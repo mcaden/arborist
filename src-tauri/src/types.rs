@@ -309,6 +309,9 @@ pub enum Error {
     #[error("invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("worktree missing: {0}")]
+    WorktreeMissing(std::path::PathBuf),
+
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -333,6 +336,7 @@ impl Error {
     pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidPath(_) => "InvalidPath",
+            Self::WorktreeMissing(_) => "WorktreeMissing",
             Self::NotFound(_) => "NotFound",
             Self::ConfigQuarantined(_) => "ConfigQuarantined",
             Self::Io(_) => "Io",
@@ -649,6 +653,10 @@ mod tests {
     fn error_codes_are_stable() {
         // Frontend may branch on these strings — keep them stable across phases.
         assert_eq!(Error::InvalidPath("p".into()).code(), "InvalidPath");
+        assert_eq!(
+            Error::WorktreeMissing(std::path::PathBuf::from("/x")).code(),
+            "WorktreeMissing"
+        );
         assert_eq!(Error::NotFound("p".into()).code(), "NotFound");
         assert_eq!(Error::Io(std::io::Error::other("e")).code(), "Io");
         assert_eq!(Error::Internal("e".into()).code(), "Internal");

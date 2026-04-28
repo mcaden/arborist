@@ -1,0 +1,757 @@
+//! Pure command composition, label dedup, worktree validation, and
+//! shell-quoting helpers (Phase 5 of the implementation plan).
+//!
+//! This module is **pure**: it performs no filesystem or process I/O. The
+//! caller (Phase 7's `session_create`) is responsible for:
+//!
+//! 1. Calling [`validate_worktree`] to canonicalize the user-supplied path.
+//! 2. Reading the selected instruction set file from disk.
+//! 3. Calling [`compose_command`] with the canonical worktree path and the
+//!    instruction set contents already in memory.
+//! 4. Materialising the returned [`ComposedInvocation::temp_files`] to disk
+//!    before spawning the PTY.
+//!
+//! Keeping composition pure makes it trivially unit-testable and lets
+//! `respawn_existing` (Phase 7) re-materialise temp files without re-running
+//! composition.
+//!
+//! Spec/design references:
+//! - SPEC §5.2 C-05 (label dedup)
+//! - SPEC §5.4 I-04 (instruction-set delivery)
+//! - SPEC §5.6 (Shell Commands at Launch)
+//! - DESIGN §5.1 step 2 (platform shell selection)
+//! - DESIGN §5.4 (restart reuses `composed_command` verbatim)
+//! - DESIGN §5.6 (per-tool CLI launch table)
+//! - DESIGN §8 (security: quoting, canonicalization, path-as-cwd)
+
+use std::path::{Path, PathBuf};
+
+use crate::types::{Error, InstructionSet, SessionId, TempFileSpec, Tool};
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// The product of [`compose_command`]: the verbatim shell string that will be
+/// passed to the platform shell as its `-c` / `/c` argument, plus any temp
+/// files the caller must materialise before spawning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposedInvocation {
+    /// Full shell command — prelaunch commands joined with `&&` followed by
+    /// the per-tool CLI launch command. This is stored verbatim on
+    /// `Session.composed_command` and reused by `session_restart` and
+    /// restore-on-launch (DESIGN §5.4 / §5.5).
+    pub composed_command: String,
+    /// Files the backend must write to disk before spawning the PTY. For
+    /// Claude this contains exactly one entry (the `--system-prompt` file).
+    /// For Copilot this is empty.
+    pub temp_files: Vec<TempFileSpec>,
+}
+
+/// Inputs to [`compose_command`]. Borrowed to keep the call site allocation-
+/// free; the function itself returns owned data.
+pub struct ComposeInputs<'a> {
+    pub session_id: SessionId,
+    pub tool: Tool,
+    /// **Already canonicalized** by [`validate_worktree`]. Composition does
+    /// not re-canonicalize and never touches disk.
+    pub worktree_path: &'a Path,
+    pub worktree_label: &'a str,
+    pub instruction_set: &'a InstructionSet,
+    /// Verbatim, in declaration order. They are joined with ` && ` ahead of
+    /// the CLI command and passed through *without* re-quoting — they are
+    /// already user-authored shell snippets (DESIGN §5.6).
+    pub prelaunch_commands: &'a [String],
+    /// In-memory contents of the selected instruction set file. The caller
+    /// reads the file (and enforces the size cap from DESIGN §8); compose
+    /// stays pure.
+    pub instruction_set_contents: &'a str,
+}
+
+/// Compose the shell command for a session.
+///
+/// Implements the per-tool table in DESIGN §5.6 / SPEC I-04:
+///
+/// | Tool    | CLI                                              | Temp file |
+/// |---------|--------------------------------------------------|-----------|
+/// | Claude  | `claude --system-prompt <quoted-temp-file-path>` | yes       |
+/// | Copilot | `copilot --interactive <quoted-context-string>`  | no        |
+///
+/// **Worktree handling**: the worktree path is *never* interpolated into the
+/// composed command for Claude (Claude reads its `cwd` directly). For
+/// Copilot the path appears only inside the quoted `--interactive` argument
+/// because the user-facing context string includes it. In both cases the
+/// real `cwd` for `portable-pty` is set separately by the PTY pool; we never
+/// emit `cd "<path>" && …` (DESIGN §8).
+pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation, Error> {
+    let quoter = platform_shell().quoter;
+
+    let (cli_cmd, temp_files) = match inputs.tool {
+        Tool::Claude => build_claude(inputs, quoter),
+        Tool::Copilot => build_copilot(inputs, quoter),
+    };
+
+    let mut parts: Vec<String> = inputs
+        .prelaunch_commands
+        .iter()
+        .map(String::clone)
+        .collect();
+    parts.push(cli_cmd);
+    let composed_command = parts.join(" && ");
+
+    Ok(ComposedInvocation {
+        composed_command,
+        temp_files,
+    })
+}
+
+/// Per SPEC C-05: produce a label that does not collide with `existing`.
+///
+/// Algorithm: if `base` is not in `existing`, return it unchanged. Otherwise
+/// pick the lowest integer `n >= 2` such that `format!("{base} {n}")` is not
+/// in `existing`. Existing gaps are **not** refilled in the sense that this
+/// function only returns `base` itself when nothing collides — but among
+/// suffixes it always picks the *lowest* free integer, so e.g. given
+/// `[foo, foo 3]` and base `foo` it returns `foo 2`.
+#[must_use]
+pub fn dedupe_label(existing: &[&str], base: &str) -> String {
+    if !existing.contains(&base) {
+        return base.to_owned();
+    }
+    let mut n: u32 = 2;
+    loop {
+        let candidate = format!("{base} {n}");
+        if !existing.contains(&candidate.as_str()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Validate a user-supplied worktree path.
+///
+/// - Missing path → [`Error::WorktreeMissing`].
+/// - Exists but not a directory → [`Error::InvalidPath`].
+/// - Otherwise returns the canonical (symlink-resolved) path.
+///
+/// On Windows we go through `dunce::canonicalize` to avoid `\\?\` UNC
+/// prefixes that confuse downstream tooling and string comparisons.
+pub fn validate_worktree(path: &Path) -> Result<PathBuf, Error> {
+    if !path.exists() {
+        return Err(Error::WorktreeMissing(path.to_path_buf()));
+    }
+    let canonical = dunce::canonicalize(path)
+        .map_err(|e| Error::InvalidPath(format!("{}: {e}", path.display())))?;
+    if !canonical.is_dir() {
+        return Err(Error::InvalidPath(format!(
+            "{} is not a directory",
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
+}
+
+/// Deterministic per-session temp directory: `<os-temp>/grove/<uuid>/`.
+///
+/// Phase 6's `cleanup_orphans` walks `<os-temp>/grove/` and removes child
+/// directories whose UUID does not match a known session, so this scheme
+/// must stay stable.
+#[must_use]
+pub fn session_temp_dir(id: &SessionId) -> PathBuf {
+    let mut p = std::env::temp_dir();
+    p.push("grove");
+    p.push(id.0.to_string());
+    p
+}
+
+// ---------------------------------------------------------------------------
+// Shell quoting
+// ---------------------------------------------------------------------------
+
+/// POSIX single-quoted form. Round-trip rule: `sh -c "echo <output>"` prints
+/// the original byte sequence unchanged.
+///
+/// Algorithm (well-known): wrap the value in single quotes, and replace any
+/// internal `'` with the four-character sequence `'\''`. This works for
+/// every byte except NUL (which no shell can carry as an argument anyway).
+/// Empty strings become `''` so they remain a single argument.
+#[must_use]
+pub fn shell_quote_posix(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_owned();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            // Close the quoted run, emit an escaped quote, reopen.
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// `cmd.exe` quoting.
+///
+/// The `cmd.exe` parser splits arguments on whitespace and then invokes the
+/// program loader, which re-parses the command tail according to the C
+/// runtime rules. Two separate layers of escaping are required:
+///
+/// 1. **CRT layer** (so the spawned program sees the value as one argument):
+///    wrap in `"…"`, double any embedded `"` and any backslash run that
+///    immediately precedes a `"` or the closing quote.
+/// 2. **`cmd.exe` layer** (so the metacharacters
+///    `^ & | < > ( ) % !` aren't interpreted by the shell *before* the
+///    target program ever sees them): caret-escape every reserved character
+///    *outside* of the double quotes — but because we put the whole value
+///    inside one pair of double quotes, the only metacharacter that needs
+///    a caret is `"` itself when it appears at the boundary. We additionally
+///    caret-escape `^` inside the value to defend against `cmd /v:on`-style
+///    delayed expansion gotchas, and caret-escape `%` and `!` which the
+///    shell expands inside double quotes.
+///
+/// The implementation here errs on the side of over-quoting: every reserved
+/// character gets a `^` prefix and the whole value is wrapped in `"…"`.
+/// This is verbose but safe, and it's only used for argv values we ourselves
+/// supply.
+#[must_use]
+pub fn shell_quote_cmd(value: &str) -> String {
+    // First, CRT-style escape inside the eventual double quotes.
+    let mut crt = String::with_capacity(value.len() + 2);
+    let mut backslashes: usize = 0;
+    for ch in value.chars() {
+        match ch {
+            '\\' => {
+                backslashes += 1;
+                crt.push('\\');
+            }
+            '"' => {
+                // Double every preceding backslash, then escape the quote.
+                for _ in 0..backslashes {
+                    crt.push('\\');
+                }
+                crt.push('\\');
+                crt.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                backslashes = 0;
+                crt.push(ch);
+            }
+        }
+    }
+    // Backslashes immediately before the closing quote also need doubling.
+    for _ in 0..backslashes {
+        crt.push('\\');
+    }
+
+    // Now caret-escape cmd.exe metacharacters. Since the whole value is
+    // wrapped in `"…"` below, most metacharacters are inert — but `%` and
+    // `!` are still expanded inside double quotes, and `^` itself is the
+    // escape character so it must be doubled. We caret-escape these three
+    // *inside* the quoted region; everything else is safe.
+    let mut out = String::with_capacity(crt.len() + 2);
+    out.push('"');
+    for ch in crt.chars() {
+        match ch {
+            '%' | '!' | '^' => {
+                out.push('^');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A function pointer to the appropriate quoter for the host shell.
+pub type Quoter = fn(&str) -> String;
+
+/// Platform shell selection per DESIGN §5.1 step 2.
+pub struct PlatformShell {
+    /// Program to spawn (e.g. `/bin/sh`, `cmd.exe`).
+    pub program: String,
+    /// Single argument flag (`-c` or `/c`).
+    pub flag: &'static str,
+    /// Quoter to use when interpolating dynamic values into the composed
+    /// command we hand to `program flag`.
+    pub quoter: Quoter,
+}
+
+/// Resolve the host's interactive shell.
+///
+/// - Unix: `$SHELL` if set, else `/bin/sh`; flag `-c`; POSIX quoting.
+/// - Windows: `%COMSPEC%` if set, else `cmd.exe`; flag `/c`; cmd quoting.
+#[must_use]
+pub fn platform_shell() -> PlatformShell {
+    #[cfg(windows)]
+    {
+        let program = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned());
+        PlatformShell {
+            program,
+            flag: "/c",
+            quoter: shell_quote_cmd,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let program = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+        PlatformShell {
+            program,
+            flag: "-c",
+            quoter: shell_quote_posix,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-tool builders
+// ---------------------------------------------------------------------------
+
+fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
+    format!(
+        "You are operating in Git worktree **{label}** at {path}.",
+        label = label,
+        path = worktree_path.display(),
+    )
+}
+
+fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+    let dir = session_temp_dir(&inputs.session_id);
+    let temp_path = dir.join("system-prompt.md");
+
+    let header = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
+    let contents = format!(
+        "{header}\n---\n{body}",
+        header = header,
+        body = inputs.instruction_set_contents,
+    );
+
+    let cli_cmd = format!(
+        "claude --system-prompt {quoted}",
+        quoted = quoter(&temp_path.to_string_lossy()),
+    );
+
+    (
+        cli_cmd,
+        vec![TempFileSpec {
+            path: temp_path,
+            contents,
+        }],
+    )
+}
+
+fn build_copilot(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+    let context = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
+    let cli_cmd = format!("copilot --interactive {quoted}", quoted = quoter(&context));
+    (cli_cmd, Vec::new())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::InstructionSetId;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use std::fs;
+    use uuid::Uuid;
+
+    // -- helpers ----------------------------------------------------------
+
+    fn fixed_id() -> SessionId {
+        SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))
+    }
+
+    fn instr_set(tool: Tool) -> InstructionSet {
+        InstructionSet {
+            id: InstructionSetId::new("set-1"),
+            name: "Set 1".into(),
+            tool,
+            file_path: PathBuf::from("/some/instructions.md"),
+            is_default: true,
+        }
+    }
+
+    fn inputs<'a>(
+        tool: Tool,
+        worktree: &'a Path,
+        label: &'a str,
+        is: &'a InstructionSet,
+        prelaunch: &'a [String],
+        body: &'a str,
+    ) -> ComposeInputs<'a> {
+        ComposeInputs {
+            session_id: fixed_id(),
+            tool,
+            worktree_path: worktree,
+            worktree_label: label,
+            instruction_set: is,
+            prelaunch_commands: prelaunch,
+            instruction_set_contents: body,
+        }
+    }
+
+    // The host's quoter — used in tests so assertions work on both Unix
+    // and Windows runners.
+    fn host_quote(s: &str) -> String {
+        (platform_shell().quoter)(s)
+    }
+
+    // -- composition: Claude --------------------------------------------
+
+    #[test]
+    fn claude_compose_no_prelaunch() {
+        let wt = PathBuf::from(if cfg!(windows) {
+            "C:\\repos\\my-feature"
+        } else {
+            "/repos/my-feature"
+        });
+        let is = instr_set(Tool::Claude);
+        let body = "# Instructions\nBe helpful.\n";
+        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", &is, &[], body))
+            .expect("compose");
+
+        let expected_path = session_temp_dir(&fixed_id()).join("system-prompt.md");
+        let quoted = host_quote(&expected_path.to_string_lossy());
+        assert_eq!(
+            r.composed_command,
+            format!("claude --system-prompt {quoted}")
+        );
+
+        assert_eq!(r.temp_files.len(), 1);
+        assert_eq!(r.temp_files[0].path, expected_path);
+        assert!(r.temp_files[0]
+            .contents
+            .starts_with("You are operating in Git worktree **my-feature** at "));
+        assert!(r.temp_files[0].contents.ends_with(body));
+        assert!(r.temp_files[0].contents.contains("\n---\n"));
+
+        // Worktree path must not leak into the composed command for Claude.
+        assert!(!r.composed_command.contains(&*wt.to_string_lossy()));
+        // No `cd "..." &&` shenanigans either.
+        assert!(!r.composed_command.contains("cd "));
+    }
+
+    #[test]
+    fn claude_compose_with_prelaunch() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let is = instr_set(Tool::Claude);
+        let pre = vec!["nvm use 20".to_owned(), "source .env".to_owned()];
+        let r =
+            compose_command(&inputs(Tool::Claude, &wt, "wt", &is, &pre, "body")).expect("compose");
+
+        assert!(r
+            .composed_command
+            .starts_with("nvm use 20 && source .env && claude --system-prompt "));
+    }
+
+    #[test]
+    fn claude_temp_path_is_quoted_when_it_contains_a_space() {
+        // Force a temp path with a space by overriding TMPDIR (Unix) /
+        // TEMP (Windows) — but env-var hacks are messy under parallel tests.
+        // Instead, exercise the quoter directly on the kind of path we'd
+        // build, and assert the composed command would contain the quoted
+        // form for such a path.
+        let space_path = if cfg!(windows) {
+            "C:\\Users\\Some User\\AppData\\Local\\Temp\\grove\\x\\system-prompt.md"
+        } else {
+            "/tmp/Some User/grove/x/system-prompt.md"
+        };
+        let q = host_quote(space_path);
+        // Either POSIX single-quoted or cmd double-quoted — both contain
+        // the relevant quote character.
+        if cfg!(windows) {
+            assert!(q.starts_with('"') && q.ends_with('"'));
+        } else {
+            assert!(q.starts_with('\'') && q.ends_with('\''));
+            // Round-trip: nothing inside is an unescaped single quote.
+            let inner = &q[1..q.len() - 1];
+            assert!(!inner.contains('\''));
+        }
+    }
+
+    // -- composition: Copilot -------------------------------------------
+
+    #[test]
+    fn copilot_compose_no_prelaunch() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let is = instr_set(Tool::Copilot);
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", &is, &[], "ignored"))
+            .expect("compose");
+
+        let context = format!(
+            "You are operating in Git worktree **wt** at {}.",
+            wt.display()
+        );
+        let quoted = host_quote(&context);
+        assert_eq!(
+            r.composed_command,
+            format!("copilot --interactive {quoted}")
+        );
+        assert!(r.temp_files.is_empty());
+        assert!(!r.composed_command.contains("--instructions"));
+        // Worktree path appears, but only inside the quoted argument.
+        assert_eq!(
+            r.composed_command.matches(&*wt.to_string_lossy()).count(),
+            1
+        );
+        assert!(!r.composed_command.contains("cd "));
+    }
+
+    #[test]
+    fn copilot_compose_with_prelaunch() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let is = instr_set(Tool::Copilot);
+        let pre = vec!["echo hi".to_owned(), "true".to_owned()];
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", &is, &pre, "")).expect("compose");
+        assert!(r
+            .composed_command
+            .starts_with("echo hi && true && copilot --interactive "));
+    }
+
+    #[test]
+    fn copilot_path_with_space_stays_one_argument() {
+        let wt = PathBuf::from(if cfg!(windows) {
+            "C:\\my repos\\feature"
+        } else {
+            "/my repos/feature"
+        });
+        let is = instr_set(Tool::Copilot);
+        let r =
+            compose_command(&inputs(Tool::Copilot, &wt, "feature", &is, &[], "")).expect("compose");
+        // The whole context (including the path with a space) must sit
+        // inside a single quoted token. We assert there is exactly one
+        // quoted token after `--interactive` and the worktree path lives
+        // entirely inside it.
+        let after = r
+            .composed_command
+            .split_once("--interactive ")
+            .expect("flag")
+            .1;
+        if cfg!(windows) {
+            assert!(after.starts_with('"') && after.ends_with('"'));
+        } else {
+            assert!(after.starts_with('\'') && after.ends_with('\''));
+        }
+    }
+
+    // -- POSIX quoting --------------------------------------------------
+
+    #[rstest]
+    #[case("")]
+    #[case("simple")]
+    #[case("with space")]
+    #[case("with'quote")]
+    #[case("with\"dquote")]
+    #[case("with\\backslash")]
+    #[case("with$dollar")]
+    #[case("with&amp")]
+    #[case("with|pipe")]
+    #[case("with>redirect")]
+    #[case("with^caret")]
+    fn posix_quote_round_trip_properties(#[case] input: &str) {
+        let q = shell_quote_posix(input);
+        // Must start and end with a single quote.
+        assert!(q.starts_with('\''), "{q:?} must start with '");
+        assert!(q.ends_with('\''), "{q:?} must end with '");
+
+        // The "interior" — between the leading and trailing single quotes
+        // — must contain no unescaped single quote. Single quotes inside
+        // are encoded as `'\''`, which means the only ' chars we should
+        // see inside are part of `'\''` patterns. Concretely: every
+        // run of consecutive `'` characters in the encoded output must
+        // have even length-or-be-part-of-the-escape: the simplest
+        // structural check is that splitting on `'\''` and re-joining
+        // recovers the original by replacing back.
+        let re_decoded = q[1..q.len() - 1].replace("'\\''", "'");
+        assert_eq!(re_decoded, input);
+    }
+
+    // -- cmd.exe quoting ------------------------------------------------
+
+    #[rstest]
+    #[case("")]
+    #[case("simple")]
+    #[case("with space")]
+    #[case("with'quote")]
+    #[case("with\"dquote")]
+    #[case("with\\backslash")]
+    #[case("with$dollar")]
+    #[case("with&amp")]
+    #[case("with|pipe")]
+    #[case("with>redirect")]
+    #[case("with^caret")]
+    #[case("with%percent")]
+    #[case("with!bang")]
+    fn cmd_quote_structural_properties(#[case] input: &str) {
+        let q = shell_quote_cmd(input);
+        // Outer wrapper.
+        assert!(q.starts_with('"'), "{q:?} must start with \"");
+        assert!(q.ends_with('"'), "{q:?} must end with \"");
+        let inner = &q[1..q.len() - 1];
+
+        // Reserved cmd metacharacters that survive double-quoting must
+        // each be preceded by a caret in the encoded form. We verify this
+        // by reconstructing the input from `inner`: walking the encoded
+        // bytes, every `^X` where `X ∈ {%, !, ^}` collapses to `X`, and
+        // every other char is itself. The result must equal the original
+        // input modulo the CRT-layer `\"`/`\\` encoding (which we decode
+        // separately below).
+        let mut decoded_cmd = String::new();
+        let mut iter = inner.chars().peekable();
+        while let Some(c) = iter.next() {
+            if c == '^' {
+                if let Some(&n) = iter.peek() {
+                    if matches!(n, '%' | '!' | '^') {
+                        decoded_cmd.push(n);
+                        iter.next();
+                        continue;
+                    }
+                }
+                decoded_cmd.push(c);
+            } else {
+                // Any bare `%`, `!`, or `^` here means the encoder failed.
+                assert!(
+                    !matches!(c, '%' | '!'),
+                    "{c:?} not caret-escaped in {inner:?}"
+                );
+                decoded_cmd.push(c);
+            }
+        }
+
+        // Now reverse the CRT layer: every `\"` → `"`, every run of `\\`
+        // before a `"` or end-of-string halves; bare `\` outside of those
+        // contexts is kept. Equivalent operational decode: replace `\"`
+        // with `"`, then replace `\\` with `\`.
+        let crt_decoded = decoded_cmd.replace("\\\"", "\"");
+        // Halve any trailing/embedded doubled backslashes that were doubled
+        // because they preceded a `"` or end-of-string. We doubled *all*
+        // backslashes that immediately preceded a `"` and any trailing run;
+        // for inputs in this test set the simple `\\` → `\` replacement on
+        // the remaining string round-trips correctly.
+        let final_decoded = crt_decoded.replace("\\\\", "\\");
+        assert_eq!(final_decoded, input, "round-trip failed for {input:?}");
+    }
+
+    #[test]
+    fn cmd_quote_preserves_trailing_backslash_before_closing_quote() {
+        // `foo\` inside `"…"` must become `foo\\` so the loader doesn't
+        // see the `\` as escaping our closing quote.
+        let q = shell_quote_cmd("foo\\");
+        assert_eq!(q, "\"foo\\\\\"");
+    }
+
+    #[test]
+    fn cmd_quote_doubles_backslashes_before_inner_quote() {
+        let q = shell_quote_cmd("a\\\"b");
+        // `\` then `"` → `\\\"`; final wrapper adds `"` on each end.
+        assert_eq!(q, "\"a\\\\\\\"b\"");
+    }
+
+    // -- worktree validation --------------------------------------------
+
+    #[test]
+    fn validate_worktree_missing_path() {
+        let p = PathBuf::from(if cfg!(windows) {
+            "C:\\definitely\\does\\not\\exist\\grove-test"
+        } else {
+            "/definitely/does/not/exist/grove-test"
+        });
+        match validate_worktree(&p) {
+            Err(Error::WorktreeMissing(got)) => assert_eq!(got, p),
+            other => panic!("expected WorktreeMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_worktree_file_not_dir() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let file = dir.path().join("not-a-dir.txt");
+        fs::write(&file, b"hi").expect("write");
+        match validate_worktree(&file) {
+            Err(Error::InvalidPath(msg)) => assert!(msg.contains("not a directory")),
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_worktree_happy_path() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let canonical = dunce::canonicalize(dir.path()).expect("canon");
+        let got = validate_worktree(dir.path()).expect("ok");
+        assert_eq!(got, canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_worktree_resolves_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().expect("tmp");
+        let target = dir.path().join("target");
+        fs::create_dir(&target).expect("mkdir");
+        let link = dir.path().join("link");
+        symlink(&target, &link).expect("symlink");
+        let got = validate_worktree(&link).expect("ok");
+        assert_eq!(got, dunce::canonicalize(&target).expect("canon"));
+    }
+
+    // -- label dedup ----------------------------------------------------
+
+    #[test]
+    fn dedupe_label_no_collision() {
+        assert_eq!(dedupe_label(&[], "foo"), "foo");
+        assert_eq!(dedupe_label(&["bar"], "foo"), "foo");
+    }
+
+    #[test]
+    fn dedupe_label_one_collision() {
+        assert_eq!(dedupe_label(&["foo"], "foo"), "foo 2");
+    }
+
+    #[test]
+    fn dedupe_label_consecutive_collisions() {
+        assert_eq!(dedupe_label(&["foo", "foo 2"], "foo"), "foo 3");
+        assert_eq!(dedupe_label(&["foo", "foo 2", "foo 3"], "foo"), "foo 4");
+    }
+
+    #[test]
+    fn dedupe_label_fills_lowest_gap() {
+        // Documented rule: pick the lowest free integer >= 2 — so a gap
+        // at "foo 2" gets filled even though "foo 3" exists.
+        assert_eq!(dedupe_label(&["foo", "foo 3"], "foo"), "foo 2");
+    }
+
+    #[test]
+    fn dedupe_label_stress_many_existing() {
+        let owned: Vec<String> = (1..100u32).map(|n| format!("foo {n}")).collect();
+        let mut refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        refs.push("foo");
+        // "foo 1" exists in `owned`; the lowest free n >= 2 is 100 since
+        // 2..=99 are all taken.
+        assert_eq!(dedupe_label(&refs, "foo"), "foo 100");
+    }
+
+    // -- session_temp_dir ----------------------------------------------
+
+    #[test]
+    fn session_temp_dir_is_deterministic() {
+        let id = fixed_id();
+        let p1 = session_temp_dir(&id);
+        let p2 = session_temp_dir(&id);
+        assert_eq!(p1, p2);
+        // Path layout: <os-temp>/grove/<uuid>/
+        assert!(p1.ends_with(id.0.to_string()));
+        assert_eq!(
+            p1.parent().and_then(|p| p.file_name()),
+            Some(std::ffi::OsStr::new("grove"))
+        );
+    }
+}
