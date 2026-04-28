@@ -60,8 +60,8 @@ pub struct ComposeInputs<'a> {
     /// Optional user-curated instruction set. When `None`:
     /// * Claude launches with no `--system-prompt` (auto-loads `CLAUDE.md`
     ///   from `cwd`).
-    /// * Copilot was never affected by this field; only the worktree
-    ///   context block is passed via `--interactive`.
+    /// * Copilot ignores this field — it is launched bare regardless,
+    ///   and reads `.github/copilot-instructions.md` from `cwd`.
     pub instruction_set: Option<&'a InstructionSet>,
     /// Verbatim, in declaration order. They are joined with ` && ` ahead of
     /// the CLI command and passed through *without* re-quoting — they are
@@ -81,14 +81,11 @@ pub struct ComposeInputs<'a> {
 /// | Tool    | CLI                                              | Temp file |
 /// |---------|--------------------------------------------------|-----------|
 /// | Claude  | `claude --system-prompt <quoted-temp-file-path>` | yes       |
-/// | Copilot | `copilot --interactive <quoted-context-string>`  | no        |
+/// | Copilot | `copilot` (bare; interactive mode is the default) | no        |
 ///
 /// **Worktree handling**: the worktree path is *never* interpolated into the
-/// composed command for Claude (Claude reads its `cwd` directly). For
-/// Copilot the path appears only inside the quoted `--interactive` argument
-/// because the user-facing context string includes it. In both cases the
-/// real `cwd` for `portable-pty` is set separately by the PTY pool; we never
-/// emit `cd "<path>" && …` (DESIGN §8).
+/// composed command. In both cases the real `cwd` for `portable-pty` is set
+/// separately by the PTY pool; we never emit `cd "<path>" && …` (DESIGN §8).
 pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation, Error> {
     let quoter = platform_shell().quoter;
 
@@ -440,13 +437,17 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
     )
 }
 
-fn build_copilot(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
-    let context = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
-    let cli_cmd = format!(
-        "{program} --interactive {quoted}",
-        program = cli_program_for_tool(Tool::Copilot, quoter),
-        quoted = quoter(&context),
-    );
+fn build_copilot(_inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+    // Modern `copilot` (the standalone GitHub Copilot CLI) starts in
+    // interactive mode by default. The legacy `--interactive <string>`
+    // flag was removed and now triggers a "too many arguments" usage
+    // error from the CLI itself. We therefore spawn `copilot` with no
+    // arguments and rely on its `cwd`-based discovery of
+    // `.github/copilot-instructions.md` for repository guidance — the
+    // PTY pool already passes the worktree as `cwd`. The worktree
+    // context block (label + path) is intentionally dropped here; the
+    // agent can derive its location from `pwd`/`git` if it needs to.
+    let cli_cmd = cli_program_for_tool(Tool::Copilot, quoter);
     (cli_cmd, Vec::new())
 }
 
@@ -667,22 +668,17 @@ mod tests {
         ))
         .expect("compose");
 
-        let context = format!(
-            "You are operating in Git worktree **wt** at {}.",
-            wt.display()
-        );
-        let quoted = host_quote(&context);
-        assert_eq!(
-            r.composed_command,
-            format!("copilot --interactive {quoted}")
-        );
+        // Modern `copilot` starts in interactive mode by default. The legacy
+        // `--interactive <string>` flag was removed and now triggers a
+        // "too many arguments" error from the CLI itself, so we spawn it
+        // bare and rely on `cwd`-based discovery for repo guidance.
+        assert_eq!(r.composed_command, "copilot");
         assert!(r.temp_files.is_empty());
         assert!(!r.composed_command.contains("--instructions"));
-        // Worktree path appears, but only inside the quoted argument.
-        assert_eq!(
-            r.composed_command.matches(&*wt.to_string_lossy()).count(),
-            1
-        );
+        assert!(!r.composed_command.contains("--interactive"));
+        // Worktree path must not leak into the composed command — it is
+        // supplied to `portable-pty` as `cwd`.
+        assert!(!r.composed_command.contains(&*wt.to_string_lossy()));
         assert!(!r.composed_command.contains("cd "));
     }
 
@@ -693,13 +689,11 @@ mod tests {
         let pre = vec!["echo hi".to_owned(), "true".to_owned()];
         let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), &pre, Some("")))
             .expect("compose");
-        assert!(r
-            .composed_command
-            .starts_with("echo hi && true && copilot --interactive "));
+        assert_eq!(r.composed_command, "echo hi && true && copilot");
     }
 
     #[test]
-    fn copilot_path_with_space_stays_one_argument() {
+    fn copilot_compose_does_not_leak_worktree_path_when_path_contains_spaces() {
         let wt = PathBuf::from(if cfg!(windows) {
             "C:\\my repos\\feature"
         } else {
@@ -715,20 +709,11 @@ mod tests {
             Some(""),
         ))
         .expect("compose");
-        // The whole context (including the path with a space) must sit
-        // inside a single quoted token. We assert there is exactly one
-        // quoted token after `--interactive` and the worktree path lives
-        // entirely inside it.
-        let after = r
-            .composed_command
-            .split_once("--interactive ")
-            .expect("flag")
-            .1;
-        if cfg!(windows) {
-            assert!(after.starts_with('"') && after.ends_with('"'));
-        } else {
-            assert!(after.starts_with('\'') && after.ends_with('\''));
-        }
+        // Bare `copilot` — no worktree path, no `--interactive`, regardless
+        // of how spicy the path looks. This is the regression test for the
+        // pre-removal behaviour where we used to interpolate the path into
+        // a quoted `--interactive` argument.
+        assert_eq!(r.composed_command, "copilot");
     }
 
     // -- POSIX quoting --------------------------------------------------

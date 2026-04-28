@@ -346,21 +346,22 @@ Copilot automatically reads `.github/copilot-instructions.md` from the repo root
 when no `--instructions` flag is provided. Arborist deliberately omits
 `--instructions` so that auto-discovery from `cwd` (the worktree) is preserved.
 
-Worktree context is injected using the `-i` / `--interactive` flag, which starts an
-interactive session and automatically sends the supplied string as the opening prompt
-before the user types anything:
+The modern `copilot` CLI starts in interactive mode by default. The legacy
+`--interactive <string>` flag was removed and now triggers a "too many
+arguments" error from the CLI, so Arborist spawns Copilot bare:
 
 ```
-copilot --interactive "You are operating in Git worktree **<label>** at <worktreePath>."
+copilot
 ```
 
-The context prompt appears in the conversation timeline as Copilot's first exchange,
-confirming to the user that context was received. No temp files are created.
+No worktree context preamble is injected; the agent can derive its location
+from `pwd`/`git` (the PTY pool sets `cwd` to the worktree). No temp files are
+created.
 
 | | Claude | Copilot |
 |---|---|---|
 | Repo instructions | Auto-loaded from `cwd` (`CLAUDE.md`) | Auto-loaded from `cwd` (`.github/copilot-instructions.md`) |
-| Worktree context | `--system-prompt <temp-file>` (only when an instruction set is attached) | `--interactive "<context string>"` |
+| Worktree context | `--system-prompt <temp-file>` (only when an instruction set is attached) | Not injected — agent derives from `pwd`/`git` |
 | Instruction set | Included in temp file when attached; otherwise launches as bare `claude` | Not passed — Copilot uses its own instruction discovery |
 | Temp file | Only when an instruction set is attached; cleaned up on session close | No |
 

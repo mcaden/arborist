@@ -36,7 +36,7 @@ A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude 
 | | Claude | Copilot |
 |---|---|---|
 | Repo instructions | Auto-loaded from `cwd` (`CLAUDE.md`). Don't pass it. | Auto-loaded from `cwd` (`.github/copilot-instructions.md`). Don't pass `--instructions` — it would disable auto-discovery. |
-| Worktree context | `--system-prompt <temp-file>` where the temp file = generated context block + selected instruction set contents | `--interactive "<context string>"` — sent as opening prompt |
+| Worktree context | `--system-prompt <temp-file>` where the temp file = generated context block + selected instruction set contents | Not injected — agent derives location from `pwd`/`git` (PTY pool sets `cwd` to the worktree) |
 | Temp file | Yes, under OS-temp `arborist/<session-uuid>/`; **deleted on session close** | None |
 | Instruction set selection | Concatenated into the temp file | Not passed; Copilot uses its own discovery |
 
