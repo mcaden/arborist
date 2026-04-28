@@ -1,0 +1,761 @@
+//! Phase 6 integration tests for the PTY pool.
+//!
+//! These tests exercise both the production [`PortablePtySpawner`] (against
+//! the purpose-built `grove-test-child` binary) and a deterministic fake
+//! spawner for backpressure / lifecycle / UTF-8 correctness.
+//!
+//! The path to the test child binary is provided automatically by Cargo via
+//! `env!("CARGO_BIN_EXE_grove-test-child")` because both the test child and
+//! these tests live in the same crate.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use grove_lib::compose::session_temp_dir;
+use grove_lib::pty_pool::{
+    cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink,
+    PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, OUTPUT_CHANNEL_CAPACITY,
+};
+use grove_lib::types::{InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool};
+use portable_pty::{ExitStatus, PtySize};
+use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Shared test helpers
+// ---------------------------------------------------------------------------
+
+const TEST_CHILD_PATH: &str = env!("CARGO_BIN_EXE_grove-test-child");
+
+/// Build a minimal `Session` whose `composed_command` runs the test child.
+///
+/// On Windows the platform shell is `cmd.exe /c "<command>"` which strips
+/// surrounding quotes, so we pass the full path through the same quoting
+/// path as the production composer would.
+fn make_session(workdir: &Path) -> Session {
+    let composed = quote_program(TEST_CHILD_PATH);
+    Session {
+        id: SessionId::new(),
+        tool: Tool::Claude,
+        worktree_path: workdir.to_path_buf(),
+        worktree_name: "test".into(),
+        label: "test".into(),
+        instruction_set_id: InstructionSetId("default".into()),
+        composed_command: composed,
+        status: SessionStatus::Starting,
+        pid: None,
+        created_at: 0,
+        tab_index: 0,
+        temp_files: Vec::new(),
+    }
+}
+
+#[cfg(windows)]
+fn quote_program(p: &str) -> String {
+    // cmd.exe /c parses the command string with its own rules. The
+    // portable-pty CommandBuilder already builds a properly escaped
+    // CreateProcess line with `cmd.exe /c "<our-string>"`, so what we hand
+    // back here must be a valid cmd-shell expression. Wrap the path in
+    // double quotes and use cmd's `^` escape on inner quotes (the test
+    // child path comes from Cargo, never has them, but we wrap for the
+    // "path may contain spaces" case).
+    if p.contains(' ') {
+        format!("\"{p}\"")
+    } else {
+        p.to_owned()
+    }
+}
+
+#[cfg(not(windows))]
+fn quote_program(p: &str) -> String {
+    grove_lib::compose::shell_quote_posix(p)
+}
+
+/// Construct a `(sink, recordings)` pair where output and status updates are
+/// pushed into shared `Vec`s for inspection.
+type OutputLog = Arc<Mutex<Vec<String>>>;
+type StatusLog = Arc<Mutex<Vec<(SessionStatus, Option<u32>)>>>;
+
+fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
+    let outs: OutputLog = Arc::new(Mutex::new(Vec::new()));
+    let stats: StatusLog = Arc::new(Mutex::new(Vec::new()));
+    let outs_cb = Arc::clone(&outs);
+    let stats_cb = Arc::clone(&stats);
+    let sink = PtySink::new(
+        Arc::new(move |_id, chunk| {
+            outs_cb.lock().unwrap().push(chunk);
+        }),
+        Arc::new(move |_id, status, pid| {
+            stats_cb.lock().unwrap().push((status, pid));
+        }),
+    );
+    (sink, outs, stats)
+}
+
+/// Block (with a budget) until `pred(joined_output)` is true. Returns the
+/// joined output on success.
+fn wait_for<F: FnMut(&str) -> bool>(
+    log: &OutputLog,
+    mut pred: F,
+    budget: Duration,
+) -> Option<String> {
+    let start = Instant::now();
+    loop {
+        let joined = log.lock().unwrap().concat();
+        if pred(&joined) {
+            return Some(joined);
+        }
+        if start.elapsed() > budget {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_for_status<F: Fn(&[(SessionStatus, Option<u32>)]) -> bool>(
+    log: &StatusLog,
+    pred: F,
+    budget: Duration,
+) -> bool {
+    let start = Instant::now();
+    loop {
+        if pred(&log.lock().unwrap()) {
+            return true;
+        }
+        if start.elapsed() > budget {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Real-spawner end-to-end tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spawn_banner_then_quit_yields_exited_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
+    let (sink, outs, stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    let pid = pool.spawn(&session, sink).expect("spawn");
+    assert!(pid > 0);
+
+    assert!(
+        wait_for(
+            &outs,
+            |s| s.contains("GROVE-TEST-CHILD READY"),
+            Duration::from_secs(5)
+        )
+        .is_some(),
+        "banner not seen: {:?}",
+        outs.lock().unwrap()
+    );
+
+    pool.write(&session.id, b"quit\r\n").expect("write quit");
+    let exited = wait_for_status(
+        &stats,
+        |s| s.iter().any(|(st, _)| matches!(st, SessionStatus::Exited)),
+        Duration::from_secs(5),
+    );
+    if !exited {
+        let outs_dump = outs.lock().unwrap().clone();
+        let stats_dump = stats.lock().unwrap().clone();
+        panic!("no Exited status; stats={stats_dump:?}; outs={outs_dump:?}");
+    }
+
+    rt.block_on(async {
+        // Drain any lingering tasks.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    });
+}
+
+#[test]
+fn echoes_input_back_through_sink() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
+    let (sink, outs, _stats) = recording_sink();
+
+    let _rt = rt();
+    let _g = _rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+    wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
+    pool.write(&session.id, b"hello\r\n").expect("write");
+    assert!(
+        wait_for(&outs, |s| s.contains("echo: hello"), Duration::from_secs(5)).is_some(),
+        "echo not seen: {:?}",
+        outs.lock().unwrap()
+    );
+    pool.write(&session.id, b"quit\r\n").ok();
+}
+
+#[test]
+fn resize_calls_do_not_disrupt_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
+    let (sink, outs, _stats) = recording_sink();
+
+    let _rt = rt();
+    let _g = _rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+    wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
+    pool.resize(&session.id, 100, 30).expect("resize");
+    pool.resize(&session.id, 80, 24).expect("resize");
+    pool.resize(&session.id, 200, 50).expect("resize");
+    pool.write(&session.id, b"hello\r\n").expect("write");
+    assert!(
+        wait_for(&outs, |s| s.contains("echo: hello"), Duration::from_secs(5)).is_some(),
+        "echo not seen after resizes: {:?}",
+        outs.lock().unwrap()
+    );
+    pool.write(&session.id, b"quit\r\n").ok();
+}
+
+#[test]
+fn nonzero_exit_yields_error_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
+    let (sink, outs, stats) = recording_sink();
+
+    let _rt = rt();
+    let _g = _rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+    wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
+    pool.write(&session.id, b"exit 7\r\n").expect("write");
+    assert!(
+        wait_for_status(
+            &stats,
+            |s| s
+                .iter()
+                .any(|(st, pid)| matches!(st, SessionStatus::Error) && pid.is_none()),
+            Duration::from_secs(5)
+        ),
+        "no Error status: {:?}",
+        stats.lock().unwrap()
+    );
+}
+
+#[test]
+fn kill_terminates_child_and_removes_entry_and_temp_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
+    let (sink, outs, _stats) = recording_sink();
+
+    // Pre-create the temp dir so kill has something to delete.
+    let temp = session_temp_dir(&session.id);
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(temp.join("system-prompt.md"), b"hello").unwrap();
+    assert!(temp.exists());
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+    wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
+
+    rt.block_on(async {
+        pool.kill(&session.id).await.expect("kill");
+    });
+
+    assert!(!pool.contains(&session.id));
+    assert!(!temp.exists(), "temp dir not deleted: {}", temp.display());
+}
+
+#[test]
+fn respawn_existing_yields_a_new_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
+    let (sink, outs, _stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    let pid1 = pool.spawn(&session, sink.clone()).expect("spawn 1");
+    wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready 1");
+    rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
+
+    let (sink2, outs2, _stats2) = recording_sink();
+    let pid2 = pool.respawn_existing(&session, sink2).expect("respawn");
+    assert_ne!(pid1, pid2, "respawn should yield a new pid");
+    assert!(
+        wait_for(&outs2, |s| s.contains("READY"), Duration::from_secs(5)).is_some(),
+        "no banner after respawn: {:?}",
+        outs2.lock().unwrap()
+    );
+    pool.write(&session.id, b"quit\r\n").ok();
+}
+
+// ---------------------------------------------------------------------------
+// Fake spawner for deterministic lifecycle / backpressure / UTF-8 tests
+// ---------------------------------------------------------------------------
+
+/// Reader that yields a fixed sequence of byte chunks then EOFs.
+struct ScriptedReader {
+    chunks: std::vec::IntoIter<Vec<u8>>,
+    pause: Duration,
+}
+
+impl Read for ScriptedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self.chunks.next() {
+            Some(c) => {
+                let n = c.len().min(buf.len());
+                buf[..n].copy_from_slice(&c[..n]);
+                if !self.pause.is_zero() {
+                    std::thread::sleep(self.pause);
+                }
+                Ok(n)
+            }
+            None => Ok(0),
+        }
+    }
+}
+
+/// Reader controlled by a flag — blocks (sleeping) until `eof` flips, then
+/// returns 0. Used to keep the wait thread parked while we test the pool's
+/// runtime behaviour.
+struct ParkedReader {
+    eof: Arc<AtomicBool>,
+}
+
+impl Read for ParkedReader {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        while !self.eof.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(0)
+    }
+}
+
+struct FakeKiller {
+    eof_flag: Arc<AtomicBool>,
+}
+
+impl PtyKiller for FakeKiller {
+    fn kill(&self) -> Result<(), grove_lib::types::Error> {
+        self.eof_flag.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+struct FakeResize;
+impl PtyResize for FakeResize {
+    fn resize(&self, _cols: u16, _rows: u16) -> Result<(), grove_lib::types::Error> {
+        Ok(())
+    }
+}
+
+struct FakeWaiter {
+    eof_flag: Arc<AtomicBool>,
+    exit_code: u32,
+    auto_exit_after: Option<Duration>,
+}
+
+impl PtyWaiter for FakeWaiter {
+    fn wait(self: Box<Self>) -> Result<ExitStatus, grove_lib::types::Error> {
+        if let Some(d) = self.auto_exit_after {
+            std::thread::sleep(d);
+            self.eof_flag.store(true, Ordering::Relaxed);
+            return Ok(ExitStatus::with_exit_code(self.exit_code));
+        }
+        // Block until the kill flag flips.
+        while !self.eof_flag.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(ExitStatus::with_exit_code(self.exit_code))
+    }
+}
+
+#[derive(Clone)]
+enum FakeMode {
+    /// Use a scripted reader with the given chunks, sleeping `pause` between.
+    Scripted {
+        chunks: Vec<Vec<u8>>,
+        pause: Duration,
+        exit_code: u32,
+    },
+    /// Use a parked reader that never returns until killed.
+    Parked,
+    /// Park reader; auto-exit waiter after `delay`.
+    AutoExit { delay: Duration, exit_code: u32 },
+}
+
+struct FakeSpawner {
+    next_pid: AtomicUsize,
+    mode: Mutex<FakeMode>,
+    last_eof: Mutex<Option<Arc<AtomicBool>>>,
+    last_cwd: Mutex<Option<PathBuf>>,
+    last_cmd: Mutex<Option<ChildCommand>>,
+}
+
+impl FakeSpawner {
+    fn new(mode: FakeMode) -> Self {
+        Self {
+            next_pid: AtomicUsize::new(1000),
+            mode: Mutex::new(mode),
+            last_eof: Mutex::new(None),
+            last_cwd: Mutex::new(None),
+            last_cmd: Mutex::new(None),
+        }
+    }
+}
+
+impl PtySpawner for FakeSpawner {
+    fn spawn(
+        &self,
+        cmd: ChildCommand,
+        cwd: &Path,
+        _size: PtySize,
+    ) -> Result<SpawnedChild, grove_lib::types::Error> {
+        *self.last_cwd.lock().unwrap() = Some(cwd.to_path_buf());
+        *self.last_cmd.lock().unwrap() = Some(cmd);
+        let pid = self.next_pid.fetch_add(1, Ordering::Relaxed) as u32;
+        let eof = Arc::new(AtomicBool::new(false));
+        *self.last_eof.lock().unwrap() = Some(Arc::clone(&eof));
+
+        let mode = self.mode.lock().unwrap().clone();
+        let (reader, exit_code, auto_exit): (Box<dyn Read + Send>, u32, Option<Duration>) =
+            match mode {
+                FakeMode::Scripted {
+                    chunks,
+                    pause,
+                    exit_code,
+                } => {
+                    let r = ScriptedReader {
+                        chunks: chunks.into_iter(),
+                        pause,
+                    };
+                    (Box::new(r), exit_code, None)
+                }
+                FakeMode::Parked => (
+                    Box::new(ParkedReader {
+                        eof: Arc::clone(&eof),
+                    }),
+                    0,
+                    None,
+                ),
+                FakeMode::AutoExit { delay, exit_code } => (
+                    Box::new(ParkedReader {
+                        eof: Arc::clone(&eof),
+                    }),
+                    exit_code,
+                    Some(delay),
+                ),
+            };
+
+        Ok(SpawnedChild {
+            pid,
+            reader,
+            writer: Box::new(std::io::sink()),
+            resize: Arc::new(FakeResize),
+            waiter: Box::new(FakeWaiter {
+                eof_flag: Arc::clone(&eof),
+                exit_code,
+                auto_exit_after: auto_exit,
+            }),
+            killer: Arc::new(FakeKiller { eof_flag: eof }),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backpressure
+// ---------------------------------------------------------------------------
+
+#[test]
+fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
+    // A scripted reader that emits MANY tiny chunks faster than the test
+    // can drain them — we make the sink "stall" so the channel fills up.
+    let chunks: Vec<Vec<u8>> = (0..2000).map(|i| format!("c{i}|").into_bytes()).collect();
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::Scripted {
+        chunks,
+        // Small pause so the producer is still emitting after the consumer is
+        // released — otherwise all chunks are produced before the consumer
+        // unblocks and there's no chunk left to carry the ESC-c reset.
+        pause: Duration::from_micros(500),
+        exit_code: 0,
+    }));
+    let pool = PtyPool::new(spawner);
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+
+    // A "stalling" sink that holds onto a Mutex while pretending to write.
+    // We block the consumer for ~200 ms so the channel saturates.
+    let outs: OutputLog = Arc::new(Mutex::new(Vec::new()));
+    let allow = Arc::new(AtomicBool::new(false));
+    let outs_cb = Arc::clone(&outs);
+    let allow_cb = Arc::clone(&allow);
+    let sink = PtySink::new(
+        Arc::new(move |_id, chunk| {
+            while !allow_cb.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            outs_cb.lock().unwrap().push(chunk);
+        }),
+        Arc::new(|_id, _status, _pid| {}),
+    );
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+
+    // Wait for the read thread to finish producing AND for the channel to
+    // fill up. The channel cap is 512; 2000 chunks > 512 so drops must occur.
+    let dropped = pool.dropped_chunks(&session.id).expect("counter");
+    let start = Instant::now();
+    while dropped.load(Ordering::Relaxed) == 0 {
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!("no drops after 5s; dropped=0");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let n_dropped = dropped.load(Ordering::Relaxed);
+    assert!(n_dropped > 0, "expected drops, got {n_dropped}");
+    // The bounded channel cap is 512; channel can never grow beyond that.
+    // We can't directly inspect length, but we can assert producer + consumer
+    // didn't deadlock by completing the test.
+
+    // Now release the consumer. The next emitted chunk must be ESC-c
+    // prefixed.
+    allow.store(true, Ordering::Relaxed);
+    rt.block_on(async {
+        // Wait for everything to flush.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+    let joined = outs.lock().unwrap().concat();
+    assert!(
+        joined.contains(ANSI_FULL_RESET),
+        "expected ESC-c reset prefix in output; first 200 chars = {:?}",
+        &joined.chars().take(200).collect::<String>()
+    );
+
+    // Also: the channel cap is exactly OUTPUT_CHANNEL_CAPACITY; verify the
+    // const hasn't drifted.
+    assert_eq!(OUTPUT_CHANNEL_CAPACITY, 512);
+
+    // Trigger the wait thread to end so the test cleanly exits.
+    rt.block_on(async {
+        pool.kill(&session.id).await.ok();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Late-output suppression after kill
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_output_delivered_after_kill_returns() {
+    // Scripted reader with one chunk so we know the read thread has emitted
+    // before kill.
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::Parked));
+    let pool = PtyPool::new(spawner);
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_cb = Arc::clone(&count);
+    let sink = PtySink::new(
+        Arc::new(move |_id, _chunk| {
+            count_cb.fetch_add(1, Ordering::Relaxed);
+        }),
+        Arc::new(|_id, _status, _pid| {}),
+    );
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+    rt.block_on(async {
+        pool.kill(&session.id).await.expect("kill");
+    });
+    let after = count.load(Ordering::Relaxed);
+    // Sleep then re-check; nothing should have been delivered after kill
+    // returned.
+    rt.block_on(async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    assert_eq!(count.load(Ordering::Relaxed), after);
+    assert!(!pool.contains(&session.id));
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 split across reads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn utf8_character_split_across_reads_emerges_intact() {
+    // Send first 2 bytes of 世 (E4 B8 96) in chunk 1, third in chunk 2.
+    let chunks = vec![vec![b'a', 0xE4, 0xB8], vec![0x96, b'b']];
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::Scripted {
+        chunks,
+        pause: Duration::from_millis(10),
+        exit_code: 0,
+    }));
+    let pool = PtyPool::new(spawner);
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let (sink, outs, stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+
+    assert!(
+        wait_for(&outs, |s| s.contains("a世b"), Duration::from_secs(3)).is_some(),
+        "expected 'a世b' in concatenated output; got {:?}",
+        outs.lock().unwrap()
+    );
+    let joined = outs.lock().unwrap().concat();
+    assert!(
+        !joined.contains('\u{FFFD}'),
+        "no replacement char expected: {joined:?}"
+    );
+
+    rt.block_on(async {
+        pool.kill(&session.id).await.ok();
+    });
+    let _ = stats; // silence unused
+}
+
+// ---------------------------------------------------------------------------
+// Wait-thread → status callback (sink-level — Phase 7 will wire persistence)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::AutoExit {
+        delay: Duration::from_millis(50),
+        exit_code: 0,
+    }));
+    let pool = PtyPool::new(spawner);
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let (sink, _outs, stats) = recording_sink();
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+    assert!(
+        wait_for_status(
+            &stats,
+            |s| s
+                .iter()
+                .any(|(st, pid)| matches!(st, SessionStatus::Exited) && pid.is_none()),
+            Duration::from_secs(3)
+        ),
+        "no Exited+pid:None status: {:?}",
+        stats.lock().unwrap()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// cleanup_orphans
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cleanup_orphans_deletes_only_unpersisted_stale_dirs() {
+    // Plant three dirs under <os-temp>/grove/:
+    //   - young: <1h, NOT in persisted   → keep (too young)
+    //   - persisted_old: >1h, IN persisted → keep (restore-safety)
+    //   - orphan_old: >1h, NOT in persisted → delete
+
+    let young_id = SessionId::new();
+    let persisted_id = SessionId::new();
+    let orphan_id = SessionId::new();
+
+    let young = session_temp_dir(&young_id);
+    let persisted = session_temp_dir(&persisted_id);
+    let orphan = session_temp_dir(&orphan_id);
+
+    for d in [&young, &persisted, &orphan] {
+        if d.exists() {
+            std::fs::remove_dir_all(d).ok();
+        }
+        std::fs::create_dir_all(d).unwrap();
+    }
+    // Set mtimes: young = now; the other two = 2h ago.
+    let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    set_mtime(&persisted, two_hours_ago);
+    set_mtime(&orphan, two_hours_ago);
+
+    let deleted = cleanup_orphans(&[persisted_id]).expect("cleanup");
+
+    assert!(young.exists(), "young dir was incorrectly deleted");
+    assert!(
+        persisted.exists(),
+        "persisted-old dir was incorrectly deleted"
+    );
+    assert!(!orphan.exists(), "orphan-old dir was not deleted");
+    assert!(deleted >= 1, "deleted count was {deleted}");
+
+    // Cleanup test fixtures.
+    std::fs::remove_dir_all(&young).ok();
+    std::fs::remove_dir_all(&persisted).ok();
+}
+
+#[cfg(windows)]
+fn set_mtime(path: &Path, when: std::time::SystemTime) {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_FLAG_BACKUP_SEMANTICS lets us open a directory handle.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .unwrap();
+    let times = std::fs::FileTimes::new()
+        .set_modified(when)
+        .set_accessed(when);
+    f.set_times(times).unwrap();
+}
+
+#[cfg(not(windows))]
+fn set_mtime(path: &Path, when: std::time::SystemTime) {
+    let f = std::fs::OpenOptions::new().read(true).open(path).unwrap();
+    let times = std::fs::FileTimes::new()
+        .set_modified(when)
+        .set_accessed(when);
+    f.set_times(times).unwrap();
+}
+
+// Sanity: ensure the test child path constant points at something on disk.
+#[test]
+fn test_child_binary_exists() {
+    assert!(
+        Path::new(TEST_CHILD_PATH).exists(),
+        "missing: {TEST_CHILD_PATH}"
+    );
+}
+
+// Sanity: ensure SessionId helpers are usable in tests too.
+#[test]
+fn session_id_new_yields_unique_uuids() {
+    let a = SessionId::new();
+    let b = SessionId::new();
+    assert_ne!(a.0, Uuid::nil());
+    assert_ne!(a, b);
+}
+
+// Silence unused-import lints when the platform-specific quoter selects
+// only one of the two variants.
+#[allow(dead_code)]
+fn _silence_temp_file_spec(_: TempFileSpec) {}

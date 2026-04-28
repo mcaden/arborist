@@ -318,6 +318,18 @@ pub enum Error {
     #[error("config quarantined: {0}")]
     ConfigQuarantined(String),
 
+    #[error("pty spawn failed: {0}")]
+    PtySpawnFailed(String),
+
+    #[error("pty write failed: {0}")]
+    PtyWriteFailed(String),
+
+    #[error("pty resize failed: {0}")]
+    PtyResizeFailed(String),
+
+    #[error("pty kill failed: {0}")]
+    PtyKillFailed(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -339,6 +351,10 @@ impl Error {
             Self::WorktreeMissing(_) => "WorktreeMissing",
             Self::NotFound(_) => "NotFound",
             Self::ConfigQuarantined(_) => "ConfigQuarantined",
+            Self::PtySpawnFailed(_) => "PtySpawnFailed",
+            Self::PtyWriteFailed(_) => "PtyWriteFailed",
+            Self::PtyResizeFailed(_) => "PtyResizeFailed",
+            Self::PtyKillFailed(_) => "PtyKillFailed",
             Self::Io(_) => "Io",
             Self::Serde(_) => "Serde",
             Self::Internal(_) => "Internal",
@@ -660,6 +676,10 @@ mod tests {
         assert_eq!(Error::NotFound("p".into()).code(), "NotFound");
         assert_eq!(Error::Io(std::io::Error::other("e")).code(), "Io");
         assert_eq!(Error::Internal("e".into()).code(), "Internal");
+        assert_eq!(Error::PtySpawnFailed("e".into()).code(), "PtySpawnFailed");
+        assert_eq!(Error::PtyWriteFailed("e".into()).code(), "PtyWriteFailed");
+        assert_eq!(Error::PtyResizeFailed("e".into()).code(), "PtyResizeFailed");
+        assert_eq!(Error::PtyKillFailed("e".into()).code(), "PtyKillFailed");
     }
 
     #[test]

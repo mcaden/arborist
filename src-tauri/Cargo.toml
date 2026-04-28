@@ -15,6 +15,13 @@ path = "src/lib.rs"
 name = "grove"
 path = "src/main.rs"
 
+# Purpose-built deterministic child process used by the PTY-pool integration
+# tests (`tests/pty_pool.rs`). Cargo automatically exposes its built path to
+# integration tests via the `CARGO_BIN_EXE_grove-test-child` env var.
+[[bin]]
+name = "grove-test-child"
+path = "src/bin/grove_test_child.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -24,13 +31,14 @@ tauri-plugin-store = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 dunce = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

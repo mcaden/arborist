@@ -8,6 +8,7 @@
 pub mod commands;
 pub mod compose;
 pub mod config_store;
+pub mod pty_pool;
 pub mod types;
 
 pub use types::{

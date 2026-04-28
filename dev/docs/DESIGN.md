@@ -425,10 +425,25 @@ shell command that runs something unintended on the user's machine.
 
 ### 8.3 Resource Management
 
-- **PTY output backpressure**: The PTY read thread buffers and rate-limits output if the
-  event queue grows beyond a threshold (default: 512 pending events). This prevents
-  memory exhaustion if a CLI process produces runaway output (e.g., a verbose build
-  or a `yes` loop).
+- **PTY output backpressure**: The PTY read thread streams bytes through a bounded
+  `tokio::sync::mpsc` channel (capacity: 512 chunks, see
+  `pty_pool::OUTPUT_CHANNEL_CAPACITY`). When the channel is full, the read thread
+  **drops the new chunk** (newest-first) and increments a per-session counter; a warning
+  is logged every 256 drops. This prevents memory exhaustion if a CLI process produces
+  runaway output (e.g., a verbose build or a `yes` loop).
+- **ANSI reset after a drop**: Because dropping a partial output chunk could leave
+  xterm.js mid-escape-sequence, the read thread prepends `ESC c` (full terminal reset)
+  to the **next** successfully-sent chunk after a drop. Tests assert this in
+  `tests/pty_pool.rs::backpressure_drops_chunks_and_inserts_reset_after_drain`.
+- **Streaming UTF-8 decode**: PTY bytes are decoded incrementally, holding at most the
+  three trailing bytes of a partial multibyte sequence between reads, so a multibyte
+  scalar split across two `read()` calls is never truncated or replaced.
+- **Orphan temp-dir cleanup**: On startup, `pty_pool::cleanup_orphans` scans
+  `<os-temp>/grove/<uuid>/` and deletes any UUID-named directory whose UUID is not in
+  the persisted session list **and** whose mtime is older than 1 hour
+  (`pty_pool::ORPHAN_AGE_THRESHOLD`). The age threshold prevents racing against an
+  in-flight session whose temp file was just written; the persisted-set check makes
+  cleanup restore-safe.
 - **Scrollback cap**: xterm.js is configured with a `scrollback` limit (default:
   5 000 lines) to bound per-session memory in the frontend.
 
