@@ -1,6 +1,6 @@
 ---
 name: quality-workflow
-description: Grove's procedural quality reference — exact build/lint/test commands, inner-loop watcher setup, Husky pre-commit/pre-push configuration, test architecture rules, and end-of-feature performance/memory smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `npm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill is the procedural lookup that complements them.
+description: Arborist's procedural quality reference — exact build/lint/test commands, inner-loop watcher setup, Husky pre-commit/pre-push configuration, test architecture rules, and end-of-feature performance/memory smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `npm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill is the procedural lookup that complements them.
 ---
 
 # Quality workflow — procedural reference

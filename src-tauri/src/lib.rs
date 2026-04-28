@@ -1,4 +1,4 @@
-//! Grove backend library crate.
+//! Arborist backend library crate.
 //!
 //! Phase 2 introduces the shared data model in [`types`]; Phase 3 adds the
 //! [`commands`] module with the typed RPC scaffold (currently just `ping`).
@@ -69,7 +69,7 @@ pub fn run() {
             commands::worktrees_list,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Grove");
+        .expect("error while running Arborist");
 }
 
 #[cfg(test)]

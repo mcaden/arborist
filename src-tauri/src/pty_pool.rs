@@ -567,7 +567,7 @@ impl PtyPool {
         let read_tx = tx.clone();
         let read_dropped = Arc::clone(&dropped);
         std::thread::Builder::new()
-            .name(format!("grove-pty-read-{pid}"))
+            .name(format!("arborist-pty-read-{pid}"))
             .spawn(move || {
                 pty_read_loop(read_id, reader, read_tx, read_dropped);
             })
@@ -578,7 +578,7 @@ impl PtyPool {
         let wait_sink = sink.clone();
         let wait_killed = Arc::clone(&killed);
         let wait_thread = std::thread::Builder::new()
-            .name(format!("grove-pty-wait-{pid}"))
+            .name(format!("arborist-pty-wait-{pid}"))
             .spawn(move || {
                 pty_wait_loop(wait_id, waiter, wait_sink, wait_killed);
             })
@@ -781,7 +781,7 @@ fn pty_read_loop(
                             needs_reset = true;
                             if n.is_multiple_of(DROP_LOG_EVERY) {
                                 warn!(
-                                    target: "grove::pty",
+                                    target: "arborist::pty",
                                     session_id = %id,
                                     drop_count = n,
                                     "pty.backpressure dropping output chunks"
@@ -829,7 +829,7 @@ fn pty_wait_loop(
 // Orphan cleanup
 // ---------------------------------------------------------------------------
 
-/// Scan `<os-temp>/grove/` for per-session directories whose UUID is **not**
+/// Scan `<os-temp>/arborist/` for per-session directories whose UUID is **not**
 /// in `persisted_session_ids` and whose mtime is older than
 /// [`ORPHAN_AGE_THRESHOLD`]. Returns the number deleted.
 ///

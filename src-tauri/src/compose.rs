@@ -151,15 +151,15 @@ pub fn validate_worktree(path: &Path) -> Result<PathBuf, Error> {
     Ok(canonical)
 }
 
-/// Deterministic per-session temp directory: `<os-temp>/grove/<uuid>/`.
+/// Deterministic per-session temp directory: `<os-temp>/arborist/<uuid>/`.
 ///
-/// Phase 6's `cleanup_orphans` walks `<os-temp>/grove/` and removes child
+/// Phase 6's `cleanup_orphans` walks `<os-temp>/arborist/` and removes child
 /// directories whose UUID does not match a known session, so this scheme
 /// must stay stable.
 #[must_use]
 pub fn session_temp_dir(id: &SessionId) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push("grove");
+    p.push("arborist");
     p.push(id.0.to_string());
     p
 }
@@ -358,16 +358,16 @@ fn build_copilot(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Tem
 
 /// Environment variable consulted by [`cli_program_for_tool`] to override
 /// the `claude` executable. **Test-only seam** — production code never sets
-/// this, but integration tests point it at `grove-test-child` so they can
+/// this, but integration tests point it at `arborist-test-child` so they can
 /// drive the full Tauri command/event surface end-to-end without a real
 /// Claude install. Documented here so the override path is auditable.
-pub const CLAUDE_OVERRIDE_ENV: &str = "GROVE_CLI_OVERRIDE_CLAUDE";
+pub const CLAUDE_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_CLAUDE";
 
 /// Sibling of [`CLAUDE_OVERRIDE_ENV`] for the `copilot` executable.
-pub const COPILOT_OVERRIDE_ENV: &str = "GROVE_CLI_OVERRIDE_COPILOT";
+pub const COPILOT_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_COPILOT";
 
 /// Resolve the program token for `tool`. Returns the bare CLI name in
-/// production (`claude` / `copilot`); when the matching `GROVE_CLI_OVERRIDE_*`
+/// production (`claude` / `copilot`); when the matching `ARBORIST_CLI_OVERRIDE_*`
 /// env var is set, returns the override **already shell-quoted** so it can
 /// be interpolated into the composed command without re-quoting at the call
 /// site. The override path is invisible to the persisted `composed_command`
@@ -499,9 +499,9 @@ mod tests {
         // build, and assert the composed command would contain the quoted
         // form for such a path.
         let space_path = if cfg!(windows) {
-            "C:\\Users\\Some User\\AppData\\Local\\Temp\\grove\\x\\system-prompt.md"
+            "C:\\Users\\Some User\\AppData\\Local\\Temp\\arborist\\x\\system-prompt.md"
         } else {
-            "/tmp/Some User/grove/x/system-prompt.md"
+            "/tmp/Some User/arborist/x/system-prompt.md"
         };
         let q = host_quote(space_path);
         // Either POSIX single-quoted or cmd double-quoted — both contain
@@ -699,9 +699,9 @@ mod tests {
     #[test]
     fn validate_worktree_missing_path() {
         let p = PathBuf::from(if cfg!(windows) {
-            "C:\\definitely\\does\\not\\exist\\grove-test"
+            "C:\\definitely\\does\\not\\exist\\arborist-test"
         } else {
-            "/definitely/does/not/exist/grove-test"
+            "/definitely/does/not/exist/arborist-test"
         });
         match validate_worktree(&p) {
             Err(Error::WorktreeMissing(got)) => assert_eq!(got, p),
@@ -785,11 +785,11 @@ mod tests {
         let p1 = session_temp_dir(&id);
         let p2 = session_temp_dir(&id);
         assert_eq!(p1, p2);
-        // Path layout: <os-temp>/grove/<uuid>/
+        // Path layout: <os-temp>/arborist/<uuid>/
         assert!(p1.ends_with(id.0.to_string()));
         assert_eq!(
             p1.parent().and_then(|p| p.file_name()),
-            Some(std::ffi::OsStr::new("grove"))
+            Some(std::ffi::OsStr::new("arborist"))
         );
     }
 }

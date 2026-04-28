@@ -1,4 +1,4 @@
-# Grove — testing guide
+# Arborist — testing guide
 
 How tests are organised, what the seams are, how to write new ones, and
 what the smoke procedure looks like.
@@ -17,7 +17,7 @@ what the smoke procedure looks like.
 | ------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `src-tauri/src/<module>.rs::tests`          | Unit tests for pure logic — composition, label dedup, validation, type round-trips.    |
 | `src-tauri/tests/*.rs`                      | Cargo integration tests against the public crate surface.                              |
-| `src-tauri/src/bin/grove_test_child.rs`     | Deterministic child binary used by `pty_pool` integration tests.                       |
+| `src-tauri/src/bin/arborist_test_child.rs`     | Deterministic child binary used by `pty_pool` integration tests.                       |
 | `src-tauri/examples/config_smoke.rs`        | End-to-end harness for the config store — useful for manual debugging, runnable via `cargo run --example config_smoke`. |
 
 The integration tests in `src-tauri/tests/` are:
@@ -26,7 +26,7 @@ The integration tests in `src-tauri/tests/` are:
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `pty_pool.rs`                       | PTY lifecycle: spawn → echo → resize → exit; backpressure with drop-newest + `ESC c` reset; UTF-8 split-character safety; orphan cleanup; wait-thread persistence. |
 | `session_lifecycle_fake.rs`         | Full command surface against a `FakePtySpawner` — no real CLI, no real PTY. Restore-on-launch, restart byte-identical to stored `composedCommand`, dead-worktree handling, idempotent `frontend_ready`. |
-| `session_lifecycle_real.rs`         | One happy-path round-trip through `PortablePtySpawner` + the `grove-test-child` binary, proving end-to-end wiring. |
+| `session_lifecycle_real.rs`         | One happy-path round-trip through `PortablePtySpawner` + the `arborist-test-child` binary, proving end-to-end wiring. |
 | `worktrees_command.rs`              | `git worktree list --porcelain` parsing via the `GitRunner` seam; missing-git, non-repo, and permission-error paths.    |
 | `capability_gating.rs`              | Structural assertion that every `#[tauri::command]` has a matching `permissions/*.toml` referenced from `capabilities/main.json`. See the file's header for why this is structural rather than a runtime negative test. |
 
@@ -41,7 +41,7 @@ The integration tests in `src-tauri/tests/` are:
 
 ## 2. Seams (how tests avoid touching the OS)
 
-Grove takes determinism seriously. Three injectable seams keep tests off
+Arborist takes determinism seriously. Three injectable seams keep tests off
 the real filesystem, the real PTY, and the real `git`.
 
 ### `PtySpawner` (Rust — `src-tauri/src/pty_pool.rs`)
@@ -80,9 +80,9 @@ Then per-test, override `vi.fn` return values on the imported module. Every
 default mock rejects with `not implemented` so a forgotten
 `mockResolvedValue` surfaces loudly.
 
-## 3. The `grove-test-child` binary
+## 3. The `arborist-test-child` binary
 
-`src-tauri/src/bin/grove_test_child.rs` is a tiny purpose-built child
+`src-tauri/src/bin/arborist_test_child.rs` is a tiny purpose-built child
 process used by the PTY-pool integration tests so cross-platform tests
 don't depend on `claude` / `copilot` being installed.
 
@@ -95,11 +95,11 @@ Behaviour:
 
 Cargo automatically builds the binary as part of `cargo test --workspace`
 and exposes its full path to integration tests via the
-`CARGO_BIN_EXE_grove-test-child` environment variable. To poke at it
+`CARGO_BIN_EXE_arborist-test-child` environment variable. To poke at it
 manually:
 
 ```sh
-cargo run -p grove --bin grove-test-child
+cargo run -p arborist --bin arborist-test-child
 ```
 
 ## 4. Test-only env-var seam: CLI program override
@@ -109,11 +109,11 @@ session's command:
 
 | Variable                          | Effect                                                          |
 | --------------------------------- | --------------------------------------------------------------- |
-| `GROVE_CLI_OVERRIDE_CLAUDE`       | Replaces the bare `claude` token in the composed command.       |
-| `GROVE_CLI_OVERRIDE_COPILOT`      | Replaces the bare `copilot` token in the composed command.      |
+| `ARBORIST_CLI_OVERRIDE_CLAUDE`       | Replaces the bare `claude` token in the composed command.       |
+| `ARBORIST_CLI_OVERRIDE_COPILOT`      | Replaces the bare `copilot` token in the composed command.      |
 
 Production never sets these. They exist so `session_lifecycle_real.rs`
-can drive the full lifecycle against `grove-test-child`. The override
+can drive the full lifecycle against `arborist-test-child`. The override
 path is encoded verbatim into the persisted `composedCommand`; restarting
 without the env var still spawns the literal path (it does **not** fall
 back to `claude` / `copilot`). This is documented in `DESIGN.md` §6 too.

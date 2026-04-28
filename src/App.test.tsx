@@ -121,7 +121,7 @@ describe('App boot sequence', () => {
     );
 
     render(<App />);
-    expect(screen.getByRole('status')).toHaveTextContent(/loading grove/i);
+    expect(screen.getByRole('status')).toHaveTextContent(/loading arborist/i);
 
     await act(async () => {
       resolveCfg!();

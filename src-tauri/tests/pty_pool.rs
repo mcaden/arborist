@@ -1,11 +1,11 @@
 //! Phase 6 integration tests for the PTY pool.
 //!
 //! These tests exercise both the production [`PortablePtySpawner`] (against
-//! the purpose-built `grove-test-child` binary) and a deterministic fake
+//! the purpose-built `arborist-test-child` binary) and a deterministic fake
 //! spawner for backpressure / lifecycle / UTF-8 correctness.
 //!
 //! The path to the test child binary is provided automatically by Cargo via
-//! `env!("CARGO_BIN_EXE_grove-test-child")` because both the test child and
+//! `env!("CARGO_BIN_EXE_arborist-test-child")` because both the test child and
 //! these tests live in the same crate.
 
 use std::io::Read;
@@ -14,12 +14,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use grove_lib::compose::session_temp_dir;
-use grove_lib::pty_pool::{
+use arborist_lib::compose::session_temp_dir;
+use arborist_lib::pty_pool::{
     cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink,
     PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, OUTPUT_CHANNEL_CAPACITY,
 };
-use grove_lib::types::{InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool};
+use arborist_lib::types::{
+    InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool,
+};
 use portable_pty::{ExitStatus, PtySize};
 use uuid::Uuid;
 
@@ -27,7 +29,7 @@ use uuid::Uuid;
 // Shared test helpers
 // ---------------------------------------------------------------------------
 
-const TEST_CHILD_PATH: &str = env!("CARGO_BIN_EXE_grove-test-child");
+const TEST_CHILD_PATH: &str = env!("CARGO_BIN_EXE_arborist-test-child");
 
 /// Build a minimal `Session` whose `composed_command` runs the test child.
 ///
@@ -70,7 +72,7 @@ fn quote_program(p: &str) -> String {
 
 #[cfg(not(windows))]
 fn quote_program(p: &str) -> String {
-    grove_lib::compose::shell_quote_posix(p)
+    arborist_lib::compose::shell_quote_posix(p)
 }
 
 /// Construct a `(sink, recordings)` pair where output and status updates are
@@ -157,7 +159,7 @@ fn spawn_banner_then_quit_yields_exited_status() {
     assert!(
         wait_for(
             &outs,
-            |s| s.contains("GROVE-TEST-CHILD READY"),
+            |s| s.contains("ARBORIST-TEST-CHILD READY"),
             Duration::from_secs(5)
         )
         .is_some(),
@@ -348,7 +350,7 @@ struct FakeKiller {
 }
 
 impl PtyKiller for FakeKiller {
-    fn kill(&self) -> Result<(), grove_lib::types::Error> {
+    fn kill(&self) -> Result<(), arborist_lib::types::Error> {
         self.eof_flag.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -356,7 +358,7 @@ impl PtyKiller for FakeKiller {
 
 struct FakeResize;
 impl PtyResize for FakeResize {
-    fn resize(&self, _cols: u16, _rows: u16) -> Result<(), grove_lib::types::Error> {
+    fn resize(&self, _cols: u16, _rows: u16) -> Result<(), arborist_lib::types::Error> {
         Ok(())
     }
 }
@@ -368,7 +370,7 @@ struct FakeWaiter {
 }
 
 impl PtyWaiter for FakeWaiter {
-    fn wait(self: Box<Self>) -> Result<ExitStatus, grove_lib::types::Error> {
+    fn wait(self: Box<Self>) -> Result<ExitStatus, arborist_lib::types::Error> {
         if let Some(d) = self.auto_exit_after {
             std::thread::sleep(d);
             self.eof_flag.store(true, Ordering::Relaxed);
@@ -422,7 +424,7 @@ impl PtySpawner for FakeSpawner {
         cmd: ChildCommand,
         cwd: &Path,
         _size: PtySize,
-    ) -> Result<SpawnedChild, grove_lib::types::Error> {
+    ) -> Result<SpawnedChild, arborist_lib::types::Error> {
         *self.last_cwd.lock().unwrap() = Some(cwd.to_path_buf());
         *self.last_cmd.lock().unwrap() = Some(cmd);
         let pid = self.next_pid.fetch_add(1, Ordering::Relaxed) as u32;
@@ -672,7 +674,7 @@ fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
 
 #[test]
 fn cleanup_orphans_deletes_only_unpersisted_stale_dirs() {
-    // Plant three dirs under <os-temp>/grove/:
+    // Plant three dirs under <os-temp>/arborist/:
     //   - young: <1h, NOT in persisted   → keep (too young)
     //   - persisted_old: >1h, IN persisted → keep (restore-safety)
     //   - orphan_old: >1h, NOT in persisted → delete

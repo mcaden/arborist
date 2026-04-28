@@ -5,7 +5,7 @@
 //
 // NOTE: these are placeholder marks, not the official Claude / Copilot logos.
 
-import type { Tool } from '@/types/grove';
+import type { Tool } from '@/types/arborist';
 
 interface ToolIconProps {
   tool: Tool;

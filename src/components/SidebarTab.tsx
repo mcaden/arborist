@@ -11,7 +11,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 import { ToolIcon } from './ToolIcon';
 import { useSessionActions, useSessionById } from '@/store/session-store';
-import type { SessionId } from '@/types/grove';
+import type { SessionId } from '@/types/arborist';
 
 interface SidebarTabProps {
   id: SessionId;

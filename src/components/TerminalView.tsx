@@ -11,7 +11,7 @@ import { useEffect, useRef } from 'react';
 import { sessionRestart } from '@/lib/tauri-bridge';
 import { useTerminal } from '@/hooks/use-terminal';
 import { useSessionById } from '@/store/session-store';
-import type { SessionId } from '@/types/grove';
+import type { SessionId } from '@/types/arborist';
 
 interface TerminalViewProps {
   sessionId: SessionId;

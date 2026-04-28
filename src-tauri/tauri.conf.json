@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Grove",
+  "productName": "Arborist",
   "version": "0.0.0",
-  "identifier": "dev.grove.desktop",
+  "identifier": "dev.arborist.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Grove",
+        "title": "Arborist",
         "width": 1200,
         "height": 800,
         "resizable": true,

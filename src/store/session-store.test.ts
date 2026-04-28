@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
-import type { SessionStatusEvent, SessionView } from '@/types/grove';
+import type { SessionStatusEvent, SessionView } from '@/types/arborist';
 
 import { useSessionStore } from './session-store';
 

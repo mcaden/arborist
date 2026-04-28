@@ -16,7 +16,7 @@
 import { create } from 'zustand';
 
 import { configGet, configSet } from '@/lib/tauri-bridge';
-import type { AppConfig, PartialAppConfig } from '@/types/grove';
+import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
   configVersion: 2,

@@ -1,4 +1,4 @@
-# Grove — Copilot Instructions
+# Arborist — Copilot Instructions
 
 ## Repository status
 
@@ -11,7 +11,7 @@ Read both before proposing implementation work. When the codebase is scaffolded,
 
 IMPORTANT!!! This repo is not stored in a remote repository. Do not push. Only commit locally.
 
-## What Grove is
+## What Arborist is
 
 A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git worktree, in a sidebar of vertical tabs with a single visible PTY terminal in the main area.
 
@@ -37,7 +37,7 @@ A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude 
 |---|---|---|
 | Repo instructions | Auto-loaded from `cwd` (`CLAUDE.md`). Don't pass it. | Auto-loaded from `cwd` (`.github/copilot-instructions.md`). Don't pass `--instructions` — it would disable auto-discovery. |
 | Worktree context | `--system-prompt <temp-file>` where the temp file = generated context block + selected instruction set contents | `--interactive "<context string>"` — sent as opening prompt |
-| Temp file | Yes, under OS-temp `grove/<session-uuid>/`; **deleted on session close** | None |
+| Temp file | Yes, under OS-temp `arborist/<session-uuid>/`; **deleted on session close** | None |
 | Instruction set selection | Concatenated into the temp file | Not passed; Copilot uses its own discovery |
 
 ## Data model

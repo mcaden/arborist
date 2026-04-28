@@ -28,7 +28,7 @@ import type {
   SessionView,
   Tool,
   WorktreeInfo,
-} from '@/types/grove';
+} from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
 // Command argument shapes

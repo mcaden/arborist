@@ -1,4 +1,4 @@
-# Grove — architecture tour
+# Arborist — architecture tour
 
 A guided walk through the codebase, mapping SPEC requirements and DESIGN
 sections to the actual modules that satisfy them. Read SPEC and DESIGN
@@ -6,7 +6,7 @@ first; this document fills in "where does X live in code?".
 
 ## 1. Two-process picture
 
-Grove is one process with a clean Rust ↔ WebView split:
+Arborist is one process with a clean Rust ↔ WebView split:
 
 ```
 ┌──────────── Rust backend (Tauri v2) ────────────┐
@@ -33,7 +33,7 @@ DESIGN §6. Both sides go through a single bridge module
 
 | File                          | Purpose                                                                                              | Maps to                            |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| `main.rs`                     | Process entry — calls `grove_lib::run`.                                                              | —                                  |
+| `main.rs`                     | Process entry — calls `arborist_lib::run`.                                                              | —                                  |
 | `lib.rs`                      | `init_tracing`, builds the `AppContext` (PtyPool + ConfigStore + GitRunner + production PtySink), registers commands, runs the Tauri event loop. | DESIGN §2.1                       |
 | `types.rs`                    | All serde types: `Session`, `SessionView`, `AppConfig`, `PartialAppConfig`, `InstructionSet`, `WorktreeInfo`, `SessionStatus`, `Tool`, errors, event payloads, command arg structs. | DESIGN §3                  |
 | `compose.rs`                  | Pure functions: `compose_command`, `dedupe_label`, `validate_worktree`, POSIX/`cmd.exe` shell quoting, `cli_program_for_tool` (test override seam). | DESIGN §5.1, §5.6, §8.1, §8.2     |
@@ -42,7 +42,7 @@ DESIGN §6. Both sides go through a single bridge module
 | `pty_pool.rs`                 | `PtySpawner` / `ChildPty` traits, `PortablePtySpawner`, `PtyPool` (per-session runtime entry: child handle, drain task, cancel token), bounded mpsc with drop-newest backpressure (`OUTPUT_CHANNEL_CAPACITY = 512`), `ESC c` reset after a drop, streaming UTF-8 decoder, wait thread that persists final status, `cleanup_orphans` (`ORPHAN_AGE_THRESHOLD = 1h`, ignores UUIDs still in `sessions.json`). | DESIGN §2.1, §5.4, §8.3 |
 | `commands/mod.rs`             | Thin `#[tauri::command]` wrappers. Each one resolves the `AppContext` from Tauri managed state and delegates to `commands::session`. Also contains `build_production_sink` which wires the PTY status / output callbacks to `app.emit` and `ConfigStore::update_session_status`. | DESIGN §6 |
 | `commands/session.rs`         | All real handler logic: `session_create_impl`, `session_close_impl`, `session_focus_impl`, `session_resize_impl`, `session_input_impl`, `session_restart_impl`, `session_list_impl`, `frontend_ready_impl`, `restore_all_sessions`, `worktrees_list_impl`. Holds the `AppContext` struct (Pool + Store + Sink + GitRunner). | DESIGN §5.1, §5.3, §5.4, §5.5 |
-| `bin/grove_test_child.rs`     | Deterministic child binary used by integration tests. Not used in production.                          | [`TESTING.md`](./TESTING.md) §3   |
+| `bin/arborist_test_child.rs`     | Deterministic child binary used by integration tests. Not used in production.                          | [`TESTING.md`](./TESTING.md) §3   |
 
 ### Key invariants enforced by the backend
 
@@ -87,7 +87,7 @@ DESIGN §6. Both sides go through a single bridge module
 | `store/session-store.ts`                    | Zustand store: `sessions[]`, `activeId`, `pendingClose`. Actions: `hydrate`, `create`, `close`, `focus`, `reorder`, `applyStatus`. **No `applyOutput`** — output bypasses Zustand and goes straight to xterm via `use-terminal`. | DESIGN §2.2 (Phase 8 design)              |
 | `store/config-store.ts`                     | Zustand store backed by `config_get` / `config_set`.                                              | DESIGN §3.3                               |
 | `store/new-session-dialog-store.ts`         | Modal step / draft state for the New-Session flow.                                                | SPEC §5.2                                 |
-| `types/grove.ts`                            | TypeScript mirrors of every Rust type in `types.rs`. Each interface carries a `// MIRROR:` marker pointing at the canonical definition. | DESIGN §3 |
+| `types/arborist.ts`                            | TypeScript mirrors of every Rust type in `types.rs`. Each interface carries a `// MIRROR:` marker pointing at the canonical definition. | DESIGN §3 |
 
 ## 4. Boot sequence (DESIGN §5.5)
 
@@ -153,9 +153,9 @@ checklist when adding a new command.
 | You want to…                                         | Start here                                                          |
 | ---------------------------------------------------- | ------------------------------------------------------------------- |
 | Add a new Tauri command                              | [`TESTING.md`](./TESTING.md) §6 checklist + `commands/mod.rs`.       |
-| Change the persisted config shape                    | `types.rs` (`AppConfig` + `PartialAppConfig`) → `types/grove.ts` mirror → bump `CONFIG_VERSION_CURRENT` and add a migration in `config_store.rs`. |
+| Change the persisted config shape                    | `types.rs` (`AppConfig` + `PartialAppConfig`) → `types/arborist.ts` mirror → bump `CONFIG_VERSION_CURRENT` and add a migration in `config_store.rs`. |
 | Tune backpressure or scrollback                      | `pty_pool.rs::OUTPUT_CHANNEL_CAPACITY` (Rust) / `useTerminal` `scrollback` option (Frontend). |
 | Add a new instruction-set tool                        | `Tool` enum in `types.rs`, the discovery rules in `config_store.rs`, the per-tool branch in `compose.rs::compose_command`. |
 | Modify the New-Session flow                          | `components/NewSessionDialog.tsx` + `store/new-session-dialog-store.ts`. |
-| Investigate a restore failure                        | `commands/session.rs::restore_all_sessions` + `tracing` output (`RUST_LOG=grove_lib=debug`). |
+| Investigate a restore failure                        | `commands/session.rs::restore_all_sessions` + `tracing` output (`RUST_LOG=arborist_lib=debug`). |
 | Reproduce backpressure / leak behaviour              | [`../ai/SMOKE_TEST_RESULTS.md`](../ai/SMOKE_TEST_RESULTS.md) procedures. |

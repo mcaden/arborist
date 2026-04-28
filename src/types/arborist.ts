@@ -3,7 +3,7 @@
 // pointing at the canonical Rust definition. **When you change a Rust struct,
 // update the matching interface here in the same commit.**
 //
-// Drift is enforced at test time by `grove.test.ts`: every fixture under
+// Drift is enforced at test time by `arborist.test.ts`: every fixture under
 // `./fixtures/` must satisfy its declared TS type *and* must have exactly
 // the same key set. A renamed Rust field will fail the fixture round-trip on
 // the Rust side and the satisfies-check here on the TS side.

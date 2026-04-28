@@ -1,7 +1,7 @@
 // Cross-boundary contract test: each JSON fixture under `./fixtures/` is
 // produced by the matching Rust serde round-trip in
 // `src-tauri/src/types.rs`. If a Rust field is renamed, added, or removed
-// without updating the TypeScript mirror in `./grove.ts`, this file will
+// without updating the TypeScript mirror in `./arborist.ts`, this file will
 // fail to typecheck (or fail the runtime key-set assertions below).
 
 import { describe, expect, it } from 'vitest';
@@ -16,7 +16,7 @@ import type {
   SessionOutputEvent,
   SessionStatusEvent,
   SessionView,
-} from './grove';
+} from './arborist';
 
 import sessionFixture from './fixtures/session.json';
 import sessionViewFixture from './fixtures/sessionView.json';
@@ -79,7 +79,7 @@ function assertExactKeys(
   expect(unexpected, `${label}: fixture has keys not declared in TS mirror`).toEqual([]);
 }
 
-describe('grove type mirrors', () => {
+describe('arborist type mirrors', () => {
   it('Session fixture matches TS interface key set', () => {
     assertExactKeys(
       sessionFixture as unknown as Record<string, unknown>,

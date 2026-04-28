@@ -1,13 +1,13 @@
-# Grove — Product Specification
+# Arborist — Product Specification
 _Version 0.3_
 
 ## 1. Overview
 
-Grove is a desktop application that provides a unified workspace for managing multiple AI coding assistant sessions (Claude CLI and GitHub Copilot CLI) across Git worktrees. It features a vertical-tab sidebar for session management and an integrated terminal area that hosts the active CLI session.
+Arborist is a desktop application that provides a unified workspace for managing multiple AI coding assistant sessions (Claude CLI and GitHub Copilot CLI) across Git worktrees. It features a vertical-tab sidebar for session management and an integrated terminal area that hosts the active CLI session.
 
 ## 2. Problem Statement
 
-Developers working across multiple Git worktrees frequently need to spin up AI assistant sessions scoped to each worktree. Today this requires manually opening terminals, navigating to the correct directory, and launching the CLI with the right flags. Grove eliminates this friction by providing a single UI that:
+Developers working across multiple Git worktrees frequently need to spin up AI assistant sessions scoped to each worktree. Today this requires manually opening terminals, navigating to the correct directory, and launching the CLI with the right flags. Arborist eliminates this friction by providing a single UI that:
 
 - Launches Claude or Copilot CLI sessions bound to a specific worktree.
 - Passes pre-configured instructions/system prompts to each session.

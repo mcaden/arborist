@@ -5,13 +5,13 @@
 //! file present). Run with:
 //!
 //! ```text
-//! cargo run -p grove --example config_smoke
+//! cargo run -p arborist --example config_smoke
 //! ```
 
 use std::fs;
 
-use grove_lib::config_store::ConfigStore;
-use grove_lib::init_tracing;
+use arborist_lib::config_store::ConfigStore;
+use arborist_lib::init_tracing;
 use tempfile::TempDir;
 
 fn main() {

@@ -1,4 +1,4 @@
-//! Persistence layer for Grove (Phase 4).
+//! Persistence layer for Arborist (Phase 4).
 //!
 //! Two logical JSON stores live side-by-side in a single directory (typically
 //! the OS-specific `app_data_dir` provided by Tauri):
@@ -1008,7 +1008,7 @@ mod tests {
             "worktreeRoots": [],
             "prelaunchCommands": [],
             "worktreePrelaunchCommands": {
-                "/definitely/not/a/real/path/grove-test": ["echo nope"]
+                "/definitely/not/a/real/path/arborist-test": ["echo nope"]
             },
             "lastOpenSessions": [],
             "tabOrder": []

@@ -40,7 +40,7 @@ import { TerminalView } from './TerminalView';
 import { __resetTerminalRegistryForTests } from '@/hooks/use-terminal';
 import { resetBridgeMocks, sessionRestart } from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
-import type { SessionView } from '@/types/grove';
+import type { SessionView } from '@/types/arborist';
 
 function seedSession(overrides: Partial<SessionView> = {}): SessionView {
   const view: SessionView = {

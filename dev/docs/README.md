@@ -1,6 +1,6 @@
-# Grove documentation
+# Arborist documentation
 
-Authoritative documentation for the Grove desktop app.
+Authoritative documentation for the Arborist desktop app.
 
 ## Index
 

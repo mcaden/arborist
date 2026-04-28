@@ -1,10 +1,10 @@
-//! `grove-test-child` — a deterministic, dependency-free child process used by
+//! `arborist-test-child` — a deterministic, dependency-free child process used by
 //! the PTY-pool integration tests.
 //!
 //! Protocol (line-based, `\n`-terminated; both `\n` and `\r\n` are tolerated
 //! because some PTY layers translate newlines):
 //!
-//! - Prints `GROVE-TEST-CHILD READY\n` on startup.
+//! - Prints `ARBORIST-TEST-CHILD READY\n` on startup.
 //! - `quit\n`               → exit 0.
 //! - `exit N\n`             → exit N (N is a non-negative i32).
 //! - `flood K\n`            → write K lines `flood-i\n` as fast as possible
@@ -15,7 +15,7 @@
 //!
 //! Cross-platform: pure stdlib, no extra dependencies. The binary is wired
 //! into `Cargo.toml` so integration tests in this crate receive its path via
-//! `env!("CARGO_BIN_EXE_grove-test-child")`.
+//! `env!("CARGO_BIN_EXE_arborist-test-child")`.
 
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
@@ -23,7 +23,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    if writeln!(out, "GROVE-TEST-CHILD READY").is_err() {
+    if writeln!(out, "ARBORIST-TEST-CHILD READY").is_err() {
         return ExitCode::from(2);
     }
     if out.flush().is_err() {
@@ -39,7 +39,7 @@ fn main() -> ExitCode {
         if line == "quit" {
             // Echo a sentinel so tests can confirm the child reached this
             // branch even when ConPTY echoes are noisy.
-            let _ = writeln!(out, "GROVE-TEST-CHILD QUITTING");
+            let _ = writeln!(out, "ARBORIST-TEST-CHILD QUITTING");
             let _ = out.flush();
             return ExitCode::SUCCESS;
         }

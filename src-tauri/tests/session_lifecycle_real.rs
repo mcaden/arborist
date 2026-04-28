@@ -1,7 +1,7 @@
 //! Phase 7 happy-path integration test against the **real** PortablePtySpawner.
 //!
 //! We override the `claude` program token with the test-only env-var seam
-//! (`GROVE_CLI_OVERRIDE_CLAUDE`) and point it at `grove-test-child`, the
+//! (`ARBORIST_CLI_OVERRIDE_CLAUDE`) and point it at `arborist-test-child`, the
 //! deterministic child shipped alongside the PTY-pool tests. This proves the
 //! end-to-end flow — compose → temp file → portable-pty spawn → output
 //! drain → status persistence — works with no fakes anywhere except the CLI
@@ -22,19 +22,19 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use grove_lib::commands::session::{
+use arborist_lib::commands::session::{
     session_close_impl, session_create_impl, session_input_impl, AppContext,
 };
-use grove_lib::compose::CLAUDE_OVERRIDE_ENV;
-use grove_lib::config_store::ConfigStore;
-use grove_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
-use grove_lib::types::{
+use arborist_lib::compose::CLAUDE_OVERRIDE_ENV;
+use arborist_lib::config_store::ConfigStore;
+use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
+use arborist_lib::types::{
     InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
     SessionId, SessionInputArgs, SessionStatus, Tool,
 };
 use tempfile::TempDir;
 
-const TEST_CHILD: &str = env!("CARGO_BIN_EXE_grove-test-child");
+const TEST_CHILD: &str = env!("CARGO_BIN_EXE_arborist-test-child");
 
 #[derive(Default)]
 struct Captured {
@@ -128,7 +128,7 @@ async fn real_spawner_drives_create_input_close_round_trip() {
                 .output
                 .lock()
                 .unwrap()
-                .contains("GROVE-TEST-CHILD READY")
+                .contains("ARBORIST-TEST-CHILD READY")
         },
         Duration::from_secs(5),
     );

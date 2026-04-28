@@ -32,7 +32,7 @@ import {
   sessionList,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
-import type { SessionId, SessionStatusEvent, SessionView } from '@/types/grove';
+import type { SessionId, SessionStatusEvent, SessionView } from '@/types/arborist';
 
 export interface SessionStoreState {
   sessions: SessionView[];

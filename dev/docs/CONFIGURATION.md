@@ -1,18 +1,18 @@
-# Grove configuration
+# Arborist configuration
 
-Grove keeps all persistent state in two JSON files inside the OS-specific
+Arborist keeps all persistent state in two JSON files inside the OS-specific
 **app data directory** that Tauri provides. There is no in-app settings UI in
 v1 — settings are edited by hand (with the app shut down) and reloaded on
 next launch. This document describes the file layout, the minimum valid
-`config.json`, and what to do when Grove quarantines a corrupt file.
+`config.json`, and what to do when Arborist quarantines a corrupt file.
 
 ## On-disk layout
 
 | OS      | Path                                                       |
 | ------- | ---------------------------------------------------------- |
-| Windows | `%APPDATA%\com.grove.app\` (typically `C:\Users\<you>\AppData\Roaming\com.grove.app\`) |
-| macOS   | `~/Library/Application Support/com.grove.app/`             |
-| Linux   | `$XDG_DATA_HOME/com.grove.app/` or `~/.local/share/com.grove.app/` |
+| Windows | `%APPDATA%\com.arborist.app\` (typically `C:\Users\<you>\AppData\Roaming\com.arborist.app\`) |
+| macOS   | `~/Library/Application Support/com.arborist.app/`             |
+| Linux   | `$XDG_DATA_HOME/com.arborist.app/` or `~/.local/share/com.arborist.app/` |
 
 > The leaf directory name is taken from the Tauri `identifier` field in
 > `src-tauri/tauri.conf.json`. If that value changes the directory changes
@@ -25,8 +25,8 @@ Inside that directory:
 | `config.json`   | The user-editable [`AppConfig`](../../src-tauri/src/types.rs).                          |
 | `sessions.json` | Backend-only mirror of every persisted [`Session`](../../src-tauri/src/types.rs).       |
 
-You almost never need to touch `sessions.json` by hand — Grove rewrites it on
-every session create/close/restart. If you do, shut Grove down first.
+You almost never need to touch `sessions.json` by hand — Arborist rewrites it on
+every session create/close/restart. If you do, shut Arborist down first.
 
 ## Minimum valid `config.json`
 
@@ -66,7 +66,7 @@ Field notes:
   set per tool. The ID is the filename (without the `.md` extension) of the
   file inside `instructionSetsDir`. If the configured ID isn't present, the
   loader falls back to the discovered default for that tool (see below).
-- `lastOpenSessions` / `tabOrder` — managed by Grove; you can leave them
+- `lastOpenSessions` / `tabOrder` — managed by Arborist; you can leave them
   empty when bootstrapping.
 
 ## Instruction set discovery
@@ -87,9 +87,9 @@ Field notes:
 
 ## Quarantine: recovering from a bad `config.json`
 
-Grove never crashes on a corrupt config file. If `config.json` (or
+Arborist never crashes on a corrupt config file. If `config.json` (or
 `sessions.json`) fails to parse — invalid JSON, schema mismatch, unknown
-enum values — Grove:
+enum values — Arborist:
 
 1. Renames the bad file to `config.json.bad-<unix-timestamp>` (or
    `sessions.json.bad-<unix-timestamp>`) inside the same directory.
@@ -100,10 +100,10 @@ enum values — Grove:
 
 To recover settings from a quarantined file:
 
-1. Stop Grove.
+1. Stop Arborist.
 2. Open the `*.bad-<timestamp>` file in your editor and fix the syntax.
 3. Move it back to its original name (`config.json` / `sessions.json`).
-4. Start Grove again — the loader will pick it up.
+4. Start Arborist again — the loader will pick it up.
 
 If you don't need the contents, just delete the `*.bad-*` files. They will
 not be cleaned up automatically.
@@ -115,14 +115,14 @@ The repository ships starter instruction-set files at
 These are **convenience defaults for developers**, not part of the
 runtime contract:
 
-- At launch Grove reads `AppConfig.instructionSetsDir` (an absolute path
+- At launch Arborist reads `AppConfig.instructionSetsDir` (an absolute path
   in the user's `config.json`) and discovers `*.md` files under it
   following the rules in §1 (Instruction set discovery).
 - The repo's `instructions/` directory is just a starter set you can
   copy somewhere safe and point `instructionSetsDir` at — or, in
   development, point `instructionSetsDir` straight at the repo path.
 - Editing files inside the repo `instructions/` directory has no effect
-  on a Grove install whose `instructionSetsDir` points elsewhere.
+  on a Arborist install whose `instructionSetsDir` points elsewhere.
 
 Treat the repo's `instructions/` directory the way you'd treat a
 template: copy, adapt, and configure `instructionSetsDir` to wherever
@@ -130,9 +130,9 @@ your real instruction sets live.
 
 ## Editing safely
 
-- **Stop Grove first.** The backend writes `sessions.json` atomically, but
+- **Stop Arborist first.** The backend writes `sessions.json` atomically, but
   hand-edits during a live session may be overwritten by a session
   create/close/restart.
 - Validate JSON before saving (most editors do this for you).
 - Paths with spaces, backslashes, or other shell metacharacters are fine on
-  disk — Grove shell-quotes any value it interpolates into a launch command.
+  disk — Arborist shell-quotes any value it interpolates into a launch command.

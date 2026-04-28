@@ -1,6 +1,6 @@
-# Grove
+# Arborist
 
-Grove is a cross-platform desktop application that provides a unified workspace
+Arborist is a cross-platform desktop application that provides a unified workspace
 for managing multiple AI coding-assistant sessions (Claude CLI and GitHub
 Copilot CLI) across Git worktrees. Each session runs in its own PTY, bound to a
 specific worktree, and is presented as a vertical tab in a sidebar with a
@@ -16,7 +16,7 @@ single integrated terminal area for the active session.
   [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
   OS): on Windows the Visual Studio C++ Build Tools, on macOS the Xcode
   command-line tools, on Linux the GTK / WebKit2GTK development packages.
-- **`claude` and/or `copilot` CLIs** on `PATH` — Grove launches whichever you
+- **`claude` and/or `copilot` CLIs** on `PATH` — Arborist launches whichever you
   pick when creating a session. They are not required to build or test the app
   itself.
 
@@ -53,7 +53,7 @@ npm run build
 
 `npm test -- --run` runs Vitest once (no watch); `npm run test:watch` is the
 inner-loop equivalent. `cargo test --workspace` includes the integration tests
-under `src-tauri/tests/`, which build the in-tree `grove-test-child` binary so
+under `src-tauri/tests/`, which build the in-tree `arborist-test-child` binary so
 PTY tests don't depend on `claude` or `copilot` being installed.
 
 ## Architecture
@@ -67,6 +67,6 @@ build/lint/test workflow and the end-of-feature smoke-test procedure.
 
 ## Status
 
-Grove is at the end of its v1 implementation. Out-of-scope for v1 (per
+Arborist is at the end of its v1 implementation. Out-of-scope for v1 (per
 SPEC §7): a built-in chat UI, remote/SSH worktrees, a plugin system,
 multi-window support, and an in-app instruction-set editor.

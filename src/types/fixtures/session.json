@@ -5,10 +5,10 @@
   "worktreeName": "feature-x",
   "label": "feature-x",
   "instructionSetId": "claude-default",
-  "composedCommand": "claude --system-prompt /tmp/grove/abc/sp.md",
+  "composedCommand": "claude --system-prompt /tmp/arborist/abc/sp.md",
   "status": "running",
   "pid": 12345,
   "createdAt": 1700000000,
   "tabIndex": 0,
-  "tempFiles": [{ "path": "/tmp/grove/abc/sp.md", "contents": "context" }]
+  "tempFiles": [{ "path": "/tmp/arborist/abc/sp.md", "contents": "context" }]
 }

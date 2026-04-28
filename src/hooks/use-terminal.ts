@@ -27,7 +27,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import { onSessionOutput, sessionInput, sessionResize } from '@/lib/tauri-bridge';
 import { useSessionStore } from '@/store/session-store';
-import type { SessionId } from '@/types/grove';
+import type { SessionId } from '@/types/arborist';
 
 /** Time the ResizeObserver waits before firing `fit()` + `sessionResize`. */
 const RESIZE_DEBOUNCE_MS = 50;

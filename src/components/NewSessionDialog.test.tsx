@@ -9,11 +9,11 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionStore } from '@/store/session-store';
-import type { AppConfig, InstructionSet, SessionView, WorktreeInfo } from '@/types/grove';
+import type { AppConfig, InstructionSet, SessionView, WorktreeInfo } from '@/types/arborist';
 
 import { NewSessionDialog } from './NewSessionDialog';
 
-const REPO_ROOT = '/repos/grove';
+const REPO_ROOT = '/repos/arborist';
 
 function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -103,8 +103,8 @@ describe('NewSessionDialog', () => {
 
   it('Step 2 lists worktrees from the bridge and supports manual Browse', async () => {
     bridgeMock.worktreesList.mockResolvedValue([
-      makeWt('/repos/grove', 'main', true),
-      makeWt('/repos/grove-feature', 'feature'),
+      makeWt('/repos/arborist', 'main', true),
+      makeWt('/repos/arborist-feature', 'feature'),
     ]);
     bridgeMock.pickDirectory.mockResolvedValue('/somewhere/else');
 
@@ -117,10 +117,10 @@ describe('NewSessionDialog', () => {
     await screen.findByText(/step 2 of 3/i);
 
     // Quick-pick rendered both worktrees with branch + main badges.
-    const mainBtn = await screen.findByRole('button', { name: /\/repos\/grove\b.*main/i });
+    const mainBtn = await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i });
     expect(within(mainBtn).getAllByText(/main/i).length).toBeGreaterThanOrEqual(2);
     expect(
-      screen.getByRole('button', { name: /\/repos\/grove-feature.*feature/i }),
+      screen.getByRole('button', { name: /\/repos\/arborist-feature.*feature/i }),
     ).toBeInTheDocument();
 
     // Selecting one enables Next.
@@ -157,7 +157,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('Step 3 filters instruction sets by tool, includes (none), and re-filters when tool changes', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/grove', 'main', true)]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/arborist', 'main', true)]);
     bridgeMock.instructionsList.mockResolvedValue([
       makeInstr('claude-default', 'claude', true),
       makeInstr('claude-strict', 'claude'),
@@ -171,7 +171,7 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     // Step 2 → pick worktree
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/grove\b.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
     // Step 3 visible
@@ -190,7 +190,7 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /back/i }));
     fireEvent.click(screen.getByRole('radio', { name: /copilot/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/grove\b.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
     // Now copilot-only should be visible and the previously-selected
@@ -201,14 +201,14 @@ describe('NewSessionDialog', () => {
   });
 
   it('Confirm calls actions.create with the right payload and closes the dialog', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/grove', 'main', true)]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/arborist', 'main', true)]);
     bridgeMock.instructionsList.mockResolvedValue([makeInstr('claude-default', 'claude', true)]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'new-id',
       tool: 'claude',
-      worktreePath: '/repos/grove',
-      worktreeName: 'grove',
-      label: 'grove',
+      worktreePath: '/repos/arborist',
+      worktreeName: 'arborist',
+      label: 'arborist',
       instructionSetId: 'claude-default',
       status: 'running',
       createdAt: 1,
@@ -220,7 +220,7 @@ describe('NewSessionDialog', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/grove\b.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     fireEvent.click(await screen.findByRole('radio', { name: /claude-default/i }));
     fireEvent.click(screen.getByRole('button', { name: /create session/i }));
@@ -228,7 +228,7 @@ describe('NewSessionDialog', () => {
     await waitFor(() =>
       expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
         tool: 'claude',
-        worktreePath: '/repos/grove',
+        worktreePath: '/repos/arborist',
         instructionSetId: 'claude-default',
       }),
     );
@@ -243,13 +243,13 @@ describe('NewSessionDialog', () => {
       status: 'ready',
       error: null,
     });
-    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/grove', 'main', true)]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/arborist', 'main', true)]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'x',
       tool: 'claude',
-      worktreePath: '/repos/grove',
-      worktreeName: 'grove',
-      label: 'grove',
+      worktreePath: '/repos/arborist',
+      worktreeName: 'arborist',
+      label: 'arborist',
       instructionSetId: 'claude-default',
       status: 'running',
       createdAt: 1,
@@ -260,7 +260,7 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/grove\b/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     // Default selection is (none); just confirm.
     fireEvent.click(await screen.findByRole('button', { name: /create session/i }));

@@ -1,4 +1,4 @@
-# Grove — Phase 12 Smoke Test Results
+# Arborist — Phase 12 Smoke Test Results
 
 **Status: RESULTS PENDING — requires interactive GUI run by maintainer.**
 
@@ -25,7 +25,7 @@ plateau, not grow unboundedly.
    binary, **or** `npm run tauri:dev` and accept that the dev-server overhead
    inflates the baseline.
 2. Open Task Manager → Details tab → enable the **Working set (memory)**
-   column. Locate `grove.exe` (or `grove-dev.exe` for the dev build). Record
+   column. Locate `arborist.exe` (or `arborist-dev.exe` for the dev build). Record
    the steady-state RSS after the window has been idle for ~10 s.
    - **Baseline RSS (idle, 0 sessions): _____ MB**
 3. Create **10 sessions** against any 10 worktrees. (For repeatability, point

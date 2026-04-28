@@ -26,7 +26,7 @@ import { CloseConfirmDialog } from './CloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
 import { SidebarTab } from './SidebarTab';
 import { useActiveSessionId, useSessionActions, useSessions } from '@/store/session-store';
-import type { SessionId } from '@/types/grove';
+import type { SessionId } from '@/types/arborist';
 
 export function Sidebar(): JSX.Element {
   const sessions = useSessions();

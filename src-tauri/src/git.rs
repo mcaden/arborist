@@ -264,7 +264,7 @@ locked migrating to slow disk
     fn real_runner_returns_empty_for_missing_directory() {
         let runner = RealGitRunner;
         let out = runner
-            .list_worktrees(Path::new("/this/path/does/not/exist/grove-test"))
+            .list_worktrees(Path::new("/this/path/does/not/exist/arborist-test"))
             .expect("graceful degradation must not error");
         assert!(out.is_empty());
     }

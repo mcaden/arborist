@@ -1,4 +1,4 @@
-# Grove — Gap Roadmap
+# Arborist — Gap Roadmap
 _Last updated: 2026-04-28_
 
 This document catalogues known gaps between the current implementation and the
@@ -67,7 +67,7 @@ intended flow is:
 
 ### 2.2 Create-new-worktree option
 - **Gap**: There is no way to create a worktree from within the app. The user
-  must do it in a terminal first, then come back to Grove.
+  must do it in a terminal first, then come back to Arborist.
 - **Needed**:
   - Step 2 gains a toggle/tab: **"Existing"** | **"New"**.
   - In **New** mode: a text input for the worktree name (which doubles as the
@@ -151,7 +151,7 @@ at least a minimal in-app settings surface is needed.
 ## 5. Data Model Gaps
 
 ### 5.1 `AppConfig` missing `workspaceRoot`
-- **Gap**: `AppConfig` (both Rust `types.rs` and TS mirror `grove.ts`) has no
+- **Gap**: `AppConfig` (both Rust `types.rs` and TS mirror `arborist.ts`) has no
   `workspaceRoot` field.
 - **Needed**: Add the field to both sides in the same commit; bump
   `CONFIG_VERSION_CURRENT` if adding as a required field (or make it
@@ -187,9 +187,51 @@ at least a minimal in-app settings surface is needed.
 
 ---
 
-## 7. Accessibility
+## 7. End-to-End Testing
 
-### 7.1 Tab keyboard navigation completeness
+The current test suite covers Rust unit/integration tests (`cargo test`) and
+frontend component tests (Vitest + RTL with `tauri-bridge` mocked). There is no
+test layer that exercises the real Tauri shell + WebView together against actual
+PTY processes.
+
+### 7.1 E2E test harness
+- **Gap**: No end-to-end test framework is wired up. Regressions in the
+  frontend ↔ backend bridge (e.g. a renamed command, a missing capability entry,
+  a broken event payload) are only caught manually via `npm run tauri dev`.
+- **Needed**: Adopt a Tauri-compatible E2E framework — the leading options are
+  WebDriver via [`tauri-driver`](https://v2.tauri.app/develop/tests/webdriver/)
+  driving the built app binary, or Playwright pointed at the dev server with the
+  Rust backend running. Decide one, document the choice in DESIGN, and add the
+  scaffolding (`e2e/` directory, runner config, CI job).
+
+### 7.2 Critical-path E2E scenarios
+- **Gap**: No automated coverage for the user journeys that span both processes.
+- **Needed** (initial scenario set, expand over time):
+  - First-boot workspace picker → select repo → main UI renders.
+  - Create new session (existing worktree) → terminal attaches → input echoes
+    back from a stub shell command.
+  - Create new session (new worktree via `worktree_create`) → directory exists
+    on disk → session launches in it.
+  - Close session → PTY process exits → tab disappears → `lastOpenSessions`
+    updated.
+  - Restart app → `restore_all_sessions` re-creates tabs in the previous order
+    and focuses the previously active session.
+  - Stale worktree path on restore surfaces the error overlay (covers gap 4.3).
+
+### 7.3 E2E in CI
+- **Gap**: Even once a harness exists, CI (#6.1) doesn't run it.
+- **Needed**: Add an `e2e` job to the GitHub Actions workflow that runs on
+  `ubuntu-latest` at minimum (with `xvfb-run` for the WebView). Windows/macOS
+  E2E runs are a v2 stretch goal — they're slow and flaky on hosted runners.
+- **Determinism**: E2E tests must use a stub CLI binary (not real `claude` /
+  `copilot`) and a tempdir workspace so they're hermetic and don't depend on
+  the developer's machine state.
+
+---
+
+## 8. Accessibility
+
+### 8.1 Tab keyboard navigation completeness
 - **Status**: Roving `tabIndex` pattern is implemented in `Sidebar.tsx` /
   `SidebarTab.tsx`. Arrow-key navigation between tabs is covered.
 - **Gap**: The `NewSessionDialog` uses native `<dialog>` with `showModal()`,
@@ -197,7 +239,7 @@ at least a minimal in-app settings surface is needed.
   transitions (moving focus to the first interactive element of each step)
   needs verification across all three platforms' WebView implementations.
 
-### 7.2 Screen-reader labels on tool icons
+### 8.2 Screen-reader labels on tool icons
 - **Status**: `ToolIcon` renders an SVG; `SidebarTab` sets `aria-label` on the
   button. Need to confirm the SVG itself is `aria-hidden` so the label is not
   read twice.
@@ -205,18 +247,18 @@ at least a minimal in-app settings surface is needed.
 
 ---
 
-## 8. Documentation Gaps
+## 9. Documentation Gaps
 
-### 8.1 SPEC §5.5 / DESIGN §5.1 reference `worktreeRoots` (plural)
+### 9.1 SPEC §5.5 / DESIGN §5.1 reference `worktreeRoots` (plural)
 - Several spec and design sections describe worktree discovery in terms of a
   list of `worktreeRoots`. Once the single-workspace model (#1) is adopted,
   these sections need updating.
 
-### 8.2 DESIGN §6 command table is the authoritative API surface
+### 9.2 DESIGN §6 command table is the authoritative API surface
 - Any new commands (`workspace_validate`, `worktree_create`) must be added to
   the table before their implementation PRs are merged.
 
-### 8.3 `.worktrees/` convention not documented
+### 9.3 `.worktrees/` convention not documented
 - The `.worktrees/` subdirectory layout convention (all linked worktrees live
   under `<repo>/.worktrees/<name>/`) is not currently documented anywhere.
 - **Needed**: A brief section in `CONFIGURATION.md` or a new `WORKTREES.md`
@@ -241,8 +283,11 @@ at least a minimal in-app settings surface is needed.
 | 4.3 | Session UX | Stale worktree path error UX at restore | P2 |
 | 1.3 | Workspace | Workspace switching | P2 |
 | 6.1 | CI | Multi-platform CI pipeline | P2 |
-| 7.1 | a11y | Focus management in NewSessionDialog steps | P2 |
-| 7.2 | a11y | `aria-hidden` on decorative SVGs | P2 |
-| 8.1–8.3 | Docs | SPEC/DESIGN update for workspace model + `.worktrees/` convention | P2 |
+| 7.1 | E2E | E2E test harness (tauri-driver or Playwright) | P2 |
+| 7.2 | E2E | Critical-path E2E scenarios | P2 (blocked by 7.1) |
+| 7.3 | E2E | Run E2E suite in CI | P2 (blocked by 7.1, 6.1) |
+| 8.1 | a11y | Focus management in NewSessionDialog steps | P2 |
+| 8.2 | a11y | `aria-hidden` on decorative SVGs | P2 |
+| 9.1–9.3 | Docs | SPEC/DESIGN update for workspace model + `.worktrees/` convention | P2 |
 | 3.2 | Settings | Instruction-set management UI | P3 (v2) |
 | 6.2 | CI | Release / bundle pipeline | P3 (v2) |

@@ -64,7 +64,7 @@ function BootSplash(): JSX.Element {
       aria-live="polite"
       className="flex h-full w-full items-center justify-center bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-200"
     >
-      <p className="text-sm">Loading Grove…</p>
+      <p className="text-sm">Loading Arborist…</p>
     </div>
   );
 }
@@ -75,7 +75,7 @@ function ErrorOverlay({ message }: { message: string }): JSX.Element {
       role="alert"
       className="flex h-full w-full flex-col items-center justify-center gap-4 bg-white p-8 text-slate-900 dark:bg-slate-900 dark:text-slate-100"
     >
-      <h1 className="text-lg font-semibold">Grove failed to start</h1>
+      <h1 className="text-lg font-semibold">Arborist failed to start</h1>
       <p className="max-w-prose text-center text-sm text-slate-600 dark:text-slate-300">
         {message}
       </p>

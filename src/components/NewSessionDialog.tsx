@@ -28,7 +28,7 @@ import {
 } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionActions } from '@/store/session-store';
-import type { InstructionSet, Tool, WorktreeInfo } from '@/types/grove';
+import type { InstructionSet, Tool, WorktreeInfo } from '@/types/arborist';
 
 type Step = 1 | 2 | 3;
 

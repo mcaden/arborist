@@ -40,7 +40,7 @@ import { MainArea } from './MainArea';
 import { __resetTerminalRegistryForTests } from '@/hooks/use-terminal';
 import { resetBridgeMocks } from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
-import type { SessionView } from '@/types/grove';
+import type { SessionView } from '@/types/arborist';
 
 function makeSession(id: string, label = id): SessionView {
   return {

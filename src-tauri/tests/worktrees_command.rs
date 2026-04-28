@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use grove_lib::commands::session::{worktrees_list_impl, AppContext};
-use grove_lib::config_store::ConfigStore;
-use grove_lib::git::GitRunner;
-use grove_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
-use grove_lib::types::{Error, SessionId, SessionStatus, WorktreeInfo};
+use arborist_lib::commands::session::{worktrees_list_impl, AppContext};
+use arborist_lib::config_store::ConfigStore;
+use arborist_lib::git::GitRunner;
+use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
+use arborist_lib::types::{Error, SessionId, SessionStatus, WorktreeInfo};
 use tempfile::TempDir;
 
 #[derive(Default)]
@@ -94,7 +94,7 @@ fn missing_repo_root_returns_empty_without_invoking_runner() {
     }]);
     let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store_dir);
 
-    let bogus = PathBuf::from("/this/path/should/not/exist/grove-phase10-test");
+    let bogus = PathBuf::from("/this/path/should/not/exist/arborist-phase10-test");
     let got = worktrees_list_impl(&ctx, &bogus).expect("graceful");
     assert!(got.is_empty(), "missing dir must short-circuit to empty");
     assert!(

@@ -1,4 +1,4 @@
-# Grove — developer setup
+# Arborist — developer setup
 
 End-to-end instructions for getting a working dev environment, plus the
 inner-loop and verification workflows you should expect to run dozens of
@@ -30,15 +30,15 @@ Platform build deps in detail:
   `sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev`.
 
 The `claude` and/or `copilot` CLIs are **not** required to build, lint, or
-test Grove. They're only needed at runtime for the sessions Grove spawns —
-the PTY integration tests use a purpose-built `grove-test-child` binary
+test Arborist. They're only needed at runtime for the sessions Arborist spawns —
+the PTY integration tests use a purpose-built `arborist-test-child` binary
 instead (see [`TESTING.md`](./TESTING.md)).
 
 ## 2. First-time install
 
 ```sh
 git clone <repo>
-cd grove
+cd arborist
 nvm use            # picks up .nvmrc → Node 24
 npm install        # installs JS deps and runs `husky` to wire git hooks
 ```
@@ -56,7 +56,7 @@ native deps; expect 2–5 minutes on a cold machine.
 ## 3. Repository layout
 
 ```
-grove/
+arborist/
 ├── Cargo.toml                # workspace root — members = ["src-tauri"]
 ├── package.json              # frontend + Tauri CLI scripts
 ├── index.html, vite.config.ts, tsconfig.json, tailwind.config.js, postcss.config.js
@@ -84,7 +84,7 @@ grove/
 │   │   ├── git.rs               # GitRunner trait + git worktree list parser
 │   │   ├── pty_pool.rs          # PTY pool, PtySpawner trait, backpressure
 │   │   ├── types.rs             # serde types (Session, AppConfig, errors, events)
-│   │   └── bin/grove_test_child.rs   # deterministic test child binary
+│   │   └── bin/arborist_test_child.rs   # deterministic test child binary
 │   ├── examples/                # `config_smoke` — end-to-end config-store harness
 │   └── tests/                   # cargo integration tests (capability_gating, pty_pool, …)
 ├── dev/
@@ -128,9 +128,9 @@ npm run build          # tsc --noEmit + vite build
 cargo test --workspace # unit + integration tests including the PTY pool
 ```
 
-`cargo test --workspace` automatically builds the in-tree `grove-test-child`
+`cargo test --workspace` automatically builds the in-tree `arborist-test-child`
 binary and exposes its path to integration tests via the
-`CARGO_BIN_EXE_grove-test-child` environment variable.
+`CARGO_BIN_EXE_arborist-test-child` environment variable.
 
 ### Acceptance gate (before declaring "done")
 
@@ -205,27 +205,27 @@ merged — never on `main` (per `.github/copilot-instructions.md`).
 
 ### Backend
 
-- Tracing output goes to stderr. Set `RUST_LOG=grove_lib=debug` (or
+- Tracing output goes to stderr. Set `RUST_LOG=arborist_lib=debug` (or
   `RUST_LOG=trace`) before launching `npm run tauri:dev` for verbose logs.
 - The standalone `config_smoke` example exercises the full config-store
   lifecycle without spinning up Tauri:
   ```sh
-  cargo run -p grove --example config_smoke
+  cargo run -p arborist --example config_smoke
   ```
 - For ad-hoc PTY experiments, run the test child directly:
   ```sh
-  cargo run -p grove --bin grove-test-child
+  cargo run -p arborist --bin arborist-test-child
   ```
 
 ### Persistent state
 
-Grove writes two JSON files to the OS app-data directory (paths and
+Arborist writes two JSON files to the OS app-data directory (paths and
 quarantine behaviour are in [`CONFIGURATION.md`](./CONFIGURATION.md)). When
 debugging persistence issues:
 
-1. Stop Grove.
+1. Stop Arborist.
 2. Inspect or hand-edit `config.json` / `sessions.json`.
-3. Restart Grove — the loader logs `code = "ConfigQuarantined"` if the file
+3. Restart Arborist — the loader logs `code = "ConfigQuarantined"` if the file
    could not be parsed and replaces it with `*.bad-<unix-timestamp>`.
 
 ## 8. Packaging a release build
@@ -237,7 +237,7 @@ npm run tauri:build
 Output lands in `src-tauri/target/release/bundle/` under platform-specific
 subdirectories (`msi`, `nsis`, `dmg`, `appimage`, `deb`, …). The bundler
 honours the metadata in `src-tauri/tauri.conf.json` (identifier
-`com.grove.app`, product name `Grove`).
+`com.arborist.app`, product name `Arborist`).
 
 There is no automated release pipeline yet — bundles are produced manually.
 
@@ -260,7 +260,7 @@ There is no automated release pipeline yet — bundles are produced manually.
 | `error: linking with cl.exe failed` on Windows                   | Visual Studio C++ Build Tools not installed; install the workload above.                                            |
 | `failed to find tool. Is gtk+-3.0 installed?` on Linux           | Missing GTK / WebKit2GTK dev packages — see prerequisites.                                                          |
 | `npm run tauri:dev` opens a blank window                         | Frontend crashed during boot; open DevTools and check the console for an `ErrorOverlay` reason.                     |
-| `cargo test --workspace` fails with `claude: command not found`  | A test path is calling the real CLI — file a bug, the integration tests must use `grove-test-child`.                |
+| `cargo test --workspace` fails with `claude: command not found`  | A test path is calling the real CLI — file a bug, the integration tests must use `arborist-test-child`.                |
 | Pre-commit hook does nothing                                     | `npm install` wasn't re-run after pulling — Husky hooks are installed by the `prepare` script.                      |
 | `config.json.bad-<timestamp>` keeps appearing                    | The loader is rejecting the file. Diff it against the minimum valid example in [`CONFIGURATION.md`](./CONFIGURATION.md). |
 | Sessions silently fail to restore on launch                      | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in the trace log; affected sessions stay in the sidebar with `status = error`. |

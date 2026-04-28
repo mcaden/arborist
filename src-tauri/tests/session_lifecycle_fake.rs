@@ -19,17 +19,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use grove_lib::commands::session::{
+use arborist_lib::commands::session::{
     frontend_ready_impl, restore_all_sessions, session_close_impl, session_create_impl,
     session_focus_impl, session_input_impl, session_list_impl, session_resize_impl,
     session_restart_impl, AppContext,
 };
-use grove_lib::compose::session_temp_dir;
-use grove_lib::config_store::ConfigStore;
-use grove_lib::pty_pool::{
+use arborist_lib::compose::session_temp_dir;
+use arborist_lib::config_store::ConfigStore;
+use arborist_lib::pty_pool::{
     ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild,
 };
-use grove_lib::types::{
+use arborist_lib::types::{
     InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
     SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, Tool,
 };
@@ -71,7 +71,7 @@ impl PtySpawner for FakeSpawner {
         cmd: ChildCommand,
         cwd: &Path,
         _size: PtySize,
-    ) -> Result<SpawnedChild, grove_lib::types::Error> {
+    ) -> Result<SpawnedChild, arborist_lib::types::Error> {
         let mut s = self.state.lock().unwrap();
         s.spawn_count += 1;
         s.last_cwd = Some(cwd.to_path_buf());
@@ -121,7 +121,7 @@ impl std::io::Write for WriteCapture {
 
 struct NoopResize;
 impl PtyResize for NoopResize {
-    fn resize(&self, _cols: u16, _rows: u16) -> Result<(), grove_lib::types::Error> {
+    fn resize(&self, _cols: u16, _rows: u16) -> Result<(), arborist_lib::types::Error> {
         Ok(())
     }
 }
@@ -130,7 +130,7 @@ struct EofKiller {
     eof: Arc<AtomicBool>,
 }
 impl PtyKiller for EofKiller {
-    fn kill(&self) -> Result<(), grove_lib::types::Error> {
+    fn kill(&self) -> Result<(), arborist_lib::types::Error> {
         self.eof.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -140,7 +140,7 @@ struct BlockingWaiter {
     eof: Arc<AtomicBool>,
 }
 impl PtyWaiter for BlockingWaiter {
-    fn wait(self: Box<Self>) -> Result<ExitStatus, grove_lib::types::Error> {
+    fn wait(self: Box<Self>) -> Result<ExitStatus, arborist_lib::types::Error> {
         while !self.eof.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -167,7 +167,7 @@ fn capture_sink(events: Arc<CapturedEvents>, store: ConfigStore) -> PtySink {
     let status = Arc::new(move |id: &SessionId, st: SessionStatus, pid: Option<u32>| {
         // Mirror production wiring: persist status, swallow NotFound.
         if let Err(e) = store.update_session_status(id, st, pid) {
-            use grove_lib::types::Error as E;
+            use arborist_lib::types::Error as E;
             if !matches!(e, E::NotFound(_)) {
                 panic!("unexpected status persist error: {e:?}");
             }

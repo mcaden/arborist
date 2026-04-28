@@ -22,7 +22,7 @@ import type {
   PartialAppConfig,
   SessionOutputEvent,
   SessionStatusEvent,
-} from '@/types/grove';
+} from '@/types/arborist';
 
 beforeEach(() => {
   invokeMock.mockReset();

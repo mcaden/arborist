@@ -1,8 +1,8 @@
-//! Shared, serializable data model for Grove.
+//! Shared, serializable data model for Arborist.
 //!
 //! Every type in this module is a load-bearing wire contract between the Rust
 //! backend and the React/TypeScript frontend. **The TypeScript mirror lives in
-//! `src/types/grove.ts`**: when you change anything here, update the matching
+//! `src/types/arborist.ts`**: when you change anything here, update the matching
 //! TS interface in the same commit (look for the `MIRROR:` markers).
 //!
 //! Conventions:
@@ -181,7 +181,7 @@ impl From<&Session> for SessionView {
 // ---------------------------------------------------------------------------
 
 /// One entry in the result of `worktrees_list` (DESIGN §6). Mirrored on the
-/// frontend by `WorktreeInfo` in `src/types/grove.ts`.
+/// frontend by `WorktreeInfo` in `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeInfo {
@@ -351,7 +351,7 @@ mod double_option {
 /// Payload of the `session://output` event (DESIGN §6).
 ///
 /// Mirrored on the frontend by `SessionOutputEvent` in
-/// `src/types/grove.ts`.
+/// `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionOutputEvent {
@@ -362,7 +362,7 @@ pub struct SessionOutputEvent {
 /// Payload of the `session://status` event (DESIGN §6).
 ///
 /// Mirrored on the frontend by `SessionStatusEvent` in
-/// `src/types/grove.ts`.
+/// `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStatusEvent {
@@ -565,13 +565,13 @@ mod tests {
             worktree_name: "feature-x".to_owned(),
             label: "feature-x".to_owned(),
             instruction_set_id: InstructionSetId::new("claude-default"),
-            composed_command: "claude --system-prompt /tmp/grove/abc/sp.md".to_owned(),
+            composed_command: "claude --system-prompt /tmp/arborist/abc/sp.md".to_owned(),
             status: SessionStatus::Running,
             pid: Some(12345),
             created_at: 1_700_000_000,
             tab_index: 0,
             temp_files: vec![TempFileSpec {
-                path: PathBuf::from("/tmp/grove/abc/sp.md"),
+                path: PathBuf::from("/tmp/arborist/abc/sp.md"),
                 contents: "context".to_owned(),
             }],
         }
@@ -585,13 +585,13 @@ mod tests {
             "worktreeName": "feature-x",
             "label": "feature-x",
             "instructionSetId": "claude-default",
-            "composedCommand": "claude --system-prompt /tmp/grove/abc/sp.md",
+            "composedCommand": "claude --system-prompt /tmp/arborist/abc/sp.md",
             "status": "running",
             "pid": 12345,
             "createdAt": 1_700_000_000,
             "tabIndex": 0,
             "tempFiles": [
-                { "path": "/tmp/grove/abc/sp.md", "contents": "context" }
+                { "path": "/tmp/arborist/abc/sp.md", "contents": "context" }
             ]
         })
     }

@@ -1,27 +1,27 @@
 [package]
-name = "grove"
+name = "arborist"
 version = "0.0.0"
 edition = "2021"
-description = "Grove — multi-session manager for AI coding CLIs"
-authors = ["Grove contributors"]
+description = "Arborist — multi-session manager for AI coding CLIs"
+authors = ["Arborist contributors"]
 license = "MIT"
 publish = false
-default-run = "grove"
+default-run = "arborist"
 
 [lib]
-name = "grove_lib"
+name = "arborist_lib"
 path = "src/lib.rs"
 
 [[bin]]
-name = "grove"
+name = "arborist"
 path = "src/main.rs"
 
 # Purpose-built deterministic child process used by the PTY-pool integration
 # tests (`tests/pty_pool.rs`). Cargo automatically exposes its built path to
-# integration tests via the `CARGO_BIN_EXE_grove-test-child` env var.
+# integration tests via the `CARGO_BIN_EXE_arborist-test-child` env var.
 [[bin]]
-name = "grove-test-child"
-path = "src/bin/grove_test_child.rs"
+name = "arborist-test-child"
+path = "src/bin/arborist_test_child.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

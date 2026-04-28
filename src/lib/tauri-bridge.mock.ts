@@ -18,7 +18,7 @@ import { vi, type Mock } from 'vitest';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
 import type * as realBridge from './tauri-bridge';
-import type { AppConfig } from '@/types/grove';
+import type { AppConfig } from '@/types/arborist';
 
 // Every command stub rejects by default so a forgotten `mockResolvedValue`
 // in a test surfaces the same way it would in production today.
