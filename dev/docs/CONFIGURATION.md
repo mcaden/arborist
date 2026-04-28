@@ -32,7 +32,7 @@ every session create/close/restart. If you do, shut Grove down first.
 
 ```json
 {
-  "configVersion": 1,
+  "configVersion": 2,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -48,8 +48,9 @@ every session create/close/restart. If you do, shut Grove down first.
 
 Field notes:
 
-- `configVersion` — schema version of the file. Currently `1`. Bumped only
-  when the on-disk shape changes; older versions are quarantined (see below).
+- `configVersion` — schema version of the file. Currently `2` (see
+  `CONFIG_VERSION_CURRENT` in `src-tauri/src/types.rs`). Bumped only when
+  the on-disk shape changes; older versions are quarantined (see below).
 - `instructionSetsDir` — must be an **absolute** path that points at an
   existing directory. The path is canonicalized on load (symlinks resolved,
   `..` collapsed). Relative values are rejected when written via the
@@ -106,6 +107,26 @@ To recover settings from a quarantined file:
 
 If you don't need the contents, just delete the `*.bad-*` files. They will
 not be cleaned up automatically.
+
+## 11. The repo `instructions/` directory vs runtime `instructionSetsDir`
+
+The repository ships starter instruction-set files at
+`instructions/claude-default.md` and `instructions/copilot-default.md`.
+These are **convenience defaults for developers**, not part of the
+runtime contract:
+
+- At launch Grove reads `AppConfig.instructionSetsDir` (an absolute path
+  in the user's `config.json`) and discovers `*.md` files under it
+  following the rules in §1 (Instruction set discovery).
+- The repo's `instructions/` directory is just a starter set you can
+  copy somewhere safe and point `instructionSetsDir` at — or, in
+  development, point `instructionSetsDir` straight at the repo path.
+- Editing files inside the repo `instructions/` directory has no effect
+  on a Grove install whose `instructionSetsDir` points elsewhere.
+
+Treat the repo's `instructions/` directory the way you'd treat a
+template: copy, adapt, and configure `instructionSetsDir` to wherever
+your real instruction sets live.
 
 ## Editing safely
 

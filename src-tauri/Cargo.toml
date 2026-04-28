@@ -6,6 +6,7 @@ description = "Grove — multi-session manager for AI coding CLIs"
 authors = ["Grove contributors"]
 license = "MIT"
 publish = false
+default-run = "grove"
 
 [lib]
 name = "grove_lib"

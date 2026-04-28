@@ -1,8 +1,11 @@
 // App shell. Phase 12 owns the boot sequence:
 //
 //   1. Hydrate the config-store from the backend.
-//   2. Hydrate the session-store with the persisted (Restoring/Stopped)
-//      session list.
+//   2. Hydrate the session-store from `session_list` (the persisted snapshot
+//      sorted by tabIndex — statuses return as-last-persisted; the
+//      `restore_all_sessions` step below flips each one to `Starting`
+//      before respawn, then to `Running` / `Exited` / `Error` as the wait
+//      thread observes the child).
 //   3. `initTerminalRouter()` — attach the global `session://output` router.
 //   4. `subscribeToStatus()` — attach the global `session://status` router.
 //   5. `frontendReady()` — tell the backend listeners are live; backend then

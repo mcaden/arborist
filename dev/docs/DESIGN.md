@@ -252,19 +252,27 @@ Tauri setup (backend)
 
 App.tsx mounts (frontend)
   → configStore.hydrate()           (reads AppConfig from store)
-  → sessionStore.hydrate()          (calls session_list — backend forces
-                                     persisted records into Restoring/
-                                     Stopped, never stale Running)
+  → sessionStore.hydrate()          (calls session_list — returns the
+                                     persisted snapshot as-is, sorted by
+                                     tabIndex; statuses come back exactly
+                                     as last persisted, which may include
+                                     a stale Running from a prior crash —
+                                     restore_all_sessions resolves it
+                                     below)
   → initTerminalRouter()            (attaches global session://output)
   → subscribeToStatus()             (attaches global session://status)
   → frontendReady()                 (one-shot CAS on the backend)
        └─ backend kicks off restore_all_sessions on a blocking thread:
-           for each persisted Session in tabOrder order, re-runs the
-           Create Session flow using the stored composedCommand and
-           worktreePath verbatim (DESIGN §5.4 — never re-composes).
-           Failures on individual sessions are logged but do not abort
-           the restore; status events update each tab to Running / Error
-           as spawns complete.
+           for each persisted Session in tabOrder order it
+             1. (re-)materialises any persisted temp_files,
+             2. flips the persisted status to Starting and emits
+                session://status,
+             3. calls pty_pool::respawn_existing using the stored
+                composedCommand and worktreePath verbatim (DESIGN §5.4 —
+                never re-composes); the wait thread later flips the
+                status to Running / Exited / Error as the child reports.
+           Spawn or temp-file failures map per-session to Error and
+           never abort the loop.
   → first session in tabOrder remains the active session
 ```
 
@@ -386,6 +394,22 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 |-------|---------|-------------|
 | `session://output` | `{ sessionId, data: string }` | Stream PTY output to xterm.js |
 | `session://status` | `{ sessionId, status }` | Notify session state changes (including `'error'`) |
+
+### Plugin commands routed via the bridge
+
+`src/lib/tauri-bridge.ts` also wraps one third-party plugin command so
+that callers stay on the single bridge surface (no direct
+`@tauri-apps/plugin-*` imports from components):
+
+| Bridge function | Underlying plugin call | Capability | Purpose |
+|-----------------|------------------------|------------|---------|
+| `pickDirectory()` | `tauri-plugin-dialog`'s `open({ directory: true, multiple: false })` | `dialog:allow-open` | Native OS directory picker; powers the New-Session dialog's manual "Browse…" fallback when `worktrees_list` returns nothing useful (SPEC W-03). |
+
+The `dialog:allow-open` permission is declared in
+`src-tauri/capabilities/main.json`; the plugin itself is initialised in
+`grove_lib::run`. Adding any further plugin command must follow the same
+capability + bridge-wrapper + mock-stub discipline (see
+[`TESTING.md`](./TESTING.md) §6).
 
 ## 7. Directory Structure (Proposed)
 

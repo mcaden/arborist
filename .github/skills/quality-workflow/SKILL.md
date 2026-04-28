@@ -11,21 +11,23 @@ Companion to the **Shift-left quality** principles in `.github/copilot-instructi
 
 ```
 npm install                                     # install JS deps
-npm run tauri dev                               # dev build + HMR
-npm run tauri build                             # production bundle
+npm run tauri:dev                               # dev build + HMR
+npm run tauri:build                             # production bundle
 npm run lint                                    # eslint + prettier --check
 npm run lint:fix                                # eslint --fix + prettier --write
 npm run dev:typecheck                           # tsc --noEmit --watch
 npm test                                        # vitest (watch by default in dev)
 npm test -- --run                               # vitest single-shot (CI mode)
 npm test -- --run --coverage                    # with coverage report
-cargo fmt --manifest-path src-tauri/Cargo.toml
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test  --manifest-path src-tauri/Cargo.toml --workspace
+cargo fmt --all -- --check                      # format check (workspace root)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 cargo watch -C src-tauri -x check -x clippy    # Rust inner loop
 ```
 
-These commands do not yet exist in the repo (it is design-only). Update this skill when scaffolding lands.
+These commands are wired up in `package.json` and the workspace
+`Cargo.toml`; if you find a discrepancy, treat it as a docs bug and
+update this skill in the same PR.
 
 ## 2. Inner-loop setup (one-time per contributor)
 
@@ -37,7 +39,7 @@ npm run dev:typecheck    # tsc --noEmit --watch
 npm run test:watch       # vitest
 
 # Rust watchers (run in two terminals)
-cargo watch -x check -x clippy            # type + lint feedback
+cargo watch -x check -x clippy            # type + lint feedback (workspace root)
 cargo watch -x 'test --workspace'         # tests
 ```
 
