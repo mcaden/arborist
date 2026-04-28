@@ -15,7 +15,7 @@ use arborist_lib::init_tracing;
 use tempfile::TempDir;
 
 fn main() {
-    init_tracing();
+    init_tracing(None);
 
     let td = TempDir::new().expect("tempdir");
     let dir = td.path().to_path_buf();

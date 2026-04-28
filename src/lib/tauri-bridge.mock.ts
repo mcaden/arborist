@@ -17,8 +17,18 @@
 import { vi, type Mock } from 'vitest';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
+// Import pure error helpers from the utility module — NOT from `./tauri-bridge`
+// itself. Importing the real bridge here would create a circular dependency:
+// the vi.mock factory loads this file, which would try to load `./tauri-bridge`,
+// which is the module being mocked, deadlocking Vitest's module resolver.
+import { formatError, isAppErrorLike } from '@/lib/tauri-error';
 import type * as realBridge from './tauri-bridge';
 import type { AppConfig } from '@/types/arborist';
+
+// Pure helpers (no Tauri side effects) — re-export so tests get the same
+// formatting as production.
+export { formatError, isAppErrorLike };
+export type { AppErrorLike } from '@/lib/tauri-error';
 
 // Every command stub rejects by default so a forgotten `mockResolvedValue`
 // in a test surfaces the same way it would in production today.
@@ -173,6 +183,8 @@ export function resetBridgeMocks(): void {
 // bridge with a compatible type. Adding a new export to tauri-bridge.ts
 // without mirroring it here is a TypeScript error.
 const _shapeCheck = {
+  formatError,
+  isAppErrorLike,
   ping,
   sessionCreate,
   sessionList,
