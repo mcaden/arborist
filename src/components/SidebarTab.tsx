@@ -10,7 +10,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
 import { ToolIcon } from './ToolIcon';
-import { useSessionActions, useSessionById } from '@/store/session-store';
+import { useHasUnread, useSessionActions, useSessionById } from '@/store/session-store';
 import type { SessionId } from '@/types/arborist';
 
 interface SidebarTabProps {
@@ -27,6 +27,7 @@ export function SidebarTab({
   onFocusableMounted,
 }: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
+  const hasUnread = useHasUnread(id);
   const actions = useSessionActions();
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -73,6 +74,14 @@ export function SidebarTab({
           }
         />
         <span className="min-w-0 flex-1 truncate">{session.label}</span>
+        {hasUnread && !isActive && session.status !== 'error' && (
+          <span
+            role="img"
+            aria-label="Unread output"
+            data-testid="status-unread"
+            className="h-2 w-2 shrink-0 rounded-full bg-sky-500"
+          />
+        )}
         {session.status === 'starting' && (
           <span
             role="img"

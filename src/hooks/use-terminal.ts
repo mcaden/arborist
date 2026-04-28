@@ -66,6 +66,9 @@ function ensureGlobalSubscriptions(): void {
         return;
       }
       entry.term.write(payload.data);
+      // Tier-4 unread indicator. `noteUnread` is a no-op when the session
+      // is active or already flagged, so this stays cheap on the hot path.
+      useSessionStore.getState().actions.noteUnread(payload.sessionId);
     });
   }
 

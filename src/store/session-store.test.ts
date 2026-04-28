@@ -30,6 +30,8 @@ function resetStore(): void {
     activeId: undefined,
     pendingClose: undefined,
     isHydrated: false,
+    statusMessages: {},
+    hasUnread: {},
   });
 }
 
@@ -274,5 +276,73 @@ describe('applyStatus', () => {
     });
 
     expect(useSessionStore.getState().statusMessages['a']).toBeUndefined();
+  });
+});
+
+describe('noteUnread', () => {
+  it('flags a non-active session', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+
+    useSessionStore.getState().actions.noteUnread('b');
+    expect(useSessionStore.getState().hasUnread['b']).toBe(true);
+  });
+
+  it('is a no-op for the active session', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+    });
+
+    useSessionStore.getState().actions.noteUnread('a');
+    expect(useSessionStore.getState().hasUnread).toEqual({});
+  });
+
+  it('is idempotent — second call returns the same hasUnread object', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+
+    useSessionStore.getState().actions.noteUnread('b');
+    const first = useSessionStore.getState().hasUnread;
+    useSessionStore.getState().actions.noteUnread('b');
+    const second = useSessionStore.getState().hasUnread;
+    // Same reference — no re-render churn on repeated output bursts.
+    expect(second).toBe(first);
+  });
+
+  it('ignores unknown session ids (race with close)', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+    });
+
+    useSessionStore.getState().actions.noteUnread('ghost');
+    expect(useSessionStore.getState().hasUnread).toEqual({});
+  });
+
+  it('focus on a flagged session clears the flag', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+      hasUnread: { b: true },
+    });
+
+    await useSessionStore.getState().actions.focus('b');
+    expect(useSessionStore.getState().hasUnread).toEqual({});
+  });
+
+  it('close clears the flag for the closed session', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+      hasUnread: { b: true },
+    });
+
+    await useSessionStore.getState().actions.close('b');
+    expect(useSessionStore.getState().hasUnread).toEqual({});
   });
 });

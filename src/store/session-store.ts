@@ -50,6 +50,14 @@ export interface SessionStoreState {
    * `SessionView` mirror.
    */
   statusMessages: Record<SessionId, string>;
+  /**
+   * Per-session "has unread output since last activation" flag. Set when
+   * `session://output` arrives for a non-active session; cleared on
+   * activation. Boolean (not byte count) so we update the store at most
+   * once per false→true transition — keeps PTY output off the
+   * re-render hot path (see DESIGN §5.2).
+   */
+  hasUnread: Record<SessionId, true>;
 }
 
 export interface SessionStoreActions {
@@ -61,6 +69,12 @@ export interface SessionStoreActions {
   requestClose: (id: SessionId) => void;
   cancelClose: () => void;
   applyStatus: (evt: SessionStatusEvent) => void;
+  /**
+   * Mark a session as having received unread output. No-op if the
+   * session is currently active or already flagged. Idempotent — safe to
+   * call from the high-frequency `session://output` handler.
+   */
+  noteUnread: (id: SessionId) => void;
 }
 
 type Store = SessionStoreState & { actions: SessionStoreActions };
@@ -71,6 +85,7 @@ const INITIAL_STATE: SessionStoreState = {
   pendingClose: undefined,
   isHydrated: false,
   statusMessages: {},
+  hasUnread: {},
 };
 
 /**
@@ -98,7 +113,7 @@ export const useSessionStore = create<Store>((set, get) => {
       const sessions = await sessionList();
       // Clear any orphan status messages — keys may belong to sessions
       // that no longer exist after the backend reload.
-      set({ sessions, isHydrated: true, statusMessages: {} });
+      set({ sessions, isHydrated: true, statusMessages: {}, hasUnread: {} });
     },
 
     create: async (args) => {
@@ -125,18 +140,30 @@ export const useSessionStore = create<Store>((set, get) => {
       // is gone.
       if (get().pendingClose === id) patch.pendingClose = undefined;
       // Drop any orphan status-message keyed under this session id.
-      const { statusMessages } = get();
+      const { statusMessages, hasUnread } = get();
       if (id in statusMessages) {
         const next = { ...statusMessages };
         delete next[id];
         patch.statusMessages = next;
+      }
+      if (id in hasUnread) {
+        const nextUnread = { ...hasUnread };
+        delete nextUnread[id];
+        patch.hasUnread = nextUnread;
       }
       set(patch);
     },
 
     focus: async (id) => {
       // Optimistic: switching tabs must feel instant.
-      set({ activeId: id });
+      const { hasUnread } = get();
+      const patch: Partial<SessionStoreState> = { activeId: id };
+      if (id in hasUnread) {
+        const next = { ...hasUnread };
+        delete next[id];
+        patch.hasUnread = next;
+      }
+      set(patch);
       try {
         await sessionFocus({ sessionId: id });
       } catch (err) {
@@ -198,6 +225,15 @@ export const useSessionStore = create<Store>((set, get) => {
       }
       set({ sessions: nextSessions, statusMessages: nextMessages });
     },
+
+    noteUnread: (id) => {
+      const { activeId, hasUnread, sessions } = get();
+      if (id === activeId) return;
+      if (hasUnread[id]) return;
+      // Defensive: ignore unknown session ids (race with close).
+      if (!sessions.some((s) => s.id === id)) return;
+      set({ hasUnread: { ...hasUnread, [id]: true } });
+    },
   };
 
   return { ...INITIAL_STATE, actions };
@@ -216,6 +252,10 @@ export const selectStatusMessage =
   (id: SessionId | undefined) =>
   (s: Store): string | undefined =>
     id === undefined ? undefined : s.statusMessages[id];
+export const selectHasUnread =
+  (id: SessionId | undefined) =>
+  (s: Store): boolean =>
+    id === undefined ? false : s.hasUnread[id] === true;
 
 export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
@@ -223,6 +263,8 @@ export const usePendingClose = (): SessionId | undefined => useSessionStore(sele
 export const useIsHydrated = (): boolean => useSessionStore(selectIsHydrated);
 export const useStatusMessage = (id: SessionId | undefined): string | undefined =>
   useSessionStore(selectStatusMessage(id));
+export const useHasUnread = (id: SessionId | undefined): boolean =>
+  useSessionStore(selectHasUnread(id));
 
 export function useActiveSession(): SessionView | undefined {
   const sessions = useSessions();
