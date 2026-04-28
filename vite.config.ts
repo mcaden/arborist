@@ -1,0 +1,23 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { fileURLToPath, URL } from 'node:url';
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
+  clearScreen: false,
+  server: {
+    port: 1420,
+    strictPort: true,
+  },
+  envPrefix: ['VITE_', 'TAURI_'],
+  build: {
+    target: 'es2022',
+    sourcemap: true,
+  },
+});

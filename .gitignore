@@ -1,0 +1,39 @@
+dev/ai/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# Vitest
+coverage/
+
+# Rust / Cargo
+target/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+.worktrees

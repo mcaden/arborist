@@ -1,0 +1,52 @@
+[package]
+name = "arborist"
+version = "0.0.0"
+edition = "2021"
+description = "Arborist — multi-session manager for AI coding CLIs"
+authors = ["Arborist contributors"]
+license = "MIT"
+publish = false
+default-run = "arborist"
+
+[lib]
+name = "arborist_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arborist"
+path = "src/main.rs"
+
+# Purpose-built deterministic child process used by the PTY-pool integration
+# tests (`tests/pty_pool.rs`). Cargo automatically exposes its built path to
+# integration tests via the `CARGO_BIN_EXE_arborist-test-child` env var.
+[[bin]]
+name = "arborist-test-child"
+path = "src/bin/arborist_test_child.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+tempfile = "3"
+dunce = "1"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
+rstest = "0.23"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

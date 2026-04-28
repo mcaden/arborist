@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+
+npx --no -- lint-staged || exit 1
+
+# Run Rust formatting + clippy only when Rust files are staged.
+RS_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.rs$' || true)
+if [ -n "$RS_STAGED" ]; then
+  echo "[husky] Rust files staged — running cargo fmt --check and clippy"
+  cargo fmt --all -- --check || exit 1
+  cargo clippy --workspace --all-targets -- -D warnings || exit 1
+fi

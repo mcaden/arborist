@@ -1,0 +1,17 @@
+{
+  "configVersion": 3,
+  "defaultInstructionSets": {
+    "claude": "claude-default",
+    "copilot": "copilot-default"
+  },
+  "instructionSetsDir": "/cfg/instructions",
+  "workspaceRoot": "/repo",
+  "worktreeRoots": ["/repo"],
+  "prelaunchCommands": ["source ~/.zshenv"],
+  "worktreePrelaunchCommands": {
+    "/repo/feature-x": ["nvm use", "asdf reshim"]
+  },
+  "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
+  "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
+  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+}

@@ -1,0 +1,14 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-session"
+description = "Allows the frontend to manage PTY-backed sessions: create, list, close, focus, resize, send input to, and restart sessions."
+commands.allow = [
+    "session_create",
+    "session_list",
+    "session_close",
+    "session_focus",
+    "session_resize",
+    "session_input",
+    "session_restart",
+]

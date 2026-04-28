@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+npm test -- --run || exit 1
+cargo test --workspace || exit 1

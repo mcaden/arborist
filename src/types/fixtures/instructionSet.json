@@ -1,0 +1,7 @@
+{
+  "id": "claude-default",
+  "name": "Claude default",
+  "tool": "claude",
+  "filePath": "/cfg/instructions/claude-default.md",
+  "isDefault": true
+}
