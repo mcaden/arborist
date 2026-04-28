@@ -110,7 +110,7 @@ describe('App boot sequence', () => {
               configVersion: 3,
               defaultInstructionSets: { claude: '', copilot: '' },
               instructionSetsDir: '',
-              workspaceRoot: null,
+              workspaceRoot: '/mock/workspace',
               worktreeRoots: [],
               prelaunchCommands: [],
               worktreePrelaunchCommands: {},
@@ -186,6 +186,26 @@ describe('App boot sequence', () => {
     await waitFor(() => {
       expect(screen.getByTestId('main-area')).toBeInTheDocument();
     });
+  });
+
+  it('shows the WorkspacePicker on first boot when workspaceRoot is null', async () => {
+    configGet.mockResolvedValueOnce({
+      configVersion: 3,
+      defaultInstructionSets: { claude: '', copilot: '' },
+      instructionSetsDir: '',
+      workspaceRoot: null,
+      worktreeRoots: [],
+      prelaunchCommands: [],
+      worktreePrelaunchCommands: {},
+      lastOpenSessions: [],
+      tabOrder: [],
+      activeSessionId: null,
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /choose your workspace/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('main-area')).not.toBeInTheDocument();
   });
 });
 

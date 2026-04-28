@@ -119,6 +119,7 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
 export const selectConfig = (s: ConfigStoreState): AppConfig => s.config;
 export const selectInstructionSetsDir = (s: ConfigStoreState): string =>
   s.config.instructionSetsDir;
+export const selectWorkspaceRoot = (s: ConfigStoreState): string | null => s.config.workspaceRoot;
 export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] =>
   s.config.worktreeRoots;
 export const selectPrelaunchCommands = (s: ConfigStoreState): readonly string[] =>

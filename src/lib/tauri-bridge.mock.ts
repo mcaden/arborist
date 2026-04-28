@@ -79,7 +79,9 @@ const defaultAppConfig = (): AppConfig => ({
   configVersion: 3,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
-  workspaceRoot: null,
+  // Tests assume the main UI is reachable by default. The first-boot
+  // picker is exercised explicitly when a test overrides this to `null`.
+  workspaceRoot: '/mock/workspace',
   worktreeRoots: [],
   prelaunchCommands: [],
   worktreePrelaunchCommands: {},

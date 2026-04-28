@@ -20,10 +20,11 @@ import { useEffect, useState } from 'react';
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
 import { Sidebar } from '@/components/Sidebar';
+import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToStatus } from '@/lib/session-events';
 import { frontendReady } from '@/lib/tauri-bridge';
-import { useConfigStore } from '@/store/config-store';
+import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
 type BootStatus = 'booting' | 'ready' | 'error';
@@ -138,6 +139,24 @@ export function App(): JSX.Element {
   }
   if (status === 'booting') {
     return <BootSplash />;
+  }
+
+  return <ReadyApp />;
+}
+
+function ReadyApp(): JSX.Element {
+  const workspaceRoot = useConfigStore(selectWorkspaceRoot);
+  const setConfig = useConfigStore((s) => s.set);
+
+  if (workspaceRoot === null || workspaceRoot.length === 0) {
+    return (
+      <WorkspacePicker
+        mode="first-boot"
+        onConfirm={async (path) => {
+          await setConfig({ workspaceRoot: path });
+        }}
+      />
+    );
   }
 
   return (

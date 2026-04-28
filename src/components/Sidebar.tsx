@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { CloseConfirmDialog } from './CloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
 import { SidebarTab } from './SidebarTab';
+import { WorkspaceIndicator } from './WorkspaceIndicator';
 import { useActiveSessionId, useSessionActions, useSessions } from '@/store/session-store';
 import type { SessionId } from '@/types/arborist';
 
@@ -211,6 +212,7 @@ export function Sidebar(): JSX.Element {
       onKeyDown={onKeyDown}
       className="flex h-full w-56 shrink-0 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900"
     >
+      <WorkspaceIndicator />
       <NewSessionButton buttonRef={newSessionButtonRef} />
       <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
         <SortableContext items={ids} strategy={verticalListSortingStrategy}>
