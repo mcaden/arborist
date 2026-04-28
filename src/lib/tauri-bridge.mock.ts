@@ -102,6 +102,14 @@ export const instructionsList: Mock<
   ReturnType<typeof realBridge.instructionsList>
 > = vi.fn(() => Promise.resolve([]));
 
+export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() =>
+  Promise.resolve([]),
+);
+
+export const pickDirectory: Mock<typeof realBridge.pickDirectory> = vi.fn(() =>
+  Promise.resolve(null),
+);
+
 export const onSessionOutput: Mock<
   Parameters<typeof realBridge.onSessionOutput>,
   ReturnType<typeof realBridge.onSessionOutput>
@@ -138,6 +146,8 @@ export function resetBridgeMocks(): void {
   configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   configSet.mockReset().mockImplementation(() => Promise.resolve());
   instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
+  worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
+  pickDirectory.mockReset().mockImplementation(() => Promise.resolve(null));
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }
@@ -158,6 +168,8 @@ const _shapeCheck = {
   configGet,
   configSet,
   instructionsList,
+  worktreesList,
+  pickDirectory,
   onSessionOutput,
   onSessionStatus,
 } satisfies typeof realBridge;

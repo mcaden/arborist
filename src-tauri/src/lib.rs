@@ -8,6 +8,7 @@
 pub mod commands;
 pub mod compose;
 pub mod config_store;
+pub mod git;
 pub mod pty_pool;
 pub mod types;
 
@@ -15,7 +16,7 @@ pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
     PartialAppConfig, PartialDefaultInstructionSets, Session, SessionCreateArgs, SessionId,
     SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView, TempFileSpec, Tool, CONFIG_VERSION_CURRENT,
+    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorktreeInfo, CONFIG_VERSION_CURRENT,
 };
 
 use tracing_subscriber::EnvFilter;
@@ -35,6 +36,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Build the production AppContext: portable-pty spawner, the
             // on-disk ConfigStore, and a PtySink that bridges back into
@@ -45,7 +47,9 @@ pub fn run() {
                 pty_pool::PortablePtySpawner,
             )));
             let sink = commands::build_production_sink(app.handle().clone(), store.clone());
-            let ctx = std::sync::Arc::new(commands::AppContext::new(pool, store, sink));
+            let git_runner: std::sync::Arc<dyn git::GitRunner> =
+                std::sync::Arc::new(git::RealGitRunner);
+            let ctx = std::sync::Arc::new(commands::AppContext::new(pool, store, sink, git_runner));
             app.manage(ctx);
             Ok(())
         })
@@ -62,6 +66,7 @@ pub fn run() {
             commands::session_input,
             commands::session_restart,
             commands::frontend_ready,
+            commands::worktrees_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Grove");

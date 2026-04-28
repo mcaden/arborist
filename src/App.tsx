@@ -1,6 +1,8 @@
-// App shell. Phase 9 wires in the Sidebar; the right-hand pane is a
-// **placeholder** until Phase 11/12 mount the real <TerminalView />.
+// App shell. Phase 9 wires in the Sidebar; Phase 10 mounts the
+// NewSessionDialog. The right-hand pane is a **placeholder** until Phase
+// 11/12 mount the real <TerminalView />.
 
+import { NewSessionDialog } from '@/components/NewSessionDialog';
 import { Sidebar } from '@/components/Sidebar';
 import { useActiveSession } from '@/store/session-store';
 
@@ -23,6 +25,7 @@ export function App(): JSX.Element {
     <div className="flex h-full w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100">
       <Sidebar />
       <MainAreaPlaceholder />
+      <NewSessionDialog />
     </div>
   );
 }

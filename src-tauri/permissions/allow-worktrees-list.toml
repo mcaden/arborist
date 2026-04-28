@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-worktrees-list"
+description = "Allows the frontend to enumerate git worktrees rooted at a user-supplied path via the `worktrees_list` command (Phase 10)."
+commands.allow = [
+    "worktrees_list",
+]

@@ -13,6 +13,7 @@ _Version 0.5_
 | Styling | **Tailwind CSS** | Utility-first; fast iteration for layout-heavy UI. |
 | Build / bundle | **Vite + Tauri CLI** | Fast HMR for the frontend; Cargo for the Rust backend. |
 | Persistence | **tauri-plugin-store** | JSON file-backed store exposed to the frontend via Tauri commands. |
+| OS dialogs | **tauri-plugin-dialog** | Native file/directory picker; gated by the `dialog:allow-open` capability. Used by the New-Session flow's manual "Browse…" fallback (Phase 10). |
 
 ## 2. Architecture Overview
 
@@ -161,6 +162,12 @@ User clicks [+]
   → NewSessionDialog opens
   → User selects tool (Claude | Copilot)
   → User selects worktree (from detected worktrees list or OS file picker)
+        ↳ Detected list comes from `worktrees_list { repoRoot }`, which runs
+          through the injectable `GitRunner` seam (production: shells out
+          to `git worktree list --porcelain`, parsed in
+          `src-tauri/src/git.rs`). Discovery failures degrade to an empty
+          list, so the manual "Browse…" button (powered by
+          `tauri-plugin-dialog`) is always available.
   → User optionally selects instruction set (default pre-selected)
   → Frontend invokes Tauri command: session_create { tool, worktreePath, instructionSetId }
   → Rust backend:
@@ -332,6 +339,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `config_get` | — | `AppConfig` | Retrieve AppConfig |
 | `config_set` | `Partial<AppConfig>` | — | Update AppConfig (`activeSessionId` is tri-state: omit to leave alone, `null` to clear, value to set) |
 | `instructions_list` | — | `InstructionSet[]` | List available instruction sets from `instructionSetsDir` |
+| `worktrees_list` | `{ repoRoot: string }` | `WorktreeInfo[]` | Enumerate git worktrees rooted at `repoRoot`. Implemented via the injectable `GitRunner` seam (production: `git worktree list --porcelain`, parsed in `src-tauri/src/git.rs`). **Always returns `Ok(vec![])` on failure** — git missing, repo_root not a directory, repo_root is not a git repository, or any IO/parse error degrades to an empty list (logged with `code="GitUnavailable"`) so the UI's "Browse…" fallback is never blocked by an error toast. `WorktreeInfo = { path, branch?, isMain, isLocked }`. |
 
 > **Test-only seam.** The Rust backend consults two env vars,
 > `GROVE_CLI_OVERRIDE_CLAUDE` and `GROVE_CLI_OVERRIDE_COPILOT`, when composing

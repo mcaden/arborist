@@ -131,3 +131,14 @@ export interface SessionStatusEvent {
   sessionId: SessionId;
   status: SessionStatus;
 }
+
+// MIRROR: src-tauri/src/types.rs::WorktreeInfo
+// Returned by the `worktrees_list` command (DESIGN §6, Phase 10).
+// `branch` is omitted by the backend when the worktree has a detached HEAD,
+// so we model it as an optional string.
+export interface WorktreeInfo {
+  path: string;
+  branch?: string;
+  isMain: boolean;
+  isLocked: boolean;
+}

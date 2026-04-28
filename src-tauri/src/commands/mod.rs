@@ -152,6 +152,19 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Enumerate worktrees rooted at `repo_root` (DESIGN §6, Phase 10). Always
+/// returns `Ok(vec![])` on discovery failures so the UI's "Browse…"
+/// fallback is never blocked by an error toast.
+#[tauri::command]
+pub async fn worktrees_list(
+    app: tauri::AppHandle,
+    repo_root: String,
+) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {
+    let ctx = ctx_of(&app)?;
+    let path = PathBuf::from(repo_root);
+    session::worktrees_list_impl(&ctx, &path)
+}
+
 // ---------------------------------------------------------------------------
 // Production PtySink builder.
 // ---------------------------------------------------------------------------

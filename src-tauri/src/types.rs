@@ -177,6 +177,24 @@ impl From<&Session> for SessionView {
 }
 
 // ---------------------------------------------------------------------------
+// Worktree discovery
+// ---------------------------------------------------------------------------
+
+/// One entry in the result of `worktrees_list` (DESIGN §6). Mirrored on the
+/// frontend by `WorktreeInfo` in `src/types/grove.ts`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    pub path: PathBuf,
+    /// `None` for detached HEAD.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub branch: Option<String>,
+    /// `true` for the primary worktree of the repository.
+    pub is_main: bool,
+    pub is_locked: bool,
+}
+
+// ---------------------------------------------------------------------------
 // InstructionSet
 // ---------------------------------------------------------------------------
 

@@ -9,6 +9,8 @@
     "allow-config",
     "allow-instructions",
     "allow-session",
-    "allow-frontend-ready"
+    "allow-frontend-ready",
+    "allow-worktrees-list",
+    "dialog:allow-open"
   ]
 }

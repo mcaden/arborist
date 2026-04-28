@@ -15,6 +15,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 import type {
   AppConfig,
@@ -26,6 +27,7 @@ import type {
   SessionStatusEvent,
   SessionView,
   Tool,
+  WorktreeInfo,
 } from '@/types/grove';
 
 // ---------------------------------------------------------------------------
@@ -161,6 +163,30 @@ export function configSet(partial: PartialAppConfig): Promise<void> {
  */
 export function instructionsList(): Promise<InstructionSet[]> {
   return invoke<InstructionSet[]>('instructions_list');
+}
+
+/**
+ * Enumerate git worktrees rooted at `repoRoot`. Always resolves with a
+ * (possibly empty) array — the backend swallows discovery failures so the
+ * UI can fall back to the manual "Browse…" picker (DESIGN §6, Phase 10).
+ */
+export function worktreesList(repoRoot: string): Promise<WorktreeInfo[]> {
+  return invoke<WorktreeInfo[]>('worktrees_list', { repoRoot });
+}
+
+/**
+ * Open the OS native directory picker. Resolves to the absolute path the
+ * user chose, or `null` if they cancelled. Backed by the
+ * `tauri-plugin-dialog` plugin (Phase 10).
+ *
+ * Components MUST go through this wrapper rather than importing the plugin
+ * directly so the bridge mock can stub it in tests.
+ */
+export async function pickDirectory(): Promise<string | null> {
+  const picked = await openDialog({ directory: true, multiple: false });
+  // The plugin returns `string | string[] | null` depending on `multiple`;
+  // we asked for a single selection so any non-string is treated as cancel.
+  return typeof picked === 'string' ? picked : null;
 }
 
 // ---------------------------------------------------------------------------

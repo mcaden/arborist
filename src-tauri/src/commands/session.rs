@@ -31,6 +31,7 @@ use crate::compose::{self, ComposeInputs};
 use crate::config_store::{
     discover_instructions, list_instructions_for, ConfigStore, MAX_INSTRUCTION_FILE_BYTES,
 };
+use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCreateArgs, SessionId,
@@ -43,6 +44,9 @@ pub struct AppContext {
     pub pool: Arc<PtyPool>,
     pub store: ConfigStore,
     pub sink: PtySink,
+    /// Injected git seam (Phase 10). Production wires [`RealGitRunner`];
+    /// tests pass a fake to avoid depending on the real `git` binary.
+    pub git_runner: Arc<dyn GitRunner>,
     /// Restore-on-launch is a one-shot operation gated on the frontend
     /// signalling readiness. We use a CAS instead of a mutex so a frenzied
     /// frontend that calls `frontend_ready` more than once cannot trigger
@@ -52,13 +56,28 @@ pub struct AppContext {
 
 impl AppContext {
     #[must_use]
-    pub fn new(pool: Arc<PtyPool>, store: ConfigStore, sink: PtySink) -> Self {
+    pub fn new(
+        pool: Arc<PtyPool>,
+        store: ConfigStore,
+        sink: PtySink,
+        git_runner: Arc<dyn GitRunner>,
+    ) -> Self {
         Self {
             pool,
             store,
             sink,
+            git_runner,
             restored: AtomicBool::new(false),
         }
+    }
+
+    /// Convenience constructor for call sites (notably integration tests
+    /// from earlier phases) that don't care about git discovery — defaults
+    /// to the real runner. New tests should prefer [`Self::new`] with a
+    /// fake [`GitRunner`].
+    #[must_use]
+    pub fn with_real_git(pool: Arc<PtyPool>, store: ConfigStore, sink: PtySink) -> Self {
+        Self::new(pool, store, sink, Arc::new(RealGitRunner))
     }
 }
 
@@ -350,6 +369,31 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// worktrees_list (Phase 10)
+// ---------------------------------------------------------------------------
+
+/// Enumerate worktrees rooted at `repo_root`. Returns `Ok(vec![])` on any
+/// failure (missing dir, not a repo, git unavailable) — graceful
+/// degradation lets the frontend always fall back to the manual "Browse…"
+/// button without surfacing an error toast.
+pub fn worktrees_list_impl(
+    ctx: &AppContext,
+    repo_root: &std::path::Path,
+) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {
+    if !repo_root.is_dir() {
+        debug!(
+            code = "GitUnavailable",
+            repo_root = %repo_root.display(),
+            "worktrees_list: repo_root not a directory; returning empty list"
+        );
+        return Ok(Vec::new());
+    }
+    ctx.git_runner
+        .list_worktrees(repo_root)
+        .map_err(AppError::from)
 }
 
 // ---------------------------------------------------------------------------

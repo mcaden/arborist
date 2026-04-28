@@ -105,7 +105,7 @@ async fn real_spawner_drives_create_input_close_round_trip() {
     let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner)));
     let captured = Arc::new(Captured::default());
     let sink = build_sink(Arc::clone(&captured), store.clone());
-    let ctx = Arc::new(AppContext::new(pool, store, sink));
+    let ctx = Arc::new(AppContext::with_real_git(pool, store, sink));
 
     // Create — this materialises the temp file, composes the command using
     // the override (so the program is `<TEST_CHILD>` instead of `claude`),

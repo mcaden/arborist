@@ -218,7 +218,7 @@ fn build_harness() -> Harness {
     let pool = Arc::new(PtyPool::new(spawner.clone() as Arc<dyn PtySpawner>));
     let events = Arc::new(CapturedEvents::default());
     let sink = capture_sink(Arc::clone(&events), store.clone());
-    let ctx = Arc::new(AppContext::new(pool, store, sink));
+    let ctx = Arc::new(AppContext::with_real_git(pool, store, sink));
 
     Harness {
         ctx,
@@ -450,7 +450,7 @@ async fn restore_respawns_persisted_sessions_without_recomposing() {
     let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
     let events2 = Arc::new(CapturedEvents::default());
     let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store.clone());
-    let ctx2 = AppContext::new(pool2, h.ctx.store.clone(), sink2);
+    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store.clone(), sink2);
 
     restore_all_sessions(&ctx2);
 

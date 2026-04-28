@@ -82,6 +82,14 @@ fn main_capability_allows_core_default_and_ping() {
         identifiers.contains(&"allow-frontend-ready"),
         "main capability must include allow-frontend-ready so frontend_ready is callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-worktrees-list"),
+        "main capability must include allow-worktrees-list so worktrees_list is callable; got {identifiers:?}",
+    );
+    assert!(
+        identifiers.contains(&"dialog:allow-open"),
+        "main capability must include dialog:allow-open so the file picker is callable; got {identifiers:?}",
+    );
 }
 
 #[test]
@@ -180,5 +188,22 @@ fn allow_frontend_ready_permission_file_declares_frontend_ready_command() {
     assert!(
         raw.contains("\"frontend_ready\""),
         "permission must allow the `frontend_ready` command",
+    );
+}
+
+#[test]
+fn allow_worktrees_list_permission_file_declares_worktrees_command() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-worktrees-list.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktrees-list\""),
+        "permission identifier must remain `allow-worktrees-list`",
+    );
+    assert!(
+        raw.contains("\"worktrees_list\""),
+        "permission must allow the `worktrees_list` command",
     );
 }
