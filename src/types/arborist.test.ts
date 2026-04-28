@@ -89,14 +89,13 @@ describe('arborist type mirrors', () => {
         'worktreePath',
         'worktreeName',
         'label',
-        'instructionSetId',
         'composedCommand',
         'status',
         'createdAt',
         'tabIndex',
         'tempFiles',
       ],
-      ['pid'],
+      ['pid', 'instructionSetId'],
       'Session',
     );
   });
@@ -104,18 +103,8 @@ describe('arborist type mirrors', () => {
   it('SessionView fixture matches TS interface key set and omits backend-only fields', () => {
     assertExactKeys(
       sessionViewFixture as unknown as Record<string, unknown>,
-      [
-        'id',
-        'tool',
-        'worktreePath',
-        'worktreeName',
-        'label',
-        'instructionSetId',
-        'status',
-        'createdAt',
-        'tabIndex',
-      ],
-      ['pid'],
+      ['id', 'tool', 'worktreePath', 'worktreeName', 'label', 'status', 'createdAt', 'tabIndex'],
+      ['pid', 'instructionSetId'],
       'SessionView',
     );
     expect(sessionViewFixture).not.toHaveProperty('composedCommand');

@@ -57,15 +57,21 @@ pub struct ComposeInputs<'a> {
     /// not re-canonicalize and never touches disk.
     pub worktree_path: &'a Path,
     pub worktree_label: &'a str,
-    pub instruction_set: &'a InstructionSet,
+    /// Optional user-curated instruction set. When `None`:
+    /// * Claude launches with no `--system-prompt` (auto-loads `CLAUDE.md`
+    ///   from `cwd`).
+    /// * Copilot was never affected by this field; only the worktree
+    ///   context block is passed via `--interactive`.
+    pub instruction_set: Option<&'a InstructionSet>,
     /// Verbatim, in declaration order. They are joined with ` && ` ahead of
     /// the CLI command and passed through *without* re-quoting — they are
     /// already user-authored shell snippets (DESIGN §5.6).
     pub prelaunch_commands: &'a [String],
     /// In-memory contents of the selected instruction set file. The caller
     /// reads the file (and enforces the size cap from DESIGN §8); compose
-    /// stays pure.
-    pub instruction_set_contents: &'a str,
+    /// stays pure. Must be `Some` when [`Self::instruction_set`] is `Some`,
+    /// `None` otherwise. Ignored for Copilot.
+    pub instruction_set_contents: Option<&'a str>,
 }
 
 /// Compose the shell command for a session.
@@ -398,19 +404,30 @@ fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
 }
 
 fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+    let program = cli_program_for_tool(Tool::Claude, quoter);
+
+    // No user instruction set: launch plain `claude`. The agent still
+    // auto-discovers `CLAUDE.md` from its `cwd` (the worktree). Skipping
+    // `--system-prompt` keeps the launch surface minimal and lets the
+    // agent derive its location from `pwd`/`git` without us having to
+    // fabricate a worktree-context system prompt.
+    let Some(contents) = inputs.instruction_set_contents else {
+        return (program, Vec::new());
+    };
+
     let dir = session_temp_dir(&inputs.session_id);
     let temp_path = dir.join("system-prompt.md");
 
     let header = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
-    let contents = format!(
-        "{header}\n---\n{body}",
+    let body = format!(
+        "{header}\n---\n{contents}",
         header = header,
-        body = inputs.instruction_set_contents,
+        contents = contents,
     );
 
     let cli_cmd = format!(
         "{program} --system-prompt {quoted}",
-        program = cli_program_for_tool(Tool::Claude, quoter),
+        program = program,
         quoted = quoter(&temp_path.to_string_lossy()),
     );
 
@@ -418,7 +435,7 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
         cli_cmd,
         vec![TempFileSpec {
             path: temp_path,
-            contents,
+            contents: body,
         }],
     )
 }
@@ -499,9 +516,9 @@ mod tests {
         tool: Tool,
         worktree: &'a Path,
         label: &'a str,
-        is: &'a InstructionSet,
+        is: Option<&'a InstructionSet>,
         prelaunch: &'a [String],
-        body: &'a str,
+        body: Option<&'a str>,
     ) -> ComposeInputs<'a> {
         ComposeInputs {
             session_id: fixed_id(),
@@ -531,8 +548,15 @@ mod tests {
         });
         let is = instr_set(Tool::Claude);
         let body = "# Instructions\nBe helpful.\n";
-        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", &is, &[], body))
-            .expect("compose");
+        let r = compose_command(&inputs(
+            Tool::Claude,
+            &wt,
+            "my-feature",
+            Some(&is),
+            &[],
+            Some(body),
+        ))
+        .expect("compose");
 
         let expected_path = session_temp_dir(&fixed_id()).join("system-prompt.md");
         let quoted = host_quote(&expected_path.to_string_lossy());
@@ -560,8 +584,15 @@ mod tests {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Claude);
         let pre = vec!["nvm use 20".to_owned(), "source .env".to_owned()];
-        let r =
-            compose_command(&inputs(Tool::Claude, &wt, "wt", &is, &pre, "body")).expect("compose");
+        let r = compose_command(&inputs(
+            Tool::Claude,
+            &wt,
+            "wt",
+            Some(&is),
+            &pre,
+            Some("body"),
+        ))
+        .expect("compose");
 
         assert!(r
             .composed_command
@@ -593,14 +624,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn claude_compose_without_instruction_set_drops_system_prompt() {
+        let wt = PathBuf::from(if cfg!(windows) {
+            "C:\\repos\\my-feature"
+        } else {
+            "/repos/my-feature"
+        });
+        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", None, &[], None))
+            .expect("compose");
+
+        assert_eq!(r.composed_command, "claude");
+        assert!(r.temp_files.is_empty());
+        // Worktree path is supplied as `cwd` by the PTY pool, never via the
+        // command string.
+        assert!(!r.composed_command.contains(&*wt.to_string_lossy()));
+    }
+
+    #[test]
+    fn claude_compose_without_instruction_set_keeps_prelaunch() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let pre = vec!["nvm use 20".to_owned()];
+        let r =
+            compose_command(&inputs(Tool::Claude, &wt, "wt", None, &pre, None)).expect("compose");
+        assert_eq!(r.composed_command, "nvm use 20 && claude");
+        assert!(r.temp_files.is_empty());
+    }
+
     // -- composition: Copilot -------------------------------------------
 
     #[test]
     fn copilot_compose_no_prelaunch() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Copilot);
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", &is, &[], "ignored"))
-            .expect("compose");
+        let r = compose_command(&inputs(
+            Tool::Copilot,
+            &wt,
+            "wt",
+            Some(&is),
+            &[],
+            Some("ignored"),
+        ))
+        .expect("compose");
 
         let context = format!(
             "You are operating in Git worktree **wt** at {}.",
@@ -626,7 +691,8 @@ mod tests {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Copilot);
         let pre = vec!["echo hi".to_owned(), "true".to_owned()];
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", &is, &pre, "")).expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), &pre, Some("")))
+            .expect("compose");
         assert!(r
             .composed_command
             .starts_with("echo hi && true && copilot --interactive "));
@@ -640,8 +706,15 @@ mod tests {
             "/my repos/feature"
         });
         let is = instr_set(Tool::Copilot);
-        let r =
-            compose_command(&inputs(Tool::Copilot, &wt, "feature", &is, &[], "")).expect("compose");
+        let r = compose_command(&inputs(
+            Tool::Copilot,
+            &wt,
+            "feature",
+            Some(&is),
+            &[],
+            Some(""),
+        ))
+        .expect("compose");
         // The whole context (including the path with a space) must sit
         // inside a single quoted token. We assert there is exactly one
         // quoted token after `--interactive` and the worktree path lives

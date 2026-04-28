@@ -44,7 +44,7 @@ fn make_session(workdir: &Path) -> Session {
         worktree_path: workdir.to_path_buf(),
         worktree_name: "test".into(),
         label: "test".into(),
-        instruction_set_id: InstructionSetId("default".into()),
+        instruction_set_id: Some(InstructionSetId("default".into())),
         composed_command: composed,
         status: SessionStatus::Starting,
         pid: None,

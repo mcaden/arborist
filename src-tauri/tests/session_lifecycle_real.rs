@@ -115,7 +115,7 @@ async fn real_spawner_drives_create_input_close_round_trip() {
         SessionCreateArgs {
             tool: Tool::Claude,
             worktree_path: worktree.path().to_path_buf(),
-            instruction_set_id: instruction_id,
+            instruction_set_id: Some(instruction_id),
         },
     )
     .expect("create");

@@ -35,7 +35,7 @@ export interface Session {
   worktreePath: string;
   worktreeName: string;
   label: string;
-  instructionSetId: InstructionSetId;
+  instructionSetId?: InstructionSetId;
   composedCommand: string;
   status: SessionStatus;
   pid?: number;
@@ -52,7 +52,7 @@ export interface SessionView {
   worktreePath: string;
   worktreeName: string;
   label: string;
-  instructionSetId: InstructionSetId;
+  instructionSetId?: InstructionSetId;
   status: SessionStatus;
   pid?: number;
   createdAt: number;

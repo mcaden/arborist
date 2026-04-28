@@ -124,7 +124,16 @@ pub struct Session {
     pub worktree_path: PathBuf,
     pub worktree_name: String,
     pub label: String,
-    pub instruction_set_id: InstructionSetId,
+    /// Optional user-curated instruction set overlay. When `None`:
+    /// * Claude is launched with no `--system-prompt`; the agent relies
+    ///   on its auto-discovered `CLAUDE.md` from `cwd`.
+    /// * Copilot ignores this field — it always auto-discovers
+    ///   `.github/copilot-instructions.md` from `cwd` regardless.
+    ///
+    /// Both tools always receive the worktree as their `cwd`, so
+    /// repository-level instructions are picked up either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_set_id: Option<InstructionSetId>,
     /// Full shell command string. Backend-only; reused verbatim by
     /// `respawn_existing` so we never recompose at restart time.
     pub composed_command: String,
@@ -151,7 +160,9 @@ pub struct SessionView {
     pub worktree_path: PathBuf,
     pub worktree_name: String,
     pub label: String,
-    pub instruction_set_id: InstructionSetId,
+    /// See [`Session::instruction_set_id`] for semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_set_id: Option<InstructionSetId>,
     pub status: SessionStatus,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pid: Option<u32>,
@@ -405,7 +416,11 @@ pub struct SessionStatusEvent {
 pub struct SessionCreateArgs {
     pub tool: Tool,
     pub worktree_path: PathBuf,
-    pub instruction_set_id: InstructionSetId,
+    /// Optional. When omitted, the session is launched with no
+    /// `--system-prompt` for Claude (Copilot never used this field).
+    /// See [`Session::instruction_set_id`].
+    #[serde(default)]
+    pub instruction_set_id: Option<InstructionSetId>,
 }
 
 /// Arguments for any command keyed only by session id (`session_close`,
@@ -628,7 +643,7 @@ mod tests {
             worktree_path: PathBuf::from("/repo/feature-x"),
             worktree_name: "feature-x".to_owned(),
             label: "feature-x".to_owned(),
-            instruction_set_id: InstructionSetId::new("claude-default"),
+            instruction_set_id: Some(InstructionSetId::new("claude-default")),
             composed_command: "claude --system-prompt /tmp/arborist/abc/sp.md".to_owned(),
             status: SessionStatus::Running,
             pid: Some(12345),

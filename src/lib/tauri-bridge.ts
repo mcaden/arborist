@@ -17,6 +17,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
+export { formatError, isAppErrorLike } from '@/lib/tauri-error';
+export type { AppErrorLike } from '@/lib/tauri-error';
+
 import type {
   AppConfig,
   InstructionSet,
@@ -44,7 +47,7 @@ import type {
 export interface SessionCreateArgs {
   tool: Tool;
   worktreePath: string;
-  instructionSetId: InstructionSetId;
+  instructionSetId?: InstructionSetId;
 }
 
 export interface SessionIdArg {

@@ -243,7 +243,7 @@ fn create_args(h: &Harness) -> SessionCreateArgs {
     SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: h.instruction_id.clone(),
+        instruction_set_id: Some(h.instruction_id.clone()),
     }
 }
 
@@ -317,7 +317,7 @@ async fn create_with_unknown_instruction_set_returns_notfound() {
     let args = SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: InstructionSetId("does-not-exist".into()),
+        instruction_set_id: Some(InstructionSetId("does-not-exist".into())),
     };
     let err = session_create_impl(&h.ctx, args).expect_err("should fail");
     assert_eq!(err.code, "NotFound");
@@ -332,7 +332,7 @@ async fn create_with_tool_mismatch_returns_toolmismatch() {
     let args = SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: InstructionSetId("copilot-only".into()),
+        instruction_set_id: Some(InstructionSetId("copilot-only".into())),
     };
     let err = session_create_impl(&h.ctx, args).expect_err("should fail");
     assert_eq!(err.code, "ToolMismatch");

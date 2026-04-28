@@ -756,7 +756,7 @@ mod tests {
             worktree_path: dir.to_path_buf(),
             worktree_name: label.to_owned(),
             label: label.to_owned(),
-            instruction_set_id: InstructionSetId::new("claude-default"),
+            instruction_set_id: Some(InstructionSetId::new("claude-default")),
             composed_command: format!("claude {label}"),
             status: SessionStatus::Running,
             pid: Some(42),

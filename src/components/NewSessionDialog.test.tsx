@@ -210,21 +210,9 @@ describe('NewSessionDialog', () => {
     expect(screen.getByRole('button', { name: /create session/i })).toBeDisabled();
   });
 
-  it('Confirm resolves the configured per-tool default and submits it', async () => {
-    useConfigStore.setState({
-      config: defaultConfig({
-        defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
-      }),
-      status: 'ready',
-      error: null,
-    });
+  it('Confirm submits without an instructionSetId so the backend launches the CLI from the worktree cwd', async () => {
     bridgeMock.worktreesList.mockResolvedValue([
       makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
-    ]);
-    bridgeMock.instructionsList.mockResolvedValue([
-      makeInstr('claude-default', 'claude', true),
-      makeInstr('claude-strict', 'claude'),
-      makeInstr('copilot-default', 'copilot', true),
     ]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'new-id',
@@ -232,7 +220,6 @@ describe('NewSessionDialog', () => {
       worktreePath: `${REPO_ROOT}/.worktrees/main`,
       worktreeName: 'main',
       label: 'main',
-      instructionSetId: 'claude-default',
       status: 'running',
       createdAt: 1,
       tabIndex: 0,
@@ -250,90 +237,12 @@ describe('NewSessionDialog', () => {
       expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
         tool: 'claude',
         worktreePath: `${REPO_ROOT}/.worktrees/main`,
-        instructionSetId: 'claude-default',
       }),
     );
+    // Defensive: assert the field was not silently included as undefined
+    // either, so the contract change is unambiguous on the wire.
+    expect(bridgeMock.sessionCreate.mock.calls[0]?.[0]).not.toHaveProperty('instructionSetId');
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
-  });
-
-  it('Confirm falls back to the discovered default when no per-tool default is configured', async () => {
-    // Default config has empty defaultInstructionSets — exactly the shape
-    // that used to trip the "instruction set  not found" error.
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
-    ]);
-    bridgeMock.instructionsList.mockResolvedValue([
-      makeInstr('claude-strict', 'claude'),
-      makeInstr('claude-default', 'claude', true),
-    ]);
-    bridgeMock.sessionCreate.mockResolvedValue({
-      id: 'x',
-      tool: 'claude',
-      worktreePath: `${REPO_ROOT}/.worktrees/main`,
-      worktreeName: 'main',
-      label: 'main',
-      instructionSetId: 'claude-default',
-      status: 'running',
-      createdAt: 1,
-      tabIndex: 0,
-    });
-
-    render(<NewSessionDialog />);
-    openDialog();
-    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
-
-    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
-    expect(bridgeMock.sessionCreate.mock.calls[0]?.[0].instructionSetId).toBe('claude-default');
-  });
-
-  it('Confirm falls back to the first available set when no default exists at all', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
-    ]);
-    // Only a non-default set exists for the chosen tool.
-    bridgeMock.instructionsList.mockResolvedValue([makeInstr('claude-strict', 'claude')]);
-    bridgeMock.sessionCreate.mockResolvedValue({
-      id: 'x',
-      tool: 'claude',
-      worktreePath: `${REPO_ROOT}/.worktrees/main`,
-      worktreeName: 'main',
-      label: 'main',
-      instructionSetId: 'claude-strict',
-      status: 'running',
-      createdAt: 1,
-      tabIndex: 0,
-    });
-
-    render(<NewSessionDialog />);
-    openDialog();
-    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
-
-    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
-    expect(bridgeMock.sessionCreate.mock.calls[0]?.[0].instructionSetId).toBe('claude-strict');
-  });
-
-  it('Confirm shows a friendly error and does not call the backend when no instruction set is available', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
-    ]);
-    // No instruction sets discovered for the chosen tool.
-    bridgeMock.instructionsList.mockResolvedValue([makeInstr('copilot-default', 'copilot', true)]);
-
-    render(<NewSessionDialog />);
-    openDialog();
-    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
-
-    expect(await screen.findByText(/no instruction set is available/i)).toBeInTheDocument();
-    expect(bridgeMock.sessionCreate).not.toHaveBeenCalled();
   });
 
   it('Confirm surfaces backend AppError objects as readable text (not [object Object])', async () => {

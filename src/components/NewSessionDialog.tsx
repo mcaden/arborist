@@ -24,23 +24,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { isInsideWorktreesDir } from '@/lib/worktree-paths';
-import {
-  formatError,
-  instructionsList as fetchInstructions,
-  pickDirectory,
-  worktreeCreate,
-  worktreesList,
-} from '@/lib/tauri-bridge';
+import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
-import {
-  selectDefaultInstructionSets,
-  selectPrelaunchCommands,
-  selectWorkspaceRoot,
-  useConfigStore,
-} from '@/store/config-store';
+import { selectPrelaunchCommands, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionActions } from '@/store/session-store';
-import type { InstructionSet, Tool, WorktreeInfo } from '@/types/arborist';
+import type { Tool, WorktreeInfo } from '@/types/arborist';
 
 type Step = 1 | 2;
 type WorktreeMode = 'existing' | 'new';
@@ -65,7 +54,6 @@ export function NewSessionDialog(): JSX.Element | null {
   const actions = useSessionActions();
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
-  const defaultSets = useConfigStore(selectDefaultInstructionSets);
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
@@ -81,7 +69,6 @@ export function NewSessionDialog(): JSX.Element | null {
   const [worktree, setWorktree] = useState<ChosenWorktree | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [worktreesLoading, setWorktreesLoading] = useState(false);
-  const [allInstructions, setAllInstructions] = useState<InstructionSet[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -100,7 +87,6 @@ export function NewSessionDialog(): JSX.Element | null {
     setWorktreeMode('existing');
     setWorktree(null);
     setWorktrees([]);
-    setAllInstructions([]);
     setSubmitting(false);
     setSubmitError(null);
     setNewName('');
@@ -133,27 +119,6 @@ export function NewSessionDialog(): JSX.Element | null {
     }
   }, [isOpen]);
 
-  // Fetch instruction sets when the dialog opens. We don't show a picker
-  // anymore, but we still need the discovered list so `onConfirm` can
-  // resolve a non-empty `instructionSetId` for the backend (which rejects
-  // empty IDs with `NotFound`).
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    fetchInstructions()
-      .then((sets) => {
-        if (!cancelled) setAllInstructions(sets);
-      })
-      .catch(() => {
-        // Discovery failure is non-fatal; `onConfirm` will surface a
-        // friendly error if no sets are available for the chosen tool.
-        if (!cancelled) setAllInstructions([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen]);
-
   // When the user lands on Step 2, list worktrees for the configured
   // workspace and filter to those under `<workspaceRoot>/.worktrees/`.
   // Worktrees outside that directory (the main checkout, ad-hoc paths)
@@ -182,24 +147,6 @@ export function NewSessionDialog(): JSX.Element | null {
       cancelled = true;
     };
   }, [isOpen, step, workspaceRoot]);
-
-  // Resolve the instruction set ID at submit time. The backend rejects
-  // empty IDs with NotFound, so we walk a fallback chain rather than
-  // relying on a sentinel: configured per-tool default → discovered
-  // `isDefault` set for the tool → first available set for the tool.
-  // Returns `null` when nothing is available; callers must surface a
-  // friendly error in that case.
-  const resolveInstructionSetId = (chosenTool: Tool): string | null => {
-    const configured = defaultSets[chosenTool];
-    if (configured.length > 0 && allInstructions.some((s) => s.id === configured)) {
-      return configured;
-    }
-    const discoveredDefault = allInstructions.find((s) => s.tool === chosenTool && s.isDefault);
-    if (discoveredDefault) return discoveredDefault.id;
-    const firstForTool = allInstructions.find((s) => s.tool === chosenTool);
-    if (firstForTool) return firstForTool.id;
-    return null;
-  };
 
   // Resolve the prelaunchCommands the backend would actually run for the
   // chosen worktree (DESIGN §5.6 / §8.1): per-worktree override (if set)
@@ -283,20 +230,18 @@ export function NewSessionDialog(): JSX.Element | null {
 
   const onConfirm = async (): Promise<void> => {
     if (!tool || !worktree) return;
-    const resolvedId = resolveInstructionSetId(tool);
-    if (resolvedId === null) {
-      setSubmitError(
-        'No instruction set is available for this tool. Configure an instruction-sets directory in Settings, or add a default file under the bundled `instructions/` folder.',
-      );
-      return;
-    }
     setSubmitting(true);
     setSubmitError(null);
     try {
+      // Instruction sets are intentionally not selected here. The CLI
+      // tools auto-discover repository instructions from `cwd` (the
+      // worktree): Claude reads `CLAUDE.md`, Copilot reads
+      // `.github/copilot-instructions.md`. Power users can attach an
+      // additional instruction-set overlay through Settings; this wizard
+      // keeps the per-session create flow opinionated.
       await actions.create({
         tool,
         worktreePath: worktree.path,
-        instructionSetId: resolvedId,
       });
       close();
     } catch (err) {

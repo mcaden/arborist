@@ -95,14 +95,27 @@ pub fn session_create_impl(
     // 1. Validate worktree (canonicalises; rejects relative/missing).
     let worktree = compose::validate_worktree(&args.worktree_path).map_err(AppError::from)?;
 
-    // 2. Resolve instruction set & enforce tool match.
+    // 2. Optionally resolve the instruction set & enforce tool match.
+    //    Empty-string IDs from the frontend are treated as "no selection"
+    //    so an over-eager wizard can't trigger a NotFound for a `none`
+    //    sentinel.
     let cfg = ctx.store.load_config();
-    let set = lookup_instruction_set(&cfg, &args.instruction_set_id, args.tool)?;
+    let id_opt = args
+        .instruction_set_id
+        .as_ref()
+        .filter(|id| !id.as_str().is_empty());
+    let set_opt = match id_opt {
+        Some(id) => Some(lookup_instruction_set(&cfg, id, args.tool)?),
+        None => None,
+    };
 
     // 3. Read instruction file contents (re-checking the size cap because
     //    `discover_instructions` *skips* oversized files but a user could
     //    have plumbed an ID through that bypassed discovery).
-    let contents = read_instruction_file(&set.file_path)?;
+    let contents_opt = match &set_opt {
+        Some(set) => Some(read_instruction_file(&set.file_path)?),
+        None => None,
+    };
 
     // 4. Derive a non-colliding label from the worktree basename.
     let existing_sessions = ctx.store.load_sessions();
@@ -123,9 +136,9 @@ pub fn session_create_impl(
         tool: args.tool,
         worktree_path: &worktree,
         worktree_label: &label,
-        instruction_set: &set,
+        instruction_set: set_opt.as_ref(),
         prelaunch_commands: prelaunch_for(&cfg, &worktree),
-        instruction_set_contents: &contents,
+        instruction_set_contents: contents_opt.as_deref(),
     })
     .map_err(AppError::from)?;
 
@@ -141,7 +154,7 @@ pub fn session_create_impl(
         worktree_path: worktree.clone(),
         worktree_name: basename,
         label: label.clone(),
-        instruction_set_id: args.instruction_set_id.clone(),
+        instruction_set_id: set_opt.as_ref().map(|s| s.id.clone()),
         composed_command: composed.composed_command,
         status: SessionStatus::Starting,
         pid: None,

@@ -49,7 +49,7 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 | C-01   | Pressing the "+" button MUST present a choice of tool: Claude or Copilot. |
 | C-02   | After tool selection, the app MUST prompt the user to select a worktree directory. The picker SHOULD offer a list of worktrees detected from configured root repositories (see §5.5) in addition to a manual OS file picker. |
 | C-03   | After worktree selection, the app MUST compose a single shell invocation that runs configured pre-launch commands followed by the CLI launch command, all within the worktree directory, and open a new terminal in the main area executing that invocation. |
-| C-04   | The instruction set used MUST be configurable per-tool (see §5.4). |
+| C-04   | The instruction set used MAY be configurable per-tool (see §5.4); when none is configured, the CLI relies on its built-in `cwd`-based discovery (see I-04). |
 | C-05   | Multiple sessions for the same tool and worktree MUST be allowed. The new session's tab label MUST append a numeric suffix to disambiguate (e.g., "my-feature 2", "my-feature 3"). |
 
 ### 5.3 Main Terminal Area
@@ -67,10 +67,10 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 
 | ID     | Requirement |
 |--------|-------------|
-| I-01   | The app MUST allow users to define instruction sets (plain text files) stored in a configurable directory on disk. |
-| I-02   | Each tool (Claude / Copilot) MUST have a default instruction set. |
-| I-03   | Instruction sets SHOULD be selectable at session-creation time (with the default pre-selected). |
-| I-04   | Instructions are passed to the CLI at launch using tool-appropriate mechanisms: for Claude, `--system-prompt <file>` passes a composed file containing the worktree context block and the user's instruction set (Claude auto-loads `CLAUDE.md` from the worktree `cwd` separately); for Copilot, `--instructions` is deliberately omitted so that `.github/copilot-instructions.md` is auto-discovered from the worktree `cwd`, and the worktree context is injected via `--interactive "<context string>"` as the opening prompt. |
+| I-01   | The app MAY allow users to define instruction sets (plain text files) stored in a configurable directory on disk. Instruction sets are an opt-in overlay; sessions are fully usable without one. |
+| I-02   | Each tool (Claude / Copilot) MAY have a default instruction set. When no default is configured, sessions launch without one and the CLI's `cwd`-based auto-discovery (see I-04) is the sole source of repo guidance. |
+| I-03   | Instruction sets MAY be attached at session-creation time via Settings; the per-session new-session wizard does not prompt for one. |
+| I-04   | When an instruction set is attached, instructions are passed to the CLI at launch using tool-appropriate mechanisms: for Claude, `--system-prompt <file>` passes a composed file containing the worktree context block and the user's instruction set; for Copilot the selected set is currently ignored at the CLI surface (the field is persisted only). When no instruction set is attached, Claude is launched as bare `claude` with no `--system-prompt`. In both with-set and without-set cases, repo-level instructions are still auto-discovered from the worktree `cwd`: Claude reads `CLAUDE.md`, and Copilot reads `.github/copilot-instructions.md` (which is why `--instructions` is deliberately omitted so auto-discovery is preserved). For Copilot the worktree context is injected via `--interactive "<context string>"` as the opening prompt regardless of whether an instruction set is attached. |
 
 ### 5.5 Worktree Discovery
 
