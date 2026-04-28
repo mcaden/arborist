@@ -9,7 +9,7 @@ This repo currently contains **only design documents** — no source code, build
 
 Read both before proposing implementation work. When the codebase is scaffolded, update this file with real build/test/lint commands.
 
-IMPORTANT!!! This repo is not stored in a remote repository. Do not push. Only commit locally.
+This repo has a remote at `origin` -> `https://github.com/mcaden/arborist.git`. Agents may commit, push feature branches, and open pull requests. Do not push directly to `main` and do not force-push shared branches; land changes through PRs.
 
 ## What Arborist is
 
