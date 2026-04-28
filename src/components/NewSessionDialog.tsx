@@ -60,6 +60,11 @@ export function NewSessionDialog(): JSX.Element | null {
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
+  const stepBodyRef = useRef<HTMLDivElement | null>(null);
+  // Track the previous step so the focus-management effect only fires on
+  // an actual transition, not on every step-body re-render (which would
+  // steal focus away from the user as they typed).
+  const previousStepRef = useRef<Step | null>(null);
 
   const [step, setStep] = useState<Step>(1);
   const [tool, setTool] = useState<Tool | null>(null);
@@ -193,6 +198,27 @@ export function NewSessionDialog(): JSX.Element | null {
   // surface the global list as the preview.
   const previewPrelaunch = prelaunchCommands;
 
+  // Focus the first interactive element of the new step whenever the
+  // user advances/goes back. Skip the very first render after open
+  // (Step 1 focus is handled by the showModal effect, which targets
+  // `firstFocusRef` so the test seam is preserved). Roadmap §8.1.
+  useEffect(() => {
+    if (!isOpen) {
+      previousStepRef.current = null;
+      return;
+    }
+    const previousStep = previousStepRef.current;
+    previousStepRef.current = step;
+    if (previousStep === null) return; // initial open — handled elsewhere
+    if (previousStep === step) return;
+    const body = stepBodyRef.current;
+    if (!body) return;
+    const candidate = body.querySelector<HTMLElement>(
+      'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    candidate?.focus();
+  }, [step, isOpen]);
+
   const next = (): void => {
     if (step === 1 && tool) setStep(2);
     else if (step === 2 && worktree) setStep(3);
@@ -293,249 +319,251 @@ export function NewSessionDialog(): JSX.Element | null {
         New session — Step {step} of 3
       </h2>
 
-      {step === 1 && (
-        <fieldset className="mb-4">
-          <legend className="mb-2 text-sm font-medium">Choose a tool</legend>
-          <label className="mb-1 flex items-center gap-2 text-sm">
-            <input
-              ref={firstFocusRef}
-              type="radio"
-              name="tool"
-              value="claude"
-              checked={tool === 'claude'}
-              onChange={() => setTool('claude')}
-            />
-            Claude
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="tool"
-              value="copilot"
-              checked={tool === 'copilot'}
-              onChange={() => setTool('copilot')}
-            />
-            Copilot
-          </label>
-        </fieldset>
-      )}
-
-      {step === 2 && (
-        <div className="mb-4">
-          <p className="mb-2 text-sm font-medium">Choose a worktree</p>
-
-          <div role="tablist" aria-label="Worktree source" className="mb-3 flex gap-1">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={worktreeMode === 'existing'}
-              onClick={() => setWorktreeMode('existing')}
-              className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
-                worktreeMode === 'existing'
-                  ? 'border-sky-600 text-sky-700 dark:text-sky-300'
-                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
-            >
-              Existing
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={worktreeMode === 'new'}
-              onClick={() => setWorktreeMode('new')}
-              className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
-                worktreeMode === 'new'
-                  ? 'border-sky-600 text-sky-700 dark:text-sky-300'
-                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
-            >
-              New
-            </button>
-          </div>
-
-          {worktreeMode === 'existing' ? (
-            <>
-              {worktreesLoading ? (
-                <p className="text-sm text-slate-500">Loading...</p>
-              ) : worktrees.length === 0 ? (
-                <p className="mb-2 text-sm text-slate-500">
-                  No worktrees found in <span className="font-mono">.worktrees/</span> — create one
-                  in the New tab, or use Browse for a path elsewhere.
-                </p>
-              ) : (
-                <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-                  {worktrees.map((w) => (
-                    <li key={w.path}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setWorktree({
-                            path: w.path,
-                            ...(w.branch !== undefined ? { branch: w.branch } : {}),
-                            isMain: w.isMain,
-                          })
-                        }
-                        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
-                          worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
-                        }`}
-                      >
-                        <span className="truncate font-mono">{w.path}</span>
-                        <span className="flex shrink-0 items-center gap-1">
-                          {w.branch && (
-                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
-                              {w.branch}
-                            </span>
-                          )}
-                          {w.isMain && (
-                            <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
-                              main
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  void onPickDirectory();
-                }}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
-              >
-                Browse...
-              </button>
-              {worktree && (
-                <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
-              )}
-            </>
-          ) : (
-            <div>
-              <label htmlFor="new-worktree-name" className="block text-sm font-medium">
-                Branch / worktree name
-              </label>
+      <div ref={stepBodyRef}>
+        {step === 1 && (
+          <fieldset className="mb-4">
+            <legend className="mb-2 text-sm font-medium">Choose a tool</legend>
+            <label className="mb-1 flex items-center gap-2 text-sm">
               <input
-                id="new-worktree-name"
-                type="text"
-                value={newName}
-                onChange={(e) => {
-                  setNewName(e.target.value);
-                  setCreateError(null);
-                }}
-                aria-invalid={newNameError !== null}
-                aria-describedby={
-                  newNameError !== null
-                    ? 'new-worktree-name-error'
-                    : createError !== null
-                      ? 'new-worktree-create-error'
-                      : 'new-worktree-name-help'
-                }
-                placeholder="my-feature"
-                className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
+                ref={firstFocusRef}
+                type="radio"
+                name="tool"
+                value="claude"
+                checked={tool === 'claude'}
+                onChange={() => setTool('claude')}
               />
-              {newNameError !== null ? (
-                <p
-                  id="new-worktree-name-error"
-                  role="alert"
-                  className="mt-1 text-xs text-red-600 dark:text-red-400"
-                >
-                  {newNameError}
-                </p>
-              ) : (
-                <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
-                  Will run{' '}
-                  <span className="font-mono">
-                    git worktree add .worktrees/{newName || 'NAME'} -b {newName || 'NAME'}
-                  </span>
-                </p>
-              )}
-              {createError !== null && (
-                <p
-                  id="new-worktree-create-error"
-                  role="alert"
-                  className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
-                >
-                  {createError}
-                </p>
-              )}
+              Claude
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="tool"
+                value="copilot"
+                checked={tool === 'copilot'}
+                onChange={() => setTool('copilot')}
+              />
+              Copilot
+            </label>
+          </fieldset>
+        )}
+
+        {step === 2 && (
+          <div className="mb-4">
+            <p className="mb-2 text-sm font-medium">Choose a worktree</p>
+
+            <div role="tablist" aria-label="Worktree source" className="mb-3 flex gap-1">
               <button
                 type="button"
-                onClick={() => void onCreateWorktree()}
-                disabled={newName.length === 0 || newNameError !== null || creating}
-                className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+                role="tab"
+                aria-selected={worktreeMode === 'existing'}
+                onClick={() => setWorktreeMode('existing')}
+                className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
+                  worktreeMode === 'existing'
+                    ? 'border-sky-600 text-sky-700 dark:text-sky-300'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+                }`}
               >
-                {creating ? 'Creating…' : 'Create worktree'}
+                Existing
               </button>
-              {worktree && (
-                <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
-              )}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={worktreeMode === 'new'}
+                onClick={() => setWorktreeMode('new')}
+                className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
+                  worktreeMode === 'new'
+                    ? 'border-sky-600 text-sky-700 dark:text-sky-300'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+                }`}
+              >
+                New
+              </button>
             </div>
-          )}
-        </div>
-      )}
 
-      {step === 3 && (
-        <div className="mb-4">
-          <p className="mb-2 text-sm font-medium">Choose an instruction set</p>
-          <ul className="mb-3 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-            <li>
-              <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700">
+            {worktreeMode === 'existing' ? (
+              <>
+                {worktreesLoading ? (
+                  <p className="text-sm text-slate-500">Loading...</p>
+                ) : worktrees.length === 0 ? (
+                  <p className="mb-2 text-sm text-slate-500">
+                    No worktrees found in <span className="font-mono">.worktrees/</span> — create
+                    one in the New tab, or use Browse for a path elsewhere.
+                  </p>
+                ) : (
+                  <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+                    {worktrees.map((w) => (
+                      <li key={w.path}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setWorktree({
+                              path: w.path,
+                              ...(w.branch !== undefined ? { branch: w.branch } : {}),
+                              isMain: w.isMain,
+                            })
+                          }
+                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
+                            worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
+                          }`}
+                        >
+                          <span className="truncate font-mono">{w.path}</span>
+                          <span className="flex shrink-0 items-center gap-1">
+                            {w.branch && (
+                              <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
+                                {w.branch}
+                              </span>
+                            )}
+                            {w.isMain && (
+                              <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
+                                main
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onPickDirectory();
+                  }}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
+                >
+                  Browse...
+                </button>
+                {worktree && (
+                  <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
+                )}
+              </>
+            ) : (
+              <div>
+                <label htmlFor="new-worktree-name" className="block text-sm font-medium">
+                  Branch / worktree name
+                </label>
                 <input
-                  type="radio"
-                  name="instruction-set"
-                  value=""
-                  checked={instructionSetId === null}
-                  onChange={() => setInstructionSetId(null)}
+                  id="new-worktree-name"
+                  type="text"
+                  value={newName}
+                  onChange={(e) => {
+                    setNewName(e.target.value);
+                    setCreateError(null);
+                  }}
+                  aria-invalid={newNameError !== null}
+                  aria-describedby={
+                    newNameError !== null
+                      ? 'new-worktree-name-error'
+                      : createError !== null
+                        ? 'new-worktree-create-error'
+                        : 'new-worktree-name-help'
+                  }
+                  placeholder="my-feature"
+                  className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
                 />
-                <span>(none)</span>
-              </label>
-            </li>
-            {filteredInstructions.map((s) => (
-              <li key={s.id}>
+                {newNameError !== null ? (
+                  <p
+                    id="new-worktree-name-error"
+                    role="alert"
+                    className="mt-1 text-xs text-red-600 dark:text-red-400"
+                  >
+                    {newNameError}
+                  </p>
+                ) : (
+                  <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
+                    Will run{' '}
+                    <span className="font-mono">
+                      git worktree add .worktrees/{newName || 'NAME'} -b {newName || 'NAME'}
+                    </span>
+                  </p>
+                )}
+                {createError !== null && (
+                  <p
+                    id="new-worktree-create-error"
+                    role="alert"
+                    className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
+                  >
+                    {createError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void onCreateWorktree()}
+                  disabled={newName.length === 0 || newNameError !== null || creating}
+                  className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+                >
+                  {creating ? 'Creating…' : 'Create worktree'}
+                </button>
+                {worktree && (
+                  <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="mb-4">
+            <p className="mb-2 text-sm font-medium">Choose an instruction set</p>
+            <ul className="mb-3 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+              <li>
                 <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700">
                   <input
                     type="radio"
                     name="instruction-set"
-                    value={s.id}
-                    checked={instructionSetId === s.id}
-                    onChange={() => setInstructionSetId(s.id)}
+                    value=""
+                    checked={instructionSetId === null}
+                    onChange={() => setInstructionSetId(null)}
                   />
-                  <span>
-                    {s.name}
-                    {s.isDefault && (
-                      <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
-                        default
-                      </span>
-                    )}
-                  </span>
+                  <span>(none)</span>
                 </label>
               </li>
-            ))}
-          </ul>
+              {filteredInstructions.map((s) => (
+                <li key={s.id}>
+                  <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700">
+                    <input
+                      type="radio"
+                      name="instruction-set"
+                      value={s.id}
+                      checked={instructionSetId === s.id}
+                      onChange={() => setInstructionSetId(s.id)}
+                    />
+                    <span>
+                      {s.name}
+                      {s.isDefault && (
+                        <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
+                          default
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
 
-          <details className="rounded border border-slate-200 px-2 py-1 text-xs dark:border-slate-700">
-            <summary className="cursor-pointer">
-              Pre-launch commands ({previewPrelaunch.length})
-            </summary>
-            {previewPrelaunch.length === 0 ? (
-              <p className="px-1 py-1 text-slate-500">(none)</p>
-            ) : (
-              <ol className="list-decimal space-y-0.5 px-5 py-1 font-mono">
-                {previewPrelaunch.map((cmd, idx) => (
-                  <li key={`${idx}-${cmd}`}>{cmd}</li>
-                ))}
-              </ol>
+            <details className="rounded border border-slate-200 px-2 py-1 text-xs dark:border-slate-700">
+              <summary className="cursor-pointer">
+                Pre-launch commands ({previewPrelaunch.length})
+              </summary>
+              {previewPrelaunch.length === 0 ? (
+                <p className="px-1 py-1 text-slate-500">(none)</p>
+              ) : (
+                <ol className="list-decimal space-y-0.5 px-5 py-1 font-mono">
+                  {previewPrelaunch.map((cmd, idx) => (
+                    <li key={`${idx}-${cmd}`}>{cmd}</li>
+                  ))}
+                </ol>
+              )}
+            </details>
+
+            {worktree && (
+              <p className="mt-2 truncate text-xs text-slate-500">
+                Label will be: <span className="font-mono">{deriveLabel(worktree.path)}</span>
+              </p>
             )}
-          </details>
-
-          {worktree && (
-            <p className="mt-2 truncate text-xs text-slate-500">
-              Label will be: <span className="font-mono">{deriveLabel(worktree.path)}</span>
-            </p>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
       {submitError && (
         <p className="mb-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100">

@@ -351,4 +351,36 @@ describe('NewSessionDialog', () => {
     // And state was reset to Step 1.
     expect(screen.getByText(/step 1 of 3/i)).toBeInTheDocument();
   });
+
+  it('moves focus to the first interactive control of the new step on advance/back (#8.1)', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([
+      makeWt(`${REPO_ROOT}/.worktrees/feature`, 'feature'),
+    ]);
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 3/i);
+    // The first focusable in step 2's body is the "Existing" tab button.
+    const existingTab = screen.getByRole('tab', { name: /^existing$/i });
+    expect(existingTab).toHaveFocus();
+  });
+
+  it('typing in the Step 2 New tab does not steal focus back to the tab strip (#8.1 regression)', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 3/i);
+    // Switch to the New sub-mode and focus the name input.
+    fireEvent.click(screen.getByRole('tab', { name: /^new$/i }));
+    const nameInput = await screen.findByLabelText(/branch \/ worktree name/i);
+    nameInput.focus();
+    expect(nameInput).toHaveFocus();
+    // Typing must not cause the step-transition focus effect to refire
+    // and pull focus back to the first focusable in the step body.
+    fireEvent.change(nameInput, { target: { value: 'feature-x' } });
+    expect(nameInput).toHaveFocus();
+  });
 });

@@ -135,7 +135,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
               aria-label="Close settings"
               className="rounded px-2 py-0.5 text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
             >
-              ✕
+              <span aria-hidden="true">✕</span>
             </button>
           </div>
 
