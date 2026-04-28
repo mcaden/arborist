@@ -56,7 +56,7 @@ fn null_sink() -> PtySink {
     let output = Arc::new(|_id: &SessionId, _data: String| {});
     let status =
         Arc::new(|_id: &SessionId, _st: SessionStatus, _pid: Option<u32>, _msg: Option<String>| {});
-    PtySink::new(output, status)
+    PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
 fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {

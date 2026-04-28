@@ -386,6 +386,22 @@ pub struct SessionOutputEvent {
     pub data: String,
 }
 
+/// Payload of the `session://activity` event (DESIGN §6).
+///
+/// `event` is a tagged enum (see [`crate::activity::ActivityEvent`]):
+/// `{ kind: "title", value: "..." }`, `{ kind: "attention" }`,
+/// `{ kind: "working" }`, `{ kind: "idle" }`, etc.
+///
+/// Mirrored on the frontend by `SessionActivityEvent` in
+/// `src/types/arborist.ts`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionActivityEvent {
+    pub session_id: SessionId,
+    #[serde(flatten)]
+    pub event: crate::activity::ActivityEvent,
+}
+
 /// Payload of the `session://status` event (DESIGN §6).
 ///
 /// `message` is an optional human-readable note that accompanies the

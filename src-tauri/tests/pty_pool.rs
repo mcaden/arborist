@@ -92,6 +92,7 @@ fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
         Arc::new(move |_id, status, pid, _msg| {
             stats_cb.lock().unwrap().push((status, pid));
         }),
+        Arc::new(|_id, _evt| {}),
     );
     (sink, outs, stats)
 }
@@ -512,6 +513,7 @@ fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
             outs_cb.lock().unwrap().push(chunk);
         }),
         Arc::new(|_id, _status, _pid, _msg| {}),
+        Arc::new(|_id, _evt| {}),
     );
 
     let rt = rt();
@@ -580,6 +582,7 @@ fn no_output_delivered_after_kill_returns() {
             count_cb.fetch_add(1, Ordering::Relaxed);
         }),
         Arc::new(|_id, _status, _pid, _msg| {}),
+        Arc::new(|_id, _evt| {}),
     );
 
     let rt = rt();

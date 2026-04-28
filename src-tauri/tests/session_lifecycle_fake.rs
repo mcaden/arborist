@@ -182,7 +182,7 @@ fn capture_sink(events: Arc<CapturedEvents>, store: ConfigStore) -> PtySink {
                 .push((*id, st, pid, msg));
         },
     );
-    PtySink::new(output, status)
+    PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
 // ---------------------------------------------------------------------------

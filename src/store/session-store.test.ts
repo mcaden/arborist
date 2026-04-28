@@ -32,6 +32,7 @@ function resetStore(): void {
     isHydrated: false,
     statusMessages: {},
     hasUnread: {},
+    activity: {},
   });
 }
 
@@ -344,5 +345,96 @@ describe('noteUnread', () => {
 
     await useSessionStore.getState().actions.close('b');
     expect(useSessionStore.getState().hasUnread).toEqual({});
+  });
+});
+
+describe('applyActivity', () => {
+  it('working transitions set state and are idempotent', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+    });
+    const { applyActivity } = useSessionStore.getState().actions;
+
+    applyActivity({ sessionId: 'a', kind: 'working' });
+    expect(useSessionStore.getState().activity['a']).toBe('working');
+
+    const before = useSessionStore.getState().activity;
+    applyActivity({ sessionId: 'a', kind: 'working' });
+    // Same reference — no-op transitions don't churn the store.
+    expect(useSessionStore.getState().activity).toBe(before);
+  });
+
+  it('idle does not overwrite attention', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+      activity: { b: 'attention' },
+    });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'b', kind: 'idle' });
+    expect(useSessionStore.getState().activity['b']).toBe('attention');
+  });
+
+  it('attention is dropped if the session is already focused', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+    });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'attention' });
+    expect(useSessionStore.getState().activity).toEqual({});
+  });
+
+  it('attention is set for an unfocused session', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'b', kind: 'attention' });
+    expect(useSessionStore.getState().activity['b']).toBe('attention');
+  });
+
+  it('focus auto-clears attention', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+      activity: { b: 'attention' },
+    });
+    await useSessionStore.getState().actions.focus('b');
+    expect(useSessionStore.getState().activity).toEqual({});
+  });
+
+  it('focus does not clear working state', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+      activity: { b: 'working' },
+    });
+    await useSessionStore.getState().actions.focus('b');
+    expect(useSessionStore.getState().activity['b']).toBe('working');
+  });
+
+  it('close clears any activity for the closed session', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+      activity: { b: 'working' },
+    });
+    await useSessionStore.getState().actions.close('b');
+    expect(useSessionStore.getState().activity).toEqual({});
+  });
+
+  it('events for unknown sessions are dropped', () => {
+    useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'ghost', kind: 'working' });
+    expect(useSessionStore.getState().activity).toEqual({});
+  });
+
+  it('non-surfaced kinds (title, prompt) are ignored', () => {
+    useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'a', kind: 'title', value: 'claude' });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'promptStart' });
+    expect(useSessionStore.getState().activity).toEqual({});
   });
 });

@@ -21,8 +21,10 @@ vi.mock('@/hooks/use-terminal', () => ({
 }));
 
 const subscribeToStatusMock = vi.fn(() => () => {});
+const subscribeToActivityMock = vi.fn(() => () => {});
 vi.mock('@/lib/session-events', () => ({
   subscribeToStatus: () => subscribeToStatusMock(),
+  subscribeToActivity: () => subscribeToActivityMock(),
 }));
 
 import { App } from './App';

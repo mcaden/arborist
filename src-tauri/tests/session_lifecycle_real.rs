@@ -54,7 +54,7 @@ fn build_sink(captured: Arc<Captured>, store: ConfigStore) -> PtySink {
             st.statuses.lock().unwrap().push(status);
         },
     );
-    PtySink::new(output, status)
+    PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
 fn wait_until<F: FnMut() -> bool>(mut f: F, dur: Duration) -> bool {

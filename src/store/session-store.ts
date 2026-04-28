@@ -32,7 +32,12 @@ import {
   sessionList,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
-import type { SessionId, SessionStatusEvent, SessionView } from '@/types/arborist';
+import type {
+  SessionActivityEvent,
+  SessionId,
+  SessionStatusEvent,
+  SessionView,
+} from '@/types/arborist';
 
 export interface SessionStoreState {
   sessions: SessionView[];
@@ -58,7 +63,17 @@ export interface SessionStoreState {
    * re-render hot path (see DESIGN §5.2).
    */
   hasUnread: Record<SessionId, true>;
+  /**
+   * Per-session activity inferred from the `session://activity` event
+   * stream. `working` while the agent is producing output; `idle` when
+   * quiescent; `attention` when the CLI rang the bell or sent a
+   * notification OSC. Cleared (back to `idle`) on focus when the prior
+   * value was `attention`. Frontend-only — not persisted.
+   */
+  activity: Record<SessionId, SessionActivity>;
 }
+
+export type SessionActivity = 'working' | 'idle' | 'attention';
 
 export interface SessionStoreActions {
   hydrate: () => Promise<void>;
@@ -75,6 +90,12 @@ export interface SessionStoreActions {
    * call from the high-frequency `session://output` handler.
    */
   noteUnread: (id: SessionId) => void;
+  /**
+   * Apply a `session://activity` event from the backend. Idempotent: only
+   * mutates the store on a true state transition. Safe to call from the
+   * high-frequency event handler.
+   */
+  applyActivity: (evt: SessionActivityEvent) => void;
 }
 
 type Store = SessionStoreState & { actions: SessionStoreActions };
@@ -86,6 +107,7 @@ const INITIAL_STATE: SessionStoreState = {
   isHydrated: false,
   statusMessages: {},
   hasUnread: {},
+  activity: {},
 };
 
 /**
@@ -113,7 +135,7 @@ export const useSessionStore = create<Store>((set, get) => {
       const sessions = await sessionList();
       // Clear any orphan status messages — keys may belong to sessions
       // that no longer exist after the backend reload.
-      set({ sessions, isHydrated: true, statusMessages: {}, hasUnread: {} });
+      set({ sessions, isHydrated: true, statusMessages: {}, hasUnread: {}, activity: {} });
     },
 
     create: async (args) => {
@@ -140,7 +162,7 @@ export const useSessionStore = create<Store>((set, get) => {
       // is gone.
       if (get().pendingClose === id) patch.pendingClose = undefined;
       // Drop any orphan status-message keyed under this session id.
-      const { statusMessages, hasUnread } = get();
+      const { statusMessages, hasUnread, activity } = get();
       if (id in statusMessages) {
         const next = { ...statusMessages };
         delete next[id];
@@ -151,17 +173,30 @@ export const useSessionStore = create<Store>((set, get) => {
         delete nextUnread[id];
         patch.hasUnread = nextUnread;
       }
+      if (id in activity) {
+        const nextActivity = { ...activity };
+        delete nextActivity[id];
+        patch.activity = nextActivity;
+      }
       set(patch);
     },
 
     focus: async (id) => {
       // Optimistic: switching tabs must feel instant.
-      const { hasUnread } = get();
+      const { hasUnread, activity } = get();
       const patch: Partial<SessionStoreState> = { activeId: id };
       if (id in hasUnread) {
         const next = { ...hasUnread };
         delete next[id];
         patch.hasUnread = next;
+      }
+      // Auto-clear `attention` on focus — the user is now looking at the
+      // tab, so the cue has served its purpose. Other states (working /
+      // idle) are intrinsic to the session and persist.
+      if (activity[id] === 'attention') {
+        const nextActivity = { ...activity };
+        delete nextActivity[id];
+        patch.activity = nextActivity;
       }
       set(patch);
       try {
@@ -234,6 +269,38 @@ export const useSessionStore = create<Store>((set, get) => {
       if (!sessions.some((s) => s.id === id)) return;
       set({ hasUnread: { ...hasUnread, [id]: true } });
     },
+
+    applyActivity: (evt) => {
+      const { sessions, activity, activeId } = get();
+      // Defensive: drop events for unknown sessions (race with close).
+      if (!sessions.some((s) => s.id === evt.sessionId)) return;
+
+      const current = activity[evt.sessionId];
+      let next: SessionActivity | undefined;
+      switch (evt.kind) {
+        case 'working':
+          next = 'working';
+          break;
+        case 'idle':
+          // Don't downgrade an `attention` cue to `idle` automatically;
+          // attention persists until the user focuses the tab.
+          next = current === 'attention' ? 'attention' : 'idle';
+          break;
+        case 'attention':
+          // If the tab is already focused there's no value in showing the
+          // cue — drop it.
+          if (evt.sessionId === activeId) return;
+          next = 'attention';
+          break;
+        default:
+          // title / promptStart / commandStart / commandEnd: not surfaced
+          // on the sidebar today.
+          return;
+      }
+
+      if (current === next) return;
+      set({ activity: { ...activity, [evt.sessionId]: next } });
+    },
   };
 
   return { ...INITIAL_STATE, actions };
@@ -256,6 +323,10 @@ export const selectHasUnread =
   (id: SessionId | undefined) =>
   (s: Store): boolean =>
     id === undefined ? false : s.hasUnread[id] === true;
+export const selectActivity =
+  (id: SessionId | undefined) =>
+  (s: Store): SessionActivity | undefined =>
+    id === undefined ? undefined : s.activity[id];
 
 export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
@@ -265,6 +336,8 @@ export const useStatusMessage = (id: SessionId | undefined): string | undefined 
   useSessionStore(selectStatusMessage(id));
 export const useHasUnread = (id: SessionId | undefined): boolean =>
   useSessionStore(selectHasUnread(id));
+export const useActivity = (id: SessionId | undefined): SessionActivity | undefined =>
+  useSessionStore(selectActivity(id));
 
 export function useActiveSession(): SessionView | undefined {
   const sessions = useSessions();

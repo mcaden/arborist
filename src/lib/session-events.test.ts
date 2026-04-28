@@ -68,3 +68,25 @@ describe('subscribeToStatus', () => {
     expect((sessionEvents as Record<string, unknown>).subscribeToOutput).toBeUndefined();
   });
 });
+
+describe('subscribeToActivity', () => {
+  it('attaches onSessionActivity and routes payloads to applyActivity', () => {
+    useSessionStore.setState({ sessions: [makeView('a')] });
+
+    sessionEvents.subscribeToActivity();
+
+    expect(bridgeMock.onSessionActivity).toHaveBeenCalledTimes(1);
+    const cb = bridgeMock.onSessionActivity.mock.calls[0]![0]!;
+    cb({ sessionId: 'a', kind: 'working' });
+
+    expect(useSessionStore.getState().activity['a']).toBe('working');
+  });
+
+  it('is idempotent — a second call does not re-attach', () => {
+    sessionEvents.subscribeToActivity();
+    const noop = sessionEvents.subscribeToActivity();
+
+    expect(bridgeMock.onSessionActivity).toHaveBeenCalledTimes(1);
+    expect(() => noop()).not.toThrow();
+  });
+});

@@ -408,6 +408,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 |-------|---------|-------------|
 | `session://output` | `{ sessionId, data: string }` | Stream PTY output to xterm.js |
 | `session://status` | `{ sessionId, status }` | Notify session state changes (including `'error'`) |
+| `session://activity` | `{ sessionId, kind: 'title' \| 'attention' \| 'working' \| 'idle' \| 'promptStart' \| 'commandStart' \| 'commandEnd', value?, exit? }` | Per-session activity inferred from the PTY stream by `src-tauri/src/activity.rs` (OSC parsing + output byte-rate). Drives sidebar tab state indicators (working spinner, attention dot). Best-effort & advisory — UI must degrade gracefully if a CLI emits nothing. |
 
 ### Plugin commands routed via the bridge
 

@@ -10,7 +10,12 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
 import { ToolIcon } from './ToolIcon';
-import { useHasUnread, useSessionActions, useSessionById } from '@/store/session-store';
+import {
+  useActivity,
+  useHasUnread,
+  useSessionActions,
+  useSessionById,
+} from '@/store/session-store';
 import type { SessionId } from '@/types/arborist';
 
 interface SidebarTabProps {
@@ -28,6 +33,7 @@ export function SidebarTab({
 }: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
   const hasUnread = useHasUnread(id);
+  const activity = useActivity(id);
   const actions = useSessionActions();
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -74,7 +80,23 @@ export function SidebarTab({
           }
         />
         <span className="min-w-0 flex-1 truncate">{session.label}</span>
-        {hasUnread && !isActive && session.status !== 'error' && (
+        {activity === 'attention' && session.status !== 'error' && (
+          <span
+            role="img"
+            aria-label="Attention required"
+            data-testid="status-attention"
+            className="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+          />
+        )}
+        {activity === 'working' && session.status === 'running' && (
+          <span
+            role="img"
+            aria-label="Working"
+            data-testid="status-working"
+            className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500"
+          />
+        )}
+        {hasUnread && !isActive && session.status !== 'error' && activity !== 'attention' && (
           <span
             role="img"
             aria-label="Unread output"

@@ -216,7 +216,7 @@ pub fn build_production_sink(
         }
     });
 
-    let app_for_status = app;
+    let app_for_status = app.clone();
     let store_for_status = store;
     let status = Arc::new(
         move |session_id: &SessionId,
@@ -240,7 +240,20 @@ pub fn build_production_sink(
         },
     );
 
-    crate::pty_pool::PtySink::new(output, status)
+    let app_for_activity = app;
+    let activity = Arc::new(
+        move |session_id: &SessionId, event: crate::activity::ActivityEvent| {
+            let payload = crate::types::SessionActivityEvent {
+                session_id: *session_id,
+                event,
+            };
+            if let Err(e) = app_for_activity.emit("session://activity", payload) {
+                tracing::debug!(session_id = %session_id, error = %e, "emit session://activity failed");
+            }
+        },
+    );
+
+    crate::pty_pool::PtySink::new(output, status, activity)
 }
 
 #[cfg(test)]

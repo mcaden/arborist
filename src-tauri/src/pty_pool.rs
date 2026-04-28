@@ -36,6 +36,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
+use crate::activity::{ActivityEvent, ActivityScanner, TICK_INTERVAL};
 use crate::compose::{self, platform_shell};
 use crate::types::{Error, Session, SessionId, SessionStatus};
 
@@ -301,6 +302,10 @@ pub type OutputCb = Arc<dyn Fn(&SessionId, String) + Send + Sync>;
 /// exit.
 pub type StatusCb =
     Arc<dyn Fn(&SessionId, SessionStatus, Option<u32>, Option<String>) + Send + Sync>;
+/// Activity callback type alias. Fired by the per-session activity scanner
+/// (see [`crate::activity`]). Carries semantic events derived from the raw
+/// PTY stream — title changes, attention cues, working/idle transitions.
+pub type ActivityCb = Arc<dyn Fn(&SessionId, ActivityEvent) + Send + Sync>;
 
 /// The pool talks to the rest of the app exclusively through this struct.
 ///
@@ -312,12 +317,17 @@ pub type StatusCb =
 pub struct PtySink {
     pub output: OutputCb,
     pub status: StatusCb,
+    pub activity: ActivityCb,
 }
 
 impl PtySink {
     #[must_use]
-    pub fn new(output: OutputCb, status: StatusCb) -> Self {
-        Self { output, status }
+    pub fn new(output: OutputCb, status: StatusCb, activity: ActivityCb) -> Self {
+        Self {
+            output,
+            status,
+            activity,
+        }
     }
 }
 
@@ -562,17 +572,55 @@ impl PtyPool {
 
         let dropped = Arc::new(AtomicUsize::new(0));
         let killed = Arc::new(AtomicBool::new(false));
+        let scanner = Arc::new(Mutex::new(ActivityScanner::new()));
 
         // ------- 4. Read thread (OS thread; portable-pty reads are blocking)
         let read_id = session.id;
         let read_tx = tx.clone();
         let read_dropped = Arc::clone(&dropped);
+        let read_scanner = Arc::clone(&scanner);
+        let read_sink = sink.clone();
         std::thread::Builder::new()
             .name(format!("arborist-pty-read-{pid}"))
             .spawn(move || {
-                pty_read_loop(read_id, reader, read_tx, read_dropped);
+                pty_read_loop(
+                    read_id,
+                    reader,
+                    read_tx,
+                    read_dropped,
+                    read_scanner,
+                    read_sink,
+                );
             })
             .map_err(|e| Error::PtySpawnFailed(format!("spawn read thread failed: {e}")))?;
+
+        // ------- 4b. Activity tick task — emits Idle transitions when the
+        // PTY has been quiescent. Runs on the tokio runtime so it shares
+        // the existing CancellationToken plumbing for clean shutdown.
+        let tick_cancel = cancel.clone();
+        let tick_sink = sink.clone();
+        let tick_id = session.id;
+        let tick_scanner = Arc::clone(&scanner);
+        let _tick_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(TICK_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = tick_cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        // Lock → take → drop, never across await.
+                        let evt = match tick_scanner.lock() {
+                            Ok(mut g) => g.tick(),
+                            Err(_) => break,
+                        };
+                        if let Some(evt) = evt {
+                            (tick_sink.activity)(&tick_id, evt);
+                        }
+                    }
+                }
+            }
+        });
 
         // ------- 5. Wait thread (OS thread)
         let wait_id = session.id;
@@ -758,6 +806,8 @@ fn pty_read_loop(
     mut reader: Box<dyn Read + Send>,
     sender: mpsc::Sender<String>,
     dropped: Arc<AtomicUsize>,
+    scanner: Arc<Mutex<ActivityScanner>>,
+    sink: PtySink,
 ) {
     let mut decoder = Utf8Stream::default();
     let mut buf = [0u8; 4096];
@@ -767,6 +817,17 @@ fn pty_read_loop(
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF
             Ok(n) => {
+                // Activity scan first — the scanner needs raw bytes (OSC
+                // sequences are pure ASCII so they survive UTF-8 decode,
+                // but we want byte-accurate timing). Lock → take → drop.
+                let events = match scanner.lock() {
+                    Ok(mut g) => g.feed_bytes(&buf[..n]),
+                    Err(_) => Vec::new(),
+                };
+                for evt in events {
+                    (sink.activity)(&id, evt);
+                }
+
                 let mut decoded = decoder.feed(&buf[..n]);
                 if decoded.is_empty() {
                     continue;

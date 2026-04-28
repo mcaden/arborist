@@ -28,6 +28,7 @@ import type {
   SessionId,
   SessionOutputEvent,
   SessionStatusEvent,
+  SessionActivityEvent,
   SessionView,
   Tool,
   WorktreeInfo,
@@ -231,4 +232,10 @@ export function onSessionOutput(cb: (payload: SessionOutputEvent) => void): Prom
 
 export function onSessionStatus(cb: (payload: SessionStatusEvent) => void): Promise<UnlistenFn> {
   return listen<SessionStatusEvent>('session://status', (event) => cb(event.payload));
+}
+
+export function onSessionActivity(
+  cb: (payload: SessionActivityEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SessionActivityEvent>('session://activity', (event) => cb(event.payload));
 }

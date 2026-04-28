@@ -73,7 +73,7 @@ impl GitRunner for FakeGitRunner {
 fn null_sink() -> PtySink {
     let output = Arc::new(|_: &SessionId, _: String| {});
     let status = Arc::new(|_: &SessionId, _: SessionStatus, _: Option<u32>, _: Option<String>| {});
-    PtySink::new(output, status)
+    PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
 fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {

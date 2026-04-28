@@ -150,6 +150,23 @@ export interface SessionStatusEvent {
   message?: string;
 }
 
+// MIRROR: src-tauri/src/activity.rs::ActivityEvent
+// Tagged union; matches `#[serde(tag = "kind", rename_all = "camelCase")]`.
+export type ActivityEvent =
+  | { kind: 'title'; value: string }
+  | { kind: 'attention' }
+  | { kind: 'working' }
+  | { kind: 'idle' }
+  | { kind: 'promptStart' }
+  | { kind: 'commandStart' }
+  | { kind: 'commandEnd'; exit: number | null };
+
+// MIRROR: src-tauri/src/types.rs::SessionActivityEvent
+// Payload of the `session://activity` Tauri event (DESIGN §6). The
+// `ActivityEvent` fields are flattened into the payload alongside
+// `sessionId`.
+export type SessionActivityEvent = { sessionId: SessionId } & ActivityEvent;
+
 // MIRROR: src-tauri/src/types.rs::WorktreeInfo
 // Returned by the `worktrees_list` command (DESIGN §6, Phase 10).
 // `branch` is omitted by the backend when the worktree has a detached HEAD,

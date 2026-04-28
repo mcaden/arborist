@@ -5,6 +5,7 @@
 //! Later phases will add the PTY pool, config store, and real command
 //! handlers.
 
+pub mod activity;
 pub mod commands;
 pub mod compose;
 pub mod config_store;
