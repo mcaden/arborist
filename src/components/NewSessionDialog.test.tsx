@@ -1,4 +1,4 @@
-// Tests for the 3-step NewSessionDialog. Bridge mocked wholesale.
+// Tests for the 2-step NewSessionDialog. Bridge mocked wholesale.
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -87,7 +87,7 @@ describe('NewSessionDialog', () => {
     render(<NewSessionDialog />);
     openDialog();
 
-    expect(await screen.findByText(/new session — step 1 of 3/i)).toBeInTheDocument();
+    expect(await screen.findByText(/new session — step 1 of 2/i)).toBeInTheDocument();
     const next = screen.getByRole('button', { name: /^next$/i });
     expect(next).toBeDisabled();
 
@@ -98,7 +98,7 @@ describe('NewSessionDialog', () => {
   it('moves focus to the first interactive control on open', async () => {
     render(<NewSessionDialog />);
     openDialog();
-    await screen.findByText(/step 1 of 3/i);
+    await screen.findByText(/step 1 of 2/i);
     expect(screen.getByRole('radio', { name: /claude/i })).toHaveFocus();
   });
 
@@ -117,7 +117,7 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
-    await screen.findByText(/step 2 of 3/i);
+    await screen.findByText(/step 2 of 2/i);
 
     // Only the linked worktree shows up; the main checkout (REPO_ROOT,
     // outside .worktrees/) is filtered out.
@@ -126,9 +126,9 @@ describe('NewSessionDialog', () => {
     });
     expect(screen.queryByText(new RegExp(`^${REPO_ROOT}$`))).not.toBeInTheDocument();
 
-    // Selecting one enables Next.
+    // Selecting one enables Create.
     fireEvent.click(featureBtn);
-    expect(screen.getByRole('button', { name: /^next$/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
 
     // Browse calls the bridge and replaces the selection.
     fireEvent.click(screen.getByRole('button', { name: /browse/i }));
@@ -149,12 +149,12 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
     expect(await screen.findByText(/no worktrees found in/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^next$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /create session/i })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: /browse/i }));
     await waitFor(() => expect(bridgeMock.pickDirectory).toHaveBeenCalled());
     expect(await screen.findByText(/Selected: \/manual\/pick/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^next$/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
   });
 
   it('Step 2 New tab validates the name and creates a worktree on submit', async () => {
@@ -167,7 +167,7 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    await screen.findByText(/step 2 of 3/i);
+    await screen.findByText(/step 2 of 2/i);
 
     // Switch to the New tab.
     fireEvent.click(screen.getByRole('tab', { name: /^new$/i }));
@@ -183,11 +183,12 @@ describe('NewSessionDialog', () => {
     const createBtn = screen.getByRole('button', { name: /^create worktree$/i });
     expect(createBtn).toBeEnabled();
 
-    // Create — bridge called, selection auto-set, Next enabled.
+    // Create — bridge called, the new worktree is auto-selected and the
+    // wizard switches back to the Existing tab so the user can confirm.
     fireEvent.click(createBtn);
     await waitFor(() => expect(bridgeMock.worktreeCreate).toHaveBeenCalledWith('my-feature'));
-    expect(await screen.findByText(/Selected: .*\.worktrees\/my-feature/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^next$/i })).toBeEnabled();
+    expect(await screen.findByText(/Label will be:/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
   });
 
   it('Step 2 New tab surfaces backend create errors', async () => {
@@ -205,11 +206,18 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^create worktree$/i }));
 
     expect(await screen.findByText(/branch already exists/i)).toBeInTheDocument();
-    // No selection happened, so Next stays disabled.
-    expect(screen.getByRole('button', { name: /^next$/i })).toBeDisabled();
+    // No selection happened, so Create session stays disabled.
+    expect(screen.getByRole('button', { name: /create session/i })).toBeDisabled();
   });
 
-  it('Step 3 filters instruction sets by tool, includes (none), and re-filters when tool changes', async () => {
+  it('Confirm resolves the configured per-tool default and submits it', async () => {
+    useConfigStore.setState({
+      config: defaultConfig({
+        defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
+      }),
+      status: 'ready',
+      error: null,
+    });
     bridgeMock.worktreesList.mockResolvedValue([
       makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
     ]);
@@ -218,48 +226,6 @@ describe('NewSessionDialog', () => {
       makeInstr('claude-strict', 'claude'),
       makeInstr('copilot-default', 'copilot', true),
     ]);
-
-    render(<NewSessionDialog />);
-    openDialog();
-
-    // Step 1 → Claude
-    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    // Step 2 → pick worktree
-    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-
-    // Step 3 visible
-    await screen.findByText(/step 3 of 3/i);
-    expect(screen.getByRole('radio', { name: /^\(none\)$/i })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /claude-default/i })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /claude-strict/i })).toBeInTheDocument();
-    expect(screen.queryByRole('radio', { name: /copilot-default/i })).toBeNull();
-
-    // Pre-launch commands preview is visible.
-    expect(screen.getByText(/nvm use 20/)).toBeInTheDocument();
-
-    // Pick claude-default, then back twice to flip the tool.
-    fireEvent.click(screen.getByRole('radio', { name: /claude-default/i }));
-    fireEvent.click(screen.getByRole('button', { name: /back/i }));
-    fireEvent.click(screen.getByRole('button', { name: /back/i }));
-    fireEvent.click(screen.getByRole('radio', { name: /copilot/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-
-    // Now copilot-only should be visible and the previously-selected
-    // claude-default selection should have been cleared.
-    expect(await screen.findByRole('radio', { name: /copilot-default/i })).toBeInTheDocument();
-    expect(screen.queryByRole('radio', { name: /claude-default/i })).toBeNull();
-    expect(screen.getByRole('radio', { name: /^\(none\)$/i })).toBeChecked();
-  });
-
-  it('Confirm calls actions.create with the right payload and closes the dialog', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
-    ]);
-    bridgeMock.instructionsList.mockResolvedValue([makeInstr('claude-default', 'claude', true)]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'new-id',
       tool: 'claude',
@@ -278,8 +244,6 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('radio', { name: /claude-default/i }));
     fireEvent.click(screen.getByRole('button', { name: /create session/i }));
 
     await waitFor(() =>
@@ -292,16 +256,15 @@ describe('NewSessionDialog', () => {
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
 
-  it('Confirm with the (none) instruction set submits the per-tool default id', async () => {
-    useConfigStore.setState({
-      config: defaultConfig({
-        defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
-      }),
-      status: 'ready',
-      error: null,
-    });
+  it('Confirm falls back to the discovered default when no per-tool default is configured', async () => {
+    // Default config has empty defaultInstructionSets — exactly the shape
+    // that used to trip the "instruction set  not found" error.
     bridgeMock.worktreesList.mockResolvedValue([
       makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
+    ]);
+    bridgeMock.instructionsList.mockResolvedValue([
+      makeInstr('claude-strict', 'claude'),
+      makeInstr('claude-default', 'claude', true),
     ]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'x',
@@ -320,12 +283,81 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    // Default selection is (none); just confirm.
     fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
 
     await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
     expect(bridgeMock.sessionCreate.mock.calls[0]?.[0].instructionSetId).toBe('claude-default');
+  });
+
+  it('Confirm falls back to the first available set when no default exists at all', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([
+      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
+    ]);
+    // Only a non-default set exists for the chosen tool.
+    bridgeMock.instructionsList.mockResolvedValue([makeInstr('claude-strict', 'claude')]);
+    bridgeMock.sessionCreate.mockResolvedValue({
+      id: 'x',
+      tool: 'claude',
+      worktreePath: `${REPO_ROOT}/.worktrees/main`,
+      worktreeName: 'main',
+      label: 'main',
+      instructionSetId: 'claude-strict',
+      status: 'running',
+      createdAt: 1,
+      tabIndex: 0,
+    });
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
+
+    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
+    expect(bridgeMock.sessionCreate.mock.calls[0]?.[0].instructionSetId).toBe('claude-strict');
+  });
+
+  it('Confirm shows a friendly error and does not call the backend when no instruction set is available', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([
+      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
+    ]);
+    // No instruction sets discovered for the chosen tool.
+    bridgeMock.instructionsList.mockResolvedValue([makeInstr('copilot-default', 'copilot', true)]);
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
+
+    expect(await screen.findByText(/no instruction set is available/i)).toBeInTheDocument();
+    expect(bridgeMock.sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it('Confirm surfaces backend AppError objects as readable text (not [object Object])', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([
+      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
+    ]);
+    bridgeMock.instructionsList.mockResolvedValue([makeInstr('copilot-default', 'copilot', true)]);
+    // Tauri serialises Rust `AppError` as `{ code, message }` and rejects
+    // the invoke promise with that bare object — not an `Error`. Without
+    // `formatError`, this would render as "[object Object]".
+    bridgeMock.sessionCreate.mockRejectedValue({
+      code: 'PtySpawnFailed',
+      message: 'failed to spawn copilot: program not found',
+    });
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /copilot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
+
+    expect(await screen.findByText(/PtySpawnFailed.*program not found/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\[object Object\]/i)).not.toBeInTheDocument();
   });
 
   it('Esc (native dialog cancel) closes the dialog', async () => {
@@ -349,7 +381,7 @@ describe('NewSessionDialog', () => {
     });
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     // And state was reset to Step 1.
-    expect(screen.getByText(/step 1 of 3/i)).toBeInTheDocument();
+    expect(screen.getByText(/step 1 of 2/i)).toBeInTheDocument();
   });
 
   it('moves focus to the first interactive control of the new step on advance/back (#8.1)', async () => {
@@ -360,7 +392,7 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    await screen.findByText(/step 2 of 3/i);
+    await screen.findByText(/step 2 of 2/i);
     // The first focusable in step 2's body is the "Existing" tab button.
     const existingTab = screen.getByRole('tab', { name: /^existing$/i });
     expect(existingTab).toHaveFocus();
@@ -372,7 +404,7 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    await screen.findByText(/step 2 of 3/i);
+    await screen.findByText(/step 2 of 2/i);
     // Switch to the New sub-mode and focus the name input.
     fireEvent.click(screen.getByRole('tab', { name: /^new$/i }));
     const nameInput = await screen.findByLabelText(/branch \/ worktree name/i);

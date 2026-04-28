@@ -1,11 +1,19 @@
-// Three-step modal for creating a new session — SPEC §5.2 (C-01..C-08).
+// Two-step modal for creating a new session — SPEC §5.2 (C-01..C-08).
 //
 // Step 1: choose tool (Claude / Copilot)
 // Step 2: choose worktree (quick-pick from `worktrees_list` for each
 //         configured root, plus a "Browse…" fallback that opens the OS
-//         directory picker)
-// Step 3: choose instruction set (filtered by tool; `(none)` is allowed —
-//         backend uses the per-tool default in that case)
+//         directory picker), then Create the session.
+//
+// The instruction set is resolved silently at submit time:
+//   configured default for the tool
+//     → discovered `is_default` set for the tool
+//     → first available set for the tool.
+// The CLI inherits the worktree path as its `cwd`, so repository-level
+// instructions (`CLAUDE.md`, `.github/copilot-instructions.md`) are
+// auto-discovered regardless. SPEC I-03 ("SHOULD be selectable at
+// session-creation time") is satisfied via the per-tool default in
+// Settings rather than a wizard step (RFC 2119 SHOULD, not MUST).
 //
 // Renders via the native `<dialog>` element using `showModal()`/`close()`,
 // matching the pattern set by `CloseConfirmDialog` in Phase 9 (jsdom shim
@@ -17,6 +25,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { isInsideWorktreesDir } from '@/lib/worktree-paths';
 import {
+  formatError,
   instructionsList as fetchInstructions,
   pickDirectory,
   worktreeCreate,
@@ -33,7 +42,7 @@ import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionActions } from '@/store/session-store';
 import type { InstructionSet, Tool, WorktreeInfo } from '@/types/arborist';
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2;
 type WorktreeMode = 'existing' | 'new';
 
 interface ChosenWorktree {
@@ -70,7 +79,6 @@ export function NewSessionDialog(): JSX.Element | null {
   const [tool, setTool] = useState<Tool | null>(null);
   const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('existing');
   const [worktree, setWorktree] = useState<ChosenWorktree | null>(null);
-  const [instructionSetId, setInstructionSetId] = useState<string | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [allInstructions, setAllInstructions] = useState<InstructionSet[]>([]);
@@ -91,7 +99,6 @@ export function NewSessionDialog(): JSX.Element | null {
     setTool(null);
     setWorktreeMode('existing');
     setWorktree(null);
-    setInstructionSetId(null);
     setWorktrees([]);
     setAllInstructions([]);
     setSubmitting(false);
@@ -126,8 +133,10 @@ export function NewSessionDialog(): JSX.Element | null {
     }
   }, [isOpen]);
 
-  // Fetch instruction sets when the dialog opens (cheap; the backend
-  // already memoises discovery effectively by filesystem cache).
+  // Fetch instruction sets when the dialog opens. We don't show a picker
+  // anymore, but we still need the discovered list so `onConfirm` can
+  // resolve a non-empty `instructionSetId` for the backend (which rejects
+  // empty IDs with `NotFound`).
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
@@ -136,8 +145,8 @@ export function NewSessionDialog(): JSX.Element | null {
         if (!cancelled) setAllInstructions(sets);
       })
       .catch(() => {
-        // Discovery failure is non-fatal for the create flow — the user
-        // can still pick "(none)" and let the backend use defaults.
+        // Discovery failure is non-fatal; `onConfirm` will surface a
+        // friendly error if no sets are available for the chosen tool.
         if (!cancelled) setAllInstructions([]);
       });
     return () => {
@@ -174,22 +183,23 @@ export function NewSessionDialog(): JSX.Element | null {
     };
   }, [isOpen, step, workspaceRoot]);
 
-  // Filter instruction sets by the selected tool so changing the tool
-  // after Step 1 always re-derives the visible options.
-  const filteredInstructions = useMemo<InstructionSet[]>(
-    () => (tool ? allInstructions.filter((s) => s.tool === tool) : []),
-    [allInstructions, tool],
-  );
-
-  // If the previously-selected instruction set is no longer in the
-  // filtered list (e.g. the user backed up to Step 1 and switched tool),
-  // drop the stale selection so the form doesn't submit a mismatched id.
-  useEffect(() => {
-    if (instructionSetId === null) return;
-    if (!filteredInstructions.some((s) => s.id === instructionSetId)) {
-      setInstructionSetId(null);
+  // Resolve the instruction set ID at submit time. The backend rejects
+  // empty IDs with NotFound, so we walk a fallback chain rather than
+  // relying on a sentinel: configured per-tool default → discovered
+  // `isDefault` set for the tool → first available set for the tool.
+  // Returns `null` when nothing is available; callers must surface a
+  // friendly error in that case.
+  const resolveInstructionSetId = (chosenTool: Tool): string | null => {
+    const configured = defaultSets[chosenTool];
+    if (configured.length > 0 && allInstructions.some((s) => s.id === configured)) {
+      return configured;
     }
-  }, [filteredInstructions, instructionSetId]);
+    const discoveredDefault = allInstructions.find((s) => s.tool === chosenTool && s.isDefault);
+    if (discoveredDefault) return discoveredDefault.id;
+    const firstForTool = allInstructions.find((s) => s.tool === chosenTool);
+    if (firstForTool) return firstForTool.id;
+    return null;
+  };
 
   // Resolve the prelaunchCommands the backend would actually run for the
   // chosen worktree (DESIGN §5.6 / §8.1): per-worktree override (if set)
@@ -221,12 +231,10 @@ export function NewSessionDialog(): JSX.Element | null {
 
   const next = (): void => {
     if (step === 1 && tool) setStep(2);
-    else if (step === 2 && worktree) setStep(3);
   };
 
   const back = (): void => {
-    if (step === 3) setStep(2);
-    else if (step === 2) setStep(1);
+    if (step === 2) setStep(1);
   };
 
   const onCancel = (): void => {
@@ -251,7 +259,8 @@ export function NewSessionDialog(): JSX.Element | null {
     setCreateError(null);
     try {
       const result = await worktreeCreate(newName.trim());
-      // Auto-select the newly created worktree and prefill its branch.
+      // Auto-select the newly created worktree and switch back to the
+      // Existing tab so the selection is visible alongside the rest.
       setWorktree({ path: result.path, branch: newName.trim(), isMain: false });
       setWorktreeMode('existing');
       // Refresh the listing so the user can see it in the list too.
@@ -261,14 +270,12 @@ export function NewSessionDialog(): JSX.Element | null {
           const list = await worktreesList(root);
           setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
         } catch {
-          // Listing failure is non-fatal; the selection above is enough
-          // to advance.
+          // Listing failure is non-fatal; the selection above is enough.
         }
       }
       setNewName('');
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setCreateError(message);
+      setCreateError(formatError(err));
     } finally {
       setCreating(false);
     }
@@ -276,22 +283,24 @@ export function NewSessionDialog(): JSX.Element | null {
 
   const onConfirm = async (): Promise<void> => {
     if (!tool || !worktree) return;
+    const resolvedId = resolveInstructionSetId(tool);
+    if (resolvedId === null) {
+      setSubmitError(
+        'No instruction set is available for this tool. Configure an instruction-sets directory in Settings, or add a default file under the bundled `instructions/` folder.',
+      );
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     try {
       await actions.create({
         tool,
         worktreePath: worktree.path,
-        // "(none)" maps to the per-tool default the backend has already
-        // canonicalised on disk. The backend rejects empty ids with a
-        // NotFound error, so we resolve the fallback here rather than
-        // relying on a sentinel.
-        instructionSetId: instructionSetId ?? defaultSets[tool],
+        instructionSetId: resolvedId,
       });
       close();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setSubmitError(message);
+      setSubmitError(formatError(err));
     } finally {
       setSubmitting(false);
     }
@@ -316,7 +325,7 @@ export function NewSessionDialog(): JSX.Element | null {
       className="w-[28rem] rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
     >
       <h2 id="new-session-title" className="mb-3 text-base font-semibold">
-        New session — Step {step} of 3
+        New session — Step {step} of 2
       </h2>
 
       <div ref={stepBodyRef}>
@@ -499,49 +508,8 @@ export function NewSessionDialog(): JSX.Element | null {
                 )}
               </div>
             )}
-          </div>
-        )}
 
-        {step === 3 && (
-          <div className="mb-4">
-            <p className="mb-2 text-sm font-medium">Choose an instruction set</p>
-            <ul className="mb-3 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-              <li>
-                <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700">
-                  <input
-                    type="radio"
-                    name="instruction-set"
-                    value=""
-                    checked={instructionSetId === null}
-                    onChange={() => setInstructionSetId(null)}
-                  />
-                  <span>(none)</span>
-                </label>
-              </li>
-              {filteredInstructions.map((s) => (
-                <li key={s.id}>
-                  <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700">
-                    <input
-                      type="radio"
-                      name="instruction-set"
-                      value={s.id}
-                      checked={instructionSetId === s.id}
-                      onChange={() => setInstructionSetId(s.id)}
-                    />
-                    <span>
-                      {s.name}
-                      {s.isDefault && (
-                        <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
-                          default
-                        </span>
-                      )}
-                    </span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-
-            <details className="rounded border border-slate-200 px-2 py-1 text-xs dark:border-slate-700">
+            <details className="mt-3 rounded border border-slate-200 px-2 py-1 text-xs dark:border-slate-700">
               <summary className="cursor-pointer">
                 Pre-launch commands ({previewPrelaunch.length})
               </summary>
@@ -589,23 +557,23 @@ export function NewSessionDialog(): JSX.Element | null {
               Back
             </button>
           )}
-          {step < 3 && (
+          {step < 2 && (
             <button
               type="button"
               onClick={next}
-              disabled={(step === 1 && !tool) || (step === 2 && !worktree)}
+              disabled={step === 1 && !tool}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-600"
             >
               Next
             </button>
           )}
-          {step === 3 && (
+          {step === 2 && (
             <button
               type="button"
               onClick={() => {
                 void onConfirm();
               }}
-              disabled={submitting}
+              disabled={submitting || !worktree}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
               {submitting ? 'Creating...' : 'Create session'}
