@@ -73,6 +73,22 @@ export function SidebarTab({
           }
         />
         <span className="min-w-0 flex-1 truncate">{session.label}</span>
+        {session.status === 'starting' && (
+          <span
+            role="img"
+            aria-label="Starting"
+            data-testid="status-starting"
+            className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full border-2 border-sky-500 border-t-transparent"
+          />
+        )}
+        {session.status === 'exited' && (
+          <span
+            role="img"
+            aria-label="Exited"
+            data-testid="status-exited"
+            className="h-2 w-2 shrink-0 rounded-full bg-slate-400 dark:bg-slate-500"
+          />
+        )}
         {session.status === 'error' && (
           <span
             role="img"

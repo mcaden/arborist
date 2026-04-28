@@ -201,6 +201,25 @@ describe('Sidebar', () => {
     expect(within(tab).getByRole('img', { name: /error/i })).toBeInTheDocument();
   });
 
+  it('shows the starting indicator when status is "starting"', () => {
+    const startingStatus: SessionStatus = 'starting';
+    seed([makeView('a', { status: startingStatus })], 'a');
+    render(<Sidebar />);
+
+    const tab = tabByLabel('claude session a');
+    expect(within(tab).getByRole('img', { name: /starting/i })).toBeInTheDocument();
+    expect(within(tab).queryByRole('img', { name: /error/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the exited indicator when status is "exited"', () => {
+    const exitedStatus: SessionStatus = 'exited';
+    seed([makeView('a', { status: exitedStatus })], 'a');
+    render(<Sidebar />);
+
+    const tab = tabByLabel('claude session a');
+    expect(within(tab).getByRole('img', { name: /exited/i })).toBeInTheDocument();
+  });
+
   it('focus moves to the right neighbour after closing the active tab', async () => {
     seed([makeView('a'), makeView('b'), makeView('c')], 'b');
     render(<Sidebar />);
