@@ -10,10 +10,11 @@
 //   subscription to the session store fires `disposeTerminal()` when an id
 //   disappears from `sessions`.
 // * Output bypasses Zustand entirely (see DESIGN §5.2): a single
-//   `onSessionOutput` listener is attached lazily on first hook use and
-//   demuxes by `sessionId` to the relevant `Terminal`. Phase 12 will hoist
-//   this to `App.tsx` boot via an explicit `initTerminalRouter()`; Phase 11
-//   keeps the lazy form.
+//   `onSessionOutput` listener is attached at boot via the explicit
+//   `initTerminalRouter()` (called from `App.tsx`) and demuxes by
+//   `sessionId` to the relevant `Terminal`. The lazy fallback inside
+//   `useTerminal` remains for safety so any code path that creates a
+//   terminal without going through boot still sees output.
 // * `attach` is idempotent: a second call with the same host element is a
 //   no-op; a call with a different host implicitly re-parents.
 // * `ResizeObserver` is debounced ~50 ms, then drives `fitAddon.fit()` →
@@ -80,6 +81,17 @@ function ensureGlobalSubscriptions(): void {
       previousIds = currentIds;
     });
   }
+}
+
+/**
+ * Explicit boot-time entry point that wires the global `session://output`
+ * listener and the session-store subscription that disposes terminals when
+ * their session is removed. Idempotent: a second call does nothing. Called
+ * from `App.tsx` once hydrate completes; the lazy fallback inside
+ * `useTerminal` remains as a safety net for tests / non-boot code paths.
+ */
+export function initTerminalRouter(): void {
+  ensureGlobalSubscriptions();
 }
 
 function createEntry(sessionId: SessionId): RegistryEntry {

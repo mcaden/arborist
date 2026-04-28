@@ -245,12 +245,41 @@ User clicks "Restart"
 ### 5.5 Session Restore on Launch
 
 ```
-App starts
-  → Rust backend reads AppConfig.lastOpenSessions and AppConfig.tabOrder from store
-  → For each session ID (in tabOrder order), re-runs Create Session flow
-    using the stored Session.composedCommand and Session.worktreePath
-  → First session in tabOrder becomes the active session
+Tauri setup (backend)
+  → initialise plugins, build PtyPool with the production spawner,
+    run cleanup_orphans(), register managed state. Window opens.
+  → (No sessions are spawned yet.)
+
+App.tsx mounts (frontend)
+  → configStore.hydrate()           (reads AppConfig from store)
+  → sessionStore.hydrate()          (calls session_list — backend forces
+                                     persisted records into Restoring/
+                                     Stopped, never stale Running)
+  → initTerminalRouter()            (attaches global session://output)
+  → subscribeToStatus()             (attaches global session://status)
+  → frontendReady()                 (one-shot CAS on the backend)
+       └─ backend kicks off restore_all_sessions on a blocking thread:
+           for each persisted Session in tabOrder order, re-runs the
+           Create Session flow using the stored composedCommand and
+           worktreePath verbatim (DESIGN §5.4 — never re-composes).
+           Failures on individual sessions are logged but do not abort
+           the restore; status events update each tab to Running / Error
+           as spawns complete.
+  → first session in tabOrder remains the active session
 ```
+
+This ordering guarantees:
+
+- The window is interactive within the SPEC NF-03 startup budget,
+  regardless of how slow individual sessions are to start (restore is
+  fire-and-forget from the frontend's perspective).
+- `session://output` and `session://status` listeners are attached
+  *before* any spawn happens, so early output and status events cannot
+  be lost.
+- Restore is driven by the Rust backend (`restore_all_sessions`), not by
+  re-invoking `session_create` from the frontend — the frontend never
+  has to reconstruct a `composedCommand`.
+
 
 ### 5.6 CLI Launch Commands
 

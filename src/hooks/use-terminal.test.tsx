@@ -54,6 +54,7 @@ import {
   __resetTerminalRegistryForTests,
   __getTerminalRegistryForTests,
   disposeTerminal,
+  initTerminalRouter,
   useTerminal,
 } from './use-terminal';
 import {
@@ -188,5 +189,12 @@ describe('useTerminal', () => {
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
     expect(sessionResize).toHaveBeenCalledTimes(1);
     expect(sessionResize).toHaveBeenCalledWith({ sessionId: 's1', cols: 80, rows: 24 });
+  });
+
+  it('initTerminalRouter is idempotent: calling twice does not double-subscribe', () => {
+    initTerminalRouter();
+    initTerminalRouter();
+    initTerminalRouter();
+    expect(onSessionOutput).toHaveBeenCalledTimes(1);
   });
 });
