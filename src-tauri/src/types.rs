@@ -228,7 +228,8 @@ pub struct DefaultInstructionSets {
 /// Version history:
 /// * `1` — initial release.
 /// * `2` — added `active_session_id` (Phase 7).
-pub const CONFIG_VERSION_CURRENT: u32 = 2;
+/// * `3` — added `workspace_root` (single-workspace model, Roadmap §1).
+pub const CONFIG_VERSION_CURRENT: u32 = 3;
 
 /// Persisted application configuration. Lives in `config.json` (Phase 4).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -240,6 +241,12 @@ pub struct AppConfig {
     pub config_version: u32,
     pub default_instruction_sets: DefaultInstructionSets,
     pub instruction_sets_dir: PathBuf,
+    /// Active workspace root: the single git repository the app operates
+    /// within. `None` until the user picks one in the first-boot picker
+    /// (Roadmap §1.1). When set, takes precedence over `worktree_roots` for
+    /// session-creation worktree discovery. Added in `configVersion = 3`.
+    #[serde(default)]
+    pub workspace_root: Option<PathBuf>,
     pub worktree_roots: Vec<PathBuf>,
     pub prelaunch_commands: Vec<String>,
     /// Per-worktree overrides. Key = canonicalized worktree path as a string.
@@ -260,6 +267,7 @@ impl Default for AppConfig {
             config_version: CONFIG_VERSION_CURRENT,
             default_instruction_sets: DefaultInstructionSets::default(),
             instruction_sets_dir: PathBuf::new(),
+            workspace_root: None,
             worktree_roots: Vec::new(),
             prelaunch_commands: Vec::new(),
             worktree_prelaunch_commands: BTreeMap::new(),
@@ -292,6 +300,14 @@ pub struct PartialAppConfig {
     pub default_instruction_sets: Option<PartialDefaultInstructionSets>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub instruction_sets_dir: Option<PathBuf>,
+    /// Tri-state: absent → leave alone; `null` → clear; `"<path>"` → set.
+    /// Mirrors the encoding used for `active_session_id`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "double_option"
+    )]
+    pub workspace_root: Option<Option<PathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub worktree_roots: Option<Vec<PathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -636,12 +652,13 @@ mod tests {
             vec!["nvm use".to_owned(), "asdf reshim".to_owned()],
         );
         let value = AppConfig {
-            config_version: 2,
+            config_version: 3,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
             },
             instruction_sets_dir: PathBuf::from("/cfg/instructions"),
+            workspace_root: Some(PathBuf::from("/repo")),
             worktree_roots: vec![PathBuf::from("/repo")],
             prelaunch_commands: vec!["source ~/.zshenv".to_owned()],
             worktree_prelaunch_commands: overrides,
@@ -656,12 +673,13 @@ mod tests {
             )),
         };
         let fixture = json!({
-            "configVersion": 2,
+            "configVersion": 3,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
             },
             "instructionSetsDir": "/cfg/instructions",
+            "workspaceRoot": "/repo",
             "worktreeRoots": ["/repo"],
             "prelaunchCommands": ["source ~/.zshenv"],
             "worktreePrelaunchCommands": {
@@ -682,6 +700,7 @@ mod tests {
                 copilot: None,
             }),
             instruction_sets_dir: None,
+            workspace_root: None,
             worktree_roots: Some(vec![PathBuf::from("/repo")]),
             prelaunch_commands: None,
             worktree_prelaunch_commands: None,
@@ -748,11 +767,29 @@ mod tests {
         // None fields must be elided so deep-merge sees a true patch.
         assert!(!obj.contains_key("configVersion"));
         assert!(!obj.contains_key("instructionSetsDir"));
+        assert!(!obj.contains_key("workspaceRoot"));
         assert!(!obj.contains_key("prelaunchCommands"));
         assert!(!obj.contains_key("worktreePrelaunchCommands"));
         assert!(!obj.contains_key("lastOpenSessions"));
         assert!(!obj.contains_key("tabOrder"));
         assert!(!obj.contains_key("activeSessionId"));
+    }
+
+    #[test]
+    fn partial_app_config_workspace_root_tri_state() {
+        let absent: PartialAppConfig = serde_json::from_value(json!({})).expect("absent");
+        assert_eq!(absent.workspace_root, None);
+
+        let cleared: PartialAppConfig =
+            serde_json::from_value(json!({ "workspaceRoot": null })).expect("clear");
+        assert_eq!(cleared.workspace_root, Some(None));
+
+        let set: PartialAppConfig =
+            serde_json::from_value(json!({ "workspaceRoot": "/repo" })).expect("set");
+        assert_eq!(set.workspace_root, Some(Some(PathBuf::from("/repo"))));
+
+        let serialised = serde_json::to_value(&cleared).expect("ser");
+        assert_eq!(serialised, json!({ "workspaceRoot": null }));
     }
 
     #[test]

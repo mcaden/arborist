@@ -142,9 +142,18 @@ impl ConfigStore {
         };
 
         let mut cfg = parsed;
-        // v1 → v2: `active_session_id` did not exist; serde already
-        // defaults it to `None`. Bump the on-disk version stamp so the
-        // next save records v2 explicitly.
+        // v1/v2 → v3: `workspace_root` did not exist. If the user already
+        // had exactly one `worktree_roots` entry, treat that as the
+        // workspace so they don't get pushed back through the first-boot
+        // picker for no reason. Multi-root and zero-root configs leave
+        // `workspace_root` as `None` and the picker will be shown.
+        if cfg.config_version < 3 && cfg.workspace_root.is_none() && cfg.worktree_roots.len() == 1 {
+            cfg.workspace_root = Some(cfg.worktree_roots[0].clone());
+        }
+        // Bump the on-disk version stamp so the next save records the
+        // current schema explicitly. (`active_session_id` was the v1→v2
+        // addition; `workspace_root` is the v2→v3 addition. Both default
+        // via serde, so missing fields hydrate cleanly already.)
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
         }
@@ -332,6 +341,29 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
         })
         .collect();
 
+    // workspace_root: canonicalize, drop on failure (treated like a stale
+    // path — the picker will be re-shown on next launch).
+    if let Some(ws) = cfg.workspace_root.take() {
+        match dunce::canonicalize(&ws) {
+            Ok(c) if c.is_dir() => cfg.workspace_root = Some(c),
+            Ok(c) => {
+                warn!(
+                    code = "InvalidPath",
+                    path = %c.display(),
+                    "workspaceRoot is not a directory; clearing",
+                );
+            }
+            Err(e) => {
+                warn!(
+                    code = "InvalidPath",
+                    path = %ws.display(),
+                    error = %e,
+                    "workspaceRoot could not be canonicalized; clearing",
+                );
+            }
+        }
+    }
+
     let raw_overrides = std::mem::take(&mut cfg.worktree_prelaunch_commands);
     let mut filtered = BTreeMap::new();
     for (key, cmds) in raw_overrides {
@@ -384,6 +416,31 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
             )));
         }
         cfg.instruction_sets_dir = canon;
+    }
+    // workspace_root is tri-state like active_session_id: absent → leave
+    // alone; Some(None) → clear; Some(Some(path)) → set after validating it
+    // is an absolute, existing directory.
+    if let Some(ws) = patch.workspace_root {
+        match ws {
+            None => cfg.workspace_root = None,
+            Some(p) => {
+                if p.is_relative() {
+                    return Err(Error::InvalidPath(format!(
+                        "workspaceRoot must be absolute, got {}",
+                        p.display()
+                    )));
+                }
+                let canon = dunce::canonicalize(&p)
+                    .map_err(|e| Error::InvalidPath(format!("{}: {e}", p.display())))?;
+                if !canon.is_dir() {
+                    return Err(Error::InvalidPath(format!(
+                        "workspaceRoot is not a directory: {}",
+                        canon.display()
+                    )));
+                }
+                cfg.workspace_root = Some(canon);
+            }
+        }
     }
     if let Some(roots) = patch.worktree_roots {
         let mut out = Vec::with_capacity(roots.len());
@@ -1166,5 +1223,129 @@ mod tests {
         let cfg = store.load_config();
         assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
         assert_eq!(cfg.active_session_id, None);
+        assert_eq!(cfg.workspace_root, None);
+    }
+
+    // ----- workspace_root (v3, Roadmap §1) ----------------------------
+
+    #[test]
+    fn save_config_sets_and_clears_workspace_root() {
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let ws_dir = td.path().join("workspace");
+        fs::create_dir_all(&ws_dir).expect("mk ws");
+        let store = ConfigStore::open(&store_dir).expect("open");
+
+        // Set.
+        let after_set = store
+            .save_config(PartialAppConfig {
+                workspace_root: Some(Some(ws_dir.clone())),
+                ..Default::default()
+            })
+            .expect("set");
+        assert_eq!(after_set.workspace_root, Some(canon(&ws_dir)));
+
+        // Absent → preserved.
+        let after_noop = store
+            .save_config(PartialAppConfig {
+                prelaunch_commands: Some(vec!["echo hi".to_owned()]),
+                ..Default::default()
+            })
+            .expect("noop");
+        assert_eq!(after_noop.workspace_root, Some(canon(&ws_dir)));
+
+        // Clear via Some(None).
+        let after_clear = store
+            .save_config(PartialAppConfig {
+                workspace_root: Some(None),
+                ..Default::default()
+            })
+            .expect("clear");
+        assert_eq!(after_clear.workspace_root, None);
+    }
+
+    #[test]
+    fn save_config_rejects_relative_workspace_root() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let err = store
+            .save_config(PartialAppConfig {
+                workspace_root: Some(Some(PathBuf::from("relative/path"))),
+                ..Default::default()
+            })
+            .expect_err("rejected");
+        assert!(matches!(err, Error::InvalidPath(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn save_config_rejects_workspace_root_that_is_not_a_dir() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let file = td.path().join("not-a-dir");
+        fs::write(&file, b"x").expect("seed");
+        let err = store
+            .save_config(PartialAppConfig {
+                workspace_root: Some(Some(file)),
+                ..Default::default()
+            })
+            .expect_err("rejected");
+        assert!(matches!(err, Error::InvalidPath(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn load_config_v2_with_single_worktree_root_promotes_to_workspace() {
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let repo = td.path().join("repo");
+        fs::create_dir_all(&repo).expect("mk repo");
+        let store = ConfigStore::open(&store_dir).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": 2,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [repo.to_string_lossy()],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null
+        });
+        fs::write(
+            store.config_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        assert_eq!(cfg.workspace_root, Some(canon(&repo)));
+    }
+
+    #[test]
+    fn load_config_v2_with_multiple_roots_does_not_promote_workspace() {
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let r1 = td.path().join("r1");
+        let r2 = td.path().join("r2");
+        fs::create_dir_all(&r1).expect("mk r1");
+        fs::create_dir_all(&r2).expect("mk r2");
+        let store = ConfigStore::open(&store_dir).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": 2,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [r1.to_string_lossy(), r2.to_string_lossy()],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null
+        });
+        fs::write(
+            store.config_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.workspace_root, None);
     }
 }

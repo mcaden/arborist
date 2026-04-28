@@ -79,6 +79,12 @@ export interface AppConfig {
   configVersion: number;
   defaultInstructionSets: DefaultInstructionSets;
   instructionSetsDir: string;
+  /**
+   * Active workspace root: the single git repository the app operates
+   * within. `null` until the user picks one in the first-boot picker
+   * (Roadmap §1.1). Added in `configVersion = 3`.
+   */
+  workspaceRoot: string | null;
   worktreeRoots: string[];
   prelaunchCommands: string[];
   worktreePrelaunchCommands: Record<string, string[]>;
@@ -102,6 +108,12 @@ export interface PartialAppConfig {
   configVersion?: number;
   defaultInstructionSets?: PartialDefaultInstructionSets;
   instructionSetsDir?: string;
+  /**
+   * Tri-state: omit to leave alone; `null` to clear; string to set. The
+   * backend canonicalizes the path and rejects relative values with
+   * `InvalidPath`.
+   */
+  workspaceRoot?: string | null;
   worktreeRoots?: string[];
   prelaunchCommands?: string[];
   worktreePrelaunchCommands?: Record<string, string[]>;

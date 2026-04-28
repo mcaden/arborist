@@ -76,9 +76,10 @@ export const frontendReady: Mock<
 // of Phase 4; their default mock behaviour returns benign empty values so
 // tests don't need to wire each call individually unless they care.
 const defaultAppConfig = (): AppConfig => ({
-  configVersion: 2,
+  configVersion: 3,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
+  workspaceRoot: null,
   worktreeRoots: [],
   prelaunchCommands: [],
   worktreePrelaunchCommands: {},

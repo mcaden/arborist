@@ -1,10 +1,11 @@
 {
-  "configVersion": 2,
+  "configVersion": 3,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
   },
   "instructionSetsDir": "/cfg/instructions",
+  "workspaceRoot": "/repo",
   "worktreeRoots": ["/repo"],
   "prelaunchCommands": ["source ~/.zshenv"],
   "worktreePrelaunchCommands": {

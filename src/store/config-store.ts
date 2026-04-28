@@ -19,9 +19,10 @@ import { configGet, configSet } from '@/lib/tauri-bridge';
 import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 2,
+  configVersion: 3,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
+  workspaceRoot: null,
   worktreeRoots: [],
   prelaunchCommands: [],
   worktreePrelaunchCommands: {},
@@ -74,6 +75,7 @@ function applyPatch(config: AppConfig, patch: PartialAppConfig): AppConfig {
     };
   }
   if (patch.instructionSetsDir !== undefined) next.instructionSetsDir = patch.instructionSetsDir;
+  if (patch.workspaceRoot !== undefined) next.workspaceRoot = patch.workspaceRoot;
   if (patch.worktreeRoots !== undefined) next.worktreeRoots = patch.worktreeRoots;
   if (patch.prelaunchCommands !== undefined) next.prelaunchCommands = patch.prelaunchCommands;
   if (patch.worktreePrelaunchCommands !== undefined) {

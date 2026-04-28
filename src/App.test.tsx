@@ -107,9 +107,10 @@ describe('App boot sequence', () => {
         new Promise((resolve) => {
           resolveCfg = () =>
             resolve({
-              configVersion: 2,
+              configVersion: 3,
               defaultInstructionSets: { claude: '', copilot: '' },
               instructionSetsDir: '',
+              workspaceRoot: null,
               worktreeRoots: [],
               prelaunchCommands: [],
               worktreePrelaunchCommands: {},

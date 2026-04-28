@@ -143,9 +143,10 @@ describe('frontendReady', () => {
 describe('configGet', () => {
   it("calls invoke('config_get') with no args and returns the parsed AppConfig", async () => {
     const cfg: AppConfig = {
-      configVersion: 2,
+      configVersion: 3,
       defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
       instructionSetsDir: '/cfg/instr',
+      workspaceRoot: null,
       worktreeRoots: [],
       prelaunchCommands: [],
       worktreePrelaunchCommands: {},

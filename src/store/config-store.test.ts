@@ -11,9 +11,10 @@ import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 import { useConfigStore } from './config-store';
 
 const SAMPLE: AppConfig = {
-  configVersion: 2,
+  configVersion: 3,
   defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
   instructionSetsDir: '/cfg/instr',
+  workspaceRoot: null,
   worktreeRoots: ['/repo'],
   prelaunchCommands: ['nvm use'],
   worktreePrelaunchCommands: { '/repo/feat-x': ['asdf reshim'] },
@@ -25,9 +26,10 @@ const SAMPLE: AppConfig = {
 function resetStore(): void {
   useConfigStore.setState({
     config: {
-      configVersion: 2,
+      configVersion: 3,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
+      workspaceRoot: null,
       worktreeRoots: [],
       prelaunchCommands: [],
       worktreePrelaunchCommands: {},
