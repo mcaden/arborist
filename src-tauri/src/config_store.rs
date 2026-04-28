@@ -237,7 +237,10 @@ impl ConfigStore {
             }
         };
         match serde_json::from_str::<BTreeMap<SessionId, Session>>(&raw) {
-            Ok(m) => m,
+            Ok(mut m) => {
+                migrate_copilot_composed_commands(&mut m);
+                m
+            }
             Err(e) => {
                 let quarantined = quarantine(&path);
                 warn!(
@@ -284,6 +287,41 @@ impl ConfigStore {
         session.status = status;
         session.pid = pid;
         write_atomic(&self.sessions_path(), &all)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Loaded-session migrations
+// ---------------------------------------------------------------------------
+
+/// Rewrite Copilot session `composed_command` values that were persisted
+/// before we dropped the legacy `--interactive <string>` invocation. The
+/// modern `copilot` CLI rejects that flag with "too many arguments". Any
+/// trailing `copilot ...` segment is replaced with bare `copilot`, so
+/// restart-on-launch and `session_restart` work for sessions created by
+/// older builds.
+fn migrate_copilot_composed_commands(sessions: &mut BTreeMap<SessionId, Session>) {
+    for (id, session) in sessions.iter_mut() {
+        if session.tool != Tool::Copilot {
+            continue;
+        }
+        let segments: Vec<&str> = session.composed_command.split(" && ").collect();
+        let Some((last, head)) = segments.split_last() else {
+            continue;
+        };
+        if !last.trim_start().starts_with("copilot") || last.trim() == "copilot" {
+            continue;
+        }
+        let mut rebuilt: Vec<String> = head.iter().map(|s| (*s).to_string()).collect();
+        rebuilt.push("copilot".to_string());
+        let new_cmd = rebuilt.join(" && ");
+        warn!(
+            session_id = %id,
+            old = %session.composed_command,
+            new = %new_cmd,
+            "migrating stale Copilot composed_command (dropping legacy --interactive flag)",
+        );
+        session.composed_command = new_cmd;
     }
 }
 
@@ -1160,6 +1198,103 @@ mod tests {
             .update_session_status(&SessionId::new(), SessionStatus::Exited, None)
             .expect_err("must fail");
         assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    // ----- Copilot composed_command migration --------------------------
+
+    #[test]
+    fn load_sessions_strips_legacy_copilot_interactive_flag() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let id = SessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"));
+
+        // Hand-write sessions.json with the legacy invocation a pre-fix
+        // build would have persisted.
+        let raw = serde_json::json!({
+            id.to_string(): {
+                "id": id,
+                "tool": "copilot",
+                "worktreePath": td.path(),
+                "worktreeName": "feat-x",
+                "label": "feat-x",
+                "composedCommand": "echo hi && copilot --interactive \"context block\"",
+                "status": "exited",
+                "createdAt": 1_700_000_000_u64,
+                "tabIndex": 0,
+                "tempFiles": []
+            }
+        });
+        fs::write(
+            store.sessions_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+
+        let loaded = store.load_sessions();
+        let session = loaded.get(&id).expect("present");
+        assert_eq!(session.composed_command, "echo hi && copilot");
+    }
+
+    #[test]
+    fn load_sessions_leaves_bare_copilot_alone() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let id = SessionId(Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("uuid"));
+        let raw = serde_json::json!({
+            id.to_string(): {
+                "id": id,
+                "tool": "copilot",
+                "worktreePath": td.path(),
+                "worktreeName": "feat-y",
+                "label": "feat-y",
+                "composedCommand": "copilot",
+                "status": "exited",
+                "createdAt": 1_700_000_000_u64,
+                "tabIndex": 0,
+                "tempFiles": []
+            }
+        });
+        fs::write(
+            store.sessions_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let loaded = store.load_sessions();
+        assert_eq!(
+            loaded.get(&id).expect("present").composed_command,
+            "copilot"
+        );
+    }
+
+    #[test]
+    fn load_sessions_does_not_touch_claude_sessions() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let id = SessionId(Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("uuid"));
+        let raw = serde_json::json!({
+            id.to_string(): {
+                "id": id,
+                "tool": "claude",
+                "worktreePath": td.path(),
+                "worktreeName": "feat-z",
+                "label": "feat-z",
+                "composedCommand": "claude --system-prompt /tmp/x.md",
+                "status": "exited",
+                "createdAt": 1_700_000_000_u64,
+                "tabIndex": 0,
+                "tempFiles": []
+            }
+        });
+        fs::write(
+            store.sessions_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let loaded = store.load_sessions();
+        assert_eq!(
+            loaded.get(&id).expect("present").composed_command,
+            "claude --system-prompt /tmp/x.md"
+        );
     }
 
     // ----- Atomic write durability --------------------------------------
