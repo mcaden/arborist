@@ -131,9 +131,10 @@ export function SidebarTab({
             />
           )}
         </span>
-        {metrics && session.status === 'running' && (
-          <MetricsLine metrics={metrics} isActive={isActive} />
-        )}
+        <MetricsLine
+          metrics={session.status === 'running' ? metrics : undefined}
+          isActive={isActive}
+        />
       </button>
       <button
         type="button"
@@ -146,7 +147,7 @@ export function SidebarTab({
           e.stopPropagation();
           actions.requestClose(id);
         }}
-        className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+        className="absolute right-3 top-1.5 rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
         <span aria-hidden="true">×</span>
       </button>
@@ -161,11 +162,25 @@ export function SidebarTab({
 // ---------------------------------------------------------------------------
 
 interface MetricsLineProps {
-  metrics: SessionMetrics;
+  metrics: SessionMetrics | undefined;
   isActive: boolean;
 }
 
-function MetricsLine({ metrics, isActive }: MetricsLineProps): JSX.Element | null {
+function MetricsLine({ metrics, isActive }: MetricsLineProps): JSX.Element {
+  const colour = isActive
+    ? 'text-sky-800/80 dark:text-sky-200/80'
+    : 'text-slate-500 dark:text-slate-400';
+
+  if (!metrics) {
+    // Same height as a populated metrics line — preserves uniform tab
+    // height while we wait for the first snapshot.
+    return (
+      <span aria-hidden="true" className={`block pl-7 text-xs leading-tight ${colour}`}>
+        &nbsp;
+      </span>
+    );
+  }
+
   const parts: string[] = [];
   if (typeof metrics.contextUsedPct === 'number') {
     parts.push(`${metrics.contextUsedPct}%`);
@@ -173,7 +188,13 @@ function MetricsLine({ metrics, isActive }: MetricsLineProps): JSX.Element | nul
   if (typeof metrics.contextTokensUsed === 'number') {
     parts.push(`${formatTokens(metrics.contextTokensUsed)} tok`);
   }
-  if (parts.length === 0) return null;
+  if (parts.length === 0) {
+    return (
+      <span aria-hidden="true" className={`block pl-7 text-xs leading-tight ${colour}`}>
+        &nbsp;
+      </span>
+    );
+  }
   const text = parts.join(' · ');
 
   const longParts: string[] = [];
@@ -196,15 +217,11 @@ function MetricsLine({ metrics, isActive }: MetricsLineProps): JSX.Element | nul
     longParts.push(`Model: ${metrics.model}`);
   }
 
-  const colour = isActive
-    ? 'text-sky-800/80 dark:text-sky-200/80'
-    : 'text-slate-500 dark:text-slate-400';
-
   return (
     <span
       data-testid="sidebar-metrics"
       title={longParts.join('\n') || undefined}
-      className={`pl-7 text-xs leading-tight tabular-nums ${colour}`}
+      className={`block pl-7 text-xs leading-tight tabular-nums ${colour}`}
     >
       {text}
     </span>

@@ -225,14 +225,16 @@ fn run_claude_watcher(
 // ---------------------------------------------------------------------------
 
 /// Encode a cwd to the `~/.claude/projects/<dir>` form used by Claude
-/// Code: every `\\`, `/`, and `:` in the absolute path becomes `-`. Other
-/// characters pass through unchanged.
+/// Code: every `\\`, `/`, `:`, and `.` in the absolute path becomes `-`.
+/// The dot replacement is what produces the `--` between segments like
+/// `\.worktrees\` (a real path written by `git worktree`); without it the
+/// encoded directory name will not match Claude's on disk.
 #[must_use]
 pub fn encode_cwd(cwd: &Path) -> String {
     let s = cwd.to_string_lossy();
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
-        if matches!(ch, '\\' | '/' | ':') {
+        if matches!(ch, '\\' | '/' | ':' | '.') {
             out.push('-');
         } else {
             out.push(ch);
@@ -475,8 +477,25 @@ mod tests {
     }
 
     #[test]
+    fn encode_cwd_replaces_dots_in_segments() {
+        // Real-world git-worktree path: the leading `.` in `.worktrees` is
+        // what produces the `--` Claude writes on disk.
+        let p = if cfg!(windows) {
+            Path::new("C:\\repos\\specd\\.worktrees\\fix-cursor-sync")
+        } else {
+            Path::new("/repos/specd/.worktrees/fix-cursor-sync")
+        };
+        let s = encode_cwd(p);
+        if cfg!(windows) {
+            assert_eq!(s, "C--repos-specd--worktrees-fix-cursor-sync");
+        } else {
+            assert_eq!(s, "-repos-specd--worktrees-fix-cursor-sync");
+        }
+    }
+
+    #[test]
     fn encode_cwd_idempotent_on_already_encoded() {
-        // Already-encoded form has no `/`, `\`, or `:`; should pass through.
+        // Already-encoded form has no `/`, `\`, `:`, or `.`; should pass through.
         let s = encode_cwd(Path::new("C--Users-me-proj"));
         assert_eq!(s, "C--Users-me-proj");
     }
