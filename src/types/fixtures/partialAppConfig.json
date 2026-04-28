@@ -1,0 +1,4 @@
+{
+  "defaultInstructionSets": { "claude": "claude-default" },
+  "worktreeRoots": ["/repo"]
+}

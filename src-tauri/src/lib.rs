@@ -1,7 +1,15 @@
 //! Grove backend library crate.
 //!
-//! Phase 1 only contains scaffolding; later phases will add the PTY pool,
-//! config store, command handlers, and shared types.
+//! Phase 2 introduces the shared data model in [`types`]; later phases will
+//! add the PTY pool, config store, and command handlers.
+
+pub mod types;
+
+pub use types::{
+    AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
+    PartialAppConfig, PartialDefaultInstructionSets, Session, SessionId, SessionStatus,
+    SessionView, TempFileSpec, Tool,
+};
 
 use tracing_subscriber::EnvFilter;
 

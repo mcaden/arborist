@@ -1,0 +1,14 @@
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "tool": "claude",
+  "worktreePath": "/repo/feature-x",
+  "worktreeName": "feature-x",
+  "label": "feature-x",
+  "instructionSetId": "claude-default",
+  "composedCommand": "claude --system-prompt /tmp/grove/abc/sp.md",
+  "status": "running",
+  "pid": 12345,
+  "createdAt": 1700000000,
+  "tabIndex": 0,
+  "tempFiles": [{ "path": "/tmp/grove/abc/sp.md", "contents": "context" }]
+}

@@ -52,7 +52,7 @@ _Version 0.5_
 
 The data model is defined in Rust (serialized via `serde`) and mirrored as TypeScript types in the frontend.
 
-Two distinct types are used for Session: the full `Session` (Rust-internal, persisted to the store) and the `SessionView` (sent to the frontend). `composedCommand` is backend-only — the frontend has no UI use for the raw shell command string and does not need it.
+Two distinct types are used for Session: the full `Session` (Rust-internal, persisted to the store) and the `SessionView` (sent to the frontend). `composedCommand` and `tempFiles` are backend-only — the frontend has no UI use for the raw shell command string or the on-disk temp-file specs and does not need them.
 
 ### 3.1 Session (Rust-internal / persisted)
 
@@ -69,12 +69,21 @@ struct Session {
     pid: Option<u32>,            // OS PID of the PTY process; cleared on exit
     created_at: i64,             // Unix timestamp
     tab_index: usize,            // Display order in the sidebar
+    temp_files: Vec<TempFileSpec>, // Backend-only; on-disk artefacts the session owns
+                                   // (e.g. Claude's --system-prompt file). Persisted so
+                                   // respawn_existing can rematerialise them after a
+                                   // crash/restart. Omitted from SessionView.
+}
+
+struct TempFileSpec {
+    path: PathBuf,
+    contents: String,
 }
 ```
 
 ### 3.1.1 SessionView (sent to frontend)
 
-`composedCommand` is intentionally omitted. The frontend receives only what it needs to render the UI.
+`composedCommand` and `tempFiles` are intentionally omitted. The frontend receives only what it needs to render the UI.
 
 ```typescript
 interface SessionView {
