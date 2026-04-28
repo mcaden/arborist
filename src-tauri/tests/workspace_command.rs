@@ -79,7 +79,13 @@ fn null_sink() -> PtySink {
 fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {
     let store = ConfigStore::open(store_dir.path()).unwrap();
     let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner)));
-    Arc::new(AppContext::new(pool, store, null_sink(), git))
+    Arc::new(AppContext::new(
+        pool,
+        store,
+        null_sink(),
+        git,
+        Arc::new(|_| {}),
+    ))
 }
 
 // ---------- workspace_validate ----------

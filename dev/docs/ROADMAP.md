@@ -146,6 +146,26 @@ at least a minimal in-app settings surface is needed.
   annotated message and show a human-readable note in the terminal overlay (e.g.
   "Worktree path no longer exists: /path/to/worktree").
 
+### 4.4 Sidebar token-usage indicators — Claude v1 _(shipped — Issue #3)_
+- **Shipped**: Each sidebar tab shows a compact second line `78% · 12.3k tok`
+  with the running context-window utilization, sourced from polling Claude's
+  `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` transcript files. Heuristic
+  cwd+mtime mapping; debounced; cleared on close/restart. Backend module:
+  `src-tauri/src/session_metrics.rs`. Event: `session://metrics`.
+- **Known limitation**: Cannot distinguish two same-tool Claude sessions sharing
+  one worktree; Copilot tabs show no metrics (no token data on disk).
+
+### 4.5 Authoritative session-id mapping via CLI hooks _(follow-up — Issue #4)_
+- **Gap**: The v1 metrics watcher (4.4) uses a heuristic cwd+mtime match against
+  Claude's transcript directory. Two same-tool sessions in one worktree are
+  indistinguishable, and Copilot is unsupported because no token data is written
+  to disk.
+- **Needed**: Replace the heuristic with hook-driven authoritative mapping.
+  Claude supports `--settings <json>` to inject a `Stop` hook that delivers the
+  CLI's `session_id` + `transcript_path` on stdin. Copilot supports hooks only
+  via `<cwd>/.github/hooks/hooks.json` (would pollute the user's repo) — revisit
+  when the Copilot CLI gains a `--hooks-file` (or equivalent) flag.
+
 ---
 
 ## 5. Data Model Gaps

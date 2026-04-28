@@ -35,6 +35,8 @@ import {
 import type {
   SessionActivityEvent,
   SessionId,
+  SessionMetrics,
+  SessionMetricsEvent,
   SessionStatusEvent,
   SessionView,
 } from '@/types/arborist';
@@ -71,6 +73,13 @@ export interface SessionStoreState {
    * value was `attention`. Frontend-only — not persisted.
    */
   activity: Record<SessionId, SessionActivity>;
+  /**
+   * Latest token-usage / context-window snapshot per session, as emitted
+   * on `session://metrics` (Issue #3). Cleared on session close and on
+   * status transitions back to `starting` (restart) so stale numbers
+   * don't linger in the sidebar.
+   */
+  metrics: Record<SessionId, SessionMetrics>;
 }
 
 export type SessionActivity = 'working' | 'idle' | 'attention';
@@ -96,6 +105,12 @@ export interface SessionStoreActions {
    * high-frequency event handler.
    */
   applyActivity: (evt: SessionActivityEvent) => void;
+  /**
+   * Apply a `session://metrics` snapshot from the backend. Idempotent
+   * for unchanged payloads (the backend also debounces) and defensive
+   * against races with `close`.
+   */
+  applyMetrics: (evt: SessionMetricsEvent) => void;
 }
 
 type Store = SessionStoreState & { actions: SessionStoreActions };
@@ -108,6 +123,7 @@ const INITIAL_STATE: SessionStoreState = {
   statusMessages: {},
   hasUnread: {},
   activity: {},
+  metrics: {},
 };
 
 /**
@@ -135,7 +151,14 @@ export const useSessionStore = create<Store>((set, get) => {
       const sessions = await sessionList();
       // Clear any orphan status messages — keys may belong to sessions
       // that no longer exist after the backend reload.
-      set({ sessions, isHydrated: true, statusMessages: {}, hasUnread: {}, activity: {} });
+      set({
+        sessions,
+        isHydrated: true,
+        statusMessages: {},
+        hasUnread: {},
+        activity: {},
+        metrics: {},
+      });
     },
 
     create: async (args) => {
@@ -162,7 +185,7 @@ export const useSessionStore = create<Store>((set, get) => {
       // is gone.
       if (get().pendingClose === id) patch.pendingClose = undefined;
       // Drop any orphan status-message keyed under this session id.
-      const { statusMessages, hasUnread, activity } = get();
+      const { statusMessages, hasUnread, activity, metrics } = get();
       if (id in statusMessages) {
         const next = { ...statusMessages };
         delete next[id];
@@ -177,6 +200,11 @@ export const useSessionStore = create<Store>((set, get) => {
         const nextActivity = { ...activity };
         delete nextActivity[id];
         patch.activity = nextActivity;
+      }
+      if (id in metrics) {
+        const nextMetrics = { ...metrics };
+        delete nextMetrics[id];
+        patch.metrics = nextMetrics;
       }
       set(patch);
     },
@@ -251,14 +279,25 @@ export const useSessionStore = create<Store>((set, get) => {
       // Track the optional status message keyed by session id. We
       // overwrite (not merge) so a status transition without a message
       // clears any stale annotation from a prior transition.
-      const { statusMessages } = get();
+      const { statusMessages, metrics } = get();
       const nextMessages = { ...statusMessages };
       if (evt.message !== undefined && evt.message.length > 0) {
         nextMessages[evt.sessionId] = evt.message;
       } else {
         delete nextMessages[evt.sessionId];
       }
-      set({ sessions: nextSessions, statusMessages: nextMessages });
+      const patch: Partial<SessionStoreState> = {
+        sessions: nextSessions,
+        statusMessages: nextMessages,
+      };
+      // On restart (back to `starting`), drop any stale metrics so the
+      // sidebar doesn't show numbers from the previous run.
+      if (evt.status === 'starting' && evt.sessionId in metrics) {
+        const nextMetrics = { ...metrics };
+        delete nextMetrics[evt.sessionId];
+        patch.metrics = nextMetrics;
+      }
+      set(patch);
     },
 
     noteUnread: (id) => {
@@ -301,6 +340,18 @@ export const useSessionStore = create<Store>((set, get) => {
       if (current === next) return;
       set({ activity: { ...activity, [evt.sessionId]: next } });
     },
+
+    applyMetrics: (evt) => {
+      const { sessions, metrics } = get();
+      // Defensive: drop events for unknown sessions (race with close).
+      if (!sessions.some((s) => s.id === evt.sessionId)) return;
+      const prev = metrics[evt.sessionId];
+      // Cheap structural equality: every key/value is a primitive or
+      // undefined, so a JSON compare is both correct and fast enough at
+      // the rate the backend emits (≤ once per ~2s per session).
+      if (prev && JSON.stringify(prev) === JSON.stringify(evt)) return;
+      set({ metrics: { ...metrics, [evt.sessionId]: evt } });
+    },
   };
 
   return { ...INITIAL_STATE, actions };
@@ -327,6 +378,10 @@ export const selectActivity =
   (id: SessionId | undefined) =>
   (s: Store): SessionActivity | undefined =>
     id === undefined ? undefined : s.activity[id];
+export const selectMetrics =
+  (id: SessionId | undefined) =>
+  (s: Store): SessionMetrics | undefined =>
+    id === undefined ? undefined : s.metrics[id];
 
 export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
@@ -338,6 +393,8 @@ export const useHasUnread = (id: SessionId | undefined): boolean =>
   useSessionStore(selectHasUnread(id));
 export const useActivity = (id: SessionId | undefined): SessionActivity | undefined =>
   useSessionStore(selectActivity(id));
+export const useMetrics = (id: SessionId | undefined): SessionMetrics | undefined =>
+  useSessionStore(selectMetrics(id));
 
 export function useActiveSession(): SessionView | undefined {
   const sessions = useSessions();

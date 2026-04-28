@@ -29,6 +29,7 @@ import type {
   SessionOutputEvent,
   SessionStatusEvent,
   SessionActivityEvent,
+  SessionMetricsEvent,
   SessionView,
   Tool,
   WorktreeInfo,
@@ -238,4 +239,8 @@ export function onSessionActivity(
   cb: (payload: SessionActivityEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<SessionActivityEvent>('session://activity', (event) => cb(event.payload));
+}
+
+export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Promise<UnlistenFn> {
+  return listen<SessionMetricsEvent>('session://metrics', (event) => cb(event.payload));
 }

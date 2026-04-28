@@ -22,7 +22,7 @@ import { NewSessionDialog } from '@/components/NewSessionDialog';
 import { Sidebar } from '@/components/Sidebar';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
-import { subscribeToActivity, subscribeToStatus } from '@/lib/session-events';
+import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
 import { frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
@@ -101,6 +101,7 @@ export function App(): JSX.Element {
     let cancelled = false;
     let unlistenStatus: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
+    let unlistenMetrics: (() => void) | null = null;
 
     const boot = async (): Promise<void> => {
       try {
@@ -111,6 +112,7 @@ export function App(): JSX.Element {
         initTerminalRouter();
         unlistenStatus = subscribeToStatus();
         unlistenActivity = subscribeToActivity();
+        unlistenMetrics = subscribeToMetrics();
         await frontendReady();
         if (cancelled) return;
         setStatus('ready');
@@ -136,6 +138,13 @@ export function App(): JSX.Element {
       if (unlistenActivity) {
         try {
           unlistenActivity();
+        } catch {
+          // ignore
+        }
+      }
+      if (unlistenMetrics) {
+        try {
+          unlistenMetrics();
         } catch {
           // ignore
         }

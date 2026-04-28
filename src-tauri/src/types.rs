@@ -402,6 +402,42 @@ pub struct SessionActivityEvent {
     pub event: crate::activity::ActivityEvent,
 }
 
+/// Snapshot of the latest token / context-window observation for a session,
+/// used both as the payload for the `session://metrics` event and as the
+/// in-memory state the frontend renders. All fields except `session_id` and
+/// `observed_at` are optional: a snapshot may carry only a token count if
+/// the model's context limit cannot be resolved.
+///
+/// Mirrored on the frontend by `SessionMetrics` in `src/types/arborist.ts`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetricsEvent {
+    pub session_id: SessionId,
+    /// Model identifier as reported by the CLI (e.g. `"claude-sonnet-4-6"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Percentage of the context window in use, 0..=100. Omitted when the
+    /// model's context limit cannot be resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used_pct: Option<u8>,
+    /// Tokens currently counted against the context window
+    /// (= `input + cache_creation + cache_read + output` for the latest
+    /// observed assistant turn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens_used: Option<u64>,
+    /// Model context-window limit in tokens (e.g. 200_000), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens_limit: Option<u64>,
+    /// Cumulative input tokens across observed turns of this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    /// Cumulative output tokens across observed turns of this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// Wall-clock unix-seconds at which this snapshot was produced.
+    pub observed_at: u64,
+}
+
 /// Payload of the `session://status` event (DESIGN §6).
 ///
 /// `message` is an optional human-readable note that accompanies the

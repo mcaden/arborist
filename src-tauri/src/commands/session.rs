@@ -33,6 +33,7 @@ use crate::config_store::{
 };
 use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
+use crate::session_metrics::{MetricsCb, MetricsRegistry};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCreateArgs, SessionId,
     SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView, Tool,
@@ -52,6 +53,14 @@ pub struct AppContext {
     /// frontend that calls `frontend_ready` more than once cannot trigger
     /// duplicate restores.
     pub restored: AtomicBool,
+    /// Per-session token-usage / context-window watcher pool (Issue #3).
+    /// A no-op for sessions whose tool isn't supported; see
+    /// [`crate::session_metrics`].
+    pub metrics: Arc<MetricsRegistry>,
+    /// Callback the metrics watchers invoke for every new snapshot.
+    /// Production wires this into `app.emit("session://metrics", …)`;
+    /// tests substitute a capturing closure.
+    pub metrics_emit: MetricsCb,
 }
 
 impl AppContext {
@@ -61,6 +70,7 @@ impl AppContext {
         store: ConfigStore,
         sink: PtySink,
         git_runner: Arc<dyn GitRunner>,
+        metrics_emit: MetricsCb,
     ) -> Self {
         Self {
             pool,
@@ -68,6 +78,8 @@ impl AppContext {
             sink,
             git_runner,
             restored: AtomicBool::new(false),
+            metrics: Arc::new(MetricsRegistry::new()),
+            metrics_emit,
         }
     }
 
@@ -77,7 +89,7 @@ impl AppContext {
     /// fake [`GitRunner`].
     #[must_use]
     pub fn with_real_git(pool: Arc<PtyPool>, store: ConfigStore, sink: PtySink) -> Self {
-        Self::new(pool, store, sink, Arc::new(RealGitRunner))
+        Self::new(pool, store, sink, Arc::new(RealGitRunner), Arc::new(|_| {}))
     }
 }
 
@@ -194,6 +206,16 @@ pub fn session_create_impl(
         .spawn(&session, ctx.sink.clone())
         .map_err(AppError::from)?;
 
+    // 12. Start the per-session metrics watcher (Issue #3). No-op for tools
+    //     we can't introspect; never fatal — surface as a debug log only.
+    ctx.metrics.start(
+        session.id,
+        session.tool,
+        session.worktree_path.clone(),
+        SystemTime::now(),
+        Arc::clone(&ctx.metrics_emit),
+    );
+
     info!(session_id = %session.id, pid, label = %label, "session created");
 
     let mut view = SessionView::from(&session);
@@ -217,6 +239,10 @@ pub fn session_list_impl(ctx: &AppContext) -> Result<Vec<SessionView>, AppError>
 // ---------------------------------------------------------------------------
 
 pub async fn session_close_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppError> {
+    // 0. Stop the metrics watcher (Issue #3) before tearing the rest down
+    //    so it never observes a half-cleaned session.
+    ctx.metrics.stop(&id);
+
     // 1. Best-effort kill (NotFound from the pool is fine — the session
     //    may have exited on its own already).
     if ctx.pool.contains(&id) {
@@ -348,6 +374,15 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
         return Err(AppError::from(e));
     }
+    // Issue #3: restart the metrics watcher with a fresh spawn instant so
+    // the freshness filter on Claude project JSONL files re-anchors.
+    ctx.metrics.start(
+        session.id,
+        session.tool,
+        session.worktree_path.clone(),
+        SystemTime::now(),
+        Arc::clone(&ctx.metrics_emit),
+    );
     Ok(())
 }
 
@@ -423,6 +458,16 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         match ctx.pool.respawn_existing(&session, ctx.sink.clone()) {
             Ok(pid) => {
                 info!(session_id = %id, pid, "restored session");
+                // Issue #3: spin up the metrics watcher for restored sessions
+                // too, otherwise a user who never recreates a session would
+                // never see the indicator.
+                ctx.metrics.start(
+                    id,
+                    session.tool,
+                    session.worktree_path.clone(),
+                    SystemTime::now(),
+                    Arc::clone(&ctx.metrics_emit),
+                );
             }
             Err(e) => {
                 warn!(session_id = %id, error = ?e, "restore: respawn failed");
