@@ -432,6 +432,47 @@ pub struct SessionInputArgs {
     pub data: String,
 }
 
+/// Arguments for `workspace_validate` (Roadmap §1.1).
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorkspaceValidateArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceValidateArgs {
+    pub path: String,
+}
+
+/// Result of `workspace_validate`. `valid: true` iff the candidate path is
+/// an absolute, existing directory containing a git repository. On failure,
+/// `error` carries a short human-readable reason for inline picker feedback.
+///
+/// MIRROR: `src/types/arborist.ts::WorkspaceValidateResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceValidateResult {
+    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+/// Arguments for `worktree_create` (Roadmap §2.2).
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeCreateArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeCreateArgs {
+    pub name: String,
+}
+
+/// Result of `worktree_create`. `path` is the canonical absolute path to
+/// the newly-created worktree directory.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreeCreateResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeCreateResult {
+    pub path: PathBuf,
+}
+
 /// Crate-wide error type. Internal Rust code consumes this via `?`; at the
 /// Tauri command boundary it is converted to [`AppError`] so the frontend
 /// gets a stable, serde-friendly shape it can branch on.

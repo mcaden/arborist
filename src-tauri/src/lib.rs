@@ -16,7 +16,9 @@ pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
     PartialAppConfig, PartialDefaultInstructionSets, Session, SessionCreateArgs, SessionId,
     SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorktreeInfo, CONFIG_VERSION_CURRENT,
+    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs,
+    WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeInfo,
+    CONFIG_VERSION_CURRENT,
 };
 
 use tracing_subscriber::EnvFilter;
@@ -67,6 +69,8 @@ pub fn run() {
             commands::session_restart,
             commands::frontend_ready,
             commands::worktrees_list,
+            commands::workspace_validate,
+            commands::worktree_create,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arborist");

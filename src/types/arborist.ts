@@ -154,3 +154,18 @@ export interface WorktreeInfo {
   isMain: boolean;
   isLocked: boolean;
 }
+
+// MIRROR: src-tauri/src/types.rs::WorkspaceValidateResult
+// Returned by the `workspace_validate` command (Roadmap §1.1). `error` is
+// only populated when `valid === false`.
+export interface WorkspaceValidateResult {
+  valid: boolean;
+  error?: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeCreateResult
+// Returned by the `worktree_create` command (Roadmap §2.2). `path` is the
+// canonical absolute path to the newly-created worktree directory.
+export interface WorktreeCreateResult {
+  path: string;
+}

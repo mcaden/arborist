@@ -87,6 +87,14 @@ fn main_capability_allows_core_default_and_ping() {
         "main capability must include allow-worktrees-list so worktrees_list is callable; got {identifiers:?}",
     );
     assert!(
+        identifiers.contains(&"allow-workspace-validate"),
+        "main capability must include allow-workspace-validate so workspace_validate is callable; got {identifiers:?}",
+    );
+    assert!(
+        identifiers.contains(&"allow-worktree-create"),
+        "main capability must include allow-worktree-create so worktree_create is callable; got {identifiers:?}",
+    );
+    assert!(
         identifiers.contains(&"dialog:allow-open"),
         "main capability must include dialog:allow-open so the file picker is callable; got {identifiers:?}",
     );
@@ -206,4 +214,63 @@ fn allow_worktrees_list_permission_file_declares_worktrees_command() {
         raw.contains("\"worktrees_list\""),
         "permission must allow the `worktrees_list` command",
     );
+}
+
+#[test]
+fn main_capability_grants_workspace_validate() {
+    // Covered by the consolidated identifier check in
+    // `main_capability_allows_core_default_and_ping`; this test asserts the
+    // permission file independently.
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-workspace-validate.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-workspace-validate\""),
+        "permission identifier must remain `allow-workspace-validate`",
+    );
+    assert!(
+        raw.contains("\"workspace_validate\""),
+        "permission must allow the `workspace_validate` command",
+    );
+}
+
+#[test]
+fn allow_workspace_validate_permission_file_declares_command() {
+    // Same intent as above test; kept distinct so a regression in either
+    // file/identifier is reported with a precise failure name.
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-workspace-validate.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(raw.contains("workspace_validate"));
+}
+
+#[test]
+fn main_capability_grants_worktree_create() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-worktree-create.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktree-create\""),
+        "permission identifier must remain `allow-worktree-create`",
+    );
+    assert!(
+        raw.contains("\"worktree_create\""),
+        "permission must allow the `worktree_create` command",
+    );
+}
+
+#[test]
+fn allow_worktree_create_permission_file_declares_command() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-worktree-create.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(raw.contains("worktree_create"));
 }

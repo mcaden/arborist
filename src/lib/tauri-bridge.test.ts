@@ -257,3 +257,36 @@ describe('onSessionStatus', () => {
     expect(cb).toHaveBeenCalledWith(payload);
   });
 });
+
+describe('workspaceValidate', () => {
+  it("calls invoke('workspace_validate', { args: { path } }) and forwards the result", async () => {
+    invokeMock.mockResolvedValueOnce({ valid: true });
+    const out = await bridge.workspaceValidate('/some/path');
+    expect(invokeMock).toHaveBeenCalledWith('workspace_validate', {
+      args: { path: '/some/path' },
+    });
+    expect(out).toEqual({ valid: true });
+  });
+
+  it('forwards the inline error when the path is rejected', async () => {
+    invokeMock.mockResolvedValueOnce({ valid: false, error: 'not a git repository' });
+    const out = await bridge.workspaceValidate('/no');
+    expect(out).toEqual({ valid: false, error: 'not a git repository' });
+  });
+});
+
+describe('worktreeCreate', () => {
+  it("calls invoke('worktree_create', { args: { name } }) and forwards the result", async () => {
+    invokeMock.mockResolvedValueOnce({ path: '/ws/.worktrees/feat-x' });
+    const out = await bridge.worktreeCreate('feat-x');
+    expect(invokeMock).toHaveBeenCalledWith('worktree_create', {
+      args: { name: 'feat-x' },
+    });
+    expect(out).toEqual({ path: '/ws/.worktrees/feat-x' });
+  });
+
+  it('propagates a rejected invoke', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('boom'));
+    await expect(bridge.worktreeCreate('x')).rejects.toThrow('boom');
+  });
+});

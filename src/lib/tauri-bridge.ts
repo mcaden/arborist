@@ -28,6 +28,8 @@ import type {
   SessionView,
   Tool,
   WorktreeInfo,
+  WorkspaceValidateResult,
+  WorktreeCreateResult,
 } from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
@@ -172,6 +174,29 @@ export function instructionsList(): Promise<InstructionSet[]> {
  */
 export function worktreesList(repoRoot: string): Promise<WorktreeInfo[]> {
   return invoke<WorktreeInfo[]>('worktrees_list', { repoRoot });
+}
+
+/**
+ * Validate a candidate workspace root. Resolves with `{ valid: true }` when
+ * the path is an absolute, existing directory containing a git repository,
+ * or `{ valid: false, error }` otherwise. Never rejects for "invalid path"
+ * — the picker shows inline feedback (Roadmap §1.1).
+ */
+export function workspaceValidate(path: string): Promise<WorkspaceValidateResult> {
+  return invoke<WorkspaceValidateResult>('workspace_validate', {
+    args: { path },
+  });
+}
+
+/**
+ * Create a new linked git worktree at `<workspaceRoot>/.worktrees/<name>`
+ * on a fresh branch named `<name>`. Rejects with `AppError` on validation
+ * or git failure (Roadmap §2.2).
+ */
+export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
+  return invoke<WorktreeCreateResult>('worktree_create', {
+    args: { name },
+  });
 }
 
 /**

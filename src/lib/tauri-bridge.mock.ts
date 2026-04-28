@@ -107,6 +107,12 @@ export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() =>
   Promise.resolve([]),
 );
 
+export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.fn(() =>
+  Promise.resolve({ valid: true }),
+);
+
+export const worktreeCreate: Mock<typeof realBridge.worktreeCreate> = vi.fn(rejectNotImplemented);
+
 export const pickDirectory: Mock<typeof realBridge.pickDirectory> = vi.fn(() =>
   Promise.resolve(null),
 );
@@ -148,6 +154,8 @@ export function resetBridgeMocks(): void {
   configSet.mockReset().mockImplementation(() => Promise.resolve());
   instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
+  workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
+  worktreeCreate.mockReset().mockImplementation(rejectNotImplemented);
   pickDirectory.mockReset().mockImplementation(() => Promise.resolve(null));
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
@@ -170,6 +178,8 @@ const _shapeCheck = {
   configSet,
   instructionsList,
   worktreesList,
+  workspaceValidate,
+  worktreeCreate,
   pickDirectory,
   onSessionOutput,
   onSessionStatus,

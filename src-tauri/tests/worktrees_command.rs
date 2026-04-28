@@ -38,6 +38,17 @@ impl GitRunner for FakeGitRunner {
         *self.last_root.lock().unwrap() = Some(repo_root.to_path_buf());
         Ok(self.response.lock().unwrap().clone())
     }
+    fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error> {
+        Ok(Some(path.to_path_buf()))
+    }
+    fn create_worktree(
+        &self,
+        repo_root: &Path,
+        relative_path: &Path,
+        _branch: &str,
+    ) -> Result<PathBuf, Error> {
+        Ok(repo_root.join(relative_path))
+    }
 }
 
 /// Minimal sink that swallows everything — we don't exercise the PTY here.

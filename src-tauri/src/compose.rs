@@ -128,6 +128,83 @@ pub fn dedupe_label(existing: &[&str], base: &str) -> String {
     }
 }
 
+/// Validate a user-supplied **worktree / branch name** (Roadmap §2.3).
+///
+/// Returns `Ok(name.to_owned())` when valid, or `Err(message)` describing
+/// the first rule violated. The rules deliberately mirror git's branch
+/// naming rules subset that makes sense for the in-app create-worktree
+/// flow:
+///
+/// * No spaces.
+/// * No `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\`.
+/// * Cannot start or end with `.` or `/`.
+/// * Cannot end with `.lock`.
+/// * Cannot be `@` alone.
+/// * 1–255 characters.
+///
+/// Pure: no IO. Used both by the Tauri command (server-side check before
+/// shelling out to `git worktree add`) and re-implemented identically on
+/// the TS side as `validateWorktreeName` for inline picker feedback.
+pub fn validate_worktree_name(name: &str) -> Result<String, String> {
+    if name.is_empty() {
+        return Err("name cannot be empty".to_owned());
+    }
+    // Use char count (Unicode scalars) on both sides of the boundary to
+    // keep Rust and TS rejecting / accepting the same inputs.
+    if name.chars().count() > 255 {
+        return Err("name cannot exceed 255 characters".to_owned());
+    }
+    if name == "@" {
+        return Err("name cannot be '@'".to_owned());
+    }
+    if name.starts_with('-') {
+        return Err("name cannot start with '-'".to_owned());
+    }
+    if name.contains("..") {
+        return Err("name cannot contain '..'".to_owned());
+    }
+    if name.contains("@{") {
+        return Err("name cannot contain '@{'".to_owned());
+    }
+    if name.contains("//") {
+        return Err("name cannot contain '//'".to_owned());
+    }
+    if name.contains(' ') {
+        return Err("name cannot contain spaces".to_owned());
+    }
+    for ch in ['~', '^', ':', '?', '*', '[', '\\'] {
+        if name.contains(ch) {
+            return Err(format!("name cannot contain '{ch}'"));
+        }
+    }
+    if name.chars().any(|c| c.is_control() || c == '\u{007f}') {
+        return Err("name cannot contain control characters".to_owned());
+    }
+    if name.starts_with('.') || name.starts_with('/') {
+        return Err("name cannot start with '.' or '/'".to_owned());
+    }
+    if name.ends_with('.') || name.ends_with('/') {
+        return Err("name cannot end with '.' or '/'".to_owned());
+    }
+    if name.ends_with(".lock") {
+        return Err("name cannot end with '.lock'".to_owned());
+    }
+    // Per-component checks: every '/'-separated segment must independently
+    // satisfy git's refs(7) rules.
+    for component in name.split('/') {
+        if component.is_empty() {
+            return Err("name cannot contain empty path components".to_owned());
+        }
+        if component.starts_with('.') {
+            return Err("name path components cannot start with '.'".to_owned());
+        }
+        if component.ends_with(".lock") {
+            return Err("name path components cannot end with '.lock'".to_owned());
+        }
+    }
+    Ok(name.to_owned())
+}
+
 /// Validate a user-supplied worktree path.
 ///
 /// - Missing path → [`Error::WorktreeMissing`].
@@ -791,5 +868,60 @@ mod tests {
             p1.parent().and_then(|p| p.file_name()),
             Some(std::ffi::OsStr::new("arborist"))
         );
+    }
+
+    // --- validate_worktree_name (Roadmap §2.3) ---------------------------
+
+    #[rstest]
+    #[case("my-feature")]
+    #[case("feature/sub")] // slash in middle is OK (becomes branch refs/heads/feature/sub)
+    #[case("a")]
+    #[case("v1.2.3")]
+    fn validate_worktree_name_accepts_valid_inputs(#[case] name: &str) {
+        assert_eq!(validate_worktree_name(name).as_deref(), Ok(name));
+    }
+
+    #[rstest]
+    #[case("", "empty")]
+    #[case("@", "'@'")]
+    #[case("foo bar", "spaces")]
+    #[case("foo..bar", "..")]
+    #[case("foo~bar", "'~'")]
+    #[case("foo^bar", "'^'")]
+    #[case("foo:bar", "':'")]
+    #[case("foo?bar", "'?'")]
+    #[case("foo*bar", "'*'")]
+    #[case("foo[bar", "'['")]
+    #[case("foo\\bar", "'\\'")]
+    #[case(".hidden", "start with '.'")]
+    #[case("/abs", "start with '.' or '/'")]
+    #[case("trailing.", "end with '.'")]
+    #[case("trailing/", "end with '.' or '/'")]
+    #[case("branch.lock", ".lock")]
+    #[case("-bad", "'-'")]
+    #[case("foo@{bar", "'@{'")]
+    #[case("foo//bar", "'//'")]
+    #[case("foo\tbar", "control characters")]
+    #[case("foo\nbar", "control characters")]
+    #[case("foo\x7fbar", "control characters")]
+    #[case("feature/.hidden", "start with '.'")]
+    #[case("feature/foo.lock/bar", ".lock")]
+    fn validate_worktree_name_rejects_invalid_inputs(
+        #[case] name: &str,
+        #[case] reason_substring: &str,
+    ) {
+        let err = validate_worktree_name(name).expect_err("should reject");
+        assert!(
+            err.contains(reason_substring),
+            "error {err:?} did not mention {reason_substring:?}",
+        );
+    }
+
+    #[test]
+    fn validate_worktree_name_rejects_overlong_names() {
+        let long = "a".repeat(256);
+        assert!(validate_worktree_name(&long).is_err());
+        let max = "a".repeat(255);
+        assert!(validate_worktree_name(&max).is_ok());
     }
 }

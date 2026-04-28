@@ -11,6 +11,8 @@
     "allow-session",
     "allow-frontend-ready",
     "allow-worktrees-list",
+    "allow-workspace-validate",
+    "allow-worktree-create",
     "dialog:allow-open"
   ]
 }

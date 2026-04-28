@@ -39,6 +39,29 @@ pub trait GitRunner: Send + Sync {
     /// (missing binary, not a repo, IO error) — graceful degradation is a
     /// load-bearing requirement of the SPEC §5.2 create flow.
     fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>, Error>;
+
+    /// Probe whether `path` is a git repository — runs
+    /// `git -C <path> rev-parse --is-inside-work-tree`. Returns `Ok(true)`
+    /// only on a clean exit-code-0 with stdout `true`. Used by the
+    /// `workspace_validate` command (Roadmap §1.1).
+    /// Run `git -C <path> rev-parse --show-toplevel`. Returns
+    /// `Ok(Some(canonical_toplevel))` if `path` lies inside a git working
+    /// tree, or `Ok(None)` otherwise (missing dir, non-repo, or git
+    /// unavailable). Never errors on the "not a repo" case so the picker
+    /// can show inline feedback without a toast.
+    fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error>;
+
+    /// Run `git -C <repo_root> worktree add <relative_path> -b <branch>`.
+    /// `relative_path` is interpreted relative to `repo_root` (typically
+    /// `.worktrees/<branch>`). Returns the canonical absolute path of the
+    /// new worktree on success; otherwise an [`Error::Internal`] carrying
+    /// the captured stderr.
+    fn create_worktree(
+        &self,
+        repo_root: &Path,
+        relative_path: &Path,
+        branch: &str,
+    ) -> Result<PathBuf, Error>;
 }
 
 /// Production [`GitRunner`] that shells out to the system `git`.
@@ -89,6 +112,79 @@ impl GitRunner for RealGitRunner {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_porcelain(&stdout))
+    }
+
+    fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error> {
+        if !path.is_dir() {
+            return Ok(None);
+        }
+        let output = match Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                warn!(
+                    code = "GitUnavailable",
+                    path = %path.display(),
+                    error = %e,
+                    "git binary not invokable; treating as non-repo",
+                );
+                return Ok(None);
+            }
+        };
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let raw = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        // `--show-toplevel` returns an already-absolute path; canonicalize it
+        // so symlink hops collapse to the same form the caller will pass in.
+        let canon = dunce::canonicalize(&raw).unwrap_or_else(|_| PathBuf::from(raw));
+        Ok(Some(canon))
+    }
+
+    fn create_worktree(
+        &self,
+        repo_root: &Path,
+        relative_path: &Path,
+        branch: &str,
+    ) -> Result<PathBuf, Error> {
+        if !repo_root.is_dir() {
+            return Err(Error::WorktreeMissing(repo_root.to_path_buf()));
+        }
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["worktree", "add"])
+            .arg(relative_path)
+            .arg("-b")
+            .arg(branch)
+            .output()
+            .map_err(|e| Error::Internal(format!("git worktree add: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(Error::Internal(format!(
+                "git worktree add failed: {}",
+                if stderr.is_empty() {
+                    "<no stderr>".to_owned()
+                } else {
+                    stderr
+                }
+            )));
+        }
+        // The new worktree lives at <repo_root>/<relative_path>.
+        let new_path = repo_root.join(relative_path);
+        dunce::canonicalize(&new_path).map_err(|e| {
+            Error::Internal(format!(
+                "worktree created but canonicalization failed: {}: {e}",
+                new_path.display()
+            ))
+        })
     }
 }
 
@@ -279,5 +375,106 @@ locked migrating to slow disk
         // Empty even though `git` is on PATH: the command exits non-zero
         // because it isn't a repository.
         assert!(out.is_empty());
+    }
+
+    /// Initialise a fresh git repo in `dir`, with a single committed file so
+    /// `worktree add -b` succeeds (it requires HEAD to point at a commit).
+    fn init_git_repo(dir: &Path) {
+        use std::process::Command;
+        let run = |args: &[&str]| {
+            let s = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("git invocation");
+            assert!(
+                s.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "test@arborist.local"]);
+        run(&["config", "user.name", "Arborist Test"]);
+        std::fs::write(dir.join("README"), b"hi").unwrap();
+        run(&["add", "README"]);
+        run(&["commit", "-q", "-m", "init"]);
+    }
+
+    #[test]
+    fn real_runner_git_toplevel_returns_path_for_initialised_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_git_repo(dir.path());
+        let runner = RealGitRunner;
+        let top = runner.git_toplevel(dir.path()).unwrap().expect("Some");
+        assert_eq!(
+            top,
+            dunce::canonicalize(dir.path()).unwrap(),
+            "toplevel must canonicalize back to the repo root"
+        );
+    }
+
+    #[test]
+    fn real_runner_git_toplevel_returns_repo_root_when_called_from_subdir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_git_repo(dir.path());
+        let sub = dir.path().join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        let runner = RealGitRunner;
+        let top = runner.git_toplevel(&sub).unwrap().expect("Some");
+        assert_eq!(
+            top,
+            dunce::canonicalize(dir.path()).unwrap(),
+            "toplevel must collapse to the repo root, not the subdir"
+        );
+    }
+
+    #[test]
+    fn real_runner_git_toplevel_none_for_plain_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let runner = RealGitRunner;
+        assert_eq!(runner.git_toplevel(dir.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn real_runner_git_toplevel_none_for_missing_dir() {
+        let runner = RealGitRunner;
+        assert_eq!(
+            runner
+                .git_toplevel(Path::new("/no/such/path/arborist-test"))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn real_runner_create_worktree_creates_branch_and_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_git_repo(dir.path());
+        let runner = RealGitRunner;
+        let new_path = runner
+            .create_worktree(dir.path(), Path::new(".worktrees/feat-x"), "feat-x")
+            .expect("create");
+        assert!(new_path.is_dir(), "expected new worktree dir to exist");
+        // The new worktree should also show up in list_worktrees.
+        let listed = runner.list_worktrees(dir.path()).unwrap();
+        assert!(
+            listed.iter().any(|w| w.branch.as_deref() == Some("feat-x")),
+            "expected feat-x in {listed:?}"
+        );
+    }
+
+    #[test]
+    fn real_runner_create_worktree_errors_on_missing_repo() {
+        let runner = RealGitRunner;
+        let err = runner
+            .create_worktree(
+                Path::new("/no/such/repo/arborist-test"),
+                Path::new(".worktrees/x"),
+                "x",
+            )
+            .expect_err("must error");
+        assert!(matches!(err, Error::WorktreeMissing(_)), "got {err:?}");
     }
 }

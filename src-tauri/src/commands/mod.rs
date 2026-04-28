@@ -28,7 +28,8 @@ use crate::config_store::{list_instructions_for, ConfigStore};
 use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCreateArgs, SessionId,
     SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView,
+    SessionStatusEvent, SessionView, WorkspaceValidateArgs, WorkspaceValidateResult,
+    WorktreeCreateArgs, WorktreeCreateResult,
 };
 
 pub use session::AppContext;
@@ -163,6 +164,29 @@ pub async fn worktrees_list(
     let ctx = ctx_of(&app)?;
     let path = PathBuf::from(repo_root);
     session::worktrees_list_impl(&ctx, &path)
+}
+
+/// Validate a candidate workspace root (Roadmap §1.1). Never errors for the
+/// "invalid path" case — the picker shows inline feedback.
+#[tauri::command]
+pub async fn workspace_validate(
+    app: tauri::AppHandle,
+    args: WorkspaceValidateArgs,
+) -> Result<WorkspaceValidateResult, AppError> {
+    let ctx = ctx_of(&app)?;
+    let path = PathBuf::from(args.path);
+    session::workspace_validate_impl(&ctx, &path)
+}
+
+/// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>`
+/// on a fresh branch named `<name>` (Roadmap §2.2).
+#[tauri::command]
+pub async fn worktree_create(
+    app: tauri::AppHandle,
+    args: WorktreeCreateArgs,
+) -> Result<WorktreeCreateResult, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::worktree_create_impl(&ctx, &args.name)
 }
 
 // ---------------------------------------------------------------------------

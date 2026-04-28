@@ -397,8 +397,142 @@ pub fn worktrees_list_impl(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// workspace_validate / worktree_create (Roadmap §1, §2)
 // ---------------------------------------------------------------------------
+
+/// Validate a candidate workspace root for the first-boot picker. Never
+/// returns an `AppError` for the "invalid" case — the picker shows inline
+/// feedback. Real `AppError`s are reserved for unexpected backend failures.
+pub fn workspace_validate_impl(
+    ctx: &AppContext,
+    path: &std::path::Path,
+) -> Result<crate::types::WorkspaceValidateResult, AppError> {
+    use crate::types::WorkspaceValidateResult;
+
+    let invalid = |msg: &str| WorkspaceValidateResult {
+        valid: false,
+        error: Some(msg.to_owned()),
+    };
+
+    if path.as_os_str().is_empty() {
+        return Ok(invalid("path is empty"));
+    }
+    if path.is_relative() {
+        return Ok(invalid("path must be absolute"));
+    }
+    let canon = match dunce::canonicalize(path) {
+        Ok(c) => c,
+        Err(e) => return Ok(invalid(&format!("path could not be resolved: {e}"))),
+    };
+    if !canon.is_dir() {
+        return Ok(invalid("path is not a directory"));
+    }
+    let toplevel = ctx
+        .git_runner
+        .git_toplevel(&canon)
+        .map_err(AppError::from)?;
+    let Some(toplevel) = toplevel else {
+        return Ok(invalid("path is not a git repository"));
+    };
+    if toplevel != canon {
+        return Ok(invalid(&format!(
+            "path must be the repository root ({})",
+            toplevel.display()
+        )));
+    }
+    Ok(WorkspaceValidateResult {
+        valid: true,
+        error: None,
+    })
+}
+
+/// Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a
+/// fresh branch named `<name>`.
+pub fn worktree_create_impl(
+    ctx: &AppContext,
+    name: &str,
+) -> Result<crate::types::WorktreeCreateResult, AppError> {
+    use crate::types::WorktreeCreateResult;
+
+    // Validate the name with the same rules the frontend used (defence in depth).
+    let validated = compose::validate_worktree_name(name)
+        .map_err(|msg| AppError::from(Error::InvalidPath(msg)))?;
+
+    let cfg = ctx.store.load_config();
+    let Some(workspace) = cfg.workspace_root.as_ref() else {
+        return Err(AppError::from(Error::NotFound(
+            "workspaceRoot is not set; cannot create worktree".to_owned(),
+        )));
+    };
+    let workspace = workspace.clone();
+    if !workspace.is_dir() {
+        return Err(AppError::from(Error::WorktreeMissing(workspace)));
+    }
+
+    let relative = std::path::PathBuf::from(".worktrees").join(&validated);
+    let absolute = workspace.join(&relative);
+    // Use symlink_metadata so dangling symlinks/junctions are still treated
+    // as "exists" (Roadmap critique #4).
+    if std::fs::symlink_metadata(&absolute).is_ok() {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "{} already exists",
+            absolute.display()
+        ))));
+    }
+
+    // Containment guard (critique #3): ensure `<workspace>/.worktrees`
+    // canonicalizes back inside the workspace. Refuses symlink/junction
+    // escapes that would otherwise place the new worktree outside the
+    // declared workspace root.
+    let worktrees_dir = workspace.join(".worktrees");
+    if let Ok(meta) = std::fs::symlink_metadata(&worktrees_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(AppError::from(Error::InvalidPath(format!(
+                "{} is a symlink; refusing to create worktree outside workspace",
+                worktrees_dir.display()
+            ))));
+        }
+    } else {
+        // Create the .worktrees parent ourselves so `git worktree add` does
+        // not have to, and so the canonicalize/containment check below has
+        // something to resolve.
+        std::fs::create_dir_all(&worktrees_dir).map_err(|e| {
+            AppError::from(Error::Internal(format!(
+                "could not create {}: {e}",
+                worktrees_dir.display()
+            )))
+        })?;
+    }
+    let canon_worktrees = dunce::canonicalize(&worktrees_dir).map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "could not canonicalize {}: {e}",
+            worktrees_dir.display()
+        )))
+    })?;
+    if !canon_worktrees.starts_with(&workspace) {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "{} resolves outside the workspace",
+            worktrees_dir.display()
+        ))));
+    }
+
+    let new_path = ctx
+        .git_runner
+        .create_worktree(&workspace, &relative, &validated)
+        .map_err(AppError::from)?;
+
+    // Post-condition: the canonical new path must still lie under the
+    // canonical workspace root.
+    if !new_path.starts_with(&workspace) {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "created worktree {} resolved outside workspace {}",
+            new_path.display(),
+            workspace.display()
+        ))));
+    }
+
+    Ok(WorktreeCreateResult { path: new_path })
+}
 
 /// Look up an instruction set by ID, validating that its tool matches the
 /// requested one.
