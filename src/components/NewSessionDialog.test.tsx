@@ -1,6 +1,6 @@
 // Tests for the 3-step NewSessionDialog. Bridge mocked wholesale.
 
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -20,7 +20,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     configVersion: 3,
     defaultInstructionSets: { claude: '', copilot: '' },
     instructionSetsDir: '/sets',
-    workspaceRoot: null,
+    workspaceRoot: REPO_ROOT,
     worktreeRoots: [REPO_ROOT],
     prelaunchCommands: ['nvm use 20'],
     worktreePrelaunchCommands: {},
@@ -102,10 +102,12 @@ describe('NewSessionDialog', () => {
     expect(screen.getByRole('radio', { name: /claude/i })).toHaveFocus();
   });
 
-  it('Step 2 lists worktrees from the bridge and supports manual Browse', async () => {
+  it('Step 2 lists worktrees from `.worktrees/` and supports manual Browse', async () => {
     bridgeMock.worktreesList.mockResolvedValue([
-      makeWt('/repos/arborist', 'main', true),
-      makeWt('/repos/arborist-feature', 'feature'),
+      // Main checkout — filtered out (not under .worktrees/).
+      makeWt(REPO_ROOT, 'main', true),
+      // Linked worktree — kept.
+      makeWt(`${REPO_ROOT}/.worktrees/feature`, 'feature'),
     ]);
     bridgeMock.pickDirectory.mockResolvedValue('/somewhere/else');
 
@@ -117,15 +119,15 @@ describe('NewSessionDialog', () => {
 
     await screen.findByText(/step 2 of 3/i);
 
-    // Quick-pick rendered both worktrees with branch + main badges.
-    const mainBtn = await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i });
-    expect(within(mainBtn).getAllByText(/main/i).length).toBeGreaterThanOrEqual(2);
-    expect(
-      screen.getByRole('button', { name: /\/repos\/arborist-feature.*feature/i }),
-    ).toBeInTheDocument();
+    // Only the linked worktree shows up; the main checkout (REPO_ROOT,
+    // outside .worktrees/) is filtered out.
+    const featureBtn = await screen.findByRole('button', {
+      name: /\.worktrees\/feature.*feature/i,
+    });
+    expect(screen.queryByText(new RegExp(`^${REPO_ROOT}$`))).not.toBeInTheDocument();
 
     // Selecting one enables Next.
-    fireEvent.click(mainBtn);
+    fireEvent.click(featureBtn);
     expect(screen.getByRole('button', { name: /^next$/i })).toBeEnabled();
 
     // Browse calls the bridge and replaces the selection.
@@ -134,13 +136,11 @@ describe('NewSessionDialog', () => {
     expect(await screen.findByText(/Selected: \/somewhere\/else/i)).toBeInTheDocument();
   });
 
-  it('Step 2 shows the manual fallback when no worktrees are detected', async () => {
-    // Empty config means no roots queried; bridge would otherwise return [].
-    useConfigStore.setState({
-      config: defaultConfig({ worktreeRoots: [] }),
-      status: 'ready',
-      error: null,
-    });
+  it('Step 2 shows the .worktrees/ empty-state and still allows Browse', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([
+      // Only the main checkout — filtered out, list ends up empty.
+      makeWt(REPO_ROOT, 'main', true),
+    ]);
     bridgeMock.pickDirectory.mockResolvedValue('/manual/pick');
 
     render(<NewSessionDialog />);
@@ -148,7 +148,7 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: /copilot/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
-    expect(await screen.findByText(/could not detect git worktrees/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no worktrees found in/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^next$/i })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: /browse/i }));
@@ -157,8 +157,62 @@ describe('NewSessionDialog', () => {
     expect(screen.getByRole('button', { name: /^next$/i })).toBeEnabled();
   });
 
+  it('Step 2 New tab validates the name and creates a worktree on submit', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+    });
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 3/i);
+
+    // Switch to the New tab.
+    fireEvent.click(screen.getByRole('tab', { name: /^new$/i }));
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+
+    // Invalid name: contains a space.
+    fireEvent.change(input, { target: { value: 'bad name' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/space/i);
+    expect(screen.getByRole('button', { name: /^create worktree$/i })).toBeDisabled();
+
+    // Valid name enables the Create button.
+    fireEvent.change(input, { target: { value: 'my-feature' } });
+    const createBtn = screen.getByRole('button', { name: /^create worktree$/i });
+    expect(createBtn).toBeEnabled();
+
+    // Create — bridge called, selection auto-set, Next enabled.
+    fireEvent.click(createBtn);
+    await waitFor(() => expect(bridgeMock.worktreeCreate).toHaveBeenCalledWith('my-feature'));
+    expect(await screen.findByText(/Selected: .*\.worktrees\/my-feature/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^next$/i })).toBeEnabled();
+  });
+
+  it('Step 2 New tab surfaces backend create errors', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockRejectedValue(new Error('branch already exists'));
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^new$/i }));
+
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+    fireEvent.change(input, { target: { value: 'already-there' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree$/i }));
+
+    expect(await screen.findByText(/branch already exists/i)).toBeInTheDocument();
+    // No selection happened, so Next stays disabled.
+    expect(screen.getByRole('button', { name: /^next$/i })).toBeDisabled();
+  });
+
   it('Step 3 filters instruction sets by tool, includes (none), and re-filters when tool changes', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/arborist', 'main', true)]);
+    bridgeMock.worktreesList.mockResolvedValue([
+      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
+    ]);
     bridgeMock.instructionsList.mockResolvedValue([
       makeInstr('claude-default', 'claude', true),
       makeInstr('claude-strict', 'claude'),
@@ -172,7 +226,7 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     // Step 2 → pick worktree
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
     // Step 3 visible
@@ -191,7 +245,7 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /back/i }));
     fireEvent.click(screen.getByRole('radio', { name: /copilot/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
     // Now copilot-only should be visible and the previously-selected
@@ -202,14 +256,16 @@ describe('NewSessionDialog', () => {
   });
 
   it('Confirm calls actions.create with the right payload and closes the dialog', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/arborist', 'main', true)]);
+    bridgeMock.worktreesList.mockResolvedValue([
+      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
+    ]);
     bridgeMock.instructionsList.mockResolvedValue([makeInstr('claude-default', 'claude', true)]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'new-id',
       tool: 'claude',
-      worktreePath: '/repos/arborist',
-      worktreeName: 'arborist',
-      label: 'arborist',
+      worktreePath: `${REPO_ROOT}/.worktrees/main`,
+      worktreeName: 'main',
+      label: 'main',
       instructionSetId: 'claude-default',
       status: 'running',
       createdAt: 1,
@@ -221,7 +277,7 @@ describe('NewSessionDialog', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     fireEvent.click(await screen.findByRole('radio', { name: /claude-default/i }));
     fireEvent.click(screen.getByRole('button', { name: /create session/i }));
@@ -229,7 +285,7 @@ describe('NewSessionDialog', () => {
     await waitFor(() =>
       expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
         tool: 'claude',
-        worktreePath: '/repos/arborist',
+        worktreePath: `${REPO_ROOT}/.worktrees/main`,
         instructionSetId: 'claude-default',
       }),
     );
@@ -244,13 +300,15 @@ describe('NewSessionDialog', () => {
       status: 'ready',
       error: null,
     });
-    bridgeMock.worktreesList.mockResolvedValue([makeWt('/repos/arborist', 'main', true)]);
+    bridgeMock.worktreesList.mockResolvedValue([
+      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
+    ]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'x',
       tool: 'claude',
-      worktreePath: '/repos/arborist',
-      worktreeName: 'arborist',
-      label: 'arborist',
+      worktreePath: `${REPO_ROOT}/.worktrees/main`,
+      worktreeName: 'main',
+      label: 'main',
       instructionSetId: 'claude-default',
       status: 'running',
       createdAt: 1,
@@ -261,7 +319,7 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\/repos\/arborist\b/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     // Default selection is (none); just confirm.
     fireEvent.click(await screen.findByRole('button', { name: /create session/i }));

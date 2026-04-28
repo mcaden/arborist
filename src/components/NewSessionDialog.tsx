@@ -15,15 +15,18 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { isInsideWorktreesDir } from '@/lib/worktree-paths';
 import {
   instructionsList as fetchInstructions,
   pickDirectory,
+  worktreeCreate,
   worktreesList,
 } from '@/lib/tauri-bridge';
+import { validateWorktreeName } from '@/lib/worktree-validation';
 import {
   selectDefaultInstructionSets,
   selectPrelaunchCommands,
-  selectWorktreeRoots,
+  selectWorkspaceRoot,
   useConfigStore,
 } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
@@ -31,6 +34,7 @@ import { useSessionActions } from '@/store/session-store';
 import type { InstructionSet, Tool, WorktreeInfo } from '@/types/arborist';
 
 type Step = 1 | 2 | 3;
+type WorktreeMode = 'existing' | 'new';
 
 interface ChosenWorktree {
   path: string;
@@ -50,7 +54,7 @@ export function NewSessionDialog(): JSX.Element | null {
   const isOpen = useNewSessionDialog((s) => s.isOpen);
   const close = useNewSessionDialog((s) => s.close);
   const actions = useSessionActions();
-  const worktreeRoots = useConfigStore(selectWorktreeRoots);
+  const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
   const defaultSets = useConfigStore(selectDefaultInstructionSets);
 
@@ -59,6 +63,7 @@ export function NewSessionDialog(): JSX.Element | null {
 
   const [step, setStep] = useState<Step>(1);
   const [tool, setTool] = useState<Tool | null>(null);
+  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('existing');
   const [worktree, setWorktree] = useState<ChosenWorktree | null>(null);
   const [instructionSetId, setInstructionSetId] = useState<string | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
@@ -67,6 +72,11 @@ export function NewSessionDialog(): JSX.Element | null {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // "New worktree" sub-form state.
+  const [newName, setNewName] = useState<string>('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
   // Reset all wizard state whenever the dialog transitions to open. We do
   // this on the *open* edge so the dialog is fresh each time it appears
   // (SPEC C-01: closing mid-flow discards the in-progress selection).
@@ -74,12 +84,16 @@ export function NewSessionDialog(): JSX.Element | null {
     if (!isOpen) return;
     setStep(1);
     setTool(null);
+    setWorktreeMode('existing');
     setWorktree(null);
     setInstructionSetId(null);
     setWorktrees([]);
     setAllInstructions([]);
     setSubmitting(false);
     setSubmitError(null);
+    setNewName('');
+    setCreating(false);
+    setCreateError(null);
   }, [isOpen]);
 
   // Show/hide the native <dialog>. Mirrors CloseConfirmDialog's jsdom-safe
@@ -126,34 +140,26 @@ export function NewSessionDialog(): JSX.Element | null {
     };
   }, [isOpen]);
 
-  // When the user lands on Step 2, fan out a `worktrees_list` per
-  // configured root and concatenate. Any per-root failure is silently
-  // dropped (the backend already swallows them and returns `[]`).
+  // When the user lands on Step 2, list worktrees for the configured
+  // workspace and filter to those under `<workspaceRoot>/.worktrees/`.
+  // Worktrees outside that directory (the main checkout, ad-hoc paths)
+  // are still reachable via "Browse…".
   useEffect(() => {
     if (!isOpen || step !== 2) return;
     let cancelled = false;
     setWorktreesLoading(true);
-    const roots = worktreeRoots;
-    if (roots.length === 0) {
+    if (workspaceRoot === null || workspaceRoot.length === 0) {
       setWorktrees([]);
       setWorktreesLoading(false);
       return;
     }
-    Promise.all(roots.map((r) => worktreesList(r).catch(() => [] as WorktreeInfo[])))
-      .then((lists) => {
+    const root = workspaceRoot;
+    worktreesList(root)
+      .catch(() => [] as WorktreeInfo[])
+      .then((list) => {
         if (cancelled) return;
-        // Deduplicate by absolute path — a worktree might be reachable
-        // from multiple configured roots.
-        const seen = new Set<string>();
-        const merged: WorktreeInfo[] = [];
-        for (const list of lists) {
-          for (const w of list) {
-            if (seen.has(w.path)) continue;
-            seen.add(w.path);
-            merged.push(w);
-          }
-        }
-        setWorktrees(merged);
+        const filtered = list.filter((w) => isInsideWorktreesDir(root, w.path));
+        setWorktrees(filtered);
       })
       .finally(() => {
         if (!cancelled) setWorktreesLoading(false);
@@ -161,7 +167,7 @@ export function NewSessionDialog(): JSX.Element | null {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, step, worktreeRoots]);
+  }, [isOpen, step, workspaceRoot]);
 
   // Filter instruction sets by the selected tool so changing the tool
   // after Step 1 always re-derives the visible options.
@@ -205,6 +211,40 @@ export function NewSessionDialog(): JSX.Element | null {
     const picked = await pickDirectory();
     if (picked) {
       setWorktree({ path: picked, isMain: false });
+    }
+  };
+
+  const newNameError = useMemo<string | null>(
+    () => (newName.length === 0 ? null : validateWorktreeName(newName)),
+    [newName],
+  );
+
+  const onCreateWorktree = async (): Promise<void> => {
+    if (newName.length === 0 || newNameError !== null || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const result = await worktreeCreate(newName.trim());
+      // Auto-select the newly created worktree and prefill its branch.
+      setWorktree({ path: result.path, branch: newName.trim(), isMain: false });
+      setWorktreeMode('existing');
+      // Refresh the listing so the user can see it in the list too.
+      if (workspaceRoot !== null && workspaceRoot.length > 0) {
+        const root = workspaceRoot;
+        try {
+          const list = await worktreesList(root);
+          setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
+        } catch {
+          // Listing failure is non-fatal; the selection above is enough
+          // to advance.
+        }
+      }
+      setNewName('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setCreateError(message);
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -283,58 +323,154 @@ export function NewSessionDialog(): JSX.Element | null {
       {step === 2 && (
         <div className="mb-4">
           <p className="mb-2 text-sm font-medium">Choose a worktree</p>
-          {worktreesLoading ? (
-            <p className="text-sm text-slate-500">Loading...</p>
-          ) : worktrees.length === 0 ? (
-            <p className="mb-2 text-sm text-slate-500">
-              Could not detect git worktrees - pick a directory manually.
-            </p>
+
+          <div role="tablist" aria-label="Worktree source" className="mb-3 flex gap-1">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={worktreeMode === 'existing'}
+              onClick={() => setWorktreeMode('existing')}
+              className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
+                worktreeMode === 'existing'
+                  ? 'border-sky-600 text-sky-700 dark:text-sky-300'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              Existing
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={worktreeMode === 'new'}
+              onClick={() => setWorktreeMode('new')}
+              className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
+                worktreeMode === 'new'
+                  ? 'border-sky-600 text-sky-700 dark:text-sky-300'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              New
+            </button>
+          </div>
+
+          {worktreeMode === 'existing' ? (
+            <>
+              {worktreesLoading ? (
+                <p className="text-sm text-slate-500">Loading...</p>
+              ) : worktrees.length === 0 ? (
+                <p className="mb-2 text-sm text-slate-500">
+                  No worktrees found in <span className="font-mono">.worktrees/</span> — create one
+                  in the New tab, or use Browse for a path elsewhere.
+                </p>
+              ) : (
+                <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+                  {worktrees.map((w) => (
+                    <li key={w.path}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setWorktree({
+                            path: w.path,
+                            ...(w.branch !== undefined ? { branch: w.branch } : {}),
+                            isMain: w.isMain,
+                          })
+                        }
+                        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
+                          worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
+                        }`}
+                      >
+                        <span className="truncate font-mono">{w.path}</span>
+                        <span className="flex shrink-0 items-center gap-1">
+                          {w.branch && (
+                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
+                              {w.branch}
+                            </span>
+                          )}
+                          {w.isMain && (
+                            <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
+                              main
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  void onPickDirectory();
+                }}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
+              >
+                Browse...
+              </button>
+              {worktree && (
+                <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
+              )}
+            </>
           ) : (
-            <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-              {worktrees.map((w) => (
-                <li key={w.path}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setWorktree({
-                        path: w.path,
-                        ...(w.branch !== undefined ? { branch: w.branch } : {}),
-                        isMain: w.isMain,
-                      })
-                    }
-                    className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
-                      worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
-                    }`}
-                  >
-                    <span className="truncate font-mono">{w.path}</span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      {w.branch && (
-                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
-                          {w.branch}
-                        </span>
-                      )}
-                      {w.isMain && (
-                        <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
-                          main
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              void onPickDirectory();
-            }}
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
-          >
-            Browse...
-          </button>
-          {worktree && (
-            <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
+            <div>
+              <label htmlFor="new-worktree-name" className="block text-sm font-medium">
+                Branch / worktree name
+              </label>
+              <input
+                id="new-worktree-name"
+                type="text"
+                value={newName}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                  setCreateError(null);
+                }}
+                aria-invalid={newNameError !== null}
+                aria-describedby={
+                  newNameError !== null
+                    ? 'new-worktree-name-error'
+                    : createError !== null
+                      ? 'new-worktree-create-error'
+                      : 'new-worktree-name-help'
+                }
+                placeholder="my-feature"
+                className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
+              />
+              {newNameError !== null ? (
+                <p
+                  id="new-worktree-name-error"
+                  role="alert"
+                  className="mt-1 text-xs text-red-600 dark:text-red-400"
+                >
+                  {newNameError}
+                </p>
+              ) : (
+                <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
+                  Will run{' '}
+                  <span className="font-mono">
+                    git worktree add .worktrees/{newName || 'NAME'} -b {newName || 'NAME'}
+                  </span>
+                </p>
+              )}
+              {createError !== null && (
+                <p
+                  id="new-worktree-create-error"
+                  role="alert"
+                  className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
+                >
+                  {createError}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => void onCreateWorktree()}
+                disabled={newName.length === 0 || newNameError !== null || creating}
+                className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+              >
+                {creating ? 'Creating…' : 'Create worktree'}
+              </button>
+              {worktree && (
+                <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
+              )}
+            </div>
           )}
         </div>
       )}
