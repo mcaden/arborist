@@ -40,38 +40,43 @@ export const sessionCreate: Mock<
 export const sessionList: Mock<
   Parameters<typeof realBridge.sessionList>,
   ReturnType<typeof realBridge.sessionList>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve([]));
 
 export const sessionClose: Mock<
   Parameters<typeof realBridge.sessionClose>,
   ReturnType<typeof realBridge.sessionClose>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve());
 
 export const sessionFocus: Mock<
   Parameters<typeof realBridge.sessionFocus>,
   ReturnType<typeof realBridge.sessionFocus>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve());
 
 export const sessionResize: Mock<
   Parameters<typeof realBridge.sessionResize>,
   ReturnType<typeof realBridge.sessionResize>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve());
 
 export const sessionInput: Mock<
   Parameters<typeof realBridge.sessionInput>,
   ReturnType<typeof realBridge.sessionInput>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve());
 
 export const sessionRestart: Mock<
   Parameters<typeof realBridge.sessionRestart>,
   ReturnType<typeof realBridge.sessionRestart>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve());
+
+export const frontendReady: Mock<
+  Parameters<typeof realBridge.frontendReady>,
+  ReturnType<typeof realBridge.frontendReady>
+> = vi.fn(() => Promise.resolve());
 
 // `config_get`/`config_set`/`instructions_list` are real implementations as
 // of Phase 4; their default mock behaviour returns benign empty values so
 // tests don't need to wire each call individually unless they care.
 const defaultAppConfig = (): AppConfig => ({
-  configVersion: 1,
+  configVersion: 2,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   worktreeRoots: [],
@@ -79,6 +84,7 @@ const defaultAppConfig = (): AppConfig => ({
   worktreePrelaunchCommands: {},
   lastOpenSessions: [],
   tabOrder: [],
+  activeSessionId: null,
 });
 
 export const configGet: Mock<
@@ -122,12 +128,13 @@ export type {
 export function resetBridgeMocks(): void {
   ping.mockReset().mockImplementation(() => Promise.resolve('pong'));
   sessionCreate.mockReset().mockImplementation(rejectNotImplemented);
-  sessionList.mockReset().mockImplementation(rejectNotImplemented);
-  sessionClose.mockReset().mockImplementation(rejectNotImplemented);
-  sessionFocus.mockReset().mockImplementation(rejectNotImplemented);
-  sessionResize.mockReset().mockImplementation(rejectNotImplemented);
-  sessionInput.mockReset().mockImplementation(rejectNotImplemented);
-  sessionRestart.mockReset().mockImplementation(rejectNotImplemented);
+  sessionList.mockReset().mockImplementation(() => Promise.resolve([]));
+  sessionClose.mockReset().mockImplementation(() => Promise.resolve());
+  sessionFocus.mockReset().mockImplementation(() => Promise.resolve());
+  sessionResize.mockReset().mockImplementation(() => Promise.resolve());
+  sessionInput.mockReset().mockImplementation(() => Promise.resolve());
+  sessionRestart.mockReset().mockImplementation(() => Promise.resolve());
+  frontendReady.mockReset().mockImplementation(() => Promise.resolve());
   configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   configSet.mockReset().mockImplementation(() => Promise.resolve());
   instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
@@ -147,6 +154,7 @@ const _shapeCheck = {
   sessionResize,
   sessionInput,
   sessionRestart,
+  frontendReady,
   configGet,
   configSet,
   instructionsList,

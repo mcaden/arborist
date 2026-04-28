@@ -206,7 +206,11 @@ pub struct DefaultInstructionSets {
 /// Current on-disk schema version for [`AppConfig`]. Incremented whenever
 /// the persisted shape changes in a non-backwards-compatible way so the
 /// loader can migrate (or quarantine) old files.
-pub const CONFIG_VERSION_CURRENT: u32 = 1;
+///
+/// Version history:
+/// * `1` — initial release.
+/// * `2` — added `active_session_id` (Phase 7).
+pub const CONFIG_VERSION_CURRENT: u32 = 2;
 
 /// Persisted application configuration. Lives in `config.json` (Phase 4).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -224,6 +228,12 @@ pub struct AppConfig {
     pub worktree_prelaunch_commands: BTreeMap<String, Vec<String>>,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
+    /// ID of the most recently focused session. Persisted by `session_focus`
+    /// and consulted by Phase 8+ on launch to decide which tab to show
+    /// active. Cleared when the active session is closed. Added in
+    /// `configVersion = 2`.
+    #[serde(default)]
+    pub active_session_id: Option<SessionId>,
 }
 
 impl Default for AppConfig {
@@ -237,6 +247,7 @@ impl Default for AppConfig {
             worktree_prelaunch_commands: BTreeMap::new(),
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
+            active_session_id: None,
         }
     }
 }
@@ -273,6 +284,46 @@ pub struct PartialAppConfig {
     pub last_open_sessions: Option<Vec<SessionId>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tab_order: Option<Vec<SessionId>>,
+    /// Tri-state: absent → leave alone; `null` → clear; `"<uuid>"` → set.
+    /// Encoded with the `double_option` helper so JSON `null` is preserved
+    /// as `Some(None)` rather than collapsing to "field absent".
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "double_option"
+    )]
+    pub active_session_id: Option<Option<SessionId>>,
+}
+
+/// serde adapter for `Option<Option<T>>`: distinguishes "absent" from
+/// "present-but-null". JSON has no native `Some(None)`, so we serialise
+/// `Some(None)` as `null` and rely on `skip_serializing_if = Option::is_none`
+/// to elide the absent case.
+mod double_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T, S>(v: &Option<Option<T>>, s: S) -> Result<S::Ok, S::Error>
+    where
+        T: Serialize,
+        S: Serializer,
+    {
+        match v {
+            // Outer None is elided by `skip_serializing_if`; this branch
+            // would only fire if the field weren't tagged with that.
+            None => s.serialize_none(),
+            Some(inner) => inner.serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
+    where
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        // If the field is present, parse it as `Option<T>` (null → None,
+        // value → Some). Wrap in the outer `Some` to mark "present".
+        Option::<T>::deserialize(d).map(Some)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +350,52 @@ pub struct SessionOutputEvent {
 pub struct SessionStatusEvent {
     pub session_id: SessionId,
     pub status: SessionStatus,
+}
+
+// ---------------------------------------------------------------------------
+// Command argument shapes (DESIGN §6)
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `session_create` command.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SessionCreateArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCreateArgs {
+    pub tool: Tool,
+    pub worktree_path: PathBuf,
+    pub instruction_set_id: InstructionSetId,
+}
+
+/// Arguments for any command keyed only by session id (`session_close`,
+/// `session_focus`, `session_restart`).
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SessionIdArg`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIdArg {
+    pub session_id: SessionId,
+}
+
+/// Arguments for `session_resize`.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SessionResizeArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionResizeArgs {
+    pub session_id: SessionId,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Arguments for `session_input`.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SessionInputArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInputArgs {
+    pub session_id: SessionId,
+    pub data: String,
 }
 
 /// Crate-wide error type. Internal Rust code consumes this via `?`; at the
@@ -330,6 +427,23 @@ pub enum Error {
     #[error("pty kill failed: {0}")]
     PtyKillFailed(String),
 
+    /// An instruction file exceeds the 1 MiB cap from DESIGN §8.2. The
+    /// payload is the offending file's path for diagnostics.
+    #[error("instruction file too large: {0}")]
+    InstructionFileTooLarge(std::path::PathBuf),
+
+    /// A session's persisted instruction temp file is missing on disk and
+    /// could not be re-materialised. Surfaces during restore (Phase 7)
+    /// when both the on-disk file and the persisted contents are gone.
+    #[error("instruction file missing: {0}")]
+    InstructionFileMissing(std::path::PathBuf),
+
+    /// The selected instruction set's `tool` does not match the requested
+    /// session tool (e.g. asking to spawn a Claude session with a
+    /// `copilot-default` instruction set).
+    #[error("tool/instruction-set mismatch: {0}")]
+    ToolMismatch(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -355,6 +469,9 @@ impl Error {
             Self::PtyWriteFailed(_) => "PtyWriteFailed",
             Self::PtyResizeFailed(_) => "PtyResizeFailed",
             Self::PtyKillFailed(_) => "PtyKillFailed",
+            Self::InstructionFileTooLarge(_) => "InstructionFileTooLarge",
+            Self::InstructionFileMissing(_) => "InstructionFileMissing",
+            Self::ToolMismatch(_) => "ToolMismatch",
             Self::Io(_) => "Io",
             Self::Serde(_) => "Serde",
             Self::Internal(_) => "Internal",
@@ -501,7 +618,7 @@ mod tests {
             vec!["nvm use".to_owned(), "asdf reshim".to_owned()],
         );
         let value = AppConfig {
-            config_version: 1,
+            config_version: 2,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
@@ -516,9 +633,12 @@ mod tests {
             tab_order: vec![SessionId(
                 Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
             )],
+            active_session_id: Some(SessionId(
+                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
+            )),
         };
         let fixture = json!({
-            "configVersion": 1,
+            "configVersion": 2,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
@@ -530,7 +650,8 @@ mod tests {
                 "/repo/feature-x": ["nvm use", "asdf reshim"]
             },
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
-            "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"]
+            "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
+            "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
         });
         (value, fixture)
     }
@@ -548,6 +669,7 @@ mod tests {
             worktree_prelaunch_commands: None,
             last_open_sessions: None,
             tab_order: None,
+            active_session_id: None,
         };
         let fixture = json!({
             "defaultInstructionSets": { "claude": "claude-default" },
@@ -612,6 +734,38 @@ mod tests {
         assert!(!obj.contains_key("worktreePrelaunchCommands"));
         assert!(!obj.contains_key("lastOpenSessions"));
         assert!(!obj.contains_key("tabOrder"));
+        assert!(!obj.contains_key("activeSessionId"));
+    }
+
+    #[test]
+    fn partial_app_config_active_session_id_tri_state() {
+        // Absent: deserialised as `None` → "leave alone".
+        let absent: PartialAppConfig = serde_json::from_value(json!({})).expect("absent");
+        assert_eq!(absent.active_session_id, None);
+
+        // null: deserialised as `Some(None)` → "clear".
+        let cleared: PartialAppConfig =
+            serde_json::from_value(json!({ "activeSessionId": null })).expect("clear");
+        assert_eq!(cleared.active_session_id, Some(None));
+
+        // string: deserialised as `Some(Some(uuid))` → "set".
+        let set: PartialAppConfig = serde_json::from_value(json!({
+            "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+        }))
+        .expect("set");
+        assert_eq!(
+            set.active_session_id,
+            Some(Some(SessionId(
+                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")
+            )))
+        );
+
+        // Round-trip: Some(None) serialises to null.
+        let serialised = serde_json::to_value(&cleared).expect("ser");
+        assert_eq!(serialised, json!({ "activeSessionId": null }));
+        // Outer None serialises to {} (field elided).
+        let serialised_absent = serde_json::to_value(&absent).expect("ser");
+        assert_eq!(serialised_absent, json!({}));
     }
 
     #[test]
@@ -680,6 +834,15 @@ mod tests {
         assert_eq!(Error::PtyWriteFailed("e".into()).code(), "PtyWriteFailed");
         assert_eq!(Error::PtyResizeFailed("e".into()).code(), "PtyResizeFailed");
         assert_eq!(Error::PtyKillFailed("e".into()).code(), "PtyKillFailed");
+        assert_eq!(
+            Error::InstructionFileTooLarge(std::path::PathBuf::from("/x")).code(),
+            "InstructionFileTooLarge"
+        );
+        assert_eq!(
+            Error::InstructionFileMissing(std::path::PathBuf::from("/x")).code(),
+            "InstructionFileMissing"
+        );
+        assert_eq!(Error::ToolMismatch("x".into()).code(), "ToolMismatch");
     }
 
     #[test]

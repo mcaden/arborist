@@ -13,8 +13,9 @@ pub mod types;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
-    PartialAppConfig, PartialDefaultInstructionSets, Session, SessionId, SessionOutputEvent,
-    SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool, CONFIG_VERSION_CURRENT,
+    PartialAppConfig, PartialDefaultInstructionSets, Session, SessionCreateArgs, SessionId,
+    SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionStatus,
+    SessionStatusEvent, SessionView, TempFileSpec, Tool, CONFIG_VERSION_CURRENT,
 };
 
 use tracing_subscriber::EnvFilter;
@@ -34,11 +35,33 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
+        .setup(|app| {
+            // Build the production AppContext: portable-pty spawner, the
+            // on-disk ConfigStore, and a PtySink that bridges back into
+            // both Tauri events and the persisted session record.
+            use tauri::Manager;
+            let store = commands::store_for(app.handle())?;
+            let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(
+                pty_pool::PortablePtySpawner,
+            )));
+            let sink = commands::build_production_sink(app.handle().clone(), store.clone());
+            let ctx = std::sync::Arc::new(commands::AppContext::new(pool, store, sink));
+            app.manage(ctx);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::config_get,
             commands::config_set,
             commands::instructions_list,
+            commands::session_create,
+            commands::session_list,
+            commands::session_close,
+            commands::session_focus,
+            commands::session_resize,
+            commands::session_input,
+            commands::session_restart,
+            commands::frontend_ready,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Grove");

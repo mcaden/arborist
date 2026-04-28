@@ -3,5 +3,12 @@
   "identifier": "main-capability",
   "description": "Default capability granted to the main window",
   "windows": ["main"],
-  "permissions": ["core:default", "allow-ping", "allow-config", "allow-instructions"]
+  "permissions": [
+    "core:default",
+    "allow-ping",
+    "allow-config",
+    "allow-instructions",
+    "allow-session",
+    "allow-frontend-ready"
+  ]
 }

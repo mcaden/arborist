@@ -116,7 +116,7 @@ interface InstructionSet {
 
 ```typescript
 interface AppConfig {
-  configVersion: number; // On-disk schema version (currently 1; bumped on breaking changes)
+  configVersion: number; // On-disk schema version (currently 2; bumped on breaking changes)
   defaultInstructionSets: {
     claude: string; // InstructionSet ID
     copilot: string; // InstructionSet ID
@@ -127,6 +127,7 @@ interface AppConfig {
   worktreePrelaunchCommands: Record<string, string[]>; // Per-worktree overrides (key = worktree path)
   lastOpenSessions: string[]; // Session IDs to restore on next launch
   tabOrder: string[]; // Session IDs in sidebar display order
+  activeSessionId: string | null; // Focused session at last shutdown (restored on launch)
 }
 ```
 
@@ -320,16 +321,27 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 
 | Command | Payload | Return | Description |
 |---------|---------|--------|-------------|
-| `session_create` | `{ tool, worktreePath, instructionSetId }` | `Session` | Compose and spawn a new session |
-| `session_list` | — | `Session[]` | Return all current Session records |
+| `session_create` | `{ tool, worktreePath, instructionSetId }` | `SessionView` | Compose and spawn a new session |
+| `session_list` | — | `SessionView[]` | Return all current sessions (without composedCommand/tempFiles) |
 | `session_close` | `{ sessionId }` | — | Terminate a session (after UI confirmation) |
 | `session_focus` | `{ sessionId }` | — | Mark session as active |
 | `session_resize` | `{ sessionId, cols, rows }` | — | Resize PTY |
 | `session_input` | `{ sessionId, data }` | — | Send keystrokes to PTY |
-| `session_restart` | `{ sessionId }` | — | Re-spawn a session using its stored composedCommand |
+| `session_restart` | `{ sessionId }` | — | Re-spawn a session using its stored `composedCommand` verbatim (DESIGN §5.4) |
+| `frontend_ready` | — | — | One-shot signal from the frontend after first paint; triggers restore-on-launch (re-spawns every session in `lastOpenSessions` via `respawn_existing`). Idempotent — subsequent calls are no-ops. |
 | `config_get` | — | `AppConfig` | Retrieve AppConfig |
-| `config_set` | `Partial<AppConfig>` | — | Update AppConfig |
+| `config_set` | `Partial<AppConfig>` | — | Update AppConfig (`activeSessionId` is tri-state: omit to leave alone, `null` to clear, value to set) |
 | `instructions_list` | — | `InstructionSet[]` | List available instruction sets from `instructionSetsDir` |
+
+> **Test-only seam.** The Rust backend consults two env vars,
+> `GROVE_CLI_OVERRIDE_CLAUDE` and `GROVE_CLI_OVERRIDE_COPILOT`, when composing
+> a session's command. If set, the value replaces the bare `claude` / `copilot`
+> program token (already shell-quoted). Production never sets these; they exist
+> only so integration tests can drive the full lifecycle against a deterministic
+> child process. The override path is encoded verbatim into the persisted
+> `composedCommand`, so restarting the session with the env var unset will spawn
+> the literal path (not fall back to `claude`/`copilot`). See
+> `compose::cli_program_for_tool`.
 
 ### Events (Rust → Frontend)
 

@@ -11,7 +11,7 @@ import type { AppConfig, PartialAppConfig } from '@/types/grove';
 import { useConfigStore } from './config-store';
 
 const SAMPLE: AppConfig = {
-  configVersion: 1,
+  configVersion: 2,
   defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
   instructionSetsDir: '/cfg/instr',
   worktreeRoots: ['/repo'],
@@ -19,12 +19,13 @@ const SAMPLE: AppConfig = {
   worktreePrelaunchCommands: { '/repo/feat-x': ['asdf reshim'] },
   lastOpenSessions: [],
   tabOrder: [],
+  activeSessionId: null,
 };
 
 function resetStore(): void {
   useConfigStore.setState({
     config: {
-      configVersion: 1,
+      configVersion: 2,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       worktreeRoots: [],
@@ -32,6 +33,7 @@ function resetStore(): void {
       worktreePrelaunchCommands: {},
       lastOpenSessions: [],
       tabOrder: [],
+      activeSessionId: null,
     },
     status: 'idle',
     error: null,

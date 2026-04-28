@@ -46,57 +46,93 @@ describe('ping', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stub coverage. Each command listed in DESIGN §6 (other than `ping`) must
-// reject with `'not implemented'` until the corresponding phase lands.
-// Adding a real implementation will flip exactly one of these assertions —
-// at which point that row should move into its own behavioural test and be
-// removed from this list.
+// Phase 7 commands — real implementations.
 // ---------------------------------------------------------------------------
 
-interface StubCase {
-  readonly name: keyof typeof bridge;
-  readonly invoke: () => Promise<unknown>;
-}
+describe('sessionCreate', () => {
+  it("calls invoke('session_create') wrapping the args under `args` and forwards the SessionView", async () => {
+    const view = {
+      id: 'sid-1',
+      tool: 'claude' as const,
+      worktreePath: '/repo/feat',
+      worktreeName: 'feat',
+      label: 'feat',
+      instructionSetId: 'claude-default',
+      status: 'running' as const,
+      pid: 1234,
+      createdAt: 1700000000,
+      tabIndex: 0,
+    };
+    invokeMock.mockResolvedValueOnce(view);
+    const args = {
+      tool: 'claude' as const,
+      worktreePath: '/repo/feat',
+      instructionSetId: 'claude-default',
+    };
 
-const STUB_CASES: readonly StubCase[] = [
-  {
-    name: 'sessionCreate',
-    invoke: () =>
-      bridge.sessionCreate({
-        tool: 'claude',
-        worktreePath: '/tmp/wt',
-        instructionSetId: 'claude-default',
-      }),
-  },
-  { name: 'sessionList', invoke: () => bridge.sessionList() },
-  {
-    name: 'sessionClose',
-    invoke: () => bridge.sessionClose({ sessionId: 'sid' }),
-  },
-  {
-    name: 'sessionFocus',
-    invoke: () => bridge.sessionFocus({ sessionId: 'sid' }),
-  },
-  {
-    name: 'sessionResize',
-    invoke: () => bridge.sessionResize({ sessionId: 'sid', cols: 80, rows: 24 }),
-  },
-  {
-    name: 'sessionInput',
-    invoke: () => bridge.sessionInput({ sessionId: 'sid', data: 'x' }),
-  },
-  {
-    name: 'sessionRestart',
-    invoke: () => bridge.sessionRestart({ sessionId: 'sid' }),
-  },
-];
+    const result = await bridge.sessionCreate(args);
 
-describe('command stubs', () => {
-  it.each(STUB_CASES)('$name rejects with "not implemented"', async ({ invoke }) => {
-    await expect(invoke()).rejects.toThrow('not implemented');
-    // Stubs must not touch the real Tauri invoke until they are
-    // implemented for real.
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith('session_create', { args });
+    expect(result).toEqual(view);
+  });
+});
+
+describe('sessionList', () => {
+  it("calls invoke('session_list') with no args and forwards the array", async () => {
+    invokeMock.mockResolvedValueOnce([]);
+    const result = await bridge.sessionList();
+    expect(invokeMock).toHaveBeenCalledWith('session_list', undefined);
+    expect(result).toEqual([]);
+  });
+});
+
+describe('session id-only commands', () => {
+  it.each([
+    ['sessionClose', 'session_close'],
+    ['sessionFocus', 'session_focus'],
+    ['sessionRestart', 'session_restart'],
+  ] as const)('%s wraps args under `args`', async (fn, command) => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    const args = { sessionId: 'sid-1' };
+    await (bridge[fn] as (a: { sessionId: string }) => Promise<void>)(args);
+    expect(invokeMock).toHaveBeenCalledWith(command, { args });
+  });
+});
+
+describe('sessionResize', () => {
+  it("calls invoke('session_resize') wrapping the args", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    const args = { sessionId: 'sid-1', cols: 120, rows: 40 };
+    await bridge.sessionResize(args);
+    expect(invokeMock).toHaveBeenCalledWith('session_resize', { args });
+  });
+});
+
+describe('sessionInput', () => {
+  it("calls invoke('session_input') wrapping the args", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    const args = { sessionId: 'sid-1', data: 'hi\r' };
+    await bridge.sessionInput(args);
+    expect(invokeMock).toHaveBeenCalledWith('session_input', { args });
+  });
+
+  it('forwards backend rejections', async () => {
+    invokeMock.mockRejectedValueOnce({
+      code: 'NotFound',
+      message: 'session sid-1 not in pty pool',
+    });
+    await expect(bridge.sessionInput({ sessionId: 'sid-1', data: 'x' })).rejects.toEqual({
+      code: 'NotFound',
+      message: 'session sid-1 not in pty pool',
+    });
+  });
+});
+
+describe('frontendReady', () => {
+  it("calls invoke('frontend_ready') with no args", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await bridge.frontendReady();
+    expect(invokeMock).toHaveBeenCalledWith('frontend_ready', undefined);
   });
 });
 
@@ -107,7 +143,7 @@ describe('command stubs', () => {
 describe('configGet', () => {
   it("calls invoke('config_get') with no args and returns the parsed AppConfig", async () => {
     const cfg: AppConfig = {
-      configVersion: 1,
+      configVersion: 2,
       defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
       instructionSetsDir: '/cfg/instr',
       worktreeRoots: [],
@@ -115,6 +151,7 @@ describe('configGet', () => {
       worktreePrelaunchCommands: {},
       lastOpenSessions: [],
       tabOrder: [],
+      activeSessionId: null,
     };
     invokeMock.mockResolvedValueOnce(cfg);
 

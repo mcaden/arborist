@@ -20,6 +20,7 @@ describe('tauri-bridge.mock', () => {
       'sessionResize',
       'sessionInput',
       'sessionRestart',
+      'frontendReady',
       'configGet',
       'configSet',
       'instructionsList',
@@ -41,6 +42,16 @@ describe('tauri-bridge.mock', () => {
 
     expect(mock.ping).toHaveBeenCalledTimes(0);
     await expect(mock.ping()).resolves.toBe('pong');
-    await expect(mock.sessionList()).rejects.toThrow('not implemented');
+    // Phase 7: sessionList default became Promise.resolve([]).
+    await expect(mock.sessionList()).resolves.toEqual([]);
+    // sessionCreate is the only remaining stub that rejects by default
+    // (callers should opt-in by setting a return value per test).
+    await expect(
+      mock.sessionCreate({
+        tool: 'claude',
+        worktreePath: '/wt',
+        instructionSetId: 'claude-default',
+      }),
+    ).rejects.toThrow('not implemented');
   });
 });

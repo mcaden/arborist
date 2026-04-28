@@ -143,6 +143,7 @@ describe('grove type mirrors', () => {
         'worktreePrelaunchCommands',
         'lastOpenSessions',
         'tabOrder',
+        'activeSessionId',
       ],
       [],
       'AppConfig',
@@ -160,6 +161,7 @@ describe('grove type mirrors', () => {
       'worktreePrelaunchCommands',
       'lastOpenSessions',
       'tabOrder',
+      'activeSessionId',
     ]);
     const unexpected = Object.keys(partialAppConfigFixture).filter((k) => !allowed.has(k));
     expect(unexpected, 'PartialAppConfig: fixture has keys not declared in TS mirror').toEqual([]);

@@ -21,7 +21,6 @@ import type {
   InstructionSet,
   InstructionSetId,
   PartialAppConfig,
-  Session,
   SessionId,
   SessionOutputEvent,
   SessionStatusEvent,
@@ -72,44 +71,69 @@ export function ping(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Stubs for every command in DESIGN §6.
-//
-// Each stub returns `Promise.reject(new Error('not implemented'))` so that:
-//   - calling code can be written and typed today,
-//   - replacing the stub with a real `invoke(...)` call in a later phase
-//     is a one-line change per command,
-//   - the parametrised test in `tauri-bridge.test.ts` will start failing
-//     once a real implementation lands — flagging which assertion to flip.
+// Session lifecycle commands (Phase 7).
 // ---------------------------------------------------------------------------
 
-const NOT_IMPLEMENTED = (): Promise<never> => Promise.reject(new Error('not implemented'));
-
-export function sessionCreate(_args: SessionCreateArgs): Promise<Session> {
-  return NOT_IMPLEMENTED();
+/**
+ * Create a new session backed by a freshly-spawned PTY child. The returned
+ * [`SessionView`] reflects the post-spawn state (status `running`, populated
+ * `pid`).
+ */
+export function sessionCreate(args: SessionCreateArgs): Promise<SessionView> {
+  return invoke<SessionView>('session_create', { args });
 }
 
+/**
+ * Returns every persisted session as a [`SessionView`], ordered by
+ * `tabIndex`.
+ */
 export function sessionList(): Promise<SessionView[]> {
-  return NOT_IMPLEMENTED();
+  return invoke<SessionView[]>('session_list');
 }
 
-export function sessionClose(_args: SessionIdArg): Promise<void> {
-  return NOT_IMPLEMENTED();
+/**
+ * Kill the PTY child, drop the persisted session record, and trim the
+ * session out of `lastOpenSessions`/`tabOrder`/`activeSessionId`. Idempotent
+ * for already-exited sessions.
+ */
+export function sessionClose(args: SessionIdArg): Promise<void> {
+  return invoke<void>('session_close', { args });
 }
 
-export function sessionFocus(_args: SessionIdArg): Promise<void> {
-  return NOT_IMPLEMENTED();
+/**
+ * Mark `sessionId` as the persisted active session. Errors with `NotFound`
+ * if the session is not in the store.
+ */
+export function sessionFocus(args: SessionIdArg): Promise<void> {
+  return invoke<void>('session_focus', { args });
 }
 
-export function sessionResize(_args: SessionResizeArgs): Promise<void> {
-  return NOT_IMPLEMENTED();
+/** Resize the PTY of the given session. */
+export function sessionResize(args: SessionResizeArgs): Promise<void> {
+  return invoke<void>('session_resize', { args });
 }
 
-export function sessionInput(_args: SessionInputArgs): Promise<void> {
-  return NOT_IMPLEMENTED();
+/** Write `data` to the PTY master of the given session. */
+export function sessionInput(args: SessionInputArgs): Promise<void> {
+  return invoke<void>('session_input', { args });
 }
 
-export function sessionRestart(_args: SessionIdArg): Promise<void> {
-  return NOT_IMPLEMENTED();
+/**
+ * Re-spawn `sessionId` from its persisted `composedCommand`. The command
+ * is reused verbatim — never recomposed (DESIGN §5.4).
+ */
+export function sessionRestart(args: SessionIdArg): Promise<void> {
+  return invoke<void>('session_restart', { args });
+}
+
+/**
+ * Signals the backend that the frontend is now subscribed to
+ * `session://output` and `session://status`. The first call triggers
+ * restore-on-launch; subsequent calls are no-ops on the backend side
+ * (DESIGN §5.5).
+ */
+export function frontendReady(): Promise<void> {
+  return invoke<void>('frontend_ready');
 }
 
 /**

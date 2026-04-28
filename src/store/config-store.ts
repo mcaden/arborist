@@ -19,7 +19,7 @@ import { configGet, configSet } from '@/lib/tauri-bridge';
 import type { AppConfig, PartialAppConfig } from '@/types/grove';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 1,
+  configVersion: 2,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   worktreeRoots: [],
@@ -27,6 +27,7 @@ const EMPTY_CONFIG: AppConfig = {
   worktreePrelaunchCommands: {},
   lastOpenSessions: [],
   tabOrder: [],
+  activeSessionId: null,
 };
 
 export type HydrationStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -80,6 +81,7 @@ function applyPatch(config: AppConfig, patch: PartialAppConfig): AppConfig {
   }
   if (patch.lastOpenSessions !== undefined) next.lastOpenSessions = patch.lastOpenSessions;
   if (patch.tabOrder !== undefined) next.tabOrder = patch.tabOrder;
+  if (patch.activeSessionId !== undefined) next.activeSessionId = patch.activeSessionId;
   return next;
 }
 

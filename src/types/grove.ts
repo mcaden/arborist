@@ -84,6 +84,8 @@ export interface AppConfig {
   worktreePrelaunchCommands: Record<string, string[]>;
   lastOpenSessions: SessionId[];
   tabOrder: SessionId[];
+  /** Persisted active-session selection. `null` when no session is active. */
+  activeSessionId: SessionId | null;
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
@@ -94,6 +96,8 @@ export interface PartialDefaultInstructionSets {
 
 // MIRROR: src-tauri/src/types.rs::PartialAppConfig
 // Every field optional so Phase 4's `config_set` can deep-merge updates.
+// `activeSessionId` is tri-state: omit to leave alone, `null` to clear,
+// string to set.
 export interface PartialAppConfig {
   configVersion?: number;
   defaultInstructionSets?: PartialDefaultInstructionSets;
@@ -103,6 +107,7 @@ export interface PartialAppConfig {
   worktreePrelaunchCommands?: Record<string, string[]>;
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
+  activeSessionId?: SessionId | null;
 }
 
 // MIRROR: src-tauri/src/types.rs::AppError

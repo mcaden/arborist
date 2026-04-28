@@ -332,7 +332,8 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
     );
 
     let cli_cmd = format!(
-        "claude --system-prompt {quoted}",
+        "{program} --system-prompt {quoted}",
+        program = cli_program_for_tool(Tool::Claude, quoter),
         quoted = quoter(&temp_path.to_string_lossy()),
     );
 
@@ -347,8 +348,45 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
 
 fn build_copilot(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     let context = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
-    let cli_cmd = format!("copilot --interactive {quoted}", quoted = quoter(&context));
+    let cli_cmd = format!(
+        "{program} --interactive {quoted}",
+        program = cli_program_for_tool(Tool::Copilot, quoter),
+        quoted = quoter(&context),
+    );
     (cli_cmd, Vec::new())
+}
+
+/// Environment variable consulted by [`cli_program_for_tool`] to override
+/// the `claude` executable. **Test-only seam** — production code never sets
+/// this, but integration tests point it at `grove-test-child` so they can
+/// drive the full Tauri command/event surface end-to-end without a real
+/// Claude install. Documented here so the override path is auditable.
+pub const CLAUDE_OVERRIDE_ENV: &str = "GROVE_CLI_OVERRIDE_CLAUDE";
+
+/// Sibling of [`CLAUDE_OVERRIDE_ENV`] for the `copilot` executable.
+pub const COPILOT_OVERRIDE_ENV: &str = "GROVE_CLI_OVERRIDE_COPILOT";
+
+/// Resolve the program token for `tool`. Returns the bare CLI name in
+/// production (`claude` / `copilot`); when the matching `GROVE_CLI_OVERRIDE_*`
+/// env var is set, returns the override **already shell-quoted** so it can
+/// be interpolated into the composed command without re-quoting at the call
+/// site. The override path is invisible to the persisted `composed_command`
+/// once the env var is unset, so do not rely on it across restarts — it's
+/// purely a test-time seam.
+fn cli_program_for_tool(tool: Tool, quoter: Quoter) -> String {
+    let var = match tool {
+        Tool::Claude => CLAUDE_OVERRIDE_ENV,
+        Tool::Copilot => COPILOT_OVERRIDE_ENV,
+    };
+    if let Ok(path) = std::env::var(var) {
+        if !path.is_empty() {
+            return quoter(&path);
+        }
+    }
+    match tool {
+        Tool::Claude => "claude".to_owned(),
+        Tool::Copilot => "copilot".to_owned(),
+    }
 }
 
 // ---------------------------------------------------------------------------

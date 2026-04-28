@@ -142,6 +142,12 @@ impl ConfigStore {
         };
 
         let mut cfg = parsed;
+        // v1 → v2: `active_session_id` did not exist; serde already
+        // defaults it to `None`. Bump the on-disk version stamp so the
+        // next save records v2 explicitly.
+        if cfg.config_version < CONFIG_VERSION_CURRENT {
+            cfg.config_version = CONFIG_VERSION_CURRENT;
+        }
         validate_loaded_config(&mut cfg);
 
         // Validate default instruction set IDs against the *discovered* set.
@@ -432,6 +438,10 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     }
     if let Some(t) = patch.tab_order {
         cfg.tab_order = t;
+    }
+    // Tri-state: `None` → don't touch; `Some(None)` → clear; `Some(Some(id))` → set.
+    if let Some(active) = patch.active_session_id {
+        cfg.active_session_id = active;
     }
     Ok(())
 }
@@ -1096,5 +1106,65 @@ mod tests {
         let raw = fs::read_to_string(&target).expect("read");
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("json");
         assert_eq!(parsed, serde_json::json!({"hello": "world"}));
+    }
+
+    // ----- active_session_id (Phase 7) ---------------------------------
+
+    #[test]
+    fn save_config_sets_and_clears_active_session_id() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let id = SessionId::new();
+
+        // Set.
+        let after_set = store
+            .save_config(PartialAppConfig {
+                active_session_id: Some(Some(id)),
+                ..Default::default()
+            })
+            .expect("set");
+        assert_eq!(after_set.active_session_id, Some(id));
+
+        // Absent in patch → preserved.
+        let after_noop = store
+            .save_config(PartialAppConfig {
+                prelaunch_commands: Some(vec!["echo hi".to_owned()]),
+                ..Default::default()
+            })
+            .expect("noop");
+        assert_eq!(after_noop.active_session_id, Some(id));
+
+        // Clear via Some(None).
+        let after_clear = store
+            .save_config(PartialAppConfig {
+                active_session_id: Some(None),
+                ..Default::default()
+            })
+            .expect("clear");
+        assert_eq!(after_clear.active_session_id, None);
+    }
+
+    #[test]
+    fn load_config_migrates_v1_to_current() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": 1,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": []
+        });
+        fs::write(
+            store.config_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        assert_eq!(cfg.active_session_id, None);
     }
 }

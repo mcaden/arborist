@@ -74,6 +74,14 @@ fn main_capability_allows_core_default_and_ping() {
         identifiers.contains(&"allow-instructions"),
         "main capability must include allow-instructions so instructions_list is callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-session"),
+        "main capability must include allow-session so session_* commands are callable; got {identifiers:?}",
+    );
+    assert!(
+        identifiers.contains(&"allow-frontend-ready"),
+        "main capability must include allow-frontend-ready so frontend_ready is callable; got {identifiers:?}",
+    );
 }
 
 #[test]
@@ -127,5 +135,50 @@ fn allow_instructions_permission_file_declares_instructions_command() {
     assert!(
         raw.contains("\"instructions_list\""),
         "permission must allow the `instructions_list` command",
+    );
+}
+
+#[test]
+fn allow_session_permission_file_declares_session_commands() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-session.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-session\""),
+        "permission identifier must remain `allow-session`",
+    );
+    for cmd in [
+        "session_create",
+        "session_list",
+        "session_close",
+        "session_focus",
+        "session_resize",
+        "session_input",
+        "session_restart",
+    ] {
+        let needle = format!("\"{cmd}\"");
+        assert!(
+            raw.contains(&needle),
+            "allow-session must declare {cmd}; raw permission file:\n{raw}",
+        );
+    }
+}
+
+#[test]
+fn allow_frontend_ready_permission_file_declares_frontend_ready_command() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-frontend-ready.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-frontend-ready\""),
+        "permission identifier must remain `allow-frontend-ready`",
+    );
+    assert!(
+        raw.contains("\"frontend_ready\""),
+        "permission must allow the `frontend_ready` command",
     );
 }
