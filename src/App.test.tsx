@@ -6,7 +6,7 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 import { App } from './App';
 
 describe('App', () => {
-  it('mounts the Sidebar and a placeholder main area', () => {
+  it('mounts the Sidebar and the main area empty state', () => {
     render(<App />);
     expect(screen.getByRole('tablist', { name: /sessions/i })).toBeInTheDocument();
     expect(screen.getByText(/no session selected/i)).toBeInTheDocument();

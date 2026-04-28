@@ -1,0 +1,116 @@
+import { act, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
+
+const mockTerminals: Array<{
+  open: ReturnType<typeof vi.fn>;
+  write: ReturnType<typeof vi.fn>;
+  onData: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  dispose: ReturnType<typeof vi.fn>;
+  loadAddon: ReturnType<typeof vi.fn>;
+  cols: number;
+  rows: number;
+}> = [];
+
+vi.mock('@xterm/xterm', () => {
+  const Terminal = vi.fn().mockImplementation(() => {
+    const inst = {
+      open: vi.fn(),
+      write: vi.fn(),
+      onData: vi.fn(),
+      focus: vi.fn(),
+      dispose: vi.fn(),
+      loadAddon: vi.fn(),
+      cols: 80,
+      rows: 24,
+    };
+    mockTerminals.push(inst);
+    return inst;
+  });
+  return { Terminal };
+});
+
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: vi.fn().mockImplementation(() => ({ fit: vi.fn(), dispose: vi.fn() })),
+}));
+
+import { TerminalView } from './TerminalView';
+import { __resetTerminalRegistryForTests } from '@/hooks/use-terminal';
+import { resetBridgeMocks, sessionRestart } from '@/lib/tauri-bridge.mock';
+import { useSessionStore } from '@/store/session-store';
+import type { SessionView } from '@/types/grove';
+
+function seedSession(overrides: Partial<SessionView> = {}): SessionView {
+  const view: SessionView = {
+    id: 's1',
+    tool: 'claude',
+    worktreePath: '/wt',
+    worktreeName: 'wt',
+    label: 'wt',
+    instructionSetId: 'default',
+    status: 'running',
+    createdAt: 0,
+    tabIndex: 0,
+    ...overrides,
+  };
+  useSessionStore.setState({ sessions: [view], activeId: view.id, isHydrated: true });
+  return view;
+}
+
+beforeEach(() => {
+  resetBridgeMocks();
+  mockTerminals.length = 0;
+  useSessionStore.setState({
+    sessions: [],
+    activeId: undefined,
+    pendingClose: undefined,
+    isHydrated: false,
+  });
+});
+
+afterEach(() => {
+  __resetTerminalRegistryForTests();
+});
+
+describe('TerminalView', () => {
+  it('mounts the terminal into its container, unmount detaches without disposing', () => {
+    seedSession();
+    const { unmount, container } = render(<TerminalView sessionId="s1" isActive={true} />);
+    expect(mockTerminals).toHaveLength(1);
+    expect(mockTerminals[0]!.open).toHaveBeenCalledTimes(1);
+    // wrapper appended into container
+    const tabpanel = container.querySelector('[role="tabpanel"]')!;
+    expect(tabpanel.querySelector('div')!.children.length).toBe(1);
+    unmount();
+    expect(mockTerminals[0]!.dispose).not.toHaveBeenCalled();
+  });
+
+  it('focuses the terminal when active', () => {
+    seedSession();
+    render(<TerminalView sessionId="s1" isActive={true} />);
+    expect(mockTerminals[0]!.focus).toHaveBeenCalled();
+  });
+
+  it('shows error overlay with Restart button when status === error', () => {
+    seedSession({ status: 'error' });
+    render(<TerminalView sessionId="s1" isActive={true} />);
+    const restart = screen.getByRole('button', { name: /restart/i });
+    act(() => restart.click());
+    expect(sessionRestart).toHaveBeenCalledWith({ sessionId: 's1' });
+  });
+
+  it('shows overlay when status === exited', () => {
+    seedSession({ status: 'exited' });
+    render(<TerminalView sessionId="s1" isActive={true} />);
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /restart/i })).toBeInTheDocument();
+  });
+
+  it('does not show overlay for running status', () => {
+    seedSession({ status: 'running' });
+    render(<TerminalView sessionId="s1" isActive={true} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
