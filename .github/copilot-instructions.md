@@ -9,6 +9,8 @@ This repo currently contains **only design documents** — no source code, build
 
 Read both before proposing implementation work. When the codebase is scaffolded, update this file with real build/test/lint commands.
 
+IMPORTANT!!! This repo is not stored in a remote repository. Do not push. Only commit locally.
+
 ## What Grove is
 
 A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git worktree, in a sidebar of vertical tabs with a single visible PTY terminal in the main area.
