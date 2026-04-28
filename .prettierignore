@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+coverage
+src-tauri/target
+src-tauri/gen
+target
+package-lock.json
+dev/
+.github/
+instructions/

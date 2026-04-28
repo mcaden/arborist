@@ -1,0 +1,40 @@
+[package]
+name = "grove"
+version = "0.0.0"
+edition = "2021"
+description = "Grove — multi-session manager for AI coding CLIs"
+authors = ["Grove contributors"]
+license = "MIT"
+publish = false
+
+[lib]
+name = "grove_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "grove"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-store = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
+rstest = "0.23"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
