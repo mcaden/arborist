@@ -86,10 +86,14 @@ describe('MainArea', () => {
     render(<MainArea />);
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels).toHaveLength(2);
-    // Only the inactive one's wrapping container should have display: none.
+    // Inactive panels are hidden via `visibility: hidden` (not `display:
+    // none`) so xterm.js's char-size measurement and fitAddon stay sane
+    // across tab switches.
     const wrappers = panels.map((p) => p.parentElement!);
-    expect(wrappers[0]!.style.display).not.toBe('none');
-    expect(wrappers[1]!.style.display).toBe('none');
+    expect(wrappers[0]!.style.visibility).not.toBe('hidden');
+    expect(wrappers[1]!.style.visibility).toBe('hidden');
+    expect(wrappers[0]!.getAttribute('aria-hidden')).toBe('false');
+    expect(wrappers[1]!.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('switching active session does NOT unmount the previously-active TerminalView', () => {

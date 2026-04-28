@@ -31,15 +31,33 @@ export function MainArea(): JSX.Element {
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 bg-black">
-      {sessions.map((session) => (
-        <div
-          key={session.id}
-          className="absolute inset-0"
-          style={session.id === activeId ? undefined : { display: 'none' }}
-        >
-          <TerminalView sessionId={session.id} isActive={session.id === activeId} />
-        </div>
-      ))}
+      {sessions.map((session) => {
+        const active = session.id === activeId;
+        return (
+          <div
+            key={session.id}
+            className="absolute inset-0"
+            style={
+              active
+                ? undefined
+                : {
+                    // Keep hidden panels laid out so xterm.js can measure
+                    // character dimensions correctly on first open and so
+                    // `fitAddon.fit()` has a real container to size against.
+                    // `display: none` zeroes the box and produces a
+                    // "squished" banner once the tab is shown again because
+                    // the PTY had already emitted output against bogus
+                    // metrics.
+                    visibility: 'hidden',
+                    pointerEvents: 'none',
+                  }
+            }
+            aria-hidden={!active}
+          >
+            <TerminalView sessionId={session.id} isActive={active} />
+          </div>
+        );
+      })}
     </main>
   );
 }
