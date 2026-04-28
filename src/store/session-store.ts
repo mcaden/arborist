@@ -41,6 +41,15 @@ export interface SessionStoreState {
   /** Id of the session whose close-confirm modal is open (Phase 9). */
   pendingClose: SessionId | undefined;
   isHydrated: boolean;
+  /**
+   * Optional human-readable note attached to the most recent status
+   * change for each session. Populated by `applyStatus` when the
+   * backend includes `message` (e.g. stale-worktree restore failures
+   * — Roadmap §4.3). Cleared whenever the next status arrives without
+   * a message. Frontend-only — not persisted, not part of the Rust
+   * `SessionView` mirror.
+   */
+  statusMessages: Record<SessionId, string>;
 }
 
 export interface SessionStoreActions {
@@ -61,6 +70,7 @@ const INITIAL_STATE: SessionStoreState = {
   activeId: undefined,
   pendingClose: undefined,
   isHydrated: false,
+  statusMessages: {},
 };
 
 /**
@@ -86,7 +96,9 @@ export const useSessionStore = create<Store>((set, get) => {
   const actions: SessionStoreActions = {
     hydrate: async () => {
       const sessions = await sessionList();
-      set({ sessions, isHydrated: true });
+      // Clear any orphan status messages — keys may belong to sessions
+      // that no longer exist after the backend reload.
+      set({ sessions, isHydrated: true, statusMessages: {} });
     },
 
     create: async (args) => {
@@ -112,6 +124,13 @@ export const useSessionStore = create<Store>((set, get) => {
       // `pendingClose` is closed automatically when the session it referenced
       // is gone.
       if (get().pendingClose === id) patch.pendingClose = undefined;
+      // Drop any orphan status-message keyed under this session id.
+      const { statusMessages } = get();
+      if (id in statusMessages) {
+        const next = { ...statusMessages };
+        delete next[id];
+        patch.statusMessages = next;
+      }
       set(patch);
     },
 
@@ -164,14 +183,20 @@ export const useSessionStore = create<Store>((set, get) => {
         return;
       }
       const current = sessions[idx]!;
-      // NOTE: the backend `SessionStatusEvent` currently carries only
-      // `status` (see `src-tauri/src/types.rs::SessionStatusEvent`). If a
-      // future phase widens that payload to include `pid`/exit code, mirror
-      // it here.
       const next: SessionView = { ...current, status: evt.status };
       const nextSessions = sessions.slice();
       nextSessions[idx] = next;
-      set({ sessions: nextSessions });
+      // Track the optional status message keyed by session id. We
+      // overwrite (not merge) so a status transition without a message
+      // clears any stale annotation from a prior transition.
+      const { statusMessages } = get();
+      const nextMessages = { ...statusMessages };
+      if (evt.message !== undefined && evt.message.length > 0) {
+        nextMessages[evt.sessionId] = evt.message;
+      } else {
+        delete nextMessages[evt.sessionId];
+      }
+      set({ sessions: nextSessions, statusMessages: nextMessages });
     },
   };
 
@@ -187,11 +212,17 @@ export const selectSessions = (s: Store): SessionView[] => s.sessions;
 export const selectActiveId = (s: Store): SessionId | undefined => s.activeId;
 export const selectPendingClose = (s: Store): SessionId | undefined => s.pendingClose;
 export const selectIsHydrated = (s: Store): boolean => s.isHydrated;
+export const selectStatusMessage =
+  (id: SessionId | undefined) =>
+  (s: Store): string | undefined =>
+    id === undefined ? undefined : s.statusMessages[id];
 
 export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
 export const usePendingClose = (): SessionId | undefined => useSessionStore(selectPendingClose);
 export const useIsHydrated = (): boolean => useSessionStore(selectIsHydrated);
+export const useStatusMessage = (id: SessionId | undefined): string | undefined =>
+  useSessionStore(selectStatusMessage(id));
 
 export function useActiveSession(): SessionView | undefined {
   const sessions = useSessions();

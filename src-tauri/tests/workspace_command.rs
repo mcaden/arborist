@@ -72,7 +72,7 @@ impl GitRunner for FakeGitRunner {
 
 fn null_sink() -> PtySink {
     let output = Arc::new(|_: &SessionId, _: String| {});
-    let status = Arc::new(|_: &SessionId, _: SessionStatus, _: Option<u32>| {});
+    let status = Arc::new(|_: &SessionId, _: SessionStatus, _: Option<u32>, _: Option<String>| {});
     PtySink::new(output, status)
 }
 

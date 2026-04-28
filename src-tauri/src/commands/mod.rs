@@ -219,7 +219,10 @@ pub fn build_production_sink(
     let app_for_status = app;
     let store_for_status = store;
     let status = Arc::new(
-        move |session_id: &SessionId, status: SessionStatus, pid: Option<u32>| {
+        move |session_id: &SessionId,
+              status: SessionStatus,
+              pid: Option<u32>,
+              message: Option<String>| {
             if let Err(e) = store_for_status.update_session_status(session_id, status, pid) {
                 use crate::types::Error as E;
                 if !matches!(e, E::NotFound(_)) {
@@ -229,6 +232,7 @@ pub fn build_production_sink(
             let payload = SessionStatusEvent {
                 session_id: *session_id,
                 status,
+                message,
             };
             if let Err(e) = app_for_status.emit("session://status", payload) {
                 tracing::debug!(session_id = %session_id, error = %e, "emit session://status failed");

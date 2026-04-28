@@ -10,7 +10,7 @@ import { useEffect, useRef } from 'react';
 
 import { sessionRestart } from '@/lib/tauri-bridge';
 import { useTerminal } from '@/hooks/use-terminal';
-import { useSessionById } from '@/store/session-store';
+import { useSessionById, useStatusMessage } from '@/store/session-store';
 import type { SessionId } from '@/types/arborist';
 
 interface TerminalViewProps {
@@ -27,6 +27,7 @@ interface TerminalViewProps {
 export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const session = useSessionById(sessionId);
+  const statusMessage = useStatusMessage(sessionId);
   const { attach, detach, focus } = useTerminal(sessionId);
 
   useEffect(() => {
@@ -65,10 +66,18 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
           role="alert"
           className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70"
         >
-          <div className="pointer-events-auto flex flex-col items-center gap-3 rounded border border-slate-700 bg-slate-900 p-4 text-slate-100 shadow-lg">
+          <div className="pointer-events-auto flex max-w-md flex-col items-center gap-3 rounded border border-slate-700 bg-slate-900 p-4 text-slate-100 shadow-lg">
             <p className="text-sm">
               {status === 'error' ? 'Session encountered an error.' : 'Session exited.'}
             </p>
+            {statusMessage && (
+              <p
+                data-testid="terminal-status-message"
+                className="max-w-full break-words text-center text-xs text-slate-300"
+              >
+                {statusMessage}
+              </p>
+            )}
             <button
               type="button"
               onClick={handleRestart}

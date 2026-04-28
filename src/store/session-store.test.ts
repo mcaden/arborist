@@ -244,4 +244,35 @@ describe('applyStatus', () => {
     expect(debug).toHaveBeenCalledTimes(1);
     debug.mockRestore();
   });
+
+  it('records statusMessages when the event carries a message', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a', status: 'starting' })],
+      statusMessages: {},
+    });
+
+    useSessionStore.getState().actions.applyStatus({
+      sessionId: 'a',
+      status: 'error',
+      message: 'Worktree path no longer exists: /tmp/gone',
+    });
+
+    expect(useSessionStore.getState().statusMessages['a']).toBe(
+      'Worktree path no longer exists: /tmp/gone',
+    );
+  });
+
+  it('clears prior statusMessages when a later event omits message', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a', status: 'error' })],
+      statusMessages: { a: 'old error' },
+    });
+
+    useSessionStore.getState().actions.applyStatus({
+      sessionId: 'a',
+      status: 'running',
+    });
+
+    expect(useSessionStore.getState().statusMessages['a']).toBeUndefined();
+  });
 });

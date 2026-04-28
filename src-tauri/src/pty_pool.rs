@@ -299,7 +299,8 @@ unsafe fn libc_kill(pid: i32, sig: i32) {
 pub type OutputCb = Arc<dyn Fn(&SessionId, String) + Send + Sync>;
 /// Status callback type alias. The `Option<u32>` is the PID; cleared on
 /// exit.
-pub type StatusCb = Arc<dyn Fn(&SessionId, SessionStatus, Option<u32>) + Send + Sync>;
+pub type StatusCb =
+    Arc<dyn Fn(&SessionId, SessionStatus, Option<u32>, Option<String>) + Send + Sync>;
 
 /// The pool talks to the rest of the app exclusively through this struct.
 ///
@@ -608,7 +609,7 @@ impl PtyPool {
         }
 
         // ------- 7. Announce Running
-        (sink.status)(&session.id, SessionStatus::Running, Some(pid));
+        (sink.status)(&session.id, SessionStatus::Running, Some(pid), None);
 
         Ok(pid)
     }
@@ -822,7 +823,7 @@ fn pty_wait_loop(
         Ok(exit) if exit.success() => SessionStatus::Exited,
         Ok(_) | Err(_) => SessionStatus::Error,
     };
-    (sink.status)(&id, status, None);
+    (sink.status)(&id, status, None, None);
 }
 
 // ---------------------------------------------------------------------------

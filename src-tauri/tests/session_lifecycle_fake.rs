@@ -152,10 +152,12 @@ impl PtyWaiter for BlockingWaiter {
 // Sink that captures emissions for assertion
 // ---------------------------------------------------------------------------
 
+type StatusTuple = (SessionId, SessionStatus, Option<u32>, Option<String>);
+
 #[derive(Default)]
 struct CapturedEvents {
     output: Mutex<Vec<(SessionId, String)>>,
-    status: Mutex<Vec<(SessionId, SessionStatus, Option<u32>)>>,
+    status: Mutex<Vec<StatusTuple>>,
 }
 
 fn capture_sink(events: Arc<CapturedEvents>, store: ConfigStore) -> PtySink {
@@ -164,16 +166,22 @@ fn capture_sink(events: Arc<CapturedEvents>, store: ConfigStore) -> PtySink {
         out_events.output.lock().unwrap().push((*id, data));
     });
     let status_events = Arc::clone(&events);
-    let status = Arc::new(move |id: &SessionId, st: SessionStatus, pid: Option<u32>| {
-        // Mirror production wiring: persist status, swallow NotFound.
-        if let Err(e) = store.update_session_status(id, st, pid) {
-            use arborist_lib::types::Error as E;
-            if !matches!(e, E::NotFound(_)) {
-                panic!("unexpected status persist error: {e:?}");
+    let status = Arc::new(
+        move |id: &SessionId, st: SessionStatus, pid: Option<u32>, msg: Option<String>| {
+            // Mirror production wiring: persist status, swallow NotFound.
+            if let Err(e) = store.update_session_status(id, st, pid) {
+                use arborist_lib::types::Error as E;
+                if !matches!(e, E::NotFound(_)) {
+                    panic!("unexpected status persist error: {e:?}");
+                }
             }
-        }
-        status_events.status.lock().unwrap().push((*id, st, pid));
-    });
+            status_events
+                .status
+                .lock()
+                .unwrap()
+                .push((*id, st, pid, msg));
+        },
+    );
     PtySink::new(output, status)
 }
 
@@ -475,3 +483,70 @@ async fn restore_respawns_persisted_sessions_without_recomposing() {
 }
 
 // (no extra trailing helpers)
+
+#[tokio::test]
+async fn restore_emits_error_with_message_when_worktree_directory_is_missing() {
+    // Bootstrap a harness, persist a session, then delete the worktree
+    // directory before restore. The restore loop should emit an Error
+    // status with a human-readable "Worktree path no longer exists"
+    // message instead of attempting to spawn (which would fail with an
+    // opaque OS error).
+    let h = build_harness();
+    let original = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    let worktree_path = h.worktree.path().to_path_buf();
+
+    // Drop the harness's TempDir handle so the directory disappears.
+    drop(h.worktree);
+    assert!(
+        !worktree_path.exists(),
+        "precondition: worktree was removed"
+    );
+
+    // "Restart": new pool + sink + ctx around the same store.
+    let spawner2 = Arc::new(FakeSpawner::new());
+    let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
+    let events2 = Arc::new(CapturedEvents::default());
+    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store.clone());
+    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store.clone(), sink2);
+
+    restore_all_sessions(&ctx2);
+
+    // Spawner must not have been invoked — we short-circuited before the
+    // PTY pool got involved.
+    assert!(
+        spawner2.state.lock().unwrap().last_cmd.is_none(),
+        "spawn must not be attempted when worktree is missing"
+    );
+
+    // The status sink received exactly one Error with the annotated
+    // message naming the missing path.
+    let statuses = events2.status.lock().unwrap();
+    let entry = statuses
+        .iter()
+        .find(|(id, _, _, _)| *id == original.id)
+        .expect("expected a status entry for the restored session");
+    assert_eq!(entry.1, SessionStatus::Error);
+    assert_eq!(entry.2, None);
+    let message = entry.3.as_deref().expect("message should be present");
+    assert!(
+        message.contains("Worktree path is no longer available"),
+        "message did not mention stale worktree: {message}"
+    );
+    // The path mentioned in the message comes from the canonicalized
+    // session record, which may differ in formatting from the original
+    // temp-dir path. Just assert the message includes *some* path
+    // component matching the temp-dir basename.
+    let basename = worktree_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    assert!(
+        !basename.is_empty() && message.contains(basename),
+        "message did not include the missing path basename {basename}: {message}"
+    );
+
+    // The persisted record reflects the Error status too.
+    let listed = session_list_impl(&Arc::new(ctx2)).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].status, SessionStatus::Error);
+}

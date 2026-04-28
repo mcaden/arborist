@@ -49,7 +49,7 @@ fn build_sink(captured: Arc<Captured>, store: ConfigStore) -> PtySink {
     });
     let st = Arc::clone(&captured);
     let status = Arc::new(
-        move |id: &SessionId, status: SessionStatus, pid: Option<u32>| {
+        move |id: &SessionId, status: SessionStatus, pid: Option<u32>, _msg: Option<String>| {
             let _ = store.update_session_status(id, status, pid);
             st.statuses.lock().unwrap().push(status);
         },

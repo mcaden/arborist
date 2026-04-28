@@ -173,7 +173,7 @@ pub fn session_create_impl(
         .map_err(AppError::from)?;
 
     // 10. Announce Starting (synchronous; the pool will follow with Running).
-    (ctx.sink.status)(&session.id, SessionStatus::Starting, None);
+    (ctx.sink.status)(&session.id, SessionStatus::Starting, None, None);
 
     // 11. Spawn. The pool emits Running with PID through the same sink.
     let pid = ctx
@@ -293,22 +293,48 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         .cloned()
         .ok_or_else(|| AppError::from(Error::NotFound(format!("session {id} not found"))))?;
 
+    // Pre-check: if the worktree directory is gone the spawn will fail
+    // with an opaque OS error. Surface a friendly message and persist
+    // Error so the overlay re-renders with context (Roadmap §4.3).
+    if !session.worktree_path.is_dir() {
+        let msg = stale_worktree_message(&session.worktree_path);
+        let _ = ctx
+            .store
+            .update_session_status(&id, SessionStatus::Error, None);
+        (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+        return Err(AppError::from(Error::WorktreeMissing(
+            session.worktree_path.clone(),
+        )));
+    }
+
     // Re-materialise temp files in case they were deleted (e.g. by a prior
     // close path that ran while the session was still open in another
     // window — defensive). Composed command is reused verbatim per
     // DESIGN §5.4 — *never* recompose at restart time.
-    materialise_temp_files(&session.temp_files)?;
+    if let Err(e) = materialise_temp_files(&session.temp_files) {
+        let msg = format!("Failed to prepare session temp files: {e}");
+        let _ = ctx
+            .store
+            .update_session_status(&id, SessionStatus::Error, None);
+        (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+        return Err(e);
+    }
 
     // Mark Starting in the persisted record up front so a UI poll right
     // after restart doesn't see stale Running/pid.
     ctx.store
         .update_session_status(&id, SessionStatus::Starting, None)
         .map_err(AppError::from)?;
-    (ctx.sink.status)(&id, SessionStatus::Starting, None);
+    (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
-    ctx.pool
-        .respawn_existing(&session, ctx.sink.clone())
-        .map_err(AppError::from)?;
+    if let Err(e) = ctx.pool.respawn_existing(&session, ctx.sink.clone()) {
+        let msg = format!("Failed to restart session: {e}");
+        let _ = ctx
+            .store
+            .update_session_status(&id, SessionStatus::Error, None);
+        (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+        return Err(AppError::from(e));
+    }
     Ok(())
 }
 
@@ -322,6 +348,13 @@ pub fn frontend_ready_impl(ctx: &AppContext) -> bool {
     ctx.restored
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
+}
+
+/// Friendly UI message when a session's worktree directory is no longer
+/// available on disk (deleted or replaced with a non-directory). Used by
+/// both restore and restart so the wording stays consistent.
+fn stale_worktree_message(path: &std::path::Path) -> String {
+    format!("Worktree path is no longer available: {}", path.display())
 }
 
 /// Re-spawn every persisted session. Called once after the frontend signals
@@ -339,10 +372,29 @@ pub fn restore_all_sessions(ctx: &AppContext) {
     }
 
     for (id, session) in sessions {
+        // Worktree path validation — Roadmap §4.3. If the directory is
+        // gone (deleted between launches), spawning would fail with an
+        // opaque OS error. Surface a friendly message instead so the
+        // terminal overlay can explain the situation.
+        if !session.worktree_path.is_dir() {
+            let msg = stale_worktree_message(&session.worktree_path);
+            warn!(session_id = %id, path = %session.worktree_path.display(), "restore: worktree missing");
+            let _ = ctx
+                .store
+                .update_session_status(&id, SessionStatus::Error, None);
+            (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+            continue;
+        }
+
         // Re-materialise temp files in case they were swept by an OS-level
         // tmp clean. `respawn_existing` reuses `composed_command` verbatim.
         if let Err(e) = materialise_temp_files(&session.temp_files) {
             warn!(session_id = %id, error = ?e, "restore: temp-file materialise failed");
+            let msg = format!("Failed to restore session temp files: {e}");
+            let _ = ctx
+                .store
+                .update_session_status(&id, SessionStatus::Error, None);
+            (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
             continue;
         }
 
@@ -353,7 +405,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             warn!(session_id = %id, error = ?e, "restore: status update failed");
             continue;
         }
-        (ctx.sink.status)(&id, SessionStatus::Starting, None);
+        (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
         match ctx.pool.respawn_existing(&session, ctx.sink.clone()) {
             Ok(pid) => {
@@ -361,11 +413,12 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             }
             Err(e) => {
                 warn!(session_id = %id, error = ?e, "restore: respawn failed");
+                let msg = format!("Failed to restart session: {e}");
                 // Best-effort: surface as Error status so the UI can show it.
                 let _ = ctx
                     .store
                     .update_session_status(&id, SessionStatus::Error, None);
-                (ctx.sink.status)(&id, SessionStatus::Error, None);
+                (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
             }
         }
     }

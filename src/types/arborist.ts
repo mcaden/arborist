@@ -139,9 +139,15 @@ export interface SessionOutputEvent {
 
 // MIRROR: src-tauri/src/types.rs::SessionStatusEvent
 // Payload of the `session://status` Tauri event (DESIGN §6).
+//
+// `message` is an optional context string the backend includes for
+// notable status transitions — used today by `restore_all_sessions`
+// when a worktree directory has been deleted between launches
+// (Roadmap §4.3).
 export interface SessionStatusEvent {
   sessionId: SessionId;
   status: SessionStatus;
+  message?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorktreeInfo

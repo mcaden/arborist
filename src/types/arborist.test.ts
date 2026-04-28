@@ -191,7 +191,7 @@ describe('arborist type mirrors', () => {
     assertExactKeys(
       sessionStatusEventFixture as unknown as Record<string, unknown>,
       ['sessionId', 'status'],
-      [],
+      ['message'],
       'SessionStatusEvent',
     );
   });

@@ -377,6 +377,11 @@ pub struct SessionOutputEvent {
 
 /// Payload of the `session://status` event (DESIGN §6).
 ///
+/// `message` is an optional human-readable note that accompanies the
+/// status change — used today for stale-worktree restore failures
+/// (Roadmap §4.3) so the terminal overlay can explain *why* the session
+/// is in `error` state instead of just showing a generic banner.
+///
 /// Mirrored on the frontend by `SessionStatusEvent` in
 /// `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -384,6 +389,8 @@ pub struct SessionOutputEvent {
 pub struct SessionStatusEvent {
     pub session_id: SessionId,
     pub status: SessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -970,6 +977,7 @@ mod tests {
                 Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid"),
             ),
             status: SessionStatus::Running,
+            message: None,
         };
         let fixture = json!({
             "sessionId": "8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00",
