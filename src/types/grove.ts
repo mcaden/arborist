@@ -76,6 +76,7 @@ export interface DefaultInstructionSets {
 
 // MIRROR: src-tauri/src/types.rs::AppConfig
 export interface AppConfig {
+  configVersion: number;
   defaultInstructionSets: DefaultInstructionSets;
   instructionSetsDir: string;
   worktreeRoots: string[];
@@ -94,6 +95,7 @@ export interface PartialDefaultInstructionSets {
 // MIRROR: src-tauri/src/types.rs::PartialAppConfig
 // Every field optional so Phase 4's `config_set` can deep-merge updates.
 export interface PartialAppConfig {
+  configVersion?: number;
   defaultInstructionSets?: PartialDefaultInstructionSets;
   instructionSetsDir?: string;
   worktreeRoots?: string[];

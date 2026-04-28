@@ -66,6 +66,14 @@ fn main_capability_allows_core_default_and_ping() {
         identifiers.contains(&"allow-ping"),
         "main capability must include allow-ping so the `ping` command is callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-config"),
+        "main capability must include allow-config so config_get/config_set are callable; got {identifiers:?}",
+    );
+    assert!(
+        identifiers.contains(&"allow-instructions"),
+        "main capability must include allow-instructions so instructions_list is callable; got {identifiers:?}",
+    );
 }
 
 #[test]
@@ -83,5 +91,41 @@ fn allow_ping_permission_file_declares_ping_command() {
     assert!(
         raw.contains("\"ping\""),
         "permission must allow the `ping` command",
+    );
+}
+
+#[test]
+fn allow_config_permission_file_declares_config_commands() {
+    let path = manifest_dir().join("permissions").join("allow-config.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-config\""),
+        "permission identifier must remain `allow-config`",
+    );
+    assert!(
+        raw.contains("\"config_get\""),
+        "permission must allow the `config_get` command",
+    );
+    assert!(
+        raw.contains("\"config_set\""),
+        "permission must allow the `config_set` command",
+    );
+}
+
+#[test]
+fn allow_instructions_permission_file_declares_instructions_command() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-instructions.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-instructions\""),
+        "permission identifier must remain `allow-instructions`",
+    );
+    assert!(
+        raw.contains("\"instructions_list\""),
+        "permission must allow the `instructions_list` command",
     );
 }

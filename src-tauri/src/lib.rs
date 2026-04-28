@@ -6,12 +6,13 @@
 //! handlers.
 
 pub mod commands;
+pub mod config_store;
 pub mod types;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
     PartialAppConfig, PartialDefaultInstructionSets, Session, SessionId, SessionOutputEvent,
-    SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool,
+    SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool, CONFIG_VERSION_CURRENT,
 };
 
 use tracing_subscriber::EnvFilter;
@@ -31,7 +32,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![commands::ping])
+        .invoke_handler(tauri::generate_handler![
+            commands::ping,
+            commands::config_get,
+            commands::config_set,
+            commands::instructions_list,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Grove");
 }

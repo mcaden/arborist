@@ -112,16 +112,31 @@ export function sessionRestart(_args: SessionIdArg): Promise<void> {
   return NOT_IMPLEMENTED();
 }
 
+/**
+ * Returns the persisted [`AppConfig`]. Path fields are canonicalized by the
+ * backend; missing instruction-set IDs are silently rewritten to the
+ * discovered default for the relevant tool.
+ */
 export function configGet(): Promise<AppConfig> {
-  return NOT_IMPLEMENTED();
+  return invoke<AppConfig>('config_get');
 }
 
-export function configSet(_partial: PartialAppConfig): Promise<void> {
-  return NOT_IMPLEMENTED();
+/**
+ * Deep-merges `partial` into the persisted [`AppConfig`]. Only the fields
+ * present on `partial` (i.e. not `undefined`) are touched; the rest survive
+ * unchanged. Backend may reject relative paths with an `InvalidPath` error.
+ */
+export function configSet(partial: PartialAppConfig): Promise<void> {
+  return invoke<void>('config_set', { partial });
 }
 
+/**
+ * Discovers and returns the list of [`InstructionSet`]s under the configured
+ * `instructionSetsDir`. Files exceeding 1 MiB or escaping the directory via
+ * symlink are skipped.
+ */
 export function instructionsList(): Promise<InstructionSet[]> {
-  return NOT_IMPLEMENTED();
+  return invoke<InstructionSet[]>('instructions_list');
 }
 
 // ---------------------------------------------------------------------------

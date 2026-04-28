@@ -116,18 +116,24 @@ interface InstructionSet {
 
 ```typescript
 interface AppConfig {
+  configVersion: number; // On-disk schema version (currently 1; bumped on breaking changes)
   defaultInstructionSets: {
-    claude: string;   // InstructionSet ID
-    copilot: string;  // InstructionSet ID
+    claude: string; // InstructionSet ID
+    copilot: string; // InstructionSet ID
   };
-  instructionSetsDir: string;                          // Path to directory containing instruction files
-  worktreeRoots: string[];                             // Root repo paths to scan for Git worktrees
-  prelaunchCommands: string[];                         // Global commands run before CLI launch
+  instructionSetsDir: string; // Path to directory containing instruction files
+  worktreeRoots: string[]; // Root repo paths to scan for Git worktrees
+  prelaunchCommands: string[]; // Global commands run before CLI launch
   worktreePrelaunchCommands: Record<string, string[]>; // Per-worktree overrides (key = worktree path)
-  lastOpenSessions: string[];                          // Session IDs to restore on next launch
-  tabOrder: string[];                                  // Session IDs in sidebar display order
+  lastOpenSessions: string[]; // Session IDs to restore on next launch
+  tabOrder: string[]; // Session IDs in sidebar display order
 }
 ```
+
+`AppConfig` lives in `<app-data>/config.json`. A separate
+`<app-data>/sessions.json` file holds the full `Session` records; the path
+discipline, atomic-write semantics, and quarantine behaviour for both files
+are documented in `dev/docs/CONFIGURATION.md`.
 
 ## 4. Component Hierarchy
 

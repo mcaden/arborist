@@ -18,6 +18,7 @@ import { vi, type Mock } from 'vitest';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
 import type * as realBridge from './tauri-bridge';
+import type { AppConfig } from '@/types/grove';
 
 // Every command stub rejects by default so a forgotten `mockResolvedValue`
 // in a test surfaces the same way it would in production today.
@@ -66,20 +67,34 @@ export const sessionRestart: Mock<
   ReturnType<typeof realBridge.sessionRestart>
 > = vi.fn(rejectNotImplemented);
 
+// `config_get`/`config_set`/`instructions_list` are real implementations as
+// of Phase 4; their default mock behaviour returns benign empty values so
+// tests don't need to wire each call individually unless they care.
+const defaultAppConfig = (): AppConfig => ({
+  configVersion: 1,
+  defaultInstructionSets: { claude: '', copilot: '' },
+  instructionSetsDir: '',
+  worktreeRoots: [],
+  prelaunchCommands: [],
+  worktreePrelaunchCommands: {},
+  lastOpenSessions: [],
+  tabOrder: [],
+});
+
 export const configGet: Mock<
   Parameters<typeof realBridge.configGet>,
   ReturnType<typeof realBridge.configGet>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
 export const configSet: Mock<
   Parameters<typeof realBridge.configSet>,
   ReturnType<typeof realBridge.configSet>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve());
 
 export const instructionsList: Mock<
   Parameters<typeof realBridge.instructionsList>,
   ReturnType<typeof realBridge.instructionsList>
-> = vi.fn(rejectNotImplemented);
+> = vi.fn(() => Promise.resolve([]));
 
 export const onSessionOutput: Mock<
   Parameters<typeof realBridge.onSessionOutput>,
@@ -113,9 +128,9 @@ export function resetBridgeMocks(): void {
   sessionResize.mockReset().mockImplementation(rejectNotImplemented);
   sessionInput.mockReset().mockImplementation(rejectNotImplemented);
   sessionRestart.mockReset().mockImplementation(rejectNotImplemented);
-  configGet.mockReset().mockImplementation(rejectNotImplemented);
-  configSet.mockReset().mockImplementation(rejectNotImplemented);
-  instructionsList.mockReset().mockImplementation(rejectNotImplemented);
+  configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
+  configSet.mockReset().mockImplementation(() => Promise.resolve());
+  instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }

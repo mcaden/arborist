@@ -135,6 +135,7 @@ describe('grove type mirrors', () => {
     assertExactKeys(
       appConfigFixture as unknown as Record<string, unknown>,
       [
+        'configVersion',
         'defaultInstructionSets',
         'instructionSetsDir',
         'worktreeRoots',
@@ -151,6 +152,7 @@ describe('grove type mirrors', () => {
   it('PartialAppConfig fixture only contains keys declared in TS mirror', () => {
     // Every PartialAppConfig key is optional; we just guard against typos.
     const allowed = new Set([
+      'configVersion',
       'defaultInstructionSets',
       'instructionSetsDir',
       'worktreeRoots',

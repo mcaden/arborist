@@ -1211,6 +1211,7 @@ dependencies = [
 name = "grove"
 version = "0.0.0"
 dependencies = [
+ "dunce",
  "portable-pty",
  "pretty_assertions",
  "rstest",

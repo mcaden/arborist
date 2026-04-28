@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 /// Stable identifier for a [`Session`]. Backed by a UUID v4 in practice, but
 /// the wire shape is just the canonical hyphenated string form.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct SessionId(pub Uuid);
 
@@ -52,7 +52,7 @@ impl std::fmt::Display for SessionId {
 
 /// Stable identifier for an [`InstructionSet`]. Currently a string slug
 /// derived from the instruction file name (e.g. `"claude-default"`).
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct InstructionSetId(pub String);
 
@@ -203,10 +203,19 @@ pub struct DefaultInstructionSets {
     pub copilot: InstructionSetId,
 }
 
+/// Current on-disk schema version for [`AppConfig`]. Incremented whenever
+/// the persisted shape changes in a non-backwards-compatible way so the
+/// loader can migrate (or quarantine) old files.
+pub const CONFIG_VERSION_CURRENT: u32 = 1;
+
 /// Persisted application configuration. Lives in `config.json` (Phase 4).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
+    /// Schema version of this on-disk config. Bumped when the layout
+    /// changes; the loader quarantines files with versions it does not
+    /// understand.
+    pub config_version: u32,
     pub default_instruction_sets: DefaultInstructionSets,
     pub instruction_sets_dir: PathBuf,
     pub worktree_roots: Vec<PathBuf>,
@@ -215,6 +224,21 @@ pub struct AppConfig {
     pub worktree_prelaunch_commands: BTreeMap<String, Vec<String>>,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            config_version: CONFIG_VERSION_CURRENT,
+            default_instruction_sets: DefaultInstructionSets::default(),
+            instruction_sets_dir: PathBuf::new(),
+            worktree_roots: Vec::new(),
+            prelaunch_commands: Vec::new(),
+            worktree_prelaunch_commands: BTreeMap::new(),
+            last_open_sessions: Vec::new(),
+            tab_order: Vec::new(),
+        }
+    }
 }
 
 /// Partial form of [`DefaultInstructionSets`] used by [`PartialAppConfig`]
@@ -233,6 +257,8 @@ pub struct PartialDefaultInstructionSets {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PartialAppConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub config_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub default_instruction_sets: Option<PartialDefaultInstructionSets>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -286,6 +312,9 @@ pub enum Error {
     #[error("not found: {0}")]
     NotFound(String),
 
+    #[error("config quarantined: {0}")]
+    ConfigQuarantined(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -305,6 +334,7 @@ impl Error {
         match self {
             Self::InvalidPath(_) => "InvalidPath",
             Self::NotFound(_) => "NotFound",
+            Self::ConfigQuarantined(_) => "ConfigQuarantined",
             Self::Io(_) => "Io",
             Self::Serde(_) => "Serde",
             Self::Internal(_) => "Internal",
@@ -451,6 +481,7 @@ mod tests {
             vec!["nvm use".to_owned(), "asdf reshim".to_owned()],
         );
         let value = AppConfig {
+            config_version: 1,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
@@ -467,6 +498,7 @@ mod tests {
             )],
         };
         let fixture = json!({
+            "configVersion": 1,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
@@ -485,6 +517,7 @@ mod tests {
 
     fn partial_app_config_fixture() -> (PartialAppConfig, Value) {
         let value = PartialAppConfig {
+            config_version: None,
             default_instruction_sets: Some(PartialDefaultInstructionSets {
                 claude: Some(InstructionSetId::new("claude-default")),
                 copilot: None,
@@ -553,6 +586,7 @@ mod tests {
         let serialized: Value = serde_json::to_value(&value).expect("serialize");
         let obj = serialized.as_object().expect("object");
         // None fields must be elided so deep-merge sees a true patch.
+        assert!(!obj.contains_key("configVersion"));
         assert!(!obj.contains_key("instructionSetsDir"));
         assert!(!obj.contains_key("prelaunchCommands"));
         assert!(!obj.contains_key("worktreePrelaunchCommands"));

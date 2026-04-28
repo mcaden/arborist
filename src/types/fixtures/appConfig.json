@@ -1,4 +1,5 @@
 {
+  "configVersion": 1,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
