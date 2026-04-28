@@ -1,14 +1,17 @@
 //! Grove backend library crate.
 //!
-//! Phase 2 introduces the shared data model in [`types`]; later phases will
-//! add the PTY pool, config store, and command handlers.
+//! Phase 2 introduces the shared data model in [`types`]; Phase 3 adds the
+//! [`commands`] module with the typed RPC scaffold (currently just `ping`).
+//! Later phases will add the PTY pool, config store, and real command
+//! handlers.
 
+pub mod commands;
 pub mod types;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
-    PartialAppConfig, PartialDefaultInstructionSets, Session, SessionId, SessionStatus,
-    SessionView, TempFileSpec, Tool,
+    PartialAppConfig, PartialDefaultInstructionSets, Session, SessionId, SessionOutputEvent,
+    SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool,
 };
 
 use tracing_subscriber::EnvFilter;
@@ -28,6 +31,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![commands::ping])
         .run(tauri::generate_context!())
         .expect("error while running Grove");
 }

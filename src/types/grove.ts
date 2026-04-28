@@ -110,3 +110,17 @@ export interface AppError {
   code: string;
   message: string;
 }
+
+// MIRROR: src-tauri/src/types.rs::SessionOutputEvent
+// Payload of the `session://output` Tauri event (DESIGN §6).
+export interface SessionOutputEvent {
+  sessionId: SessionId;
+  data: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SessionStatusEvent
+// Payload of the `session://status` Tauri event (DESIGN §6).
+export interface SessionStatusEvent {
+  sessionId: SessionId;
+  status: SessionStatus;
+}

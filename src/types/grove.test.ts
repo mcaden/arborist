@@ -13,6 +13,8 @@ import type {
   InstructionSet,
   PartialAppConfig,
   Session,
+  SessionOutputEvent,
+  SessionStatusEvent,
   SessionView,
 } from './grove';
 
@@ -22,6 +24,8 @@ import instructionSetFixture from './fixtures/instructionSet.json';
 import appConfigFixture from './fixtures/appConfig.json';
 import partialAppConfigFixture from './fixtures/partialAppConfig.json';
 import appErrorFixture from './fixtures/appError.json';
+import sessionOutputEventFixture from './fixtures/sessionOutputEvent.json';
+import sessionStatusEventFixture from './fixtures/sessionStatusEvent.json';
 
 // --- Compile-time assertions ------------------------------------------------
 //
@@ -39,6 +43,8 @@ const _instructionSet = instructionSetFixture satisfies InstructionSet;
 const _appConfig = appConfigFixture satisfies AppConfig;
 const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
 const _appError = appErrorFixture satisfies AppError;
+const _sessionOutputEvent = sessionOutputEventFixture satisfies SessionOutputEvent;
+const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEvent;
 
 // Silence "unused" lint without losing the satisfies assertion.
 void _session;
@@ -47,6 +53,8 @@ void _instructionSet;
 void _appConfig;
 void _partialAppConfig;
 void _appError;
+void _sessionOutputEvent;
+void _sessionStatusEvent;
 
 // --- Runtime key-set assertions --------------------------------------------
 
@@ -161,6 +169,24 @@ describe('grove type mirrors', () => {
       ['code', 'message'],
       [],
       'AppError',
+    );
+  });
+
+  it('SessionOutputEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      sessionOutputEventFixture as unknown as Record<string, unknown>,
+      ['sessionId', 'data'],
+      [],
+      'SessionOutputEvent',
+    );
+  });
+
+  it('SessionStatusEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      sessionStatusEventFixture as unknown as Record<string, unknown>,
+      ['sessionId', 'status'],
+      [],
+      'SessionStatusEvent',
     );
   });
 

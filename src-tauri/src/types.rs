@@ -253,6 +253,28 @@ pub struct PartialAppConfig {
 // Errors
 // ---------------------------------------------------------------------------
 
+/// Payload of the `session://output` event (DESIGN §6).
+///
+/// Mirrored on the frontend by `SessionOutputEvent` in
+/// `src/types/grove.ts`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOutputEvent {
+    pub session_id: SessionId,
+    pub data: String,
+}
+
+/// Payload of the `session://status` event (DESIGN §6).
+///
+/// Mirrored on the frontend by `SessionStatusEvent` in
+/// `src/types/grove.ts`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStatusEvent {
+    pub session_id: SessionId,
+    pub status: SessionStatus,
+}
+
 /// Crate-wide error type. Internal Rust code consumes this via `?`; at the
 /// Tauri command boundary it is converted to [`AppError`] so the frontend
 /// gets a stable, serde-friendly shape it can branch on.
@@ -603,5 +625,35 @@ mod tests {
         let app: AppError = Error::InvalidPath("/no/such/dir".into()).into();
         assert_eq!(app.code, "InvalidPath");
         assert!(app.message.contains("/no/such/dir"));
+    }
+
+    #[test]
+    fn session_output_event_roundtrip() {
+        let value = SessionOutputEvent {
+            session_id: SessionId(
+                Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid"),
+            ),
+            data: "hello from PTY".to_owned(),
+        };
+        let fixture = json!({
+            "sessionId": "8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00",
+            "data": "hello from PTY"
+        });
+        assert_roundtrip(&value, fixture);
+    }
+
+    #[test]
+    fn session_status_event_roundtrip() {
+        let value = SessionStatusEvent {
+            session_id: SessionId(
+                Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid"),
+            ),
+            status: SessionStatus::Running,
+        };
+        let fixture = json!({
+            "sessionId": "8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00",
+            "status": "running"
+        });
+        assert_roundtrip(&value, fixture);
     }
 }
