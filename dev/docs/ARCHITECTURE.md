@@ -58,7 +58,9 @@ DESIGN §6. Both sides go through a single bridge module
 - **Path values are canonicalized at the boundary.** `config_store::save_config`
   rejects relative paths and any instruction file outside
   `instructionSetsDir`; `validate_worktree` requires an existing directory.
-  Stale `worktreeRoots` are silently dropped on load with a warning.
+  Stale `worktreeRoots` entries are silently dropped on load with a warning;
+  a stale `workspaceRoot` is cleared on load with a warning, prompting the
+  first-boot picker on next launch.
 - **Persistence is atomic.** `config_store` writes via
   `NamedTempFile::persist`; an aborted write leaves either the old file
   intact or the new file fully on disk — never a truncated half.

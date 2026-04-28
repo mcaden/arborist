@@ -38,6 +38,7 @@ every session create/close/restart. If you do, shut Arborist down first.
     "copilot": "copilot-default"
   },
   "instructionSetsDir": "/absolute/path/to/instructions",
+  "workspaceRoot": "/absolute/path/to/repo",
   "worktreeRoots": ["/absolute/path/to/repo"],
   "prelaunchCommands": [],
   "worktreePrelaunchCommands": {},
@@ -55,8 +56,17 @@ Field notes:
   existing directory. The path is canonicalized on load (symlinks resolved,
   `..` collapsed). Relative values are rejected when written via the
   `config_set` command and silently cleared when read from `config.json`.
-- `worktreeRoots[]` — same rules as `instructionSetsDir`. Entries that no
-  longer exist on disk are dropped (with a warning) on load.
+- `workspaceRoot` — single, optional anchor repository. Must be an
+  **absolute** path to a Git repository (validated via `git rev-parse`). When
+  set, this is the repo Arborist treats as the primary workspace: the
+  `.worktrees/` convention (see `WORKTREES.md`), the workspace indicator,
+  and new-worktree creation all derive from it. Cleared (set to `null`) on
+  load if the path no longer exists, which re-triggers the first-boot
+  picker.
+- `worktreeRoots[]` — legacy companion to `workspaceRoot`; same path rules
+  as `instructionSetsDir`. Entries that no longer exist on disk are dropped
+  (with a warning) on load. Retained for forward compatibility; new
+  installations should use `workspaceRoot`.
 - `prelaunchCommands[]` — global commands joined with `&&` before each CLI
   launch (SPEC §5.6). They run as the user; review them carefully.
 - `worktreePrelaunchCommands` — per-worktree overrides. Keys are

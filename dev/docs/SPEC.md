@@ -76,7 +76,7 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 
 | ID     | Requirement |
 |--------|-------------|
-| W-01   | The app MUST support a configurable list of root repository paths (`worktreeRoots`) to scan for Git worktrees. |
+| W-01   | The app MUST anchor its worktree discovery on a single configurable `workspaceRoot` repository path. (`worktreeRoots` is retained as a legacy field for forward compatibility but is no longer the primary surface; see DESIGN §3 and `WORKTREES.md`.) |
 | W-02   | Detected worktrees from configured root repos SHOULD be presented as a quick-pick list during session creation. |
 | W-03   | The user MUST always be able to pick any directory manually via an OS file picker, regardless of W-01. |
 

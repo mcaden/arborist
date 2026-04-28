@@ -123,7 +123,8 @@ interface AppConfig {
     copilot: string; // InstructionSet ID
   };
   instructionSetsDir: string; // Path to directory containing instruction files
-  worktreeRoots: string[]; // Root repo paths to scan for Git worktrees
+  workspaceRoot: string | null; // Single anchor repo (Roadmap §1); takes precedence over worktreeRoots
+  worktreeRoots: string[]; // Legacy: additional repo roots to scan (kept for forward compatibility)
   prelaunchCommands: string[]; // Global commands run before CLI launch
   worktreePrelaunchCommands: Record<string, string[]>; // Per-worktree overrides (key = worktree path)
   lastOpenSessions: string[]; // Session IDs to restore on next launch
@@ -531,7 +532,7 @@ tokens, API keys, or passwords.
 ## 9. Future Considerations
 
 - **Split view**: Show two terminals side by side.
-- **Worktree auto-discovery**: Deeper scanning (e.g., recursive search, multiple remotes). _(Basic discovery via `worktreeRoots` is included in v1.)_
+- **Worktree auto-discovery**: Deeper scanning (e.g., recursive search, multiple remotes). _(Basic discovery anchored on `workspaceRoot` — and its legacy `worktreeRoots` companion — is included in v1; see `WORKTREES.md`.)_
 - **Session snapshots**: Save/restore terminal scrollback.
 - **Theming**: Respect system dark/light mode and allow custom terminal themes.
 - **Keyboard shortcuts**: Ctrl+Tab to cycle sessions, Ctrl+N for new session.
