@@ -273,7 +273,7 @@ impl PtyKiller for PortableKiller {
             std::thread::sleep(KILL_GRACE);
             // SAFETY: kill(2) is thread-safe.
             unsafe {
-                let _ = libc_kill(self.pid as i32, 9);
+                libc_kill(self.pid as i32, 9);
             }
         }
         Ok(())
