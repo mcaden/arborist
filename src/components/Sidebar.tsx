@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 
 import { CloseConfirmDialog } from './CloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
+import { SettingsDialog } from './SettingsDialog';
 import { SidebarTab } from './SidebarTab';
 import { WorkspaceIndicator } from './WorkspaceIndicator';
 import { useActiveSessionId, useSessionActions, useSessions } from '@/store/session-store';
@@ -33,6 +34,7 @@ export function Sidebar(): JSX.Element {
   const sessions = useSessions();
   const activeId = useActiveSessionId();
   const actions = useSessionActions();
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
 
   const ids = useMemo(() => sessions.map((s) => s.id), [sessions]);
 
@@ -134,6 +136,18 @@ export function Sidebar(): JSX.Element {
   );
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    // The sidebar implements the WAI-ARIA tabs keyboard pattern. It
+    // must not intercept events that originate from descendant inputs
+    // or modal dialogs (e.g. the Settings dialog or NewSession dialog
+    // rendered inside the aside): otherwise Space/Arrow/Delete typed
+    // into a textbox would move tab focus or trigger close-confirm.
+    const target = e.target as HTMLElement | null;
+    if (target) {
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (target.isContentEditable) return;
+      if (target.closest('[role="dialog"]')) return;
+    }
     if (ids.length === 0) return;
     const current = Math.min(focusedIndex, ids.length - 1);
     const currentId = ids[current];
@@ -229,7 +243,19 @@ export function Sidebar(): JSX.Element {
           </ul>
         </SortableContext>
       </DndContext>
+      <div className="mt-auto border-t border-slate-200 px-2 py-2 dark:border-slate-800">
+        <button
+          type="button"
+          data-testid="settings-button"
+          onClick={() => setSettingsOpen(true)}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
+        >
+          <span aria-hidden="true">⚙</span>
+          <span>Settings</span>
+        </button>
+      </div>
       <CloseConfirmDialog />
+      {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
     </aside>
   );
 }

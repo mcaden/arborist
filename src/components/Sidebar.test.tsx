@@ -256,4 +256,25 @@ describe('Sidebar', () => {
 
     expect(screen.getByRole('button', { name: /close session docs-rewrite/i })).toBeInTheDocument();
   });
+
+  it('renders the Settings footer button and opens the Settings dialog on click', () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    expect(screen.queryByTestId('settings-dialog')).toBeNull();
+    fireEvent.click(screen.getByTestId('settings-button'));
+    expect(screen.getByTestId('settings-dialog')).toBeInTheDocument();
+  });
+
+  it('does not intercept Delete/Arrow keypresses originating in the Settings dialog', () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId('settings-button'));
+    const input = screen.getByLabelText(/instruction sets directory/i);
+    input.focus();
+    fireEvent.keyDown(input, { key: 'Delete' });
+    // The close-confirm dialog must NOT have been opened — Delete
+    // pressed inside an input should not bubble up into the tablist
+    // handler.
+    expect(screen.queryByText(/terminate session/i)).toBeNull();
+  });
 });

@@ -401,21 +401,27 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         }
     }
     if let Some(dir) = patch.instruction_sets_dir {
-        if dir.is_relative() {
-            return Err(Error::InvalidPath(format!(
-                "instructionSetsDir must be absolute, got {}",
-                dir.display()
-            )));
+        // Empty string = "clear the directory" (revert to the unconfigured
+        // default). Otherwise the path must be absolute and exist.
+        if dir.as_os_str().is_empty() {
+            cfg.instruction_sets_dir = PathBuf::new();
+        } else {
+            if dir.is_relative() {
+                return Err(Error::InvalidPath(format!(
+                    "instructionSetsDir must be absolute, got {}",
+                    dir.display()
+                )));
+            }
+            let canon = dunce::canonicalize(&dir)
+                .map_err(|e| Error::InvalidPath(format!("{}: {e}", dir.display())))?;
+            if !canon.is_dir() {
+                return Err(Error::InvalidPath(format!(
+                    "instructionSetsDir is not a directory: {}",
+                    canon.display()
+                )));
+            }
+            cfg.instruction_sets_dir = canon;
         }
-        let canon = dunce::canonicalize(&dir)
-            .map_err(|e| Error::InvalidPath(format!("{}: {e}", dir.display())))?;
-        if !canon.is_dir() {
-            return Err(Error::InvalidPath(format!(
-                "instructionSetsDir is not a directory: {}",
-                canon.display()
-            )));
-        }
-        cfg.instruction_sets_dir = canon;
     }
     // workspace_root is tri-state like active_session_id: absent → leave
     // alone; Some(None) → clear; Some(Some(path)) → set after validating it
@@ -927,6 +933,30 @@ mod tests {
         let cfg = store.save_config(patch).expect("ok");
         assert_eq!(cfg.instruction_sets_dir, canon(&inst_dir));
         assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+    }
+
+    #[test]
+    fn save_config_accepts_empty_instruction_dir_as_clear() {
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let inst_dir = td.path().join("instr");
+        fs::create_dir_all(&inst_dir).expect("mkdir");
+        let store = ConfigStore::open(&store_dir).expect("open");
+        // First set a non-empty dir...
+        store
+            .save_config(PartialAppConfig {
+                instruction_sets_dir: Some(inst_dir.clone()),
+                ..Default::default()
+            })
+            .expect("set");
+        // ...then clear it with an empty PathBuf.
+        let cfg = store
+            .save_config(PartialAppConfig {
+                instruction_sets_dir: Some(PathBuf::new()),
+                ..Default::default()
+            })
+            .expect("clear");
+        assert!(cfg.instruction_sets_dir.as_os_str().is_empty());
     }
 
     #[test]

@@ -7,8 +7,8 @@
 import { useCallback, useState } from 'react';
 
 import { WorkspacePicker } from './WorkspacePicker';
+import { changeWorkspace } from '@/lib/workspace-switch';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
-import { useSessionStore } from '@/store/session-store';
 
 /** Extract the trailing path component, handling both POSIX and Windows separators. */
 function basename(p: string): string {
@@ -19,37 +19,12 @@ function basename(p: string): string {
 
 export function WorkspaceIndicator(): JSX.Element | null {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
-  const setConfig = useConfigStore((s) => s.set);
   const [picking, setPicking] = useState(false);
 
-  const handleConfirm = useCallback(
-    async (path: string) => {
-      // Close every open session before switching: the new workspace's
-      // worktrees won't match the old session records, so leaving them
-      // open is misleading.
-      const { sessions, actions } = useSessionStore.getState();
-      const failures: string[] = [];
-      for (const s of sessions) {
-        try {
-          await actions.close(s.id);
-        } catch (err) {
-          failures.push(s.label);
-          console.error('Failed to close session before workspace switch', s.id, err);
-        }
-      }
-      if (failures.length > 0) {
-        // Atomic switch: if we cannot tear down a session cleanly, the new
-        // workspace would inherit a stranded record pointing at a stale
-        // worktree. Surface the error and leave the user on the picker.
-        throw new Error(
-          `Could not close ${failures.length === 1 ? 'session' : 'sessions'}: ${failures.join(', ')}. Resolve and try again.`,
-        );
-      }
-      await setConfig({ workspaceRoot: path });
-      setPicking(false);
-    },
-    [setConfig],
-  );
+  const handleConfirm = useCallback(async (path: string) => {
+    await changeWorkspace(path);
+    setPicking(false);
+  }, []);
 
   if (workspaceRoot === null || workspaceRoot.length === 0) {
     // App-level shell shows the first-boot picker in this state, so the
