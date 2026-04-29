@@ -328,7 +328,7 @@ export function NewSessionDialog(): JSX.Element | null {
                 )
                   return;
                 e.preventDefault();
-                const next: WorktreeMode =
+                const nextMode: WorktreeMode =
                   e.key === 'Home'
                     ? 'new'
                     : e.key === 'End'
@@ -336,8 +336,8 @@ export function NewSessionDialog(): JSX.Element | null {
                       : worktreeMode === 'new'
                         ? 'existing'
                         : 'new';
-                setWorktreeMode(next);
-                const id = next === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
+                setWorktreeMode(nextMode);
+                const id = nextMode === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
                 document.getElementById(id)?.focus();
               }}
             >
