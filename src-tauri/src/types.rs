@@ -444,15 +444,41 @@ impl SessionMetricsEvent {
     /// `session://metrics` emissions when nothing has changed since the
     /// previous poll. Comparing `Self` directly via derived `PartialEq`
     /// would always differ because `observed_at` advances every poll.
+    ///
+    /// **Future-proofing:** the destructuring patterns below intentionally
+    /// list every field by name (no `..`) so that adding a new field to
+    /// `SessionMetricsEvent` is a compile error here. That forces an
+    /// explicit decision: include the new field in the dedup comparison,
+    /// or document why it's excluded (like `observed_at`).
     #[must_use]
     pub fn same_payload_as(&self, other: &Self) -> bool {
-        self.session_id == other.session_id
-            && self.model == other.model
-            && self.context_used_pct == other.context_used_pct
-            && self.context_tokens_used == other.context_tokens_used
-            && self.context_tokens_limit == other.context_tokens_limit
-            && self.input_tokens == other.input_tokens
-            && self.output_tokens == other.output_tokens
+        let Self {
+            session_id: a_session_id,
+            model: a_model,
+            context_used_pct: a_pct,
+            context_tokens_used: a_used,
+            context_tokens_limit: a_limit,
+            input_tokens: a_in,
+            output_tokens: a_out,
+            observed_at: _, // intentionally excluded — see fn doc
+        } = self;
+        let Self {
+            session_id: b_session_id,
+            model: b_model,
+            context_used_pct: b_pct,
+            context_tokens_used: b_used,
+            context_tokens_limit: b_limit,
+            input_tokens: b_in,
+            output_tokens: b_out,
+            observed_at: _, // intentionally excluded — see fn doc
+        } = other;
+        a_session_id == b_session_id
+            && a_model == b_model
+            && a_pct == b_pct
+            && a_used == b_used
+            && a_limit == b_limit
+            && a_in == b_in
+            && a_out == b_out
     }
 }
 
