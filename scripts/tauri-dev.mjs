@@ -68,27 +68,59 @@ process.on('exit', cleanup);
 console.log(`[arborist] tauri dev on port ${port}`);
 
 const isWindows = process.platform === 'win32';
+
+// On POSIX we can spawn `npx` directly without a shell and put the child in
+// its own process group (`detached: true`); this lets us deliver signals to
+// the whole tree (`tauri dev`, `vite`, …) via `process.kill(-pid, sig)`.
+//
+// On Windows we still need `shell: true` because Node's `spawn` refuses to
+// execute `.cmd`/`.bat` files directly without a shell since the CVE-2024-27980
+// fix.  In return we use `taskkill /pid <pid> /T /F` to terminate the whole
+// process tree on shutdown — `child.kill()` against the wrapping `cmd.exe`
+// alone does not reliably reach `tauri`/`vite`.
 const child = spawn(
   isWindows ? 'npx.cmd' : 'npx',
   ['tauri', 'dev', '--config', overridePath, ...process.argv.slice(2)],
-  { stdio: 'inherit', env: process.env, shell: isWindows },
+  {
+    stdio: 'inherit',
+    env: process.env,
+    shell: isWindows,
+    detached: !isWindows,
+  },
 );
 
-// Forward terminating signals to the child so we don't orphan `tauri dev` /
-// Vite (which would keep holding the dev port). The child's `exit` handler
-// below performs cleanup and propagates its exit status. SIGBREAK is
-// Windows-only; registering it on POSIX would crash with `ERR_UNKNOWN_SIGNAL`.
+function killChildTree(sig) {
+  if (isWindows) {
+    try {
+      // /T = tree, /F = force. Spawn synchronously and ignore output —
+      // failure usually just means the child already exited.
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+      });
+    } catch {
+      // best-effort
+    }
+    return;
+  }
+  try {
+    // Negative pid targets the process group created by `detached: true`.
+    process.kill(-child.pid, sig);
+  } catch {
+    try {
+      child.kill(sig);
+    } catch {
+      // child may already be gone
+    }
+  }
+}
+
+// SIGBREAK is Windows-only; registering it on POSIX would crash with
+// `ERR_UNKNOWN_SIGNAL`.
 const forwardSignals = isWindows
   ? ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']
   : ['SIGINT', 'SIGTERM', 'SIGHUP'];
 for (const sig of forwardSignals) {
-  process.on(sig, () => {
-    try {
-      child.kill(sig);
-    } catch {
-      // child may already be gone — fall through to cleanup
-    }
-  });
+  process.on(sig, () => killChildTree(sig));
 }
 
 child.on('exit', (code, signal) => {
