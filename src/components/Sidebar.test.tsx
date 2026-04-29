@@ -352,5 +352,31 @@ describe('Sidebar metrics indicator (Issue #3)', () => {
     expect(line.textContent).toContain('29.5k tok');
     expect(line.getAttribute('title')).toContain('claude-opus-4.7');
     expect(line.getAttribute('title')).toMatch(/168,000|168000/);
+    // Disambiguation: the Copilot-reported window is smaller than the
+    // model's nominal max because Copilot reserves space for its own
+    // system prompt + tool definitions. Surface that in the tooltip so
+    // users don't read 30k/168k as a math error against e.g. Opus's 200k.
+    expect(line.getAttribute('title')).toMatch(/Copilot-reported/i);
+  });
+
+  it('does NOT add the Copilot-reported caveat for Claude sessions', () => {
+    seed([makeView('a')], 'a');
+    useSessionStore.setState({
+      metrics: {
+        a: {
+          sessionId: 'a',
+          model: 'claude-sonnet-4-6',
+          contextUsedPct: 42,
+          contextTokensUsed: 12_345,
+          contextTokensLimit: 200_000,
+          inputTokens: 9000,
+          outputTokens: 3345,
+          observedAt: 1_700_000_000,
+        },
+      },
+    });
+    render(<Sidebar />);
+    const title = screen.getByTestId('sidebar-metrics').getAttribute('title') ?? '';
+    expect(title).not.toMatch(/Copilot-reported/i);
   });
 });

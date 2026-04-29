@@ -17,7 +17,7 @@ import {
   useSessionActions,
   useSessionById,
 } from '@/store/session-store';
-import type { SessionId, SessionMetrics } from '@/types/arborist';
+import type { SessionId, SessionMetrics, Tool } from '@/types/arborist';
 
 interface SidebarTabProps {
   id: SessionId;
@@ -133,6 +133,7 @@ export function SidebarTab({
         </span>
         <MetricsLine
           metrics={session.status === 'running' ? metrics : undefined}
+          tool={session.tool}
           isActive={isActive}
         />
       </button>
@@ -163,10 +164,11 @@ export function SidebarTab({
 
 interface MetricsLineProps {
   metrics: SessionMetrics | undefined;
+  tool: Tool;
   isActive: boolean;
 }
 
-function MetricsLine({ metrics, isActive }: MetricsLineProps): JSX.Element {
+function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element {
   const colour = isActive
     ? 'text-sky-800/80 dark:text-sky-200/80'
     : 'text-slate-500 dark:text-slate-400';
@@ -202,9 +204,13 @@ function MetricsLine({ metrics, isActive }: MetricsLineProps): JSX.Element {
     typeof metrics.contextTokensUsed === 'number' &&
     typeof metrics.contextTokensLimit === 'number'
   ) {
+    const suffix =
+      tool === 'copilot'
+        ? ' (Copilot-reported window; smaller than the model nominal max because Copilot reserves space for its system prompt and tool definitions)'
+        : '';
     longParts.push(
       `Context ${metrics.contextTokensUsed.toLocaleString()} / ` +
-        `${metrics.contextTokensLimit.toLocaleString()} tokens`,
+        `${metrics.contextTokensLimit.toLocaleString()} tokens${suffix}`,
     );
   }
   if (typeof metrics.inputTokens === 'number' && typeof metrics.outputTokens === 'number') {
