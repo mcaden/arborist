@@ -246,31 +246,14 @@ fn run_claude_watcher(
                     last_emitted = None;
                 }
                 if len > tracked_len {
-                    if let Ok(bytes) = read_range(&c, tracked_len, len) {
-                        // Only advance the cursor up to the last *complete*
-                        // line we observed — a half-written trailing line
-                        // must be re-read after the writer finishes it,
-                        // otherwise `extract_assistant_usage` silently
-                        // drops a partial JSON object. Mirrors the
-                        // Copilot watcher's last-newline logic.
-                        if let Some(nl) = bytes.iter().rposition(|&b| b == b'\n') {
-                            let consumable = &bytes[..=nl];
-                            for line in consumable.split(|&b| b == b'\n') {
-                                if line.is_empty() {
-                                    continue;
-                                }
-                                if let Some((usage, model)) = extract_assistant_usage(line) {
-                                    totals.add(&usage);
-                                    if let Some(m) = model {
-                                        last_model = Some(m);
-                                    }
-                                }
+                    tracked_len = tail_lines(&c, tracked_len, len, |line| {
+                        if let Some((usage, model)) = extract_assistant_usage(line) {
+                            totals.add(&usage);
+                            if let Some(m) = model {
+                                last_model = Some(m);
                             }
-                            tracked_len += (nl as u64) + 1;
                         }
-                        // No newline in the chunk yet → leave cursor where
-                        // it is; we'll retry next poll.
-                    }
+                    });
                 }
             }
         }
@@ -320,21 +303,9 @@ fn run_copilot_watcher(
                 last_emitted = None;
             }
             if len > cursor {
-                if let Ok(bytes) = read_range(&otel_path, cursor, len) {
-                    // Only advance the cursor up to the last *complete*
-                    // line we observed, so a half-written line at EOF is
-                    // re-read after the writer finishes it.
-                    if let Some(nl) = bytes.iter().rposition(|&b| b == b'\n') {
-                        let consumable = &bytes[..=nl];
-                        for line in consumable.split(|&b| b == b'\n') {
-                            if line.is_empty() {
-                                continue;
-                            }
-                            ingest_otel_line(line, &mut state);
-                        }
-                        cursor += (nl as u64) + 1;
-                    }
-                }
+                cursor = tail_lines(&otel_path, cursor, len, |line| {
+                    ingest_otel_line(line, &mut state);
+                });
             }
         }
 
@@ -434,6 +405,84 @@ fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// Tail `path` from `cursor` up to `end`, invoking `consume` for each
+/// complete `\n`-terminated line found. Returns the new cursor position
+/// (always `>= cursor`).
+///
+/// Three pitfalls handled:
+/// 1. **Half-written trailing line.** The cursor only advances past the
+///    last complete `\n`; partial trailing bytes are re-read on the next
+///    call. Without this the line parser silently drops a partial JSON
+///    object the writer is still finishing.
+/// 2. **Read cap.** `read_range` is capped at [`MAX_READ_CHUNK`] so a
+///    runaway exporter cannot make us allocate gigabytes in one shot.
+///    The remaining bytes are picked up on subsequent polls.
+/// 3. **Oversized line (> [`MAX_READ_CHUNK`] without a `\n` in the cap).**
+///    If the capped chunk has no newline AND the file extends past what
+///    we read, the line itself is bigger than the cap. Without special
+///    handling, `rposition` would always be `None` and the watcher would
+///    re-read the same chunk forever (wasted I/O, metrics never advance).
+///    We scan forward from the end of the chunk *without* buffering to
+///    find the next `\n`, log a warning, and skip the whole oversized
+///    line. If no `\n` is found anywhere up to `end`, the writer is
+///    still in flight, so we leave the cursor where it is and let the
+///    next poll re-check.
+fn tail_lines<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, mut consume: F) -> u64 {
+    let bytes = match read_range(path, cursor, end) {
+        Ok(b) => b,
+        Err(_) => return cursor,
+    };
+    if let Some(nl) = bytes.iter().rposition(|&b| b == b'\n') {
+        for line in bytes[..=nl].split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            consume(line);
+        }
+        return cursor + (nl as u64) + 1;
+    }
+    // No newline in the chunk. If there's more file beyond what we read,
+    // the line is oversized — skip it. Otherwise the writer is still in
+    // flight and we should retry next poll.
+    let read = bytes.len() as u64;
+    if cursor + read < end {
+        tracing::warn!(
+            path = %path.display(),
+            max_bytes = MAX_READ_CHUNK,
+            "session_metrics: skipping oversized line (>cap, no newline in chunk)"
+        );
+        match find_next_newline(path, cursor + read, end) {
+            Some(nl_abs) => nl_abs + 1,
+            None => cursor,
+        }
+    } else {
+        cursor
+    }
+}
+
+/// Scan `path` from `start` (inclusive) up to `end` (exclusive) without
+/// buffering the whole range, looking for the next `\n`. Returns its
+/// absolute byte offset, or `None` if no newline exists in the range.
+fn find_next_newline(path: &Path, start: u64, end: u64) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut pos = start;
+    while pos < end {
+        let want = ((end - pos) as usize).min(buf.len());
+        let n = f.read(&mut buf[..want]).ok()?;
+        if n == 0 {
+            return None;
+        }
+        if let Some(idx) = buf[..n].iter().position(|&b| b == b'\n') {
+            return Some(pos + idx as u64);
+        }
+        pos += n as u64;
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1288,6 +1337,101 @@ mod tests {
             MAX_READ_CHUNK,
             "read_range must cap at MAX_READ_CHUNK to bound allocation"
         );
+    }
+
+    // ----- tail_lines: oversized-line skip ---------------------------------
+
+    /// Regression for the infinite-loop hazard noted in PR review: if a
+    /// single line exceeds `MAX_READ_CHUNK`, both watchers used to be
+    /// stuck forever — `rposition('\n')` would always be `None` on the
+    /// capped chunk and the cursor would never move. `tail_lines` must
+    /// detect "no newline + more file beyond the chunk", scan forward
+    /// without buffering, and skip the oversized line.
+    #[test]
+    fn tail_lines_skips_line_larger_than_max_read_chunk() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("oversized.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // Oversized line: MAX_READ_CHUNK + 1MB of 'x' bytes, no \n inside.
+        let oversized_len = (MAX_READ_CHUNK + 1024 * 1024) as usize;
+        let oversized = vec![b'x'; oversized_len];
+        f.write_all(&oversized).unwrap();
+        f.write_all(b"\n").unwrap();
+        // A normal line afterwards that MUST be observed by the consumer.
+        let normal = br#"{"normal":true}"#;
+        f.write_all(normal).unwrap();
+        f.write_all(b"\n").unwrap();
+        drop(f);
+        let total = std::fs::metadata(&path).unwrap().len();
+
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        let mut cursor: u64 = 0;
+        // Loop the watcher's poll body until the cursor reaches EOF or we
+        // give up. A working implementation drains in 1–2 iterations;
+        // a broken one (the bug under regression) loops forever.
+        for _ in 0..10 {
+            let new_cursor = tail_lines(&path, cursor, total, |line| {
+                seen.push(line.to_vec());
+            });
+            if new_cursor == cursor {
+                break;
+            }
+            cursor = new_cursor;
+            if cursor == total {
+                break;
+            }
+        }
+        assert_eq!(cursor, total, "cursor must reach EOF (no infinite loop)");
+        assert_eq!(seen.len(), 1, "oversized line skipped, only normal seen");
+        assert_eq!(seen[0], normal, "the post-oversized line was delivered");
+    }
+
+    /// `tail_lines` must NOT skip a "long" line that hasn't been
+    /// terminated yet — that's a partial trailing line, not an oversized
+    /// one. Cursor stays put; we'll re-read after the writer commits a
+    /// `\n`. The oversized-line skip only triggers when there's already
+    /// more data on the far side of the cap.
+    #[test]
+    fn tail_lines_does_not_skip_in_flight_partial_line() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("inflight.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // Oversized partial line: > MAX_READ_CHUNK, NO trailing \n, NO
+        // extra bytes after. This is "writer still in flight on a huge
+        // line", which is rare but distinct from "committed oversized
+        // line followed by more data".
+        let partial = vec![b'x'; (MAX_READ_CHUNK + 4096) as usize];
+        f.write_all(&partial).unwrap();
+        drop(f);
+        let len = std::fs::metadata(&path).unwrap().len();
+
+        let mut consumed: usize = 0;
+        let new_cursor = tail_lines(&path, 0, len, |_line| consumed += 1);
+        assert_eq!(consumed, 0, "no complete line yet");
+        assert_eq!(new_cursor, 0, "cursor must NOT advance on in-flight EOF");
+    }
+
+    /// Sanity: `tail_lines` must also drain a normal multi-line chunk
+    /// in one call and leave a trailing partial in place.
+    #[test]
+    fn tail_lines_drains_complete_lines_and_preserves_partial() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("normal.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"line1\nline2\nline3-partial").unwrap();
+        drop(f);
+        let len = std::fs::metadata(&path).unwrap().len();
+
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        let new_cursor = tail_lines(&path, 0, len, |l| seen.push(l.to_vec()));
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], b"line1");
+        assert_eq!(seen[1], b"line2");
+        // 6 bytes for "line1\n" + 6 bytes for "line2\n" = 12.
+        assert_eq!(new_cursor, 12);
     }
 
     // ----- Claude watcher partial-line protection --------------------------
