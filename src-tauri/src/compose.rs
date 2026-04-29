@@ -244,6 +244,44 @@ pub fn session_temp_dir(id: &SessionId) -> PathBuf {
     p
 }
 
+/// Per-session **environment variables** to inject into the spawned CLI
+/// process, separately from the shell command. These are *additions* on top
+/// of the parent process's inherited env (the spawner does not call
+/// `env_clear`). They are recomputed on every spawn from the session id and
+/// **never** stored on `Session` — only the path to the OTel JSONL would be
+/// derivable anyway, and persisting it would let stale paths from a previous
+/// install leak across upgrades.
+///
+/// Per-tool behaviour:
+///
+/// * `Tool::Copilot` — enable Copilot's OpenTelemetry **file exporter**
+///   pointing at `<session_temp_dir>/otel.jsonl`. Arborist tails that file
+///   to surface real-time token usage / context-window state in the sidebar
+///   (see [`crate::session_metrics::run_copilot_watcher`]). The
+///   `OTEL_BSP_SCHEDULE_DELAY=1000` (ms) tightens the SDK's batch flush
+///   from its 5s default to ~1Hz so the sidebar updates feel live. Older
+///   Copilot CLIs that don't recognise these vars silently ignore them.
+/// * `Tool::Claude` — empty. Claude Code has no file-exporter mode (only
+///   OTLP, which would require an in-process receiver). Reuses the existing
+///   transcript-tailing watcher.
+#[must_use]
+pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, String)> {
+    match tool {
+        Tool::Copilot => {
+            let path = session_temp_dir(session_id).join("otel.jsonl");
+            vec![
+                (
+                    "COPILOT_OTEL_FILE_EXPORTER_PATH".to_owned(),
+                    path.to_string_lossy().into_owned(),
+                ),
+                ("COPILOT_OTEL_ENABLED".to_owned(), "true".to_owned()),
+                ("OTEL_BSP_SCHEDULE_DELAY".to_owned(), "1000".to_owned()),
+            ]
+        }
+        Tool::Claude => Vec::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shell quoting
 // ---------------------------------------------------------------------------
@@ -981,5 +1019,55 @@ mod tests {
         assert!(validate_worktree_name(&long).is_err());
         let max = "a".repeat(255);
         assert!(validate_worktree_name(&max).is_ok());
+    }
+
+    // -- env_for_tool --------------------------------------------------------
+
+    #[test]
+    fn env_for_tool_claude_is_empty() {
+        assert!(env_for_tool(Tool::Claude, &fixed_id()).is_empty());
+    }
+
+    #[test]
+    fn env_for_tool_copilot_returns_otel_keys() {
+        let id = fixed_id();
+        let env = env_for_tool(Tool::Copilot, &id);
+        let map: std::collections::HashMap<String, String> = env.iter().cloned().collect();
+
+        // Path is deterministic from session_temp_dir.
+        let expected = session_temp_dir(&id)
+            .join("otel.jsonl")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            map.get("COPILOT_OTEL_FILE_EXPORTER_PATH")
+                .map(String::as_str),
+            Some(expected.as_str()),
+        );
+        assert_eq!(
+            map.get("COPILOT_OTEL_ENABLED").map(String::as_str),
+            Some("true")
+        );
+        // Standard OTel SDK env var; literal "1000" (ms) tightens batch
+        // flush from the 5s default to ~1Hz.
+        assert_eq!(
+            map.get("OTEL_BSP_SCHEDULE_DELAY").map(String::as_str),
+            Some("1000"),
+        );
+        assert_eq!(env.len(), 3, "exactly three env vars for Copilot");
+    }
+
+    #[test]
+    fn env_for_tool_copilot_path_changes_with_session_id() {
+        let a = SessionId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
+        let b = SessionId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap());
+        let path_a: std::collections::HashMap<_, _> =
+            env_for_tool(Tool::Copilot, &a).into_iter().collect();
+        let path_b: std::collections::HashMap<_, _> =
+            env_for_tool(Tool::Copilot, &b).into_iter().collect();
+        assert_ne!(
+            path_a.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
+            path_b.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
+        );
     }
 }

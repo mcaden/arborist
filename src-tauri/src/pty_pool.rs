@@ -86,6 +86,12 @@ pub const ORPHAN_AGE_THRESHOLD: Duration = Duration::from_secs(60 * 60);
 pub struct ChildCommand {
     pub program: String,
     pub args: Vec<String>,
+    /// Environment variable additions/overrides applied on top of the
+    /// parent process's inherited env. Used to inject per-session
+    /// telemetry settings (e.g. Copilot's OTel file exporter path) without
+    /// touching the persisted `Session.composed_command`. Empty for tools
+    /// that need no extra env (e.g. Claude today).
+    pub env: Vec<(String, String)>,
 }
 
 /// Result of a successful spawn — a bundle of independent handles. Splitting
@@ -170,6 +176,12 @@ impl PtySpawner for PortablePtySpawner {
         // DESIGN §5.6: cwd is the discrete worktree path — never spliced into
         // the command string.
         builder.cwd(cwd);
+        // Per-session env additions. The child still inherits the parent
+        // process's env (we never call `env_clear`); these are
+        // overrides/additions only — see `compose::env_for_tool`.
+        for (k, v) in &cmd.env {
+            builder.env(k, v);
+        }
 
         let child = pair
             .slave
@@ -529,14 +541,41 @@ impl PtyPool {
     }
 
     fn spawn_internal(&self, session: &Session, sink: PtySink) -> Result<u32, Error> {
-        // ------- 1. Compose ChildCommand from platform shell + composed_command
+        // ------- 1. Per-session spawn prep (telemetry env, temp dir).
+        //
+        // We do this here — not in `commands/session.rs` — so every spawn
+        // path (create, restart, restore-on-launch) gets the same
+        // treatment without each call site having to remember. Mirror of
+        // the post-close cleanup that already lives next to `kill`.
+        let env = compose::env_for_tool(session.tool, &session.id);
+        if !env.is_empty() {
+            // The temp dir might not exist yet (Copilot doesn't materialise
+            // any compose-time temp files today). Ensure it's there before
+            // the child opens its OTel exporter file inside it.
+            let dir = compose::session_temp_dir(&session.id);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                debug!(session_id = %session.id, error = %e, dir = %dir.display(), "session temp dir create failed");
+            }
+            // Wipe a stale OTel JSONL from a previous run so restart /
+            // restore-on-launch don't replay old spans and double-count
+            // totals. Best-effort; missing file is fine.
+            let stale = dir.join("otel.jsonl");
+            if stale.exists() {
+                if let Err(e) = std::fs::remove_file(&stale) {
+                    debug!(session_id = %session.id, error = %e, "stale otel.jsonl removal failed");
+                }
+            }
+        }
+
+        // ------- 2. Compose ChildCommand from platform shell + composed_command
         let shell = platform_shell();
         let cmd = ChildCommand {
             program: shell.program.clone(),
             args: vec![shell.flag.to_string(), session.composed_command.clone()],
+            env,
         };
 
-        // ------- 2. Spawn via injected spawner; cwd is discrete (DESIGN §5.6)
+        // ------- 3. Spawn via injected spawner; cwd is discrete (DESIGN §5.6)
         let spawned = self
             .spawner
             .spawn(cmd, &session.worktree_path, DEFAULT_PTY_SIZE)?;
@@ -549,7 +588,7 @@ impl PtyPool {
             killer,
         } = spawned;
 
-        // ------- 3. Build channel + drain task
+        // ------- 4. Build channel + drain task
         let (tx, mut rx) = mpsc::channel::<String>(OUTPUT_CHANNEL_CAPACITY);
         let cancel = CancellationToken::new();
         let drain_cancel = cancel.clone();
@@ -574,7 +613,7 @@ impl PtyPool {
         let killed = Arc::new(AtomicBool::new(false));
         let scanner = Arc::new(Mutex::new(ActivityScanner::new()));
 
-        // ------- 4. Read thread (OS thread; portable-pty reads are blocking)
+        // ------- 5. Read thread (OS thread; portable-pty reads are blocking)
         let read_id = session.id;
         let read_tx = tx.clone();
         let read_dropped = Arc::clone(&dropped);
@@ -594,7 +633,7 @@ impl PtyPool {
             })
             .map_err(|e| Error::PtySpawnFailed(format!("spawn read thread failed: {e}")))?;
 
-        // ------- 4b. Activity tick task — emits Idle transitions when the
+        // ------- 5b. Activity tick task — emits Idle transitions when the
         // PTY has been quiescent. Runs on the tokio runtime so it shares
         // the existing CancellationToken plumbing for clean shutdown.
         let tick_cancel = cancel.clone();
@@ -622,7 +661,7 @@ impl PtyPool {
             }
         });
 
-        // ------- 5. Wait thread (OS thread)
+        // ------- 6. Wait thread (OS thread)
         let wait_id = session.id;
         let wait_sink = sink.clone();
         let wait_killed = Arc::clone(&killed);
@@ -633,7 +672,7 @@ impl PtyPool {
             })
             .map_err(|e| Error::PtySpawnFailed(format!("spawn wait thread failed: {e}")))?;
 
-        // ------- 6. Insert runtime entry
+        // ------- 7. Insert runtime entry
         {
             let mut guard = self
                 .inner
@@ -656,7 +695,7 @@ impl PtyPool {
             );
         }
 
-        // ------- 7. Announce Running
+        // ------- 8. Announce Running
         (sink.status)(&session.id, SessionStatus::Running, Some(pid), None);
 
         Ok(pid)

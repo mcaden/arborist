@@ -325,4 +325,32 @@ describe('Sidebar metrics indicator (Issue #3)', () => {
     render(<Sidebar />);
     expect(screen.queryByTestId('sidebar-metrics')).toBeNull();
   });
+
+  // Copilot sessions surface metrics through the same wire shape
+  // (`SessionMetricsEvent`) as Claude — the only difference is which
+  // backend watcher produced the snapshot. The sidebar must render
+  // them identically.
+  it('renders the same metrics indicator for Copilot sessions', () => {
+    seed([makeView('a', { tool: 'copilot', instructionSetId: undefined })], 'a');
+    useSessionStore.setState({
+      metrics: {
+        a: {
+          sessionId: 'a',
+          model: 'claude-opus-4.7',
+          contextUsedPct: 17,
+          contextTokensUsed: 29_461,
+          contextTokensLimit: 168_000,
+          inputTokens: 39_497,
+          outputTokens: 24,
+          observedAt: 1_700_000_000,
+        },
+      },
+    });
+    render(<Sidebar />);
+    const line = screen.getByTestId('sidebar-metrics');
+    expect(line.textContent).toContain('17%');
+    expect(line.textContent).toContain('29.5k tok');
+    expect(line.getAttribute('title')).toContain('claude-opus-4.7');
+    expect(line.getAttribute('title')).toMatch(/168,000|168000/);
+  });
 });
