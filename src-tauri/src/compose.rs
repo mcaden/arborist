@@ -244,6 +244,17 @@ pub fn session_temp_dir(id: &SessionId) -> PathBuf {
     p
 }
 
+/// Single source of truth for the path to a Copilot session's OTel JSONL
+/// file. Used by [`env_for_tool`] (to point Copilot's exporter at it),
+/// by `pty_pool` spawn prep (to wipe a stale copy from a prior run), and
+/// by `session_metrics::MetricsRegistry::start` (to tail it). Anywhere
+/// else that needs this path **must** call this helper — never reconstruct
+/// the filename inline.
+#[must_use]
+pub fn copilot_otel_path(session_id: &SessionId) -> PathBuf {
+    session_temp_dir(session_id).join("otel.jsonl")
+}
+
 /// Per-session **environment variables** to inject into the spawned CLI
 /// process, separately from the shell command. These are *additions* on top
 /// of the parent process's inherited env (the spawner does not call
@@ -268,7 +279,7 @@ pub fn session_temp_dir(id: &SessionId) -> PathBuf {
 pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, String)> {
     match tool {
         Tool::Copilot => {
-            let path = session_temp_dir(session_id).join("otel.jsonl");
+            let path = copilot_otel_path(session_id);
             vec![
                 (
                     "COPILOT_OTEL_FILE_EXPORTER_PATH".to_owned(),
@@ -1034,11 +1045,8 @@ mod tests {
         let env = env_for_tool(Tool::Copilot, &id);
         let map: std::collections::HashMap<String, String> = env.iter().cloned().collect();
 
-        // Path is deterministic from session_temp_dir.
-        let expected = session_temp_dir(&id)
-            .join("otel.jsonl")
-            .to_string_lossy()
-            .into_owned();
+        // Path is deterministic and matches the single-source-of-truth helper.
+        let expected = copilot_otel_path(&id).to_string_lossy().into_owned();
         assert_eq!(
             map.get("COPILOT_OTEL_FILE_EXPORTER_PATH")
                 .map(String::as_str),

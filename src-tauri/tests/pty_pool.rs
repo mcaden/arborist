@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use arborist_lib::compose::session_temp_dir;
+use arborist_lib::compose::{copilot_otel_path, session_temp_dir};
 use arborist_lib::pty_pool::{
     cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink,
     PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, OUTPUT_CHANNEL_CAPACITY,
@@ -338,7 +338,7 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
     // the watcher doesn't replay old totals.
     let temp = session_temp_dir(&session.id);
     std::fs::create_dir_all(&temp).unwrap();
-    let stale = temp.join("otel.jsonl");
+    let stale = copilot_otel_path(&session.id);
     std::fs::write(&stale, b"stale-data\n").unwrap();
     assert!(stale.exists(), "precondition: stale file present");
 
@@ -359,7 +359,9 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
         .clone()
         .expect("spawner received a command");
     let env: std::collections::HashMap<String, String> = cmd.env.into_iter().collect();
-    let expected_path = temp.join("otel.jsonl").to_string_lossy().into_owned();
+    let expected_path = copilot_otel_path(&session.id)
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         env.get("COPILOT_OTEL_FILE_EXPORTER_PATH").cloned(),
         Some(expected_path),

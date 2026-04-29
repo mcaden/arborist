@@ -558,10 +558,14 @@ impl PtyPool {
             }
             // Wipe a stale OTel JSONL from a previous run so restart /
             // restore-on-launch don't replay old spans and double-count
-            // totals. Best-effort; missing file is fine.
-            let stale = dir.join("otel.jsonl");
-            if stale.exists() {
-                if let Err(e) = std::fs::remove_file(&stale) {
+            // totals. Best-effort; missing file is fine. (Single source
+            // of truth for the path is `compose::copilot_otel_path` — no
+            // string literal here.)
+            let stale = compose::copilot_otel_path(&session.id);
+            match std::fs::remove_file(&stale) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
                     debug!(session_id = %session.id, error = %e, "stale otel.jsonl removal failed");
                 }
             }

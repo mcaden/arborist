@@ -94,9 +94,12 @@ struct WatcherHandle {
 }
 
 /// Registry of active per-session watchers. Stored on `AppContext`. Calls
-/// to [`MetricsRegistry::stop`] are idempotent — closing a session that
-/// never had a watcher (e.g. a Copilot session, or a Claude session whose
-/// home dir could not be resolved) is a no-op.
+/// to [`MetricsRegistry::stop`] are idempotent — closing a session whose
+/// watcher could not be started in the first place (e.g. a Claude session
+/// whose home dir could not be resolved, or any session for which
+/// `start` returned `false`) is a no-op. **Both** Claude and Copilot
+/// sessions get watchers when their inputs are available — Claude via
+/// transcript tailing, Copilot via OTel JSONL tailing.
 #[derive(Default)]
 pub struct MetricsRegistry {
     inner: Mutex<HashMap<SessionId, WatcherHandle>>,
@@ -147,7 +150,7 @@ impl MetricsRegistry {
                     })
             }
             Tool::Copilot => {
-                let otel_path = compose::session_temp_dir(&session_id).join("otel.jsonl");
+                let otel_path = compose::copilot_otel_path(&session_id);
                 thread::Builder::new()
                     .name(format!("arborist-metrics-{}", session_id))
                     .spawn(move || {
