@@ -379,5 +379,8 @@ describe('Sidebar metrics indicator (Issue #3)', () => {
     render(<Sidebar />);
     const title = screen.getByTestId('sidebar-metrics').getAttribute('title') ?? '';
     expect(title).not.toMatch(/Copilot-reported/i);
+    // Claude gets its own parallel caveat so users know what 'limit' means.
+    expect(title).toMatch(/model nominal max/i);
+    expect(title).toMatch(/includes harness overhead/i);
   });
 });
