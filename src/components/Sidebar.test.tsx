@@ -331,7 +331,7 @@ describe('Sidebar metrics indicator (Issue #3)', () => {
   // backend watcher produced the snapshot. The sidebar must render
   // them identically.
   it('renders the same metrics indicator for Copilot sessions', () => {
-    seed([makeView('a', { tool: 'copilot', instructionSetId: undefined })], 'a');
+    seed([makeView('a', { tool: 'copilot' })], 'a');
     useSessionStore.setState({
       metrics: {
         a: {
