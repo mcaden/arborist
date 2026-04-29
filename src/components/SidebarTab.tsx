@@ -205,9 +205,7 @@ function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element
     typeof metrics.contextTokensLimit === 'number'
   ) {
     const suffix =
-      tool === 'copilot'
-        ? ' (Copilot-reported window; smaller than the model nominal max because Copilot reserves space for its system prompt and tool definitions)'
-        : '';
+      tool === 'copilot' ? ' (Copilot-reported; excludes its system-prompt + tool overhead)' : '';
     longParts.push(
       `Context ${metrics.contextTokensUsed.toLocaleString()} / ` +
         `${metrics.contextTokensLimit.toLocaleString()} tokens${suffix}`,

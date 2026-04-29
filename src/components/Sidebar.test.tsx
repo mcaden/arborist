@@ -357,6 +357,7 @@ describe('Sidebar metrics indicator (Issue #3)', () => {
     // system prompt + tool definitions. Surface that in the tooltip so
     // users don't read 30k/168k as a math error against e.g. Opus's 200k.
     expect(line.getAttribute('title')).toMatch(/Copilot-reported/i);
+    expect(line.getAttribute('title')).toMatch(/system-prompt \+ tool overhead/i);
   });
 
   it('does NOT add the Copilot-reported caveat for Claude sessions', () => {
