@@ -12,7 +12,7 @@ export default defineConfig({
   },
   clearScreen: false,
   server: {
-    port: 1420,
+    port: Number(process.env.ARBORIST_DEV_PORT) || 1420,
     strictPort: true,
   },
   envPrefix: ['VITE_', 'TAURI_'],
