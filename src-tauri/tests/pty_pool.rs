@@ -358,21 +358,19 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
         .unwrap()
         .clone()
         .expect("spawner received a command");
-    let env: std::collections::HashMap<String, String> = cmd.env.into_iter().collect();
-    let expected_path = copilot_otel_path(&session.id)
-        .to_string_lossy()
-        .into_owned();
+    let env: std::collections::HashMap<String, std::ffi::OsString> = cmd.env.into_iter().collect();
+    let expected_path = copilot_otel_path(&session.id).into_os_string();
     assert_eq!(
-        env.get("COPILOT_OTEL_FILE_EXPORTER_PATH").cloned(),
-        Some(expected_path),
+        env.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
+        Some(&expected_path),
     );
     assert_eq!(
-        env.get("COPILOT_OTEL_ENABLED").map(String::as_str),
-        Some("true")
+        env.get("COPILOT_OTEL_ENABLED"),
+        Some(&std::ffi::OsString::from("true"))
     );
     assert_eq!(
-        env.get("OTEL_BSP_SCHEDULE_DELAY").map(String::as_str),
-        Some("1000")
+        env.get("OTEL_BSP_SCHEDULE_DELAY"),
+        Some(&std::ffi::OsString::from("1000"))
     );
 
     // Assert: the temp dir still exists, and the stale file is gone.

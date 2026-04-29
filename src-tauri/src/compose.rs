@@ -263,6 +263,9 @@ pub fn copilot_otel_path(session_id: &SessionId) -> PathBuf {
 /// derivable anyway, and persisting it would let stale paths from a previous
 /// install leak across upgrades.
 ///
+/// Values are `OsString` so paths with non-UTF-8 segments (rare on Windows
+/// but possible) round-trip without lossy `�` substitution.
+///
 /// Per-tool behaviour:
 ///
 /// * `Tool::Copilot` — enable Copilot's OpenTelemetry **file exporter**
@@ -276,17 +279,17 @@ pub fn copilot_otel_path(session_id: &SessionId) -> PathBuf {
 ///   OTLP, which would require an in-process receiver). Reuses the existing
 ///   transcript-tailing watcher.
 #[must_use]
-pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, String)> {
+pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi::OsString)> {
     match tool {
         Tool::Copilot => {
             let path = copilot_otel_path(session_id);
             vec![
                 (
                     "COPILOT_OTEL_FILE_EXPORTER_PATH".to_owned(),
-                    path.to_string_lossy().into_owned(),
+                    path.into_os_string(),
                 ),
-                ("COPILOT_OTEL_ENABLED".to_owned(), "true".to_owned()),
-                ("OTEL_BSP_SCHEDULE_DELAY".to_owned(), "1000".to_owned()),
+                ("COPILOT_OTEL_ENABLED".to_owned(), "true".into()),
+                ("OTEL_BSP_SCHEDULE_DELAY".to_owned(), "1000".into()),
             ]
         }
         Tool::Claude => Vec::new(),
@@ -1043,24 +1046,21 @@ mod tests {
     fn env_for_tool_copilot_returns_otel_keys() {
         let id = fixed_id();
         let env = env_for_tool(Tool::Copilot, &id);
-        let map: std::collections::HashMap<String, String> = env.iter().cloned().collect();
+        let map: std::collections::HashMap<String, std::ffi::OsString> =
+            env.iter().cloned().collect();
 
         // Path is deterministic and matches the single-source-of-truth helper.
-        let expected = copilot_otel_path(&id).to_string_lossy().into_owned();
+        let expected = copilot_otel_path(&id).into_os_string();
+        assert_eq!(map.get("COPILOT_OTEL_FILE_EXPORTER_PATH"), Some(&expected),);
         assert_eq!(
-            map.get("COPILOT_OTEL_FILE_EXPORTER_PATH")
-                .map(String::as_str),
-            Some(expected.as_str()),
-        );
-        assert_eq!(
-            map.get("COPILOT_OTEL_ENABLED").map(String::as_str),
-            Some("true")
+            map.get("COPILOT_OTEL_ENABLED"),
+            Some(&std::ffi::OsString::from("true"))
         );
         // Standard OTel SDK env var; literal "1000" (ms) tightens batch
         // flush from the 5s default to ~1Hz.
         assert_eq!(
-            map.get("OTEL_BSP_SCHEDULE_DELAY").map(String::as_str),
-            Some("1000"),
+            map.get("OTEL_BSP_SCHEDULE_DELAY"),
+            Some(&std::ffi::OsString::from("1000")),
         );
         assert_eq!(env.len(), 3, "exactly three env vars for Copilot");
     }

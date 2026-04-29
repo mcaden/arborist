@@ -91,7 +91,7 @@ pub struct ChildCommand {
     /// telemetry settings (e.g. Copilot's OTel file exporter path) without
     /// touching the persisted `Session.composed_command`. Empty for tools
     /// that need no extra env (e.g. Claude today).
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(String, std::ffi::OsString)>,
 }
 
 /// Result of a successful spawn — a bundle of independent handles. Splitting

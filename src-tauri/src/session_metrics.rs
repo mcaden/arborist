@@ -237,21 +237,40 @@ fn run_claude_watcher(
 
             if let Ok(meta) = std::fs::metadata(&c) {
                 let len = meta.len();
+                // Defensive: handle truncation/rotation. Same shape as the
+                // Copilot watcher.
+                if len < tracked_len {
+                    tracked_len = 0;
+                    totals = TurnTotals::default();
+                    last_model = None;
+                    last_emitted = None;
+                }
                 if len > tracked_len {
                     if let Ok(bytes) = read_range(&c, tracked_len, len) {
-                        for line in bytes.split(|&b| b == b'\n') {
-                            if line.is_empty() {
-                                continue;
-                            }
-                            if let Some((usage, model)) = extract_assistant_usage(line) {
-                                totals.add(&usage);
-                                if let Some(m) = model {
-                                    last_model = Some(m);
+                        // Only advance the cursor up to the last *complete*
+                        // line we observed — a half-written trailing line
+                        // must be re-read after the writer finishes it,
+                        // otherwise `extract_assistant_usage` silently
+                        // drops a partial JSON object. Mirrors the
+                        // Copilot watcher's last-newline logic.
+                        if let Some(nl) = bytes.iter().rposition(|&b| b == b'\n') {
+                            let consumable = &bytes[..=nl];
+                            for line in consumable.split(|&b| b == b'\n') {
+                                if line.is_empty() {
+                                    continue;
+                                }
+                                if let Some((usage, model)) = extract_assistant_usage(line) {
+                                    totals.add(&usage);
+                                    if let Some(m) = model {
+                                        last_model = Some(m);
+                                    }
                                 }
                             }
+                            tracked_len += (nl as u64) + 1;
                         }
+                        // No newline in the chunk yet → leave cursor where
+                        // it is; we'll retry next poll.
                     }
-                    tracked_len = len;
                 }
             }
         }
@@ -394,11 +413,19 @@ fn newest_jsonl_after(dir: &Path, after: SystemTime) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Defensive cap on a single watcher read. A runaway exporter (e.g. a
+/// Copilot bug or a Claude session that grew enormous between polls)
+/// must not be able to make us allocate gigabytes in one shot. If the
+/// file is larger than this, we read this much and let the caller's
+/// last-newline logic re-enter on the next poll to consume the rest.
+const MAX_READ_CHUNK: u64 = 10 * 1024 * 1024;
+
 fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)?;
     f.seek(SeekFrom::Start(start))?;
-    let len = end.saturating_sub(start) as usize;
+    let span = end.saturating_sub(start);
+    let len = span.min(MAX_READ_CHUNK) as usize;
     let mut buf = vec![0u8; len];
     f.read_exact(&mut buf)?;
     Ok(buf)
@@ -1222,6 +1249,132 @@ mod tests {
         assert_eq!(snap.context_tokens_used, Some(50));
         assert_eq!(snap.context_tokens_limit, Some(1000));
         assert_eq!(snap.model.as_deref(), Some("tiny"));
+
+        running.store(false, Ordering::SeqCst);
+        handle.join().expect("watcher thread joined");
+    }
+
+    // ----- read_range cap (defensive against runaway exporter) -------------
+
+    #[test]
+    fn read_range_caps_at_max_chunk_size() {
+        // A pathological 50MB file. The cap should clamp the buffer to
+        // MAX_READ_CHUNK and let the watcher's last-newline logic drain
+        // the rest on subsequent polls.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("huge.bin");
+        let total: u64 = 50 * 1024 * 1024;
+        // Write a sparse-ish payload: chunks of 'a' separated by newlines
+        // every 1MB so the watcher would be able to make forward progress.
+        let chunk = vec![b'a'; 1024 * 1024 - 1];
+        let mut f = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        for _ in 0..50 {
+            f.write_all(&chunk).unwrap();
+            f.write_all(b"\n").unwrap();
+        }
+        drop(f);
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(len, total);
+
+        let bytes = read_range(&path, 0, len).expect("read");
+        assert_eq!(
+            bytes.len() as u64,
+            MAX_READ_CHUNK,
+            "read_range must cap at MAX_READ_CHUNK to bound allocation"
+        );
+    }
+
+    // ----- Claude watcher partial-line protection --------------------------
+
+    /// Regression for the gap noted in PR review: a half-written trailing
+    /// JSON line at EOF must NOT be silently dropped. The watcher must
+    /// only advance its cursor up to the last complete `\n`, so the rest
+    /// of the line is re-read after the writer finishes it.
+    #[test]
+    fn claude_watcher_does_not_drop_partial_trailing_line() {
+        use std::io::Write;
+        use std::sync::mpsc;
+
+        // Set up a fake $HOME so the watcher's project_dir resolves into
+        // our tempdir. encode_cwd of the cwd we pass becomes the dir name.
+        let home = tempfile::tempdir().expect("home");
+        let cwd_dir = tempfile::tempdir().expect("cwd");
+        let cwd = cwd_dir.path().to_path_buf();
+        let project_dir = home
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join(encode_cwd(&cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let jsonl = project_dir.join("session.jsonl");
+        std::fs::write(&jsonl, b"").unwrap();
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_for_thread = Arc::clone(&running);
+        let (tx, rx) = mpsc::channel::<SessionMetricsEvent>();
+        let cb: MetricsCb = Arc::new(move |ev| {
+            let _ = tx.send(ev);
+        });
+        let home_for_thread = home.path().to_path_buf();
+        let cwd_for_thread = cwd.clone();
+        let spawn_instant = SystemTime::now() - Duration::from_secs(60);
+        let handle = std::thread::spawn(move || {
+            run_claude_watcher(
+                session_id,
+                home_for_thread,
+                cwd_for_thread,
+                spawn_instant,
+                cb,
+                running_for_thread,
+            );
+        });
+
+        // 1) Write one complete line + a partial second line (no newline).
+        let complete = br#"{"type":"assistant","message":{"model":"claude-opus-4.7","usage":{"input_tokens":10,"output_tokens":2}}}"#;
+        let partial = br#"{"type":"assistant","message":{"model":"claude-opus-4.7","usage":{"input_tokens":99"#;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&jsonl)
+                .unwrap();
+            f.write_all(complete).unwrap();
+            f.write_all(b"\n").unwrap();
+            f.write_all(partial).unwrap();
+        }
+
+        // First emission must reflect ONLY the complete line.
+        let first = rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("first snapshot");
+        assert_eq!(first.input_tokens, Some(10));
+        assert_eq!(first.output_tokens, Some(2));
+
+        // 2) Finish the partial line. The cursor must have stayed at the
+        //    end of the first line, so the now-complete second line gets
+        //    parsed in full and added to the totals.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&jsonl)
+                .unwrap();
+            f.write_all(b",\"output_tokens\":7}}}\n").unwrap();
+        }
+
+        // Drain until totals jump to 10+99 = 109 in.
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let snap = loop {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            let s = rx
+                .recv_timeout(Duration::from_secs(8))
+                .expect("post-completion snapshot");
+            if s.input_tokens == Some(109) {
+                break s;
+            }
+        };
+        assert_eq!(snap.input_tokens, Some(109), "partial line was re-read");
+        assert_eq!(snap.output_tokens, Some(9));
 
         running.store(false, Ordering::SeqCst);
         handle.join().expect("watcher thread joined");
