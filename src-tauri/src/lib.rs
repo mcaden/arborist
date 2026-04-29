@@ -182,10 +182,10 @@ mod tests {
 
     #[test]
     fn title_on_feature_branch_includes_name() {
+        assert_eq!(window_title_for_branch("feature/x"), "Arborist - feature/x");
         assert_eq!(
-            window_title_for_branch("feature/x"),
-            "Arborist - feature/x"
+            window_title_for_branch("  branch-name  "),
+            "Arborist - branch-name"
         );
-        assert_eq!(window_title_for_branch("  branch-name  "), "Arborist - branch-name");
     }
 }

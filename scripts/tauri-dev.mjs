@@ -36,10 +36,7 @@ process.env.ARBORIST_DEV_PORT = String(port);
 // Windows the shell strips quotes from inline JSON args, breaking parsing.
 const dir = mkdtempSync(join(tmpdir(), 'arborist-dev-'));
 const overridePath = join(dir, 'tauri.conf.override.json');
-writeFileSync(
-  overridePath,
-  JSON.stringify({ build: { devUrl: `http://localhost:${port}` } }),
-);
+writeFileSync(overridePath, JSON.stringify({ build: { devUrl: `http://localhost:${port}` } }));
 
 console.log(`[arborist] tauri dev on port ${port}`);
 
