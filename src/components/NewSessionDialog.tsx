@@ -65,7 +65,7 @@ export function NewSessionDialog(): JSX.Element | null {
 
   const [step, setStep] = useState<Step>(1);
   const [tool, setTool] = useState<Tool | null>(null);
-  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('existing');
+  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('new');
   const [worktree, setWorktree] = useState<ChosenWorktree | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [worktreesLoading, setWorktreesLoading] = useState(false);
@@ -84,7 +84,7 @@ export function NewSessionDialog(): JSX.Element | null {
     if (!isOpen) return;
     setStep(1);
     setTool(null);
-    setWorktreeMode('existing');
+    setWorktreeMode('new');
     setWorktree(null);
     setWorktrees([]);
     setSubmitting(false);
@@ -168,13 +168,23 @@ export function NewSessionDialog(): JSX.Element | null {
     previousStepRef.current = step;
     if (previousStep === null) return; // initial open — handled elsewhere
     if (previousStep === step) return;
+    // On Step 2, focus the currently-selected tab so focus and
+    // `aria-selected` stay consistent across Back/Next round-trips.
+    if (step === 2) {
+      const id = worktreeMode === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
+      const tab = document.getElementById(id);
+      if (tab) {
+        tab.focus();
+        return;
+      }
+    }
     const body = stepBodyRef.current;
     if (!body) return;
     const candidate = body.querySelector<HTMLElement>(
       'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
     );
     candidate?.focus();
-  }, [step, isOpen]);
+  }, [step, isOpen, worktreeMode]);
 
   const next = (): void => {
     if (step === 1 && tool) setStep(2);
@@ -305,24 +315,39 @@ export function NewSessionDialog(): JSX.Element | null {
           <div className="mb-4">
             <p className="mb-2 text-sm font-medium">Choose a worktree</p>
 
-            <div role="tablist" aria-label="Worktree source" className="mb-3 flex gap-1">
+            <div
+              role="tablist"
+              aria-label="Worktree source"
+              className="mb-3 flex gap-1"
+              onKeyDown={(e) => {
+                if (
+                  e.key !== 'ArrowLeft' &&
+                  e.key !== 'ArrowRight' &&
+                  e.key !== 'Home' &&
+                  e.key !== 'End'
+                )
+                  return;
+                e.preventDefault();
+                const nextMode: WorktreeMode =
+                  e.key === 'Home'
+                    ? 'new'
+                    : e.key === 'End'
+                      ? 'existing'
+                      : worktreeMode === 'new'
+                        ? 'existing'
+                        : 'new';
+                setWorktreeMode(nextMode);
+                const id = nextMode === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
+                document.getElementById(id)?.focus();
+              }}
+            >
               <button
                 type="button"
                 role="tab"
-                aria-selected={worktreeMode === 'existing'}
-                onClick={() => setWorktreeMode('existing')}
-                className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
-                  worktreeMode === 'existing'
-                    ? 'border-sky-600 text-sky-700 dark:text-sky-300'
-                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
-                }`}
-              >
-                Existing
-              </button>
-              <button
-                type="button"
-                role="tab"
+                id="worktree-tab-new"
                 aria-selected={worktreeMode === 'new'}
+                aria-controls="worktree-panel-new"
+                tabIndex={worktreeMode === 'new' ? 0 : -1}
                 onClick={() => setWorktreeMode('new')}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
                   worktreeMode === 'new'
@@ -332,126 +357,154 @@ export function NewSessionDialog(): JSX.Element | null {
               >
                 New
               </button>
+              <button
+                type="button"
+                role="tab"
+                id="worktree-tab-existing"
+                aria-selected={worktreeMode === 'existing'}
+                aria-controls="worktree-panel-existing"
+                tabIndex={worktreeMode === 'existing' ? 0 : -1}
+                onClick={() => setWorktreeMode('existing')}
+                className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
+                  worktreeMode === 'existing'
+                    ? 'border-sky-600 text-sky-700 dark:text-sky-300'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+                }`}
+              >
+                Existing
+              </button>
             </div>
 
-            {worktreeMode === 'existing' ? (
-              <>
-                {worktreesLoading ? (
-                  <p className="text-sm text-slate-500">Loading...</p>
-                ) : worktrees.length === 0 ? (
-                  <p className="mb-2 text-sm text-slate-500">
-                    No worktrees found in <span className="font-mono">.worktrees/</span> — create
-                    one in the New tab, or use Browse for a path elsewhere.
-                  </p>
-                ) : (
-                  <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-                    {worktrees.map((w) => (
-                      <li key={w.path}>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setWorktree({
-                              path: w.path,
-                              ...(w.branch !== undefined ? { branch: w.branch } : {}),
-                              isMain: w.isMain,
-                            })
-                          }
-                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
-                            worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
-                          }`}
-                        >
-                          <span className="truncate font-mono">{w.path}</span>
-                          <span className="flex shrink-0 items-center gap-1">
-                            {w.branch && (
-                              <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
-                                {w.branch}
-                              </span>
-                            )}
-                            {w.isMain && (
-                              <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
-                                main
-                              </span>
-                            )}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    void onPickDirectory();
-                  }}
-                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
-                >
-                  Browse...
-                </button>
-                {worktree && (
-                  <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
-                )}
-              </>
-            ) : (
-              <div>
-                <label htmlFor="new-worktree-name" className="block text-sm font-medium">
-                  Branch / worktree name
-                </label>
-                <input
-                  id="new-worktree-name"
-                  type="text"
-                  value={newName}
-                  onChange={(e) => {
-                    setNewName(e.target.value);
-                    setCreateError(null);
-                  }}
-                  aria-invalid={newNameError !== null}
-                  aria-describedby={
-                    newNameError !== null
-                      ? 'new-worktree-name-error'
-                      : createError !== null
-                        ? 'new-worktree-create-error'
-                        : 'new-worktree-name-help'
-                  }
-                  placeholder="my-feature"
-                  className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
-                />
-                {newNameError !== null ? (
-                  <p
-                    id="new-worktree-name-error"
-                    role="alert"
-                    className="mt-1 text-xs text-red-600 dark:text-red-400"
+            {/* Both tabpanels are always rendered so `aria-controls` on the tabs
+                always points at a node in the DOM. The inactive panel is hidden
+                via the native `hidden` attribute. */}
+            <div
+              role="tabpanel"
+              id="worktree-panel-existing"
+              aria-labelledby="worktree-tab-existing"
+              hidden={worktreeMode !== 'existing'}
+            >
+              {worktreeMode === 'existing' && (
+                <>
+                  {worktreesLoading ? (
+                    <p className="text-sm text-slate-500">Loading...</p>
+                  ) : worktrees.length === 0 ? (
+                    <p className="mb-2 text-sm text-slate-500">
+                      No worktrees found in <span className="font-mono">.worktrees/</span> — create
+                      one in the New tab, or use Browse for a path elsewhere.
+                    </p>
+                  ) : (
+                    <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+                      {worktrees.map((w) => (
+                        <li key={w.path}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setWorktree({
+                                path: w.path,
+                                ...(w.branch !== undefined ? { branch: w.branch } : {}),
+                                isMain: w.isMain,
+                              })
+                            }
+                            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
+                              worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
+                            }`}
+                          >
+                            <span className="truncate font-mono">{w.path}</span>
+                            <span className="flex shrink-0 items-center gap-1">
+                              {w.branch && (
+                                <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
+                                  {w.branch}
+                                </span>
+                              )}
+                              {w.isMain && (
+                                <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
+                                  main
+                                </span>
+                              )}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void onPickDirectory();
+                    }}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
                   >
-                    {newNameError}
-                  </p>
-                ) : (
-                  <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
-                    Will run{' '}
-                    <span className="font-mono">
-                      git worktree add .worktrees/{newName || 'NAME'} -b {newName || 'NAME'}
-                    </span>
-                  </p>
-                )}
-                {createError !== null && (
-                  <p
-                    id="new-worktree-create-error"
-                    role="alert"
-                    className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
-                  >
-                    {createError}
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void onCreateWorktree()}
-                  disabled={newName.length === 0 || newNameError !== null || creating}
-                  className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+                    Browse...
+                  </button>
+                </>
+              )}
+            </div>
+            <div
+              role="tabpanel"
+              id="worktree-panel-new"
+              aria-labelledby="worktree-tab-new"
+              hidden={worktreeMode !== 'new'}
+            >
+              <label htmlFor="new-worktree-name" className="block text-sm font-medium">
+                Branch / worktree name
+              </label>
+              <input
+                id="new-worktree-name"
+                type="text"
+                value={newName}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                  setCreateError(null);
+                }}
+                aria-invalid={newNameError !== null}
+                aria-describedby={
+                  newNameError !== null
+                    ? 'new-worktree-name-error'
+                    : createError !== null
+                      ? 'new-worktree-create-error'
+                      : 'new-worktree-name-help'
+                }
+                placeholder="my-feature"
+                className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
+              />
+              {newNameError !== null ? (
+                <p
+                  id="new-worktree-name-error"
+                  role="alert"
+                  className="mt-1 text-xs text-red-600 dark:text-red-400"
                 >
-                  {creating ? 'Creating…' : 'Create worktree'}
-                </button>
-                {worktree && (
-                  <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
-                )}
-              </div>
+                  {newNameError}
+                </p>
+              ) : (
+                <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
+                  Will run{' '}
+                  <span className="font-mono">
+                    git worktree add .worktrees/{newName || 'NAME'} -b {newName || 'NAME'}
+                  </span>
+                </p>
+              )}
+              {createError !== null && (
+                <p
+                  id="new-worktree-create-error"
+                  role="alert"
+                  className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
+                >
+                  {createError}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => void onCreateWorktree()}
+                disabled={newName.length === 0 || newNameError !== null || creating}
+                className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+              >
+                {creating ? 'Creating…' : 'Create worktree'}
+              </button>
+            </div>
+
+            {worktree && (
+              <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
             )}
 
             <details className="mt-3 rounded border border-slate-200 px-2 py-1 text-xs dark:border-slate-700">
