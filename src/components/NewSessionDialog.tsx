@@ -305,11 +305,39 @@ export function NewSessionDialog(): JSX.Element | null {
           <div className="mb-4">
             <p className="mb-2 text-sm font-medium">Choose a worktree</p>
 
-            <div role="tablist" aria-label="Worktree source" className="mb-3 flex gap-1">
+            <div
+              role="tablist"
+              aria-label="Worktree source"
+              className="mb-3 flex gap-1"
+              onKeyDown={(e) => {
+                if (
+                  e.key !== 'ArrowLeft' &&
+                  e.key !== 'ArrowRight' &&
+                  e.key !== 'Home' &&
+                  e.key !== 'End'
+                )
+                  return;
+                e.preventDefault();
+                const next: WorktreeMode =
+                  e.key === 'Home'
+                    ? 'new'
+                    : e.key === 'End'
+                      ? 'existing'
+                      : worktreeMode === 'new'
+                        ? 'existing'
+                        : 'new';
+                setWorktreeMode(next);
+                const id = next === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
+                document.getElementById(id)?.focus();
+              }}
+            >
               <button
                 type="button"
                 role="tab"
+                id="worktree-tab-new"
                 aria-selected={worktreeMode === 'new'}
+                aria-controls="worktree-panel-new"
+                tabIndex={worktreeMode === 'new' ? 0 : -1}
                 onClick={() => setWorktreeMode('new')}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
                   worktreeMode === 'new'
@@ -322,7 +350,10 @@ export function NewSessionDialog(): JSX.Element | null {
               <button
                 type="button"
                 role="tab"
+                id="worktree-tab-existing"
                 aria-selected={worktreeMode === 'existing'}
+                aria-controls="worktree-panel-existing"
+                tabIndex={worktreeMode === 'existing' ? 0 : -1}
                 onClick={() => setWorktreeMode('existing')}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
                   worktreeMode === 'existing'
@@ -335,7 +366,11 @@ export function NewSessionDialog(): JSX.Element | null {
             </div>
 
             {worktreeMode === 'existing' ? (
-              <>
+              <div
+                role="tabpanel"
+                id="worktree-panel-existing"
+                aria-labelledby="worktree-tab-existing"
+              >
                 {worktreesLoading ? (
                   <p className="text-sm text-slate-500">Loading...</p>
                 ) : worktrees.length === 0 ? (
@@ -390,9 +425,9 @@ export function NewSessionDialog(): JSX.Element | null {
                 {worktree && (
                   <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
                 )}
-              </>
+              </div>
             ) : (
-              <div>
+              <div role="tabpanel" id="worktree-panel-new" aria-labelledby="worktree-tab-new">
                 <label htmlFor="new-worktree-name" className="block text-sm font-medium">
                   Branch / worktree name
                 </label>
