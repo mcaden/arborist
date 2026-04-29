@@ -118,6 +118,7 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
 
     await screen.findByText(/step 2 of 2/i);
+    fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
 
     // Only the linked worktree shows up; the main checkout (REPO_ROOT,
     // outside .worktrees/) is filtered out.
@@ -147,6 +148,7 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /copilot/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^existing$/i }));
 
     expect(await screen.findByText(/no worktrees found in/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /create session/i })).toBeDisabled();
@@ -230,6 +232,7 @@ describe('NewSessionDialog', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^existing$/i }));
     fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
     fireEvent.click(screen.getByRole('button', { name: /create session/i }));
 
@@ -262,6 +265,7 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /copilot/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^existing$/i }));
     fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main/i }));
     fireEvent.click(await screen.findByRole('button', { name: /create session/i }));
 
@@ -302,9 +306,9 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     await screen.findByText(/step 2 of 2/i);
-    // The first focusable in step 2's body is the "Existing" tab button.
-    const existingTab = screen.getByRole('tab', { name: /^existing$/i });
-    expect(existingTab).toHaveFocus();
+    // The first focusable in step 2's body is the "New" tab button (default mode).
+    const newTab = screen.getByRole('tab', { name: /^new$/i });
+    expect(newTab).toHaveFocus();
   });
 
   it('typing in the Step 2 New tab does not steal focus back to the tab strip (#8.1 regression)', async () => {

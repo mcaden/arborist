@@ -65,7 +65,7 @@ export function NewSessionDialog(): JSX.Element | null {
 
   const [step, setStep] = useState<Step>(1);
   const [tool, setTool] = useState<Tool | null>(null);
-  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('existing');
+  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('new');
   const [worktree, setWorktree] = useState<ChosenWorktree | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [worktreesLoading, setWorktreesLoading] = useState(false);
@@ -84,7 +84,7 @@ export function NewSessionDialog(): JSX.Element | null {
     if (!isOpen) return;
     setStep(1);
     setTool(null);
-    setWorktreeMode('existing');
+    setWorktreeMode('new');
     setWorktree(null);
     setWorktrees([]);
     setSubmitting(false);
@@ -309,19 +309,6 @@ export function NewSessionDialog(): JSX.Element | null {
               <button
                 type="button"
                 role="tab"
-                aria-selected={worktreeMode === 'existing'}
-                onClick={() => setWorktreeMode('existing')}
-                className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
-                  worktreeMode === 'existing'
-                    ? 'border-sky-600 text-sky-700 dark:text-sky-300'
-                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
-                }`}
-              >
-                Existing
-              </button>
-              <button
-                type="button"
-                role="tab"
                 aria-selected={worktreeMode === 'new'}
                 onClick={() => setWorktreeMode('new')}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
@@ -331,6 +318,19 @@ export function NewSessionDialog(): JSX.Element | null {
                 }`}
               >
                 New
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={worktreeMode === 'existing'}
+                onClick={() => setWorktreeMode('existing')}
+                className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
+                  worktreeMode === 'existing'
+                    ? 'border-sky-600 text-sky-700 dark:text-sky-300'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+                }`}
+              >
+                Existing
               </button>
             </div>
 
