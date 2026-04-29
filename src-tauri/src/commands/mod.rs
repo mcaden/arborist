@@ -256,6 +256,18 @@ pub fn build_production_sink(
     crate::pty_pool::PtySink::new(output, status, activity)
 }
 
+/// Build the production metrics emitter (Issue #3) — fires
+/// `session://metrics` Tauri events. Tests construct their own callback
+/// (typically a channel sender) and pass it to [`AppContext::new`].
+#[must_use]
+pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_metrics::MetricsCb {
+    Arc::new(move |payload: crate::types::SessionMetricsEvent| {
+        if let Err(e) = app.emit("session://metrics", payload) {
+            tracing::debug!(error = %e, "emit session://metrics failed");
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

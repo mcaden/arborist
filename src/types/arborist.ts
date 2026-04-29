@@ -167,6 +167,32 @@ export type ActivityEvent =
 // `sessionId`.
 export type SessionActivityEvent = { sessionId: SessionId } & ActivityEvent;
 
+// MIRROR: src-tauri/src/types.rs::SessionMetricsEvent
+// Payload of the `session://metrics` Tauri event (Issue #3). All fields
+// except `sessionId` and `observedAt` are optional — the watcher emits
+// only what it can resolve. The same shape doubles as the in-memory
+// snapshot the sidebar renders.
+export interface SessionMetricsEvent {
+  sessionId: SessionId;
+  /** Model identifier as reported by the CLI (e.g. `claude-sonnet-4-6`). */
+  model?: string;
+  /** Percentage of the context window in use, 0..=100. */
+  contextUsedPct?: number;
+  /** Tokens currently counted against the context window. */
+  contextTokensUsed?: number;
+  /** Model context-window limit in tokens, when known. */
+  contextTokensLimit?: number;
+  /** Cumulative input tokens across observed turns. */
+  inputTokens?: number;
+  /** Cumulative output tokens across observed turns. */
+  outputTokens?: number;
+  /** Wall-clock unix-seconds at which this snapshot was produced. */
+  observedAt: number;
+}
+
+/** In-memory alias — sidebar reads the same shape it received over the wire. */
+export type SessionMetrics = SessionMetricsEvent;
+
 // MIRROR: src-tauri/src/types.rs::WorktreeInfo
 // Returned by the `worktrees_list` command (DESIGN §6, Phase 10).
 // `branch` is omitted by the backend when the worktree has a detached HEAD,

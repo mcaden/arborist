@@ -33,6 +33,7 @@ function resetStore(): void {
     statusMessages: {},
     hasUnread: {},
     activity: {},
+    metrics: {},
   });
 }
 
@@ -436,5 +437,87 @@ describe('applyActivity', () => {
       .actions.applyActivity({ sessionId: 'a', kind: 'title', value: 'claude' });
     useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'promptStart' });
     expect(useSessionStore.getState().activity).toEqual({});
+  });
+});
+
+describe('applyMetrics', () => {
+  it('stores the snapshot keyed by sessionId', () => {
+    useSessionStore.setState({ sessions: [makeView({ id: 'a' })] });
+    useSessionStore.getState().actions.applyMetrics({
+      sessionId: 'a',
+      contextUsedPct: 25,
+      contextTokensUsed: 50_000,
+      contextTokensLimit: 200_000,
+      observedAt: 1700000000,
+    });
+    const m = useSessionStore.getState().metrics['a'];
+    expect(m).toBeDefined();
+    expect(m!.contextUsedPct).toBe(25);
+    expect(m!.contextTokensLimit).toBe(200_000);
+  });
+
+  it('drops metrics for unknown sessions (race with close)', () => {
+    useSessionStore.getState().actions.applyMetrics({
+      sessionId: 'ghost',
+      contextUsedPct: 10,
+      observedAt: 0,
+    });
+    expect(useSessionStore.getState().metrics).toEqual({});
+  });
+
+  it('does not re-set state for an unchanged snapshot (debounce)', () => {
+    useSessionStore.setState({ sessions: [makeView({ id: 'a' })] });
+    const evt = {
+      sessionId: 'a' as const,
+      contextUsedPct: 10,
+      contextTokensUsed: 1000,
+      observedAt: 1700000000,
+    };
+    useSessionStore.getState().actions.applyMetrics(evt);
+    const before = useSessionStore.getState().metrics['a'];
+    useSessionStore.getState().actions.applyMetrics({ ...evt });
+    const after = useSessionStore.getState().metrics['a'];
+    // Same reference => no new object created => no extra render.
+    expect(after).toBe(before);
+  });
+});
+
+describe('applyStatus + applyMetrics interaction', () => {
+  it('clears stale metrics when a session transitions back to starting (restart)', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      metrics: {
+        a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
+      },
+    });
+    const evt: SessionStatusEvent = { sessionId: 'a', status: 'starting' };
+    useSessionStore.getState().actions.applyStatus(evt);
+    expect(useSessionStore.getState().metrics['a']).toBeUndefined();
+  });
+
+  it('preserves metrics across non-starting status transitions', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      metrics: {
+        a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
+      },
+    });
+    const evt: SessionStatusEvent = { sessionId: 'a', status: 'running' };
+    useSessionStore.getState().actions.applyStatus(evt);
+    expect(useSessionStore.getState().metrics['a']).toBeDefined();
+  });
+});
+
+describe('close + metrics', () => {
+  it('drops metrics for the closed session', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      metrics: {
+        a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
+      },
+    });
+    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve());
+    await useSessionStore.getState().actions.close('a');
+    expect(useSessionStore.getState().metrics['a']).toBeUndefined();
   });
 });

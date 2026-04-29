@@ -90,3 +90,33 @@ describe('subscribeToActivity', () => {
     expect(() => noop()).not.toThrow();
   });
 });
+
+describe('subscribeToMetrics', () => {
+  it('attaches onSessionMetrics and routes payloads to applyMetrics', () => {
+    useSessionStore.setState({ sessions: [makeView('a')] });
+
+    sessionEvents.subscribeToMetrics();
+
+    expect(bridgeMock.onSessionMetrics).toHaveBeenCalledTimes(1);
+    const cb = bridgeMock.onSessionMetrics.mock.calls[0]![0]!;
+    cb({
+      sessionId: 'a',
+      contextUsedPct: 42,
+      contextTokensUsed: 8400,
+      contextTokensLimit: 20000,
+      observedAt: 1700000000,
+    });
+
+    const m = useSessionStore.getState().metrics['a'];
+    expect(m).toBeDefined();
+    expect(m!.contextUsedPct).toBe(42);
+  });
+
+  it('is idempotent — a second call does not re-attach', () => {
+    sessionEvents.subscribeToMetrics();
+    const noop = sessionEvents.subscribeToMetrics();
+
+    expect(bridgeMock.onSessionMetrics).toHaveBeenCalledTimes(1);
+    expect(() => noop()).not.toThrow();
+  });
+});

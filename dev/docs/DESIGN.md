@@ -409,6 +409,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `session://output` | `{ sessionId, data: string }` | Stream PTY output to xterm.js |
 | `session://status` | `{ sessionId, status }` | Notify session state changes (including `'error'`) |
 | `session://activity` | `{ sessionId, kind: 'title' \| 'attention' \| 'working' \| 'idle' \| 'promptStart' \| 'commandStart' \| 'commandEnd', value?, exit? }` | Per-session activity inferred from the PTY stream by `src-tauri/src/activity.rs` (OSC parsing + output byte-rate). Drives sidebar tab state indicators (working spinner, attention dot). Best-effort & advisory — UI must degrade gracefully if a CLI emits nothing. |
+| `session://metrics` | `{ sessionId, model?, contextUsedPct?, contextTokensUsed?, contextTokensLimit?, inputTokens?, outputTokens?, observedAt }` | Per-session token usage / context-window utilization. Emitted by `src-tauri/src/session_metrics.rs`, which polls Claude's `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` transcripts (heuristic cwd+mtime mapping) and extracts cumulative `usage` from the latest assistant turn. Claude-only in v1; Copilot tabs receive no events. Drives the compact second line on each sidebar tab. Best-effort & debounced — UI must degrade gracefully when no snapshot is present. |
 
 ### Plugin commands routed via the bridge
 

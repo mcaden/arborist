@@ -11,13 +11,14 @@ pub mod compose;
 pub mod config_store;
 pub mod git;
 pub mod pty_pool;
+pub mod session_metrics;
 pub mod types;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
     PartialAppConfig, PartialDefaultInstructionSets, Session, SessionCreateArgs, SessionId,
-    SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs,
+    SessionIdArg, SessionInputArgs, SessionMetricsEvent, SessionOutputEvent, SessionResizeArgs,
+    SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs,
     WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeInfo,
     CONFIG_VERSION_CURRENT,
 };
@@ -96,9 +97,16 @@ pub fn run() {
                 pty_pool::PortablePtySpawner,
             )));
             let sink = commands::build_production_sink(app.handle().clone(), store.clone());
+            let metrics_emit = commands::build_production_metrics_emit(app.handle().clone());
             let git_runner: std::sync::Arc<dyn git::GitRunner> =
                 std::sync::Arc::new(git::RealGitRunner);
-            let ctx = std::sync::Arc::new(commands::AppContext::new(pool, store, sink, git_runner));
+            let ctx = std::sync::Arc::new(commands::AppContext::new(
+                pool,
+                store,
+                sink,
+                git_runner,
+                metrics_emit,
+            ));
             app.manage(ctx);
             Ok(())
         })

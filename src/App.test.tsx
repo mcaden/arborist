@@ -22,9 +22,11 @@ vi.mock('@/hooks/use-terminal', () => ({
 
 const subscribeToStatusMock = vi.fn(() => () => {});
 const subscribeToActivityMock = vi.fn(() => () => {});
+const subscribeToMetricsMock = vi.fn(() => () => {});
 vi.mock('@/lib/session-events', () => ({
   subscribeToStatus: () => subscribeToStatusMock(),
   subscribeToActivity: () => subscribeToActivityMock(),
+  subscribeToMetrics: () => subscribeToMetricsMock(),
 }));
 
 import { App } from './App';
@@ -92,6 +94,8 @@ beforeEach(() => {
   resetBridgeMocks();
   initTerminalRouterMock.mockClear();
   subscribeToStatusMock.mockClear();
+  subscribeToActivityMock.mockClear();
+  subscribeToMetricsMock.mockClear();
   resetStores();
   document.documentElement.classList.remove('dark');
   installMatchMedia();

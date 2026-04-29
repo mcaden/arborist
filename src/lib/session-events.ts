@@ -11,7 +11,7 @@
 // defeat xterm's own buffering. If you find yourself wanting one, you almost
 // certainly want a hook closer to the terminal instead.
 
-import { onSessionActivity, onSessionStatus } from '@/lib/tauri-bridge';
+import { onSessionActivity, onSessionMetrics, onSessionStatus } from '@/lib/tauri-bridge';
 import { useSessionStore } from '@/store/session-store';
 
 type Unlisten = () => void;
@@ -22,6 +22,8 @@ let statusAttached = false;
 let statusUnlistenPromise: Promise<Unlisten> | null = null;
 let activityAttached = false;
 let activityUnlistenPromise: Promise<Unlisten> | null = null;
+let metricsAttached = false;
+let metricsUnlistenPromise: Promise<Unlisten> | null = null;
 
 /**
  * Attach the single app-lifetime listener for `session://status` and route
@@ -79,6 +81,30 @@ export function subscribeToActivity(): Unlisten {
 }
 
 /**
+ * Attach the single app-lifetime listener for `session://metrics` and route
+ * each event into the session store's `applyMetrics` action. Same idempotency
+ * contract as {@link subscribeToStatus}.
+ */
+export function subscribeToMetrics(): Unlisten {
+  if (metricsAttached) return NOOP_UNLISTEN;
+  metricsAttached = true;
+
+  metricsUnlistenPromise = onSessionMetrics((payload) => {
+    useSessionStore.getState().actions.applyMetrics(payload);
+  });
+
+  return () => {
+    const pending = metricsUnlistenPromise;
+    metricsAttached = false;
+    metricsUnlistenPromise = null;
+    if (!pending) return;
+    void pending.then((unlisten) => {
+      unlisten();
+    });
+  };
+}
+
+/**
  * Test-only: forcibly detach the active subscription (if any) and reset the
  * module's internal state so subsequent `subscribeTo*` calls attach fresh.
  * Production code must use the unlisten returned by `subscribeToStatus`
@@ -87,10 +113,13 @@ export function subscribeToActivity(): Unlisten {
 export function __resetForTests(): void {
   const pendingStatus = statusUnlistenPromise;
   const pendingActivity = activityUnlistenPromise;
+  const pendingMetrics = metricsUnlistenPromise;
   statusAttached = false;
   statusUnlistenPromise = null;
   activityAttached = false;
   activityUnlistenPromise = null;
+  metricsAttached = false;
+  metricsUnlistenPromise = null;
   if (pendingStatus) {
     void pendingStatus.then((unlisten) => {
       unlisten();
@@ -98,6 +127,11 @@ export function __resetForTests(): void {
   }
   if (pendingActivity) {
     void pendingActivity.then((unlisten) => {
+      unlisten();
+    });
+  }
+  if (pendingMetrics) {
+    void pendingMetrics.then((unlisten) => {
       unlisten();
     });
   }

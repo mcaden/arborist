@@ -54,6 +54,10 @@ beforeEach(() => {
     activeId: undefined,
     pendingClose: undefined,
     isHydrated: false,
+    statusMessages: {},
+    hasUnread: {},
+    activity: {},
+    metrics: {},
   });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
   // versions; provide minimal shims so CloseConfirmDialog can mount.
@@ -276,5 +280,49 @@ describe('Sidebar', () => {
     // pressed inside an input should not bubble up into the tablist
     // handler.
     expect(screen.queryByText(/terminate session/i)).toBeNull();
+  });
+});
+
+describe('Sidebar metrics indicator (Issue #3)', () => {
+  it('renders a compact metrics line under the label when metrics are present', () => {
+    seed([makeView('a')], 'a');
+    useSessionStore.setState({
+      metrics: {
+        a: {
+          sessionId: 'a',
+          model: 'claude-sonnet-4-6',
+          contextUsedPct: 42,
+          contextTokensUsed: 12_345,
+          contextTokensLimit: 200_000,
+          inputTokens: 9000,
+          outputTokens: 3345,
+          observedAt: 1700000000,
+        },
+      },
+    });
+    render(<Sidebar />);
+    const line = screen.getByTestId('sidebar-metrics');
+    expect(line.textContent).toContain('42%');
+    expect(line.textContent).toContain('12.3k tok');
+    // Long-form is in the title attribute for hover.
+    expect(line.getAttribute('title')).toContain('claude-sonnet-4-6');
+    expect(line.getAttribute('title')).toMatch(/200,000|200000/);
+  });
+
+  it('hides the metrics line when no snapshot is in the store', () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    expect(screen.queryByTestId('sidebar-metrics')).toBeNull();
+  });
+
+  it('hides the metrics line for non-running sessions even if a stale snapshot exists', () => {
+    seed([makeView('a', { status: 'starting' })], 'a');
+    useSessionStore.setState({
+      metrics: {
+        a: { sessionId: 'a', contextUsedPct: 10, observedAt: 0 },
+      },
+    });
+    render(<Sidebar />);
+    expect(screen.queryByTestId('sidebar-metrics')).toBeNull();
   });
 });

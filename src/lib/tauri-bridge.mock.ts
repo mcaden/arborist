@@ -144,6 +144,11 @@ export const onSessionActivity: Mock<
   ReturnType<typeof realBridge.onSessionActivity>
 > = vi.fn(() => Promise.resolve(noopUnlisten));
 
+export const onSessionMetrics: Mock<
+  Parameters<typeof realBridge.onSessionMetrics>,
+  ReturnType<typeof realBridge.onSessionMetrics>
+> = vi.fn(() => Promise.resolve(noopUnlisten));
+
 // Re-export the bridge's argument-shape interfaces so consumers importing
 // from the mock get identical types.
 export type {
@@ -177,6 +182,7 @@ export function resetBridgeMocks(): void {
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  onSessionMetrics.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }
 
 // Compile-time guard: this module must export every member of the real
@@ -204,5 +210,6 @@ const _shapeCheck = {
   onSessionOutput,
   onSessionStatus,
   onSessionActivity,
+  onSessionMetrics,
 } satisfies typeof realBridge;
 void _shapeCheck;
