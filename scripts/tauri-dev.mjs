@@ -64,12 +64,6 @@ function cleanup() {
   }
 }
 process.on('exit', cleanup);
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
-  process.on(sig, () => {
-    cleanup();
-    process.exit(1);
-  });
-}
 
 console.log(`[arborist] tauri dev on port ${port}`);
 
@@ -79,7 +73,27 @@ const child = spawn(
   ['tauri', 'dev', '--config', overridePath, ...process.argv.slice(2)],
   { stdio: 'inherit', env: process.env, shell: isWindows },
 );
-child.on('exit', (code) => {
+
+// Forward terminating signals to the child so we don't orphan `tauri dev` /
+// Vite (which would keep holding the dev port). The child's `exit` handler
+// below performs cleanup and propagates its exit status.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.on(sig, () => {
+    try {
+      child.kill(sig);
+    } catch {
+      // child may already be gone — fall through to cleanup
+    }
+  });
+}
+
+child.on('exit', (code, signal) => {
   cleanup();
+  if (signal) {
+    // Mirror the child's terminating signal in our exit code (128 + signum
+    // is the conventional shell encoding); fall back to 1 if unknown.
+    const signums = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1, SIGBREAK: 21 };
+    process.exit(128 + (signums[signal] ?? 0) || 1);
+  }
   process.exit(code ?? 1);
 });
