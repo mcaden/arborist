@@ -438,6 +438,24 @@ pub struct SessionMetricsEvent {
     pub observed_at: u64,
 }
 
+impl SessionMetricsEvent {
+    /// True when two snapshots carry the same data — every field except
+    /// `observed_at`. Used by the per-tool watchers to suppress redundant
+    /// `session://metrics` emissions when nothing has changed since the
+    /// previous poll. Comparing `Self` directly via derived `PartialEq`
+    /// would always differ because `observed_at` advances every poll.
+    #[must_use]
+    pub fn same_payload_as(&self, other: &Self) -> bool {
+        self.session_id == other.session_id
+            && self.model == other.model
+            && self.context_used_pct == other.context_used_pct
+            && self.context_tokens_used == other.context_tokens_used
+            && self.context_tokens_limit == other.context_tokens_limit
+            && self.input_tokens == other.input_tokens
+            && self.output_tokens == other.output_tokens
+    }
+}
+
 /// Payload of the `session://status` event (DESIGN §6).
 ///
 /// `message` is an optional human-readable note that accompanies the

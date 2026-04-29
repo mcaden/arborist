@@ -45,8 +45,8 @@
 //!   `github.copilot.current_tokens` (the conversational context size at
 //!   the moment that span was emitted — *not* the same as
 //!   `gen_ai.usage.input_tokens`, which also includes cache-creation
-//!   writes; we use `current_tokens` as the "context % used" denominator
-//!   numerator to match the user-visible Copilot status line).
+//!   writes; we use `current_tokens` as the "context % used" numerator
+//!   to match the user-visible Copilot status line).
 //!
 //! Two critical parsing rules:
 //!
@@ -278,7 +278,13 @@ fn run_claude_watcher(
         if totals.has_any() {
             let limit = resolve_limit(&token_usage_path, last_model.as_deref());
             let snapshot = build_snapshot(session_id, &totals, last_model.clone(), limit);
-            if Some(&snapshot) != last_emitted.as_ref() {
+            // Compare the data payload only — observed_at advances every
+            // poll and would otherwise defeat dedup, causing a redundant
+            // emission ~every POLL_INTERVAL even when nothing changed.
+            if !last_emitted
+                .as_ref()
+                .is_some_and(|prev| prev.same_payload_as(&snapshot))
+            {
                 emit(snapshot.clone());
                 last_emitted = Some(snapshot);
             }
@@ -318,13 +324,7 @@ fn run_copilot_watcher(
                     // Only advance the cursor up to the last *complete*
                     // line we observed, so a half-written line at EOF is
                     // re-read after the writer finishes it.
-                    let mut last_newline_in_chunk: Option<usize> = None;
-                    for (i, b) in bytes.iter().enumerate() {
-                        if *b == b'\n' {
-                            last_newline_in_chunk = Some(i);
-                        }
-                    }
-                    if let Some(nl) = last_newline_in_chunk {
+                    if let Some(nl) = bytes.iter().rposition(|&b| b == b'\n') {
                         let consumable = &bytes[..=nl];
                         for line in consumable.split(|&b| b == b'\n') {
                             if line.is_empty() {
@@ -340,7 +340,12 @@ fn run_copilot_watcher(
 
         if state.has_any() {
             let snapshot = state.snapshot(session_id);
-            if Some(&snapshot) != last_emitted.as_ref() {
+            // Same dedup fix as the Claude watcher: observed_at must not
+            // be part of the comparison.
+            if !last_emitted
+                .as_ref()
+                .is_some_and(|prev| prev.same_payload_as(&snapshot))
+            {
                 emit(snapshot.clone());
                 last_emitted = Some(snapshot);
             }
@@ -1378,5 +1383,37 @@ mod tests {
 
         running.store(false, Ordering::SeqCst);
         handle.join().expect("watcher thread joined");
+    }
+
+    // ----- dedup regression -------------------------------------------------
+
+    /// Bug regression: `observed_at` must not be compared as part of the
+    /// dedup check. Two snapshots with the same data but different
+    /// timestamps must compare as equal payload, otherwise both watchers
+    /// would emit a redundant event every POLL_INTERVAL forever.
+    #[test]
+    fn same_payload_as_ignores_observed_at() {
+        let id = SessionId::new();
+        let a = SessionMetricsEvent {
+            session_id: id,
+            model: Some("claude-opus-4.7".to_owned()),
+            context_used_pct: Some(17),
+            context_tokens_used: Some(29_461),
+            context_tokens_limit: Some(168_000),
+            input_tokens: Some(39_497),
+            output_tokens: Some(24),
+            observed_at: 1_700_000_000,
+        };
+        let mut b = a.clone();
+        b.observed_at = 1_700_000_002; // 2 seconds later (one poll interval)
+        assert!(
+            a.same_payload_as(&b),
+            "same data must compare equal regardless of observed_at"
+        );
+
+        // Sanity: any change in actual data flips the comparison.
+        let mut c = a.clone();
+        c.input_tokens = Some(39_498);
+        assert!(!a.same_payload_as(&c));
     }
 }
