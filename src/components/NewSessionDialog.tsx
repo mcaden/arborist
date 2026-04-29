@@ -168,13 +168,23 @@ export function NewSessionDialog(): JSX.Element | null {
     previousStepRef.current = step;
     if (previousStep === null) return; // initial open — handled elsewhere
     if (previousStep === step) return;
+    // On Step 2, focus the currently-selected tab so focus and
+    // `aria-selected` stay consistent across Back/Next round-trips.
+    if (step === 2) {
+      const id = worktreeMode === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
+      const tab = document.getElementById(id);
+      if (tab) {
+        tab.focus();
+        return;
+      }
+    }
     const body = stepBodyRef.current;
     if (!body) return;
     const candidate = body.querySelector<HTMLElement>(
       'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
     );
     candidate?.focus();
-  }, [step, isOpen]);
+  }, [step, isOpen, worktreeMode]);
 
   const next = (): void => {
     if (step === 1 && tool) setStep(2);
@@ -374,57 +384,61 @@ export function NewSessionDialog(): JSX.Element | null {
               aria-labelledby="worktree-tab-existing"
               hidden={worktreeMode !== 'existing'}
             >
-              {worktreesLoading ? (
-                <p className="text-sm text-slate-500">Loading...</p>
-              ) : worktrees.length === 0 ? (
-                <p className="mb-2 text-sm text-slate-500">
-                  No worktrees found in <span className="font-mono">.worktrees/</span> — create one
-                  in the New tab, or use Browse for a path elsewhere.
-                </p>
-              ) : (
-                <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-                  {worktrees.map((w) => (
-                    <li key={w.path}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setWorktree({
-                            path: w.path,
-                            ...(w.branch !== undefined ? { branch: w.branch } : {}),
-                            isMain: w.isMain,
-                          })
-                        }
-                        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
-                          worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
-                        }`}
-                      >
-                        <span className="truncate font-mono">{w.path}</span>
-                        <span className="flex shrink-0 items-center gap-1">
-                          {w.branch && (
-                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
-                              {w.branch}
+              {worktreeMode === 'existing' && (
+                <>
+                  {worktreesLoading ? (
+                    <p className="text-sm text-slate-500">Loading...</p>
+                  ) : worktrees.length === 0 ? (
+                    <p className="mb-2 text-sm text-slate-500">
+                      No worktrees found in <span className="font-mono">.worktrees/</span> — create
+                      one in the New tab, or use Browse for a path elsewhere.
+                    </p>
+                  ) : (
+                    <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+                      {worktrees.map((w) => (
+                        <li key={w.path}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setWorktree({
+                                path: w.path,
+                                ...(w.branch !== undefined ? { branch: w.branch } : {}),
+                                isMain: w.isMain,
+                              })
+                            }
+                            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
+                              worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
+                            }`}
+                          >
+                            <span className="truncate font-mono">{w.path}</span>
+                            <span className="flex shrink-0 items-center gap-1">
+                              {w.branch && (
+                                <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
+                                  {w.branch}
+                                </span>
+                              )}
+                              {w.isMain && (
+                                <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
+                                  main
+                                </span>
+                              )}
                             </span>
-                          )}
-                          {w.isMain && (
-                            <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
-                              main
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void onPickDirectory();
+                    }}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
+                  >
+                    Browse...
+                  </button>
+                </>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  void onPickDirectory();
-                }}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
-              >
-                Browse...
-              </button>
             </div>
             <div
               role="tabpanel"
