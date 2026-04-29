@@ -37,8 +37,24 @@ fn detect_branch() -> String {
     String::new()
 }
 
+/// Sanitize a branch name before embedding it in a `cargo:` directive.
+///
+/// Branch names can in principle contain control characters (notably
+/// newlines via the `ARBORIST_BUILD_BRANCH` override).  Without sanitization
+/// a malicious or malformed value could inject extra `cargo:` lines into
+/// the build output.  Restrict to a single-line, conservative character set:
+/// ASCII alphanumerics plus `-_./+:`.  Anything else is dropped.
+fn sanitize_branch(raw: &str) -> String {
+    raw.lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '+' | ':'))
+        .collect()
+}
+
 fn main() {
-    let branch = detect_branch();
+    let branch = sanitize_branch(&detect_branch());
     println!("cargo:rustc-env=ARBORIST_BUILD_BRANCH={branch}");
 
     // Re-run when the override or CI env vars change.

@@ -76,8 +76,12 @@ const child = spawn(
 
 // Forward terminating signals to the child so we don't orphan `tauri dev` /
 // Vite (which would keep holding the dev port). The child's `exit` handler
-// below performs cleanup and propagates its exit status.
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+// below performs cleanup and propagates its exit status. SIGBREAK is
+// Windows-only; registering it on POSIX would crash with `ERR_UNKNOWN_SIGNAL`.
+const forwardSignals = isWindows
+  ? ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']
+  : ['SIGINT', 'SIGTERM', 'SIGHUP'];
+for (const sig of forwardSignals) {
   process.on(sig, () => {
     try {
       child.kill(sig);
@@ -91,9 +95,14 @@ child.on('exit', (code, signal) => {
   cleanup();
   if (signal) {
     // Mirror the child's terminating signal in our exit code (128 + signum
-    // is the conventional shell encoding); fall back to 1 if unknown.
+    // is the conventional shell encoding). For unknown signals, fall back
+    // to exit code 1.
     const signums = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1, SIGBREAK: 21 };
-    process.exit(128 + (signums[signal] ?? 0) || 1);
+    const signum = signums[signal];
+    if (signum === undefined) {
+      process.exit(1);
+    }
+    process.exit(128 + signum);
   }
   process.exit(code ?? 1);
 });
