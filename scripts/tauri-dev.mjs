@@ -13,17 +13,32 @@
 //     desktop shell loads the matching URL.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const PORT_MIN = 1420;
 const PORT_RANGE = 100;
+const PORT_MAX = 65535;
+
+function failInvalidPortOverride(override) {
+  console.error(
+    `[arborist] ARBORIST_DEV_PORT must be an integer between 1 and ${PORT_MAX}; received "${override}"`,
+  );
+  process.exit(1);
+}
 
 function pickPort() {
   const override = process.env.ARBORIST_DEV_PORT;
-  if (override && /^\d+$/.test(override)) {
-    return Number(override);
+  if (override !== undefined && override !== '') {
+    if (!/^\d+$/.test(override)) {
+      failInvalidPortOverride(override);
+    }
+    const port = Number(override);
+    if (!Number.isInteger(port) || port < 1 || port > PORT_MAX) {
+      failInvalidPortOverride(override);
+    }
+    return port;
   }
   const hash = createHash('sha1').update(process.cwd()).digest();
   return PORT_MIN + (hash.readUInt16BE(0) % PORT_RANGE);
@@ -38,6 +53,24 @@ const dir = mkdtempSync(join(tmpdir(), 'arborist-dev-'));
 const overridePath = join(dir, 'tauri.conf.override.json');
 writeFileSync(overridePath, JSON.stringify({ build: { devUrl: `http://localhost:${port}` } }));
 
+let cleanedUp = false;
+function cleanup() {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // best-effort: nothing actionable if removal fails
+  }
+}
+process.on('exit', cleanup);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.on(sig, () => {
+    cleanup();
+    process.exit(1);
+  });
+}
+
 console.log(`[arborist] tauri dev on port ${port}`);
 
 const isWindows = process.platform === 'win32';
@@ -46,4 +79,7 @@ const child = spawn(
   ['tauri', 'dev', '--config', overridePath, ...process.argv.slice(2)],
   { stdio: 'inherit', env: process.env, shell: isWindows },
 );
-child.on('exit', (code) => process.exit(code ?? 1));
+child.on('exit', (code) => {
+  cleanup();
+  process.exit(code ?? 1);
+});

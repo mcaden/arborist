@@ -78,7 +78,7 @@ pub fn init_tracing(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
 /// On `main` (or when no branch could be detected) the title is just
 /// `"Arborist"`.  On any other branch the title becomes
 /// `"Arborist - <branch>"` so it is obvious which build is running.
-pub fn window_title_for_branch(branch: &str) -> String {
+pub(crate) fn window_title_for_branch(branch: &str) -> String {
     let trimmed = branch.trim();
     if trimmed.is_empty() || trimmed == "main" {
         "Arborist".to_string()
@@ -88,7 +88,7 @@ pub fn window_title_for_branch(branch: &str) -> String {
 }
 
 /// Branch this binary was built from, captured at compile time by `build.rs`.
-pub const BUILD_BRANCH: &str = env!("ARBORIST_BUILD_BRANCH");
+pub(crate) const BUILD_BRANCH: &str = env!("ARBORIST_BUILD_BRANCH");
 
 /// Build and run the Tauri application.
 pub fn run() {
