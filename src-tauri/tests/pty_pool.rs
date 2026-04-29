@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use arborist_lib::compose::session_temp_dir;
+use arborist_lib::compose::{copilot_otel_path, session_temp_dir};
 use arborist_lib::pty_pool::{
     cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink,
     PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, OUTPUT_CHANNEL_CAPACITY,
@@ -302,6 +302,134 @@ fn respawn_existing_yields_a_new_pid() {
         outs2.lock().unwrap()
     );
     pool.write(&session.id, b"quit\r\n").ok();
+}
+
+// ---------------------------------------------------------------------------
+// Pool spawn-prep (env injection / temp-dir setup / stale-otel truncation)
+// ---------------------------------------------------------------------------
+
+fn make_copilot_session(workdir: &Path) -> Session {
+    Session {
+        id: SessionId::new(),
+        tool: Tool::Copilot,
+        worktree_path: workdir.to_path_buf(),
+        worktree_name: "test".into(),
+        label: "test".into(),
+        instruction_set_id: None,
+        // Composed command can be anything — the FakeSpawner doesn't run
+        // it. We just need pool.spawn to reach the spawner with the env
+        // populated.
+        composed_command: "true".into(),
+        status: SessionStatus::Starting,
+        pid: None,
+        created_at: 0,
+        tab_index: 0,
+        temp_files: Vec::new(),
+    }
+}
+
+#[test]
+fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_copilot_session(dir.path());
+
+    // Pre-create the deterministic temp dir + a stale OTel JSONL from a
+    // hypothetical previous run. The pool must wipe it before spawn so
+    // the watcher doesn't replay old totals.
+    let temp = session_temp_dir(&session.id);
+    std::fs::create_dir_all(&temp).unwrap();
+    let stale = copilot_otel_path(&session.id);
+    std::fs::write(&stale, b"stale-data\n").unwrap();
+    assert!(stale.exists(), "precondition: stale file present");
+
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::Parked));
+    let spawner_for_assert = Arc::clone(&spawner);
+    let pool = PtyPool::new(spawner);
+    let (sink, _outs, _stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+
+    // Assert: the spawner saw a ChildCommand with the three OTel env keys.
+    let cmd = spawner_for_assert
+        .last_cmd
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("spawner received a command");
+    let env: std::collections::HashMap<String, std::ffi::OsString> = cmd.env.into_iter().collect();
+    let expected_path = copilot_otel_path(&session.id).into_os_string();
+    assert_eq!(
+        env.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
+        Some(&expected_path),
+    );
+    assert_eq!(
+        env.get("COPILOT_OTEL_ENABLED"),
+        Some(&std::ffi::OsString::from("true"))
+    );
+    assert_eq!(
+        env.get("OTEL_BSP_SCHEDULE_DELAY"),
+        Some(&std::ffi::OsString::from("1000"))
+    );
+
+    // Assert: the temp dir still exists, and the stale file is gone.
+    assert!(temp.exists(), "session temp dir must exist after prep");
+    assert!(
+        !stale.exists(),
+        "stale otel.jsonl must be removed before spawn"
+    );
+
+    rt.block_on(async {
+        pool.kill(&session.id).await.ok();
+    });
+    // Post-kill cleanup: pool.kill removes session_temp_dir wholesale, so
+    // an otel.jsonl that the (real) child would have written goes with
+    // it. This is the Copilot equivalent of the system-prompt.md cleanup
+    // covered by `kill_terminates_child_and_removes_entry_and_temp_dir`,
+    // and is the regression assertion for the temp-cleanup-verify todo.
+    assert!(
+        !temp.exists(),
+        "session_temp_dir must be removed by kill: {}",
+        temp.display(),
+    );
+}
+
+#[test]
+fn pool_spawn_prep_is_noop_for_claude_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+
+    // Confirm the temp dir does NOT exist before spawn — the pool should
+    // not create one for Claude sessions that have no compose-time temp
+    // files (matches today's `materialise_temp_files`-only behaviour).
+    let temp = session_temp_dir(&session.id);
+    assert!(!temp.exists(), "precondition: no Claude temp dir");
+
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::Parked));
+    let spawner_for_assert = Arc::clone(&spawner);
+    let pool = PtyPool::new(spawner);
+    let (sink, _outs, _stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink).expect("spawn");
+
+    let cmd = spawner_for_assert
+        .last_cmd
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("spawner received a command");
+    assert!(cmd.env.is_empty(), "Claude must not get any extra env");
+    assert!(
+        !temp.exists(),
+        "Claude spawn must not create the OTel temp dir"
+    );
+
+    rt.block_on(async {
+        pool.kill(&session.id).await.ok();
+    });
 }
 
 // ---------------------------------------------------------------------------

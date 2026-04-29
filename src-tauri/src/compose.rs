@@ -244,6 +244,58 @@ pub fn session_temp_dir(id: &SessionId) -> PathBuf {
     p
 }
 
+/// Single source of truth for the path to a Copilot session's OTel JSONL
+/// file. Used by [`env_for_tool`] (to point Copilot's exporter at it),
+/// by `pty_pool` spawn prep (to wipe a stale copy from a prior run), and
+/// by `session_metrics::MetricsRegistry::start` (to tail it). Anywhere
+/// else that needs this path **must** call this helper — never reconstruct
+/// the filename inline.
+#[must_use]
+pub fn copilot_otel_path(session_id: &SessionId) -> PathBuf {
+    session_temp_dir(session_id).join("otel.jsonl")
+}
+
+/// Per-session **environment variables** to inject into the spawned CLI
+/// process, separately from the shell command. These are *additions* on top
+/// of the parent process's inherited env (the spawner does not call
+/// `env_clear`). They are recomputed on every spawn from the session id and
+/// **never** stored on `Session` — only the path to the OTel JSONL would be
+/// derivable anyway, and persisting it would let stale paths from a previous
+/// install leak across upgrades.
+///
+/// Values are `OsString` so paths with non-UTF-8 segments (rare on Windows
+/// but possible) round-trip without lossy `�` substitution.
+///
+/// Per-tool behaviour:
+///
+/// * `Tool::Copilot` — enable Copilot's OpenTelemetry **file exporter**
+///   pointing at `<session_temp_dir>/otel.jsonl`. Arborist tails that file
+///   to surface real-time token usage / context-window state in the sidebar
+///   (see [`crate::session_metrics::run_copilot_watcher`]). The
+///   `OTEL_BSP_SCHEDULE_DELAY=1000` (ms) tightens the SDK's batch flush
+///   from its 5s default to ~1Hz so the sidebar updates feel live. Older
+///   Copilot CLIs that don't recognise these vars silently ignore them.
+/// * `Tool::Claude` — empty. Claude Code has no file-exporter mode (only
+///   OTLP, which would require an in-process receiver). Reuses the existing
+///   transcript-tailing watcher.
+#[must_use]
+pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi::OsString)> {
+    match tool {
+        Tool::Copilot => {
+            let path = copilot_otel_path(session_id);
+            vec![
+                (
+                    "COPILOT_OTEL_FILE_EXPORTER_PATH".to_owned(),
+                    path.into_os_string(),
+                ),
+                ("COPILOT_OTEL_ENABLED".to_owned(), "true".into()),
+                ("OTEL_BSP_SCHEDULE_DELAY".to_owned(), "1000".into()),
+            ]
+        }
+        Tool::Claude => Vec::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shell quoting
 // ---------------------------------------------------------------------------
@@ -981,5 +1033,49 @@ mod tests {
         assert!(validate_worktree_name(&long).is_err());
         let max = "a".repeat(255);
         assert!(validate_worktree_name(&max).is_ok());
+    }
+
+    // -- env_for_tool --------------------------------------------------------
+
+    #[test]
+    fn env_for_tool_claude_is_empty() {
+        assert!(env_for_tool(Tool::Claude, &fixed_id()).is_empty());
+    }
+
+    #[test]
+    fn env_for_tool_copilot_returns_otel_keys() {
+        let id = fixed_id();
+        let env = env_for_tool(Tool::Copilot, &id);
+        let map: std::collections::HashMap<String, std::ffi::OsString> =
+            env.iter().cloned().collect();
+
+        // Path is deterministic and matches the single-source-of-truth helper.
+        let expected = copilot_otel_path(&id).into_os_string();
+        assert_eq!(map.get("COPILOT_OTEL_FILE_EXPORTER_PATH"), Some(&expected),);
+        assert_eq!(
+            map.get("COPILOT_OTEL_ENABLED"),
+            Some(&std::ffi::OsString::from("true"))
+        );
+        // Standard OTel SDK env var; literal "1000" (ms) tightens batch
+        // flush from the 5s default to ~1Hz.
+        assert_eq!(
+            map.get("OTEL_BSP_SCHEDULE_DELAY"),
+            Some(&std::ffi::OsString::from("1000")),
+        );
+        assert_eq!(env.len(), 3, "exactly three env vars for Copilot");
+    }
+
+    #[test]
+    fn env_for_tool_copilot_path_changes_with_session_id() {
+        let a = SessionId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
+        let b = SessionId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap());
+        let path_a: std::collections::HashMap<_, _> =
+            env_for_tool(Tool::Copilot, &a).into_iter().collect();
+        let path_b: std::collections::HashMap<_, _> =
+            env_for_tool(Tool::Copilot, &b).into_iter().collect();
+        assert_ne!(
+            path_a.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
+            path_b.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
+        );
     }
 }

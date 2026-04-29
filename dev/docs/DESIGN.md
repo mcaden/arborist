@@ -356,14 +356,40 @@ copilot
 
 No worktree context preamble is injected; the agent can derive its location
 from `pwd`/`git` (the PTY pool sets `cwd` to the worktree). No temp files are
-created.
+created at compose time.
+
+##### Per-session telemetry env (Copilot only)
+
+Arborist enables Copilot's OpenTelemetry **file exporter** at spawn time so
+the sidebar can surface real-time token usage and context-window state. The
+PTY pool injects three environment variables into the spawned `copilot`
+process (additive — the child still inherits the parent's env; Arborist
+never calls `env_clear`):
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `COPILOT_OTEL_FILE_EXPORTER_PATH` | `<session_temp_dir>/otel.jsonl` | Redirects OTel spans to a per-session JSONL file Arborist tails (`session_metrics::run_copilot_watcher`). |
+| `COPILOT_OTEL_ENABLED` | `true` | Activates the exporter. |
+| `OTEL_BSP_SCHEDULE_DELAY` | `1000` | Standard OTel SDK env var; tightens the batch span processor flush from 5s to ~1s so the sidebar updates feel live. |
+
+These values are computed by `compose::env_for_tool(tool, &session_id)` and
+**not** persisted on `Session` — they are derived from the session id (which
+*is* persisted) at every spawn / restart / restore. This keeps
+`Session.composed_command` clean (it remains the same shell string we'd
+write into the user's terminal if asked) and avoids stale paths leaking
+across upgrades.
+
+The pool also creates `<session_temp_dir>` if missing and removes any stale
+`otel.jsonl` from a previous run before spawning, so restart / restore-on-
+launch don't replay old spans and double-count totals.
 
 | | Claude | Copilot |
 |---|---|---|
 | Repo instructions | Auto-loaded from `cwd` (`CLAUDE.md`) | Auto-loaded from `cwd` (`.github/copilot-instructions.md`) |
 | Worktree context | `--system-prompt <temp-file>` (only when an instruction set is attached) | Not injected — agent derives from `pwd`/`git` |
 | Instruction set | Included in temp file when attached; otherwise launches as bare `claude` | Not passed — Copilot uses its own instruction discovery |
-| Temp file | Only when an instruction set is attached; cleaned up on session close | No |
+| Compose-time temp file | Only when an instruction set is attached; cleaned up on session close | No |
+| Telemetry env injected at spawn | None (Claude transcripts under `~/.claude/projects/` are read directly) | Three OTel env vars enable the file exporter (see above) |
 
 ## 6. Tauri Command & Event API
 

@@ -438,6 +438,50 @@ pub struct SessionMetricsEvent {
     pub observed_at: u64,
 }
 
+impl SessionMetricsEvent {
+    /// True when two snapshots carry the same data — every field except
+    /// `observed_at`. Used by the per-tool watchers to suppress redundant
+    /// `session://metrics` emissions when nothing has changed since the
+    /// previous poll. Comparing `Self` directly via derived `PartialEq`
+    /// would always differ because `observed_at` advances every poll.
+    ///
+    /// **Future-proofing:** the destructuring patterns below intentionally
+    /// list every field by name (no `..`) so that adding a new field to
+    /// `SessionMetricsEvent` is a compile error here. That forces an
+    /// explicit decision: include the new field in the dedup comparison,
+    /// or document why it's excluded (like `observed_at`).
+    #[must_use]
+    pub fn same_payload_as(&self, other: &Self) -> bool {
+        let Self {
+            session_id: a_session_id,
+            model: a_model,
+            context_used_pct: a_pct,
+            context_tokens_used: a_used,
+            context_tokens_limit: a_limit,
+            input_tokens: a_in,
+            output_tokens: a_out,
+            observed_at: _, // intentionally excluded — see fn doc
+        } = self;
+        let Self {
+            session_id: b_session_id,
+            model: b_model,
+            context_used_pct: b_pct,
+            context_tokens_used: b_used,
+            context_tokens_limit: b_limit,
+            input_tokens: b_in,
+            output_tokens: b_out,
+            observed_at: _, // intentionally excluded — see fn doc
+        } = other;
+        a_session_id == b_session_id
+            && a_model == b_model
+            && a_pct == b_pct
+            && a_used == b_used
+            && a_limit == b_limit
+            && a_in == b_in
+            && a_out == b_out
+    }
+}
+
 /// Payload of the `session://status` event (DESIGN §6).
 ///
 /// `message` is an optional human-readable note that accompanies the

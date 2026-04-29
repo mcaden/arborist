@@ -1,6 +1,8 @@
 //! Per-session token-usage / context-window watcher.
 //!
-//! ## Signal source (v1)
+//! ## Signal sources (v1)
+//!
+//! ### Claude
 //!
 //! Claude Code persists every session as a JSONL transcript at
 //! `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`. Each `assistant`-type
@@ -16,17 +18,51 @@
 //! session's spawn instant, and extracts the latest token totals. On
 //! change, it emits a [`MetricsSnapshot`] through the supplied callback.
 //!
-//! ### Limitations
+//! Limitation: two same-tool sessions in the same worktree cannot be
+//! disambiguated by cwd + mtime alone — both would observe the most-
+//! recently-written JSONL. See follow-up issue #4 for the hook-driven
+//! authoritative version.
 //!
-//! Two same-tool sessions in the same worktree cannot be disambiguated by
-//! cwd + mtime alone — both would observe the most-recently-written JSONL.
-//! See follow-up issue #4 for the hook-driven authoritative version.
+//! ### Copilot
 //!
-//! ## Copilot
+//! GitHub Copilot CLI does **not** write token usage to its own session-
+//! state JSONL (`~/.copilot/session-state/<sid>/events.jsonl`). It does,
+//! however, support OpenTelemetry export. We use the **file exporter** —
+//! enabled and configured via the env vars in `compose::env_for_tool`
+//! (injected by `pty_pool::spawn_internal`) — to redirect spans to a
+//! deterministic per-session file `<session_temp_dir>/otel.jsonl`.
 //!
-//! `~/.copilot/session-state/<sid>/events.jsonl` does **not** carry token
-//! usage, so [`MetricsWatcher::start`] is a no-op for `Tool::Copilot`. A
-//! follow-up will revisit this when the Copilot CLI exposes the data.
+//! The watcher tails that file and extracts:
+//!
+//! * **Cumulative input/output token totals** from `chat <model>` span
+//!   `attributes."gen_ai.usage.{input,output}_tokens"`. Each span is one
+//!   LLM round-trip; we sum them.
+//! * **Model name** from `attributes."gen_ai.response.model"` (fallback
+//!   `"gen_ai.request.model"`).
+//! * **Context-window state** from the inline event
+//!   `github.copilot.session.usage_info`'s attributes:
+//!   `github.copilot.token_limit` (the model's authoritative window) and
+//!   `github.copilot.current_tokens` (the conversational context size at
+//!   the moment that span was emitted — *not* the same as
+//!   `gen_ai.usage.input_tokens`, which also includes cache-creation
+//!   writes; we use `current_tokens` as the "context % used" numerator
+//!   to match the user-visible Copilot status line).
+//!
+//! Two critical parsing rules:
+//!
+//! 1. **Filter to leaf `chat` spans only.** Copilot's `invoke_agent` parent
+//!    span aggregates the *same* `gen_ai.usage.*` numbers as its child
+//!    `chat` span(s). Counting both would double the totals. We require
+//!    `name` to start with `"chat "` and ignore everything else (including
+//!    `type: "metric"` lines, which are redundant with span attributes).
+//! 2. **Spans only emit at span CLOSE.** OTel's batch span processor
+//!    flushes after the span ends, not while it's open. Use the existing
+//!    PTY-stream activity scanner for "is the agent currently working" —
+//!    OTel cannot answer that question.
+//!
+//! `OTEL_BSP_SCHEDULE_DELAY=1000` (set in `env_for_tool`) tightens the
+//! SDK's batch flush from its 5s default to ~1Hz so token totals appear
+//! in the sidebar within a couple seconds of each agent turn.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,6 +73,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
+use crate::compose;
 use crate::types::{SessionId, SessionMetricsEvent, Tool};
 
 /// Polling cadence for the watcher. Trade-off: smaller is more responsive,
@@ -57,9 +94,12 @@ struct WatcherHandle {
 }
 
 /// Registry of active per-session watchers. Stored on `AppContext`. Calls
-/// to [`MetricsRegistry::stop`] are idempotent — closing a session that
-/// never had a watcher (e.g. a Copilot session, or a Claude session whose
-/// home dir could not be resolved) is a no-op.
+/// to [`MetricsRegistry::stop`] are idempotent — closing a session whose
+/// watcher could not be started in the first place (e.g. a Claude session
+/// whose home dir could not be resolved, or any session for which
+/// `start` returned `false`) is a no-op. **Both** Claude and Copilot
+/// sessions get watchers when their inputs are available — Claude via
+/// transcript tailing, Copilot via OTel JSONL tailing.
 #[derive(Default)]
 pub struct MetricsRegistry {
     inner: Mutex<HashMap<SessionId, WatcherHandle>>,
@@ -74,7 +114,7 @@ impl MetricsRegistry {
     /// Start a watcher for `session_id`. If one is already running it is
     /// stopped first so the new one starts from a clean slate (used by
     /// session restart). Returns `false` if no watcher could be started
-    /// (Copilot sessions, or no resolvable home dir).
+    /// (e.g. Claude session whose home dir could not be resolved).
     pub fn start(
         &self,
         session_id: SessionId,
@@ -83,32 +123,41 @@ impl MetricsRegistry {
         spawn_instant: SystemTime,
         emit: MetricsCb,
     ) -> bool {
-        if !matches!(tool, Tool::Claude) {
-            return false;
-        }
-        let Some(home) = home_dir() else {
-            tracing::debug!(session_id = %session_id, "no home dir; metrics watcher not started");
-            return false;
-        };
-
-        // Stop any existing watcher first.
+        // Stop any existing watcher first so the per-tool worker starts
+        // from a clean slate (used by session restart).
         self.stop(&session_id);
 
         let running = Arc::new(AtomicBool::new(true));
         let running_for_thread = Arc::clone(&running);
-        let cwd_for_thread = cwd.clone();
-        let join = thread::Builder::new()
-            .name(format!("arborist-metrics-{}", session_id))
-            .spawn(move || {
-                run_claude_watcher(
-                    session_id,
-                    home,
-                    cwd_for_thread,
-                    spawn_instant,
-                    emit,
-                    running_for_thread,
-                );
-            });
+        let join = match tool {
+            Tool::Claude => {
+                let Some(home) = home_dir() else {
+                    tracing::debug!(session_id = %session_id, "no home dir; Claude metrics watcher not started");
+                    return false;
+                };
+                let cwd_for_thread = cwd.clone();
+                thread::Builder::new()
+                    .name(format!("arborist-metrics-{}", session_id))
+                    .spawn(move || {
+                        run_claude_watcher(
+                            session_id,
+                            home,
+                            cwd_for_thread,
+                            spawn_instant,
+                            emit,
+                            running_for_thread,
+                        );
+                    })
+            }
+            Tool::Copilot => {
+                let otel_path = compose::copilot_otel_path(&session_id);
+                thread::Builder::new()
+                    .name(format!("arborist-metrics-{}", session_id))
+                    .spawn(move || {
+                        run_copilot_watcher(session_id, otel_path, emit, running_for_thread);
+                    })
+            }
+        };
         match join {
             Ok(_handle) => {
                 self.inner
@@ -188,21 +237,23 @@ fn run_claude_watcher(
 
             if let Ok(meta) = std::fs::metadata(&c) {
                 let len = meta.len();
+                // Defensive: handle truncation/rotation. Same shape as the
+                // Copilot watcher.
+                if len < tracked_len {
+                    tracked_len = 0;
+                    totals = TurnTotals::default();
+                    last_model = None;
+                    last_emitted = None;
+                }
                 if len > tracked_len {
-                    if let Ok(bytes) = read_range(&c, tracked_len, len) {
-                        for line in bytes.split(|&b| b == b'\n') {
-                            if line.is_empty() {
-                                continue;
-                            }
-                            if let Some((usage, model)) = extract_assistant_usage(line) {
-                                totals.add(&usage);
-                                if let Some(m) = model {
-                                    last_model = Some(m);
-                                }
+                    tracked_len = tail_lines(&c, tracked_len, len, |line| {
+                        if let Some((usage, model)) = extract_assistant_usage(line) {
+                            totals.add(&usage);
+                            if let Some(m) = model {
+                                last_model = Some(m);
                             }
                         }
-                    }
-                    tracked_len = len;
+                    });
                 }
             }
         }
@@ -210,7 +261,62 @@ fn run_claude_watcher(
         if totals.has_any() {
             let limit = resolve_limit(&token_usage_path, last_model.as_deref());
             let snapshot = build_snapshot(session_id, &totals, last_model.clone(), limit);
-            if Some(&snapshot) != last_emitted.as_ref() {
+            // Compare the data payload only — observed_at advances every
+            // poll and would otherwise defeat dedup, causing a redundant
+            // emission ~every POLL_INTERVAL even when nothing changed.
+            if !last_emitted
+                .as_ref()
+                .is_some_and(|prev| prev.same_payload_as(&snapshot))
+            {
+                emit(snapshot.clone());
+                last_emitted = Some(snapshot);
+            }
+        }
+
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Copilot worker
+// ---------------------------------------------------------------------------
+
+fn run_copilot_watcher(
+    session_id: SessionId,
+    otel_path: PathBuf,
+    emit: MetricsCb,
+    running: Arc<AtomicBool>,
+) {
+    let mut state = CopilotState::default();
+    let mut cursor: u64 = 0;
+    let mut last_emitted: Option<SessionMetricsEvent> = None;
+
+    while running.load(Ordering::SeqCst) {
+        if let Ok(meta) = std::fs::metadata(&otel_path) {
+            let len = meta.len();
+            // Truncated or rotated under us: reset and reread from start.
+            // Spawn-time prep removes a stale otel.jsonl, but a hostile
+            // rotation mid-run shouldn't make us read garbage offsets.
+            if len < cursor {
+                cursor = 0;
+                state = CopilotState::default();
+                last_emitted = None;
+            }
+            if len > cursor {
+                cursor = tail_lines(&otel_path, cursor, len, |line| {
+                    ingest_otel_line(line, &mut state);
+                });
+            }
+        }
+
+        if state.has_any() {
+            let snapshot = state.snapshot(session_id);
+            // Same dedup fix as the Claude watcher: observed_at must not
+            // be part of the comparison.
+            if !last_emitted
+                .as_ref()
+                .is_some_and(|prev| prev.same_payload_as(&snapshot))
+            {
                 emit(snapshot.clone());
                 last_emitted = Some(snapshot);
             }
@@ -283,14 +389,100 @@ fn newest_jsonl_after(dir: &Path, after: SystemTime) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Defensive cap on a single watcher read. A runaway exporter (e.g. a
+/// Copilot bug or a Claude session that grew enormous between polls)
+/// must not be able to make us allocate gigabytes in one shot. If the
+/// file is larger than this, we read this much and let the caller's
+/// last-newline logic re-enter on the next poll to consume the rest.
+const MAX_READ_CHUNK: u64 = 10 * 1024 * 1024;
+
 fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)?;
     f.seek(SeekFrom::Start(start))?;
-    let len = end.saturating_sub(start) as usize;
+    let span = end.saturating_sub(start);
+    let len = span.min(MAX_READ_CHUNK) as usize;
     let mut buf = vec![0u8; len];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// Tail `path` from `cursor` up to `end`, invoking `consume` for each
+/// complete `\n`-terminated line found. Returns the new cursor position
+/// (always `>= cursor`).
+///
+/// Three pitfalls handled:
+/// 1. **Half-written trailing line.** The cursor only advances past the
+///    last complete `\n`; partial trailing bytes are re-read on the next
+///    call. Without this the line parser silently drops a partial JSON
+///    object the writer is still finishing.
+/// 2. **Read cap.** `read_range` is capped at [`MAX_READ_CHUNK`] so a
+///    runaway exporter cannot make us allocate gigabytes in one shot.
+///    The remaining bytes are picked up on subsequent polls.
+/// 3. **Oversized line (> [`MAX_READ_CHUNK`] without a `\n` in the cap).**
+///    If the capped chunk has no newline AND the file extends past what
+///    we read, the line itself is bigger than the cap. Without special
+///    handling, `rposition` would always be `None` and the watcher would
+///    re-read the same chunk forever (wasted I/O, metrics never advance).
+///    We scan forward from the end of the chunk *without* buffering to
+///    find the next `\n`, log a warning, and skip the whole oversized
+///    line. If no `\n` is found anywhere up to `end`, the writer is
+///    still in flight, so we leave the cursor where it is and let the
+///    next poll re-check.
+fn tail_lines<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, mut consume: F) -> u64 {
+    let bytes = match read_range(path, cursor, end) {
+        Ok(b) => b,
+        Err(_) => return cursor,
+    };
+    if let Some(nl) = bytes.iter().rposition(|&b| b == b'\n') {
+        for line in bytes[..=nl].split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            consume(line);
+        }
+        return cursor + (nl as u64) + 1;
+    }
+    // No newline in the chunk. If there's more file beyond what we read,
+    // the line is oversized — skip it. Otherwise the writer is still in
+    // flight and we should retry next poll.
+    let read = bytes.len() as u64;
+    if cursor + read < end {
+        tracing::warn!(
+            path = %path.display(),
+            max_bytes = MAX_READ_CHUNK,
+            "session_metrics: skipping oversized line (>cap, no newline in chunk)"
+        );
+        match find_next_newline(path, cursor + read, end) {
+            Some(nl_abs) => nl_abs + 1,
+            None => cursor,
+        }
+    } else {
+        cursor
+    }
+}
+
+/// Scan `path` from `start` (inclusive) up to `end` (exclusive) without
+/// buffering the whole range, looking for the next `\n`. Returns its
+/// absolute byte offset, or `None` if no newline exists in the range.
+fn find_next_newline(path: &Path, start: u64, end: u64) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut pos = start;
+    while pos < end {
+        let want = ((end - pos) as usize).min(buf.len());
+        let n = f.read(&mut buf[..want]).ok()?;
+        if n == 0 {
+            return None;
+        }
+        if let Some(idx) = buf[..n].iter().position(|&b| b == b'\n') {
+            return Some(pos + idx as u64);
+        }
+        pos += n as u64;
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +642,152 @@ fn now_unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Copilot OTel parser
+// ---------------------------------------------------------------------------
+
+/// Running state accumulated by the Copilot watcher across all ingested
+/// `chat <model>` spans for one session.
+#[derive(Debug, Default)]
+pub(crate) struct CopilotState {
+    /// Cumulative input tokens (sum of `gen_ai.usage.input_tokens` across
+    /// every leaf chat span). Includes cache-creation writes.
+    sum_input: u64,
+    /// Cumulative output tokens (sum of `gen_ai.usage.output_tokens`).
+    sum_output: u64,
+    /// Most recent model name observed (`gen_ai.response.model`, fallback
+    /// `gen_ai.request.model`).
+    last_model: Option<String>,
+    /// Most recent value of `github.copilot.token_limit` from the inline
+    /// `github.copilot.session.usage_info` event. Authoritative context
+    /// window for the model that turn used.
+    token_limit: Option<u64>,
+    /// Most recent value of `github.copilot.current_tokens` — the size of
+    /// the conversational context the agent had in front of it at the
+    /// moment of the span. Drives the sidebar's "context % used".
+    current_tokens: Option<u64>,
+    /// True once at least one chat span has been ingested.
+    seen: bool,
+}
+
+impl CopilotState {
+    pub(crate) fn has_any(&self) -> bool {
+        self.seen
+    }
+
+    pub(crate) fn snapshot(&self, session_id: SessionId) -> SessionMetricsEvent {
+        let used = self.current_tokens;
+        let pct = match (used, self.token_limit) {
+            (Some(u), Some(lim)) if lim > 0 => Some(
+                u.saturating_mul(100)
+                    .checked_div(lim)
+                    .map(|raw| raw.min(100) as u8)
+                    .unwrap_or(0),
+            ),
+            _ => None,
+        };
+        SessionMetricsEvent {
+            session_id,
+            model: self.last_model.clone(),
+            context_used_pct: pct,
+            context_tokens_used: used,
+            context_tokens_limit: self.token_limit,
+            input_tokens: Some(self.sum_input),
+            output_tokens: Some(self.sum_output),
+            observed_at: now_unix_seconds(),
+        }
+    }
+}
+
+/// Ingest a single OTel JSONL line into `state`. Silently ignores anything
+/// that isn't a leaf `chat` span (metric lines, `invoke_agent` parents,
+/// other span kinds, malformed JSON). Never panics.
+///
+/// The `invoke_agent` filter is critical: that span carries the *same*
+/// `gen_ai.usage.*` numbers as its child `chat` span(s), so counting both
+/// would double the totals. Filtering on `name.starts_with("chat ")`
+/// matches the leaf-only rule.
+pub(crate) fn ingest_otel_line(line: &[u8], state: &mut CopilotState) {
+    #[derive(Deserialize)]
+    struct Outer {
+        #[serde(default)]
+        r#type: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        attributes: Option<serde_json::Value>,
+        #[serde(default)]
+        events: Option<Vec<OtelEvent>>,
+    }
+    #[derive(Deserialize)]
+    struct OtelEvent {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        attributes: Option<serde_json::Value>,
+    }
+
+    let Ok(outer) = serde_json::from_slice::<Outer>(line) else {
+        return;
+    };
+    if outer.r#type != "span" {
+        return;
+    }
+    // Leaf chat spans only. The space after "chat" is intentional — it
+    // matches `chat <model>` and excludes any future `chat_completion`-
+    // style sibling that we'd want to treat differently.
+    if !outer.name.starts_with("chat ") {
+        return;
+    }
+
+    let attrs = outer.attributes.as_ref();
+    let input = attrs
+        .and_then(|a| a.get("gen_ai.usage.input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = attrs
+        .and_then(|a| a.get("gen_ai.usage.output_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    state.sum_input = state.sum_input.saturating_add(input);
+    state.sum_output = state.sum_output.saturating_add(output);
+
+    if let Some(model) = attrs
+        .and_then(|a| a.get("gen_ai.response.model"))
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            attrs
+                .and_then(|a| a.get("gen_ai.request.model"))
+                .and_then(|v| v.as_str())
+        })
+    {
+        state.last_model = Some(model.to_owned());
+    }
+
+    if let Some(events) = outer.events.as_ref() {
+        for ev in events {
+            if ev.name != "github.copilot.session.usage_info" {
+                continue;
+            }
+            let ev_attrs = ev.attributes.as_ref();
+            if let Some(v) = ev_attrs
+                .and_then(|a| a.get("github.copilot.token_limit"))
+                .and_then(|v| v.as_u64())
+            {
+                state.token_limit = Some(v);
+            }
+            if let Some(v) = ev_attrs
+                .and_then(|a| a.get("github.copilot.current_tokens"))
+                .and_then(|v| v.as_u64())
+            {
+                state.current_tokens = Some(v);
+            }
+        }
+    }
+
+    state.seen = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -658,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_start_is_noop_for_copilot() {
+    fn registry_start_spawns_watcher_for_copilot() {
         let reg = MetricsRegistry::new();
         let id = SessionId::new();
         let cb: MetricsCb = Arc::new(|_| {});
@@ -669,7 +1007,17 @@ mod tests {
             SystemTime::now(),
             cb,
         );
-        assert!(!started, "metrics watcher must not start for Copilot");
+        assert!(started, "Copilot watcher must start");
+        assert!(
+            reg.inner.lock().unwrap().contains_key(&id),
+            "registry should track the Copilot watcher",
+        );
+        // Stop it so the worker thread exits before the test ends.
+        reg.stop(&id);
+        assert!(
+            !reg.inner.lock().unwrap().contains_key(&id),
+            "registry should drop the entry on stop",
+        );
     }
 
     #[test]
@@ -697,5 +1045,519 @@ mod tests {
         // After=now+1day => nothing eligible.
         let future = SystemTime::now() + Duration::from_secs(86_400);
         assert!(newest_jsonl_after(dir.path(), future).is_none());
+    }
+
+    // -- Copilot OTel parser ---------------------------------------------
+
+    /// Real probe data captured from `copilot -p` with the OTel file
+    /// exporter enabled. Two spans (chat + invoke_agent parent) plus
+    /// metric lines. Used as the canonical fixture for the parser tests.
+    const COPILOT_OTEL_FIXTURE: &[u8] =
+        include_bytes!("../tests/fixtures/copilot_otel_sample.jsonl");
+
+    fn fixture_lines() -> Vec<&'static [u8]> {
+        COPILOT_OTEL_FIXTURE
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn ingest_otel_chat_span_extracts_totals_and_context() {
+        // Find the leaf chat span line.
+        let chat_line = fixture_lines()
+            .into_iter()
+            .find(|l| {
+                std::str::from_utf8(l)
+                    .unwrap_or("")
+                    .contains(r#""name":"chat "#)
+            })
+            .expect("chat span in fixture");
+        let mut state = CopilotState::default();
+        ingest_otel_line(chat_line, &mut state);
+        assert!(state.has_any());
+        assert_eq!(state.sum_input, 39_497);
+        assert_eq!(state.sum_output, 24);
+        assert_eq!(state.last_model.as_deref(), Some("claude-opus-4.7"));
+        assert_eq!(state.token_limit, Some(168_000));
+        assert_eq!(state.current_tokens, Some(29_461));
+    }
+
+    #[test]
+    fn ingest_otel_invoke_agent_is_ignored() {
+        // The invoke_agent span carries the same gen_ai.usage.* numbers as
+        // its child chat span. If we counted both we'd double-count.
+        let parent_line = fixture_lines()
+            .into_iter()
+            .find(|l| {
+                std::str::from_utf8(l)
+                    .unwrap_or("")
+                    .contains(r#""name":"invoke_agent""#)
+            })
+            .expect("invoke_agent span in fixture");
+        let mut state = CopilotState::default();
+        ingest_otel_line(parent_line, &mut state);
+        assert!(!state.has_any(), "invoke_agent must not advance state");
+        assert_eq!(state.sum_input, 0);
+        assert_eq!(state.sum_output, 0);
+    }
+
+    #[test]
+    fn ingest_otel_metric_lines_are_ignored() {
+        let metric_line = fixture_lines()
+            .into_iter()
+            .find(|l| {
+                std::str::from_utf8(l)
+                    .unwrap_or("")
+                    .contains(r#""type":"metric""#)
+            })
+            .expect("metric line in fixture");
+        let mut state = CopilotState::default();
+        ingest_otel_line(metric_line, &mut state);
+        assert!(!state.has_any(), "metric lines must not advance state");
+    }
+
+    #[test]
+    fn ingest_otel_full_fixture_no_double_counting() {
+        // Replay the entire fixture (chat span + invoke_agent + metric
+        // lines). Only the chat span should contribute. This is the
+        // regression assertion for the subagent / aggregate-parent shape.
+        let mut state = CopilotState::default();
+        for line in fixture_lines() {
+            ingest_otel_line(line, &mut state);
+        }
+        assert_eq!(state.sum_input, 39_497, "exactly the chat span's tokens");
+        assert_eq!(state.sum_output, 24);
+        assert_eq!(state.token_limit, Some(168_000));
+        assert_eq!(state.current_tokens, Some(29_461));
+    }
+
+    #[test]
+    fn ingest_otel_malformed_json_is_ignored() {
+        let mut state = CopilotState::default();
+        ingest_otel_line(b"not json", &mut state);
+        ingest_otel_line(b"{}", &mut state);
+        ingest_otel_line(b"{\"type\":\"span\"}", &mut state); // no name
+        assert!(!state.has_any());
+    }
+
+    #[test]
+    fn ingest_otel_two_chat_spans_sum_and_latest_wins() {
+        let chat1 = br#"{"type":"span","name":"chat model-a","attributes":{"gen_ai.response.model":"model-a","gen_ai.usage.input_tokens":100,"gen_ai.usage.output_tokens":10},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":1000,"github.copilot.current_tokens":500}}]}"#;
+        let chat2 = br#"{"type":"span","name":"chat model-b","attributes":{"gen_ai.response.model":"model-b","gen_ai.usage.input_tokens":200,"gen_ai.usage.output_tokens":20},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":2000,"github.copilot.current_tokens":700}}]}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(chat1, &mut state);
+        ingest_otel_line(chat2, &mut state);
+        // Sums.
+        assert_eq!(state.sum_input, 300);
+        assert_eq!(state.sum_output, 30);
+        // Latest wins for model + context state.
+        assert_eq!(state.last_model.as_deref(), Some("model-b"));
+        assert_eq!(state.token_limit, Some(2000));
+        assert_eq!(state.current_tokens, Some(700));
+    }
+
+    #[test]
+    fn ingest_otel_chat_span_without_usage_info_event() {
+        // Totals should still update; context fields stay at their last
+        // observed values (None here).
+        let line = br#"{"type":"span","name":"chat foo","attributes":{"gen_ai.response.model":"foo","gen_ai.usage.input_tokens":7,"gen_ai.usage.output_tokens":3}}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(line, &mut state);
+        assert_eq!(state.sum_input, 7);
+        assert_eq!(state.sum_output, 3);
+        assert!(state.token_limit.is_none());
+        assert!(state.current_tokens.is_none());
+    }
+
+    #[test]
+    fn ingest_otel_falls_back_to_request_model() {
+        let line = br#"{"type":"span","name":"chat fallback","attributes":{"gen_ai.request.model":"req-only","gen_ai.usage.input_tokens":1,"gen_ai.usage.output_tokens":2}}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(line, &mut state);
+        assert_eq!(state.last_model.as_deref(), Some("req-only"));
+    }
+
+    #[test]
+    fn copilot_state_snapshot_computes_pct_from_current_tokens() {
+        // Critical: pct uses current_tokens (29461) / token_limit (168000),
+        // NOT sum_input. Confirms the "context_tokens_used != input_tokens"
+        // invariant from the design.
+        let mut state = CopilotState::default();
+        for line in fixture_lines() {
+            ingest_otel_line(line, &mut state);
+        }
+        let snap = state.snapshot(SessionId::new());
+        assert_eq!(snap.context_tokens_used, Some(29_461));
+        assert_eq!(snap.context_tokens_limit, Some(168_000));
+        // 29461 * 100 / 168000 = 17
+        assert_eq!(snap.context_used_pct, Some(17));
+        // Cumulative totals are independent of the context numerator.
+        assert_eq!(snap.input_tokens, Some(39_497));
+        assert_eq!(snap.output_tokens, Some(24));
+    }
+
+    #[test]
+    fn copilot_state_snapshot_omits_pct_without_limit() {
+        let line = br#"{"type":"span","name":"chat foo","attributes":{"gen_ai.response.model":"foo","gen_ai.usage.input_tokens":1,"gen_ai.usage.output_tokens":1}}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(line, &mut state);
+        let snap = state.snapshot(SessionId::new());
+        assert!(snap.context_used_pct.is_none());
+        assert!(snap.context_tokens_used.is_none());
+        assert!(snap.context_tokens_limit.is_none());
+    }
+
+    // -- Copilot watcher integration -------------------------------------
+
+    /// Run a Copilot watcher against an evolving JSONL file in a tempdir.
+    /// Drives state transitions by appending to the file and waiting for
+    /// the callback to fire — no virtual time, but the test only sleeps
+    /// long enough to clear at most a couple of poll intervals.
+    #[test]
+    fn copilot_watcher_emits_on_new_chat_span() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("otel.jsonl");
+        // Pre-create empty so the watcher's first poll sees a valid file.
+        std::fs::write(&path, b"").unwrap();
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_for_thread = Arc::clone(&running);
+        let (tx, rx) = mpsc::channel::<SessionMetricsEvent>();
+        let cb: MetricsCb = Arc::new(move |ev| {
+            // Channel may be closed if the test already finished; ignore
+            // send errors so the watcher thread can shut down cleanly.
+            let _ = tx.send(ev);
+        });
+        let path_for_thread = path.clone();
+        let handle = std::thread::spawn(move || {
+            run_copilot_watcher(session_id, path_for_thread, cb, running_for_thread);
+        });
+
+        // Append the fixture (one chat span + invoke_agent + metrics) and
+        // wait for the watcher to surface a snapshot.
+        std::fs::write(&path, COPILOT_OTEL_FIXTURE).unwrap();
+        let snap = rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("watcher emitted snapshot");
+        assert_eq!(snap.context_tokens_used, Some(29_461));
+        assert_eq!(snap.context_tokens_limit, Some(168_000));
+        assert_eq!(snap.input_tokens, Some(39_497));
+        assert_eq!(snap.output_tokens, Some(24));
+        assert_eq!(snap.model.as_deref(), Some("claude-opus-4.7"));
+
+        // Shut the watcher down.
+        running.store(false, Ordering::SeqCst);
+        handle.join().expect("watcher thread joined");
+    }
+
+    #[test]
+    fn copilot_watcher_handles_truncate_and_resets_totals() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("otel.jsonl");
+        std::fs::write(&path, b"").unwrap();
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_for_thread = Arc::clone(&running);
+        let (tx, rx) = mpsc::channel::<SessionMetricsEvent>();
+        let cb: MetricsCb = Arc::new(move |ev| {
+            let _ = tx.send(ev);
+        });
+        let path_for_thread = path.clone();
+        let handle = std::thread::spawn(move || {
+            run_copilot_watcher(session_id, path_for_thread, cb, running_for_thread);
+        });
+
+        // 1) Initial usage from the full fixture.
+        std::fs::write(&path, COPILOT_OTEL_FIXTURE).unwrap();
+        let _first = rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("first snapshot");
+
+        // 2) Truncate to a fresh, smaller chat span. Watcher must reset.
+        let smaller = br#"{"type":"span","name":"chat tiny","attributes":{"gen_ai.response.model":"tiny","gen_ai.usage.input_tokens":42,"gen_ai.usage.output_tokens":1},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":1000,"github.copilot.current_tokens":50}}]}
+"#;
+        std::fs::write(&path, smaller).unwrap();
+
+        // Drain until we get the post-truncate snapshot. The first message
+        // received after the truncate should reflect the smaller numbers
+        // (not the cumulative pre-truncate values).
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let snap = loop {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            let s = rx
+                .recv_timeout(Duration::from_secs(8))
+                .expect("post-truncate snapshot");
+            if s.input_tokens == Some(42) {
+                break s;
+            }
+        };
+        assert_eq!(snap.input_tokens, Some(42));
+        assert_eq!(snap.output_tokens, Some(1));
+        assert_eq!(snap.context_tokens_used, Some(50));
+        assert_eq!(snap.context_tokens_limit, Some(1000));
+        assert_eq!(snap.model.as_deref(), Some("tiny"));
+
+        running.store(false, Ordering::SeqCst);
+        handle.join().expect("watcher thread joined");
+    }
+
+    // ----- read_range cap (defensive against runaway exporter) -------------
+
+    #[test]
+    fn read_range_caps_at_max_chunk_size() {
+        // A pathological 50MB file. The cap should clamp the buffer to
+        // MAX_READ_CHUNK and let the watcher's last-newline logic drain
+        // the rest on subsequent polls.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("huge.bin");
+        let total: u64 = 50 * 1024 * 1024;
+        // Write a sparse-ish payload: chunks of 'a' separated by newlines
+        // every 1MB so the watcher would be able to make forward progress.
+        let chunk = vec![b'a'; 1024 * 1024 - 1];
+        let mut f = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        for _ in 0..50 {
+            f.write_all(&chunk).unwrap();
+            f.write_all(b"\n").unwrap();
+        }
+        drop(f);
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(len, total);
+
+        let bytes = read_range(&path, 0, len).expect("read");
+        assert_eq!(
+            bytes.len() as u64,
+            MAX_READ_CHUNK,
+            "read_range must cap at MAX_READ_CHUNK to bound allocation"
+        );
+    }
+
+    // ----- tail_lines: oversized-line skip ---------------------------------
+
+    /// Regression for the infinite-loop hazard noted in PR review: if a
+    /// single line exceeds `MAX_READ_CHUNK`, both watchers used to be
+    /// stuck forever — `rposition('\n')` would always be `None` on the
+    /// capped chunk and the cursor would never move. `tail_lines` must
+    /// detect "no newline + more file beyond the chunk", scan forward
+    /// without buffering, and skip the oversized line.
+    #[test]
+    fn tail_lines_skips_line_larger_than_max_read_chunk() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("oversized.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // Oversized line: MAX_READ_CHUNK + 1MB of 'x' bytes, no \n inside.
+        let oversized_len = (MAX_READ_CHUNK + 1024 * 1024) as usize;
+        let oversized = vec![b'x'; oversized_len];
+        f.write_all(&oversized).unwrap();
+        f.write_all(b"\n").unwrap();
+        // A normal line afterwards that MUST be observed by the consumer.
+        let normal = br#"{"normal":true}"#;
+        f.write_all(normal).unwrap();
+        f.write_all(b"\n").unwrap();
+        drop(f);
+        let total = std::fs::metadata(&path).unwrap().len();
+
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        let mut cursor: u64 = 0;
+        // Loop the watcher's poll body until the cursor reaches EOF or we
+        // give up. A working implementation drains in 1–2 iterations;
+        // a broken one (the bug under regression) loops forever.
+        for _ in 0..10 {
+            let new_cursor = tail_lines(&path, cursor, total, |line| {
+                seen.push(line.to_vec());
+            });
+            if new_cursor == cursor {
+                break;
+            }
+            cursor = new_cursor;
+            if cursor == total {
+                break;
+            }
+        }
+        assert_eq!(cursor, total, "cursor must reach EOF (no infinite loop)");
+        assert_eq!(seen.len(), 1, "oversized line skipped, only normal seen");
+        assert_eq!(seen[0], normal, "the post-oversized line was delivered");
+    }
+
+    /// `tail_lines` must NOT skip a "long" line that hasn't been
+    /// terminated yet — that's a partial trailing line, not an oversized
+    /// one. Cursor stays put; we'll re-read after the writer commits a
+    /// `\n`. The oversized-line skip only triggers when there's already
+    /// more data on the far side of the cap.
+    #[test]
+    fn tail_lines_does_not_skip_in_flight_partial_line() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("inflight.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // Oversized partial line: > MAX_READ_CHUNK, NO trailing \n, NO
+        // extra bytes after. This is "writer still in flight on a huge
+        // line", which is rare but distinct from "committed oversized
+        // line followed by more data".
+        let partial = vec![b'x'; (MAX_READ_CHUNK + 4096) as usize];
+        f.write_all(&partial).unwrap();
+        drop(f);
+        let len = std::fs::metadata(&path).unwrap().len();
+
+        let mut consumed: usize = 0;
+        let new_cursor = tail_lines(&path, 0, len, |_line| consumed += 1);
+        assert_eq!(consumed, 0, "no complete line yet");
+        assert_eq!(new_cursor, 0, "cursor must NOT advance on in-flight EOF");
+    }
+
+    /// Sanity: `tail_lines` must also drain a normal multi-line chunk
+    /// in one call and leave a trailing partial in place.
+    #[test]
+    fn tail_lines_drains_complete_lines_and_preserves_partial() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("normal.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"line1\nline2\nline3-partial").unwrap();
+        drop(f);
+        let len = std::fs::metadata(&path).unwrap().len();
+
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        let new_cursor = tail_lines(&path, 0, len, |l| seen.push(l.to_vec()));
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], b"line1");
+        assert_eq!(seen[1], b"line2");
+        // 6 bytes for "line1\n" + 6 bytes for "line2\n" = 12.
+        assert_eq!(new_cursor, 12);
+    }
+
+    // ----- Claude watcher partial-line protection --------------------------
+
+    /// Regression for the gap noted in PR review: a half-written trailing
+    /// JSON line at EOF must NOT be silently dropped. The watcher must
+    /// only advance its cursor up to the last complete `\n`, so the rest
+    /// of the line is re-read after the writer finishes it.
+    #[test]
+    fn claude_watcher_does_not_drop_partial_trailing_line() {
+        use std::io::Write;
+        use std::sync::mpsc;
+
+        // Set up a fake $HOME so the watcher's project_dir resolves into
+        // our tempdir. encode_cwd of the cwd we pass becomes the dir name.
+        let home = tempfile::tempdir().expect("home");
+        let cwd_dir = tempfile::tempdir().expect("cwd");
+        let cwd = cwd_dir.path().to_path_buf();
+        let project_dir = home
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join(encode_cwd(&cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let jsonl = project_dir.join("session.jsonl");
+        std::fs::write(&jsonl, b"").unwrap();
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_for_thread = Arc::clone(&running);
+        let (tx, rx) = mpsc::channel::<SessionMetricsEvent>();
+        let cb: MetricsCb = Arc::new(move |ev| {
+            let _ = tx.send(ev);
+        });
+        let home_for_thread = home.path().to_path_buf();
+        let cwd_for_thread = cwd.clone();
+        let spawn_instant = SystemTime::now() - Duration::from_secs(60);
+        let handle = std::thread::spawn(move || {
+            run_claude_watcher(
+                session_id,
+                home_for_thread,
+                cwd_for_thread,
+                spawn_instant,
+                cb,
+                running_for_thread,
+            );
+        });
+
+        // 1) Write one complete line + a partial second line (no newline).
+        let complete = br#"{"type":"assistant","message":{"model":"claude-opus-4.7","usage":{"input_tokens":10,"output_tokens":2}}}"#;
+        let partial = br#"{"type":"assistant","message":{"model":"claude-opus-4.7","usage":{"input_tokens":99"#;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&jsonl)
+                .unwrap();
+            f.write_all(complete).unwrap();
+            f.write_all(b"\n").unwrap();
+            f.write_all(partial).unwrap();
+        }
+
+        // First emission must reflect ONLY the complete line.
+        let first = rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("first snapshot");
+        assert_eq!(first.input_tokens, Some(10));
+        assert_eq!(first.output_tokens, Some(2));
+
+        // 2) Finish the partial line. The cursor must have stayed at the
+        //    end of the first line, so the now-complete second line gets
+        //    parsed in full and added to the totals.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&jsonl)
+                .unwrap();
+            f.write_all(b",\"output_tokens\":7}}}\n").unwrap();
+        }
+
+        // Drain until totals jump to 10+99 = 109 in.
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let snap = loop {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            let s = rx
+                .recv_timeout(Duration::from_secs(8))
+                .expect("post-completion snapshot");
+            if s.input_tokens == Some(109) {
+                break s;
+            }
+        };
+        assert_eq!(snap.input_tokens, Some(109), "partial line was re-read");
+        assert_eq!(snap.output_tokens, Some(9));
+
+        running.store(false, Ordering::SeqCst);
+        handle.join().expect("watcher thread joined");
+    }
+
+    // ----- dedup regression -------------------------------------------------
+
+    /// Bug regression: `observed_at` must not be compared as part of the
+    /// dedup check. Two snapshots with the same data but different
+    /// timestamps must compare as equal payload, otherwise both watchers
+    /// would emit a redundant event every POLL_INTERVAL forever.
+    #[test]
+    fn same_payload_as_ignores_observed_at() {
+        let id = SessionId::new();
+        let a = SessionMetricsEvent {
+            session_id: id,
+            model: Some("claude-opus-4.7".to_owned()),
+            context_used_pct: Some(17),
+            context_tokens_used: Some(29_461),
+            context_tokens_limit: Some(168_000),
+            input_tokens: Some(39_497),
+            output_tokens: Some(24),
+            observed_at: 1_700_000_000,
+        };
+        let mut b = a.clone();
+        b.observed_at = 1_700_000_002; // 2 seconds later (one poll interval)
+        assert!(
+            a.same_payload_as(&b),
+            "same data must compare equal regardless of observed_at"
+        );
+
+        // Sanity: any change in actual data flips the comparison.
+        let mut c = a.clone();
+        c.input_tokens = Some(39_498);
+        assert!(!a.same_payload_as(&c));
     }
 }

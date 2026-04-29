@@ -325,4 +325,62 @@ describe('Sidebar metrics indicator (Issue #3)', () => {
     render(<Sidebar />);
     expect(screen.queryByTestId('sidebar-metrics')).toBeNull();
   });
+
+  // Copilot sessions surface metrics through the same wire shape
+  // (`SessionMetricsEvent`) as Claude — the only difference is which
+  // backend watcher produced the snapshot. The sidebar must render
+  // them identically.
+  it('renders the same metrics indicator for Copilot sessions', () => {
+    seed([makeView('a', { tool: 'copilot' })], 'a');
+    useSessionStore.setState({
+      metrics: {
+        a: {
+          sessionId: 'a',
+          model: 'claude-opus-4.7',
+          contextUsedPct: 17,
+          contextTokensUsed: 29_461,
+          contextTokensLimit: 168_000,
+          inputTokens: 39_497,
+          outputTokens: 24,
+          observedAt: 1_700_000_000,
+        },
+      },
+    });
+    render(<Sidebar />);
+    const line = screen.getByTestId('sidebar-metrics');
+    expect(line.textContent).toContain('17%');
+    expect(line.textContent).toContain('29.5k tok');
+    expect(line.getAttribute('title')).toContain('claude-opus-4.7');
+    expect(line.getAttribute('title')).toMatch(/168,000|168000/);
+    // Disambiguation: the Copilot-reported window is smaller than the
+    // model's nominal max because Copilot reserves space for its own
+    // system prompt + tool definitions. Surface that in the tooltip so
+    // users don't read 30k/168k as a math error against e.g. Opus's 200k.
+    expect(line.getAttribute('title')).toMatch(/Copilot-reported/i);
+    expect(line.getAttribute('title')).toMatch(/system-prompt \+ tool overhead/i);
+  });
+
+  it('does NOT add the Copilot-reported caveat for Claude sessions', () => {
+    seed([makeView('a')], 'a');
+    useSessionStore.setState({
+      metrics: {
+        a: {
+          sessionId: 'a',
+          model: 'claude-sonnet-4-6',
+          contextUsedPct: 42,
+          contextTokensUsed: 12_345,
+          contextTokensLimit: 200_000,
+          inputTokens: 9000,
+          outputTokens: 3345,
+          observedAt: 1_700_000_000,
+        },
+      },
+    });
+    render(<Sidebar />);
+    const title = screen.getByTestId('sidebar-metrics').getAttribute('title') ?? '';
+    expect(title).not.toMatch(/Copilot-reported/i);
+    // Claude gets its own parallel caveat so users know what 'limit' means.
+    expect(title).toMatch(/model nominal max/i);
+    expect(title).toMatch(/includes harness overhead/i);
+  });
 });
