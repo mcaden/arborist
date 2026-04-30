@@ -149,11 +149,13 @@ export function NewSessionDialog(): JSX.Element | null {
     worktreesList(root)
       .catch(() => [] as WorktreeInfo[])
       .then((list) => {
+        if (!isMountedRef.current) return;
         if (requestId !== worktreesRequestIdRef.current) return;
         const filtered = list.filter((w) => isInsideWorktreesDir(root, w.path));
         setWorktrees(filtered);
       })
       .finally(() => {
+        if (!isMountedRef.current) return;
         if (requestId === worktreesRequestIdRef.current) setWorktreesLoading(false);
       });
   }, [isOpen, step, workspaceRoot]);
