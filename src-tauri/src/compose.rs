@@ -823,7 +823,7 @@ mod tests {
     // -- with_resume ----------------------------------------------------
 
     #[test]
-    fn with_resume_appends_quoted_id_to_bare_claude() {
+    fn with_resume_appends_verbatim_id_to_bare_claude() {
         let out = with_resume("claude", Tool::Claude, "abc-123");
         // Slug-safe id: appended verbatim, no shell quoting (avoids
         // `.cmd`-shim quote leakage on Windows).
