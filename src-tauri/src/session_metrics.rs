@@ -392,7 +392,7 @@ pub fn encode_cwd(cwd: &Path) -> String {
     out
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("HOME") {
         if !p.is_empty() {
             return Some(PathBuf::from(p));

@@ -437,7 +437,7 @@ fn ai_session_transcript_exists(
     worktree_path: &std::path::Path,
     ai_session_id: &str,
 ) -> bool {
-    let Some(home) = home_dir() else {
+    let Some(home) = crate::session_metrics::home_dir() else {
         return true;
     };
     match tool {
@@ -459,13 +459,6 @@ fn ai_session_transcript_exists(
             path.is_dir()
         }
     }
-}
-
-fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
 }
 
 /// Re-spawn every persisted session. Called once after the frontend signals
@@ -524,6 +517,19 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         // (DESIGN §5.4 still holds for the persisted record). We only
         // resume on app-restart restore — user-initiated `session_restart`
         // intentionally launches a fresh CLI conversation.
+        //
+        // Known limitation (ROADMAP §4.5): for Claude, the `ai_session_id`
+        // is discovered heuristically from the newest JSONL in the project
+        // dir post-spawn. If two Arborist sessions share the same worktree
+        // (same `<encoded-cwd>`), the watchers can converge on the same
+        // file and persist the same id for both. On restart, both sessions
+        // would then try to `--resume` the same Claude conversation; only
+        // one resumes faithfully and the other will see Claude's own "no
+        // such session" / "conversation in use" error in its terminal.
+        // The fix is a hook-driven session-id source (tracked in #4); the
+        // single-session-per-worktree case (the common one) is unaffected.
+        // Copilot is not affected — its OTel file is per-Arborist-session,
+        // so `gen_ai.conversation.id` is unambiguous.
         let mut session_to_spawn = session.clone();
         if let Some(aid) = session.ai_session_id.as_deref() {
             if ai_session_transcript_exists(session.tool, &session.worktree_path, aid) {
