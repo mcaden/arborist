@@ -88,9 +88,14 @@ describe('TerminalView', () => {
     expect(mockTerminals[0]!.dispose).not.toHaveBeenCalled();
   });
 
-  it('focuses the terminal when active', () => {
+  it('focuses the terminal when active (after rAF refit+focus)', async () => {
     seedSession();
     render(<TerminalView sessionId="s1" isActive={true} />);
+    // Activation refit+focus runs in requestAnimationFrame so the
+    // visibility:visible style has time to apply before measuring.
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
     expect(mockTerminals[0]!.focus).toHaveBeenCalled();
   });
 
