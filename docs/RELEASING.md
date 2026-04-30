@@ -15,8 +15,8 @@ None. The workflow uses the default `GITHUB_TOKEN`; no secrets to configure.
    - `package.json` → `"version"`
    - `src-tauri/tauri.conf.json` → `"version"`
    - `src-tauri/Cargo.toml` → `[package] version`
-     Then run `cargo update -p arborist --precise <new-version>` so `Cargo.lock`
-     tracks it.
+     Then run `cargo check --workspace` (from the repo root) so `Cargo.lock`
+     picks up the new crate version.
 2. **Commit** the bump on `main` (via PR) — e.g. `chore: bump to v0.1.1`.
 3. **Tag and push**:
    ```sh

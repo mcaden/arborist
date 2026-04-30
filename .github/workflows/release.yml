@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag name to build (e.g. v0.1.0). Will be created if missing.'
+        description: 'Existing tag to build (e.g. v0.1.0). The tag must already exist on the repo; this workflow does not create it.'
         required: true
         type: string
 
@@ -34,7 +34,13 @@ jobs:
             args: ''
     runs-on: ${{ matrix.platform.os }}
     steps:
+      # On workflow_dispatch, check out the exact tag the user requested so
+      # the built binaries correspond to the release tag rather than the
+      # default branch HEAD. On tag pushes, GITHUB_REF already points at the
+      # tag, so the default checkout behaviour is correct.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
