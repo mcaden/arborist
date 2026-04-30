@@ -26,12 +26,13 @@ use arborist_lib::commands::session::{
 };
 use arborist_lib::compose::session_temp_dir;
 use arborist_lib::config_store::ConfigStore;
+use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{
     ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild,
 };
 use arborist_lib::types::{
     InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
-    SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, Tool,
+    SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, Tool, WorktreeInfo,
 };
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
@@ -199,7 +200,56 @@ struct Harness {
     instruction_id: InstructionSetId,
 }
 
+/// Records `remove_worktree` invocations so a test can assert opt-in
+/// deletion was forwarded to the git layer.
+#[derive(Default)]
+struct RecordingGitRunner {
+    removes: Mutex<Vec<(PathBuf, PathBuf)>>,
+    fail_with: Mutex<Option<String>>,
+}
+
+impl RecordingGitRunner {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+impl GitRunner for RecordingGitRunner {
+    fn list_worktrees(&self, _: &Path) -> Result<Vec<WorktreeInfo>, arborist_lib::types::Error> {
+        Ok(vec![])
+    }
+    fn git_toplevel(&self, p: &Path) -> Result<Option<PathBuf>, arborist_lib::types::Error> {
+        Ok(Some(p.to_path_buf()))
+    }
+    fn create_worktree(
+        &self,
+        repo_root: &Path,
+        relative_path: &Path,
+        _branch: &str,
+    ) -> Result<PathBuf, arborist_lib::types::Error> {
+        Ok(repo_root.join(relative_path))
+    }
+    fn remove_worktree(
+        &self,
+        repo_root: &Path,
+        worktree_path: &Path,
+    ) -> Result<(), arborist_lib::types::Error> {
+        self.removes
+            .lock()
+            .unwrap()
+            .push((repo_root.to_path_buf(), worktree_path.to_path_buf()));
+        if let Some(msg) = self.fail_with.lock().unwrap().clone() {
+            return Err(arborist_lib::types::Error::Internal(msg));
+        }
+        Ok(())
+    }
+}
+
 fn build_harness() -> Harness {
+    build_harness_with_git(Arc::new(arborist_lib::git::RealGitRunner) as Arc<dyn GitRunner>)
+}
+
+fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let config_dir = TempDir::new().unwrap();
     let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
@@ -226,7 +276,7 @@ fn build_harness() -> Harness {
     let pool = Arc::new(PtyPool::new(spawner.clone() as Arc<dyn PtySpawner>));
     let events = Arc::new(CapturedEvents::default());
     let sink = capture_sink(Arc::clone(&events), store.clone());
-    let ctx = Arc::new(AppContext::with_real_git(pool, store, sink));
+    let ctx = Arc::new(AppContext::new(pool, store, sink, git, Arc::new(|_| {})));
 
     Harness {
         ctx,
@@ -394,7 +444,7 @@ async fn close_kills_pty_removes_record_and_clears_active() {
     let temp = session_temp_dir(&view.id);
     assert!(temp.exists(), "Claude temp dir must exist after create");
 
-    session_close_impl(&h.ctx, view.id).await.unwrap();
+    session_close_impl(&h.ctx, view.id, false).await.unwrap();
 
     assert!(!h.ctx.pool.contains(&view.id));
     assert!(session_list_impl(&h.ctx).unwrap().is_empty());
@@ -407,6 +457,214 @@ async fn close_kills_pty_removes_record_and_clears_active() {
     // cleanup. Allow a beat for filesystem to settle on Windows.
     let cleared = wait_until(|| !temp.exists(), Duration::from_secs(2));
     assert!(cleared, "session temp dir {temp:?} should be removed");
+}
+
+#[tokio::test]
+async fn close_with_delete_worktree_invokes_git_runner_remove() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    // Configure a workspace root that *contains* the session's worktree so
+    // the containment check passes.
+    let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
+    h.ctx
+        .store
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(ws_root.clone())),
+            ..Default::default()
+        })
+        .unwrap();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    let worktree_path = h.worktree.path().to_path_buf();
+
+    session_close_impl(&h.ctx, view.id, true).await.unwrap();
+
+    let removes = git.removes.lock().unwrap().clone();
+    assert_eq!(removes.len(), 1, "expected one remove_worktree call");
+    let (_repo, wt) = &removes[0];
+    let wt_canon = dunce::canonicalize(wt).unwrap_or_else(|_| wt.clone());
+    let expected_canon =
+        dunce::canonicalize(&worktree_path).unwrap_or_else(|_| worktree_path.clone());
+    assert_eq!(
+        wt_canon, expected_canon,
+        "remove_worktree must be called with the session's worktree path"
+    );
+    // Session record is gone regardless.
+    assert!(session_list_impl(&h.ctx).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn close_without_delete_worktree_does_not_invoke_remove() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    session_close_impl(&h.ctx, view.id, false).await.unwrap();
+
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "remove_worktree must NOT be called when delete_worktree is false"
+    );
+}
+
+#[tokio::test]
+async fn close_with_delete_worktree_refuses_main_workspace_root() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    // Point workspace_root at the same path as the session's worktree so
+    // the safety check trips.
+    h.ctx
+        .store
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(h.worktree.path().to_path_buf())),
+            ..Default::default()
+        })
+        .unwrap();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    let result = session_close_impl(&h.ctx, view.id, true)
+        .await
+        .expect("close itself should succeed even when worktree deletion is refused");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected a worktree-delete-error in the result");
+    assert!(
+        msg.contains("workspace root") || msg.contains("main worktree"),
+        "expected a workspace-root refusal message, got: {msg}",
+    );
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "remove_worktree must not be invoked when refused"
+    );
+    // The session is still removed because the kill+config cleanup happens
+    // before the worktree-deletion attempt — the user opted in to losing
+    // the session even if the worktree is preserved.
+    assert!(session_list_impl(&h.ctx).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn close_with_delete_worktree_propagates_git_failure() {
+    let git = RecordingGitRunner::new();
+    *git.fail_with.lock().unwrap() = Some("fatal: not a working tree".into());
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
+    h.ctx
+        .store
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(ws_root)),
+            ..Default::default()
+        })
+        .unwrap();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    let result = session_close_impl(&h.ctx, view.id, true)
+        .await
+        .expect("close itself should succeed even when git fails");
+    let msg = result
+        .worktree_delete_error
+        .expect("git failure must surface as a worktree-delete-error");
+    assert!(
+        msg.contains("not a working tree"),
+        "expected the git stderr to bubble up, got: {msg}",
+    );
+    assert_eq!(
+        git.removes.lock().unwrap().len(),
+        1,
+        "remove_worktree should still have been attempted"
+    );
+    // Session record is gone regardless of the post-close worktree failure.
+    assert!(session_list_impl(&h.ctx).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn close_with_delete_worktree_refuses_when_no_workspace_root() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    // No workspace_root configured.
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    let result = session_close_impl(&h.ctx, view.id, true)
+        .await
+        .expect("close itself should succeed even without workspace_root");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected workspace-root error in result");
+    assert!(
+        msg.contains("workspace root"),
+        "expected workspace-root error, got: {msg}",
+    );
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "remove_worktree must not be invoked"
+    );
+    assert!(session_list_impl(&h.ctx).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn close_with_delete_worktree_refuses_when_sessions_snapshot_unreadable() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
+    h.ctx
+        .store
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(ws_root)),
+            ..Default::default()
+        })
+        .unwrap();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    // Corrupt sessions.json so the strict snapshot read at the start of
+    // close fails. The destructive worktree-delete path must refuse
+    // rather than treat the unreadable snapshot as "session not found,
+    // skip silently".
+    std::fs::write(h.ctx.store.dir().join("sessions.json"), b"###bad###").unwrap();
+
+    let result = session_close_impl(&h.ctx, view.id, true)
+        .await
+        .expect("close itself should succeed even when sessions.json is corrupt");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected snapshot-read refusal in result");
+    assert!(
+        msg.contains("sessions snapshot"),
+        "expected snapshot-read refusal, got: {msg}",
+    );
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "remove_worktree must not be invoked when sessions snapshot is unreadable"
+    );
+}
+
+#[tokio::test]
+async fn close_with_delete_worktree_refuses_when_outside_workspace_root() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    // Configure workspace_root at an unrelated TempDir so the session's
+    // worktree is *not* contained under it.
+    let unrelated_root = TempDir::new().unwrap();
+    h.ctx
+        .store
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(unrelated_root.path().to_path_buf())),
+            ..Default::default()
+        })
+        .unwrap();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    let result = session_close_impl(&h.ctx, view.id, true)
+        .await
+        .expect("close itself should succeed even when path is outside workspace_root");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected containment error in result");
+    assert!(
+        msg.contains("outside workspace root"),
+        "expected containment error, got: {msg}",
+    );
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "remove_worktree must not be invoked"
+    );
 }
 
 #[tokio::test]

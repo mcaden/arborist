@@ -255,6 +255,28 @@ impl ConfigStore {
         }
     }
 
+    /// Strict variant of [`Self::load_sessions`] for callers that perform
+    /// destructive operations and cannot safely treat IO/parse failures as
+    /// "no sessions exist". Returns the full session map on success or the
+    /// underlying error otherwise. A missing file is still treated as an
+    /// empty map (a fresh install has no `sessions.json`).
+    pub fn try_load_sessions(&self) -> Result<BTreeMap<SessionId, Session>, Error> {
+        let path = self.sessions_path();
+        let raw = match fs::read_to_string(&path) {
+            Ok(v) => v,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) => return Err(Error::Io(e)),
+        };
+        let mut m: BTreeMap<SessionId, Session> = serde_json::from_str(&raw).map_err(|e| {
+            Error::Internal(format!(
+                "sessions.json failed to parse: {} ({e})",
+                path.display()
+            ))
+        })?;
+        migrate_copilot_composed_commands(&mut m);
+        Ok(m)
+    }
+
     /// Persist a single session record (insert-or-replace).
     pub fn save_session(&self, session: &Session) -> Result<(), Error> {
         let mut all = self.load_sessions();
@@ -943,6 +965,47 @@ mod tests {
             })
             .collect();
         assert_eq!(badfiles.len(), 1);
+    }
+
+    #[test]
+    fn try_load_sessions_returns_ok_empty_when_file_missing() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let map = store.try_load_sessions().expect("ok on missing file");
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn try_load_sessions_surfaces_parse_failure_without_quarantine() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let path = td.path().join(SESSIONS_FILENAME);
+        fs::write(&path, b"###bad###").expect("write");
+
+        let err = store
+            .try_load_sessions()
+            .expect_err("expected parse failure");
+        assert!(matches!(err, Error::Internal(_)), "got {err:?}");
+
+        // Strict variant must NOT quarantine — the caller (a destructive
+        // operation) needs the file intact so it can be inspected/repaired.
+        assert!(
+            path.exists(),
+            "try_load_sessions must not quarantine the bad file"
+        );
+        let badfiles: Vec<_> = fs::read_dir(td.path())
+            .expect("rd")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("sessions.json.bad-")
+            })
+            .collect();
+        assert!(
+            badfiles.is_empty(),
+            "try_load_sessions must not produce quarantine files"
+        );
     }
 
     #[test]

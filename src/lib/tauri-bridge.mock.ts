@@ -154,6 +154,8 @@ export const onSessionMetrics: Mock<
 export type {
   SessionCreateArgs,
   SessionIdArg,
+  SessionCloseArgs,
+  SessionCloseResult,
   SessionResizeArgs,
   SessionInputArgs,
 } from './tauri-bridge';
@@ -166,7 +168,7 @@ export function resetBridgeMocks(): void {
   ping.mockReset().mockImplementation(() => Promise.resolve('pong'));
   sessionCreate.mockReset().mockImplementation(rejectNotImplemented);
   sessionList.mockReset().mockImplementation(() => Promise.resolve([]));
-  sessionClose.mockReset().mockImplementation(() => Promise.resolve());
+  sessionClose.mockReset().mockImplementation(() => Promise.resolve({ worktreeDeleteError: null }));
   sessionFocus.mockReset().mockImplementation(() => Promise.resolve());
   sessionResize.mockReset().mockImplementation(() => Promise.resolve());
   sessionInput.mockReset().mockImplementation(() => Promise.resolve());
