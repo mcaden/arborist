@@ -381,15 +381,21 @@ fn delete_worktree_after_close(
     // from the store at this point, so it cannot match itself. If a
     // foreign session's path fails to canonicalize, we conservatively
     // treat it as a match (better to refuse than to delete a worktree
-    // that another session may still depend on).
-    let still_in_use =
-        ctx.store
-            .load_sessions()
-            .values()
-            .any(|s| match dunce::canonicalize(&s.worktree_path) {
-                Ok(other) => other == canon_wt,
-                Err(_) => s.worktree_path == worktree_path,
-            });
+    // that another session may still depend on). The session snapshot
+    // itself must be loaded *strictly* — for a destructive operation, an
+    // unreadable or quarantined sessions.json cannot be silently treated
+    // as "no other sessions exist".
+    let sessions = ctx.store.try_load_sessions().map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "refusing to delete worktree because the sessions snapshot could not be read reliably: {e}"
+        )))
+    })?;
+    let still_in_use = sessions
+        .values()
+        .any(|s| match dunce::canonicalize(&s.worktree_path) {
+            Ok(other) => other == canon_wt,
+            Err(_) => s.worktree_path == worktree_path,
+        });
     if still_in_use {
         return Err(AppError::from(Error::Internal(format!(
             "refusing to delete worktree still in use by another session: {}",

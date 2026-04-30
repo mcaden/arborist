@@ -99,9 +99,11 @@ pub trait GitRunner: Send + Sync {
     /// deletion in the UI (CloseConfirmDialog) and we have just torn down
     /// the PTY that owned the cwd.
     ///
-    /// `repo_root` is any checkout of the same repository — typically the
-    /// configured `workspace_root`, but `worktree_path` itself works as a
-    /// fallback while it still exists on disk.
+    /// `repo_root` must be a stable checkout of the same repository
+    /// *outside* the target `worktree_path` — typically the configured
+    /// `workspace_root`. Callers must not pass `worktree_path` itself as
+    /// `repo_root`: the spawned `git` would inherit it as its CWD, and on
+    /// Windows the OS prevents deletion of a process's own CWD.
     ///
     /// Errors are surfaced as [`Error::Internal`] carrying git's stderr so
     /// the frontend can show the user a meaningful message.
