@@ -12,6 +12,7 @@ const mockTerminals: Array<{
   focus: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
+  refresh: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
@@ -26,6 +27,7 @@ vi.mock('@xterm/xterm', () => {
       focus: vi.fn(),
       dispose: vi.fn(),
       loadAddon: vi.fn(),
+      refresh: vi.fn(),
       cols: 80,
       rows: 24,
     };
@@ -72,17 +74,31 @@ function makeHost(width = 600, height = 400): HTMLDivElement {
   return el;
 }
 
+let originalResizeObserver: typeof ResizeObserver | undefined;
+
 beforeEach(() => {
   vi.useFakeTimers();
   resetBridgeMocks();
   mockTerminals.length = 0;
   mockFitAddons.length = 0;
+  originalResizeObserver = (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver })
+    .ResizeObserver;
 });
 
 afterEach(() => {
   __resetTerminalRegistryForTests();
   document.body.innerHTML = '';
   vi.useRealTimers();
+  // Restore (or delete) ResizeObserver — several tests in this file
+  // overwrite globalThis.ResizeObserver with a fake to capture the
+  // callback. Without this, the fake leaks into later tests/files and
+  // creates order-dependent behavior.
+  if (originalResizeObserver === undefined) {
+    delete (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
+  } else {
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
+      originalResizeObserver;
+  }
 });
 
 describe('useTerminal', () => {
@@ -210,20 +226,28 @@ describe('useTerminal', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
-    // Attach already fit once and emitted one resize (0,0 → 80,24).
+    // Attach already fit once and emitted one resize (0,0 → 80,24), and
+    // refreshed the renderer once (rows=24, so refresh(0, 23)).
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
     expect(sessionResize).toHaveBeenCalledTimes(1);
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalledTimes(1);
+    expect(mockTerminals[0]!.refresh).toHaveBeenLastCalledWith(0, 23);
 
-    // Same dims → fit runs (forces internal recompute) but no extra resize.
+    // Same dims → fit + refresh both run (forces internal recompute and
+    // viewport repaint) but no extra sessionResize.
     act(() => result.current.refit());
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalledTimes(2);
     expect(sessionResize).toHaveBeenCalledTimes(1);
 
-    // Change reported dims → refit emits a new sessionResize.
+    // Change reported dims → refit emits a new sessionResize and repaints
+    // against the new row count.
     mockTerminals[0]!.cols = 100;
     mockTerminals[0]!.rows = 30;
     act(() => result.current.refit());
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(3);
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalledTimes(3);
+    expect(mockTerminals[0]!.refresh).toHaveBeenLastCalledWith(0, 29);
     expect(sessionResize).toHaveBeenCalledTimes(2);
     expect(sessionResize).toHaveBeenLastCalledWith({ sessionId: 's1', cols: 100, rows: 30 });
   });
@@ -232,6 +256,7 @@ describe('useTerminal', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     expect(() => act(() => result.current.refit())).not.toThrow();
     expect(mockFitAddons[0]!.fit).not.toHaveBeenCalled();
+    expect(mockTerminals[0]!.refresh).not.toHaveBeenCalled();
     expect(sessionResize).not.toHaveBeenCalled();
   });
 
