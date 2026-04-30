@@ -138,6 +138,28 @@ impl AppContext {
 // session_create
 // ---------------------------------------------------------------------------
 
+/// Reject zero-sized PTY dimensions at the command boundary. Raw `u16`
+/// allows `0`; passing `PtySize { cols: 0, rows: 0, ... }` to
+/// `portable_pty::openpty` fails with an opaque OS error on the spawn
+/// thread. We catch it here so the frontend gets a stable, branchable
+/// error code (`InvalidArgs`) it can surface as a real diagnostic
+/// instead of a generic "PTY spawn failed".
+///
+/// In normal use, [`crate::types::SessionCreateArgs`]/`SessionResizeArgs`
+/// are populated by the frontend's `measureInitialPtyDimensions` /
+/// `getTerminalDimensions`, which clamp upward. This guard is purely
+/// defensive against a future refactor that bypasses those helpers, or
+/// a buggy direct caller.
+fn validate_pty_dims(cols: u16, rows: u16) -> Result<(), AppError> {
+    if cols == 0 || rows == 0 {
+        return Err(AppError::new(
+            "InvalidArgs",
+            format!("pty dimensions must be > 0 (got cols={cols}, rows={rows})"),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a new session, materialise its temp files, persist it, and spawn
 /// the PTY child. Returns the [`SessionView`] the frontend can stash in its
 /// store.
@@ -145,6 +167,8 @@ pub fn session_create_impl(
     ctx: &AppContext,
     args: SessionCreateArgs,
 ) -> Result<SessionView, AppError> {
+    validate_pty_dims(args.cols, args.rows)?;
+
     // 1. Validate worktree (canonicalises; rejects relative/missing).
     let worktree = compose::validate_worktree(&args.worktree_path).map_err(AppError::from)?;
 
@@ -553,6 +577,12 @@ pub fn session_resize_impl(ctx: &AppContext, args: SessionResizeArgs) -> Result<
         rows,
     } = args;
 
+    // Reject 0×0 up front. Without this, the deferred-spawn branch below
+    // would forward zeros into `pool.spawn` and the live-resize branch
+    // into `pool.resize`, both of which surface OS-level openpty/ioctl
+    // errors. See [`validate_pty_dims`].
+    validate_pty_dims(cols, rows)?;
+
     // Atomically claim a pending-spawn entry for this session, if any.
     // `restore_all_sessions` registers restored sessions here without
     // spawning, deferring the actual `pool.spawn` until the frontend
@@ -630,6 +660,8 @@ pub fn session_input_impl(ctx: &AppContext, args: SessionInputArgs) -> Result<()
 // ---------------------------------------------------------------------------
 
 pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Result<(), AppError> {
+    validate_pty_dims(args.cols, args.rows)?;
+
     let id = args.session_id;
     let sessions = ctx.store.load_sessions();
     let session = sessions

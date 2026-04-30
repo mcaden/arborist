@@ -426,6 +426,72 @@ async fn restart_passes_dims_to_respawn() {
 }
 
 #[tokio::test]
+async fn create_rejects_zero_dimensions() {
+    // PR #28 review: raw u16 lets `0` slip through, which then fails
+    // deep inside `portable_pty::openpty` with an opaque OS error. The
+    // command boundary now rejects it with a stable, branchable code so
+    // the frontend can surface a real diagnostic (or a future refactor
+    // that bypasses `measureInitialPtyDimensions` is caught at the
+    // boundary instead of as a cryptic "PTY spawn failed").
+    let h = build_harness();
+    for (cols, rows) in [(0u16, 24u16), (80, 0), (0, 0)] {
+        let args = SessionCreateArgs {
+            tool: Tool::Claude,
+            worktree_path: h.worktree.path().to_path_buf(),
+            instruction_set_id: Some(h.instruction_id.clone()),
+            cols,
+            rows,
+        };
+        let err = session_create_impl(&h.ctx, args)
+            .expect_err(&format!("create({cols}x{rows}) should have failed"));
+        assert_eq!(err.code, "InvalidArgs", "unexpected code for {cols}x{rows}");
+        assert!(
+            err.message.contains("pty dimensions"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+    // Sanity: the spawner must NOT have been touched.
+    let st = h.spawner.state.lock().unwrap();
+    assert!(
+        st.last_size.is_none(),
+        "spawner.spawn should not run when dims are 0"
+    );
+}
+
+#[tokio::test]
+async fn restart_rejects_zero_dimensions() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    let err = session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 0,
+            rows: 24,
+        },
+    )
+    .expect_err("restart with cols=0 should fail");
+    assert_eq!(err.code, "InvalidArgs");
+}
+
+#[tokio::test]
+async fn resize_rejects_zero_dimensions() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    let err = session_resize_impl(
+        &h.ctx,
+        SessionResizeArgs {
+            session_id: view.id,
+            cols: 0,
+            rows: 0,
+        },
+    )
+    .expect_err("resize with 0×0 should fail");
+    assert_eq!(err.code, "InvalidArgs");
+}
+
+#[tokio::test]
 async fn create_with_unknown_instruction_set_returns_notfound() {
     let h = build_harness();
     let args = SessionCreateArgs {

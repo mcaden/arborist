@@ -78,6 +78,26 @@ describe('FitDebugButton', () => {
     expect(screen.getByTestId('fit-debug-button')).toHaveTextContent('Fit');
   });
 
+  it('exposes the visible label as the accessible name (no static aria-label that would mask it)', () => {
+    // Regression for the original sidebar-debug PR: the button used a
+    // static aria-label, so screen readers always heard "Force-fit every
+    // terminal..." regardless of whether the visible text changed to
+    // "Copied ✓" / "Copy failed". The fix drops aria-label so the SR
+    // accessible name is the visible label, and the live region on the
+    // label span announces the transient state.
+    render(<FitDebugButton />);
+    const btn = screen.getByRole('button', { name: /^fit$/i });
+    expect(btn).toBe(screen.getByTestId('fit-debug-button'));
+    expect(btn.hasAttribute('aria-label')).toBe(false);
+    // Tooltip stays on `title`.
+    expect(btn.getAttribute('title')).toMatch(/force-fit/i);
+    // The label span itself is the live region so SRs announce updates.
+    const labelSpan = btn.querySelector<HTMLElement>('[aria-live="polite"]');
+    expect(labelSpan).not.toBeNull();
+    expect(labelSpan!.textContent).toBe('Fit');
+    expect(labelSpan!.getAttribute('aria-atomic')).toBe('true');
+  });
+
   it('captures snapshot, forces refit, and copies bundle to clipboard', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {

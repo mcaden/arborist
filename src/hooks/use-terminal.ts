@@ -451,17 +451,23 @@ const PROBE_SAMPLE_TEXT = 'M'.repeat(80);
 const TERMINAL_HOST_INNER_PADDING_PX = 8;
 
 /**
- * Read the current cols/rows of an existing terminal entry. Returns
- * `null` if the session has no entry yet, or if its terminal hasn't been
- * sized (cols/rows non-positive). Used by `session_restart` callers so
- * the respawn lands at the size xterm currently shows, not at
- * `DEFAULT_PTY_SIZE`.
+ * Read the *measured* cols/rows of an existing terminal entry. Returns
+ * `null` unless the entry is attached to a connected host AND has been
+ * successfully fit at least once.
+ *
+ * Why the strict gate: a fresh `Terminal` defaults to 80×24 even before
+ * `open()`/`fit()`, so a naive `term.cols/term.rows` read can leak the
+ * old hardcoded default into `session_restart`. We use `entry.lastCols`
+ * /`lastRows` as the proven-fit signal — those are written only by a
+ * successful `refitEntry()` (which itself requires a connected wrapper
+ * and a non-throwing `fit()`).
  */
 export function getTerminalDimensions(sessionId: SessionId): InitialPtyDims | null {
   const entry = registry.get(sessionId);
   if (!entry) return null;
-  const cols = entry.term.cols;
-  const rows = entry.term.rows;
+  if (!entry.wrapper?.isConnected) return null;
+  const cols = entry.lastCols;
+  const rows = entry.lastRows;
   if (cols <= 0 || rows <= 0) return null;
   return { cols, rows };
 }
@@ -693,13 +699,17 @@ function safeComputed(el: Element | null): CSSStyleDeclaration | null {
 }
 
 function describeAncestors(host: HTMLElement | null, max = 6): TerminalDebugAncestor[] {
-  const out: TerminalDebugAncestor[] = [];
+  // Walk parent chain bottom-up (closest-first, capped at `max`), then
+  // reverse so the returned array is oldest-first (root → host's parent)
+  // as documented on `TerminalDebugEntry.ancestors`. Reading the snapshot
+  // top-down matches how DevTools shows the DOM tree.
+  const collected: TerminalDebugAncestor[] = [];
   let cur: HTMLElement | null = host?.parentElement ?? null;
   let depth = 0;
   while (cur && depth < max) {
     const cs = safeComputed(cur);
     const r = safeRect(cur);
-    out.push({
+    collected.push({
       tag: cur.tagName.toLowerCase(),
       classes: cur.className || '',
       display: cs?.display ?? '',
@@ -711,7 +721,7 @@ function describeAncestors(host: HTMLElement | null, max = 6): TerminalDebugAnce
     cur = cur.parentElement;
     depth += 1;
   }
-  return out;
+  return collected.reverse();
 }
 
 function describeEntry(sessionId: SessionId, entry: RegistryEntry): TerminalDebugEntry {

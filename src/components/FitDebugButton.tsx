@@ -130,17 +130,24 @@ export function FitDebugButton(): JSX.Element {
   const title =
     'Force-fit every terminal and copy a debug snapshot of layout state to the clipboard.';
 
+  // Accessibility: the visible `<span>` text doubles as the button's
+  // accessible name (no `aria-label`, which would mask it). The label
+  // span is `aria-live="polite"` + `aria-atomic="true"` so screen
+  // readers announce the transient "Copied ✓" / "Copy failed" status
+  // without spamming on every paint. `title` provides the long
+  // hover/tooltip description without affecting the SR name.
   return (
     <button
       type="button"
       data-testid="fit-debug-button"
       title={title}
-      aria-label={title}
       onClick={onClick}
       className="flex items-center gap-1 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
     >
       <span aria-hidden="true">🔧</span>
-      <span>{label}</span>
+      <span aria-live="polite" aria-atomic="true">
+        {label}
+      </span>
     </button>
   );
 }

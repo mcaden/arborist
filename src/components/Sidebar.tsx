@@ -148,6 +148,11 @@ export function Sidebar(): JSX.Element {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (target.isContentEditable) return;
       if (target.closest('[role="dialog"]')) return;
+      // Skip non-tab buttons inside the sidebar (Settings, Fit-debug). They
+      // bubble keydown into this tablist handler, which then `preventDefault`s
+      // Enter/Space and breaks their normal activation. Tabs themselves carry
+      // role="tab", so a tab's button passes the gate.
+      if (tag === 'BUTTON' && !target.matches('[role="tab"]')) return;
     }
     if (ids.length === 0) return;
     const current = Math.min(focusedIndex, ids.length - 1);
