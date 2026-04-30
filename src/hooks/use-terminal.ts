@@ -47,8 +47,10 @@ interface RegistryEntry {
   host: HTMLDivElement | null;
   observer: ResizeObserver | null;
   resizeTimer: ReturnType<typeof setTimeout> | null;
-  /** Listener installed on `host` to forward `paste` events to xterm. */
+  /** Capture-phase listener installed on `host` to forward `paste` events. */
   pasteListener: ((event: ClipboardEvent) => void) | null;
+  /** Capture-phase listener installed on `host` to intercept Shift+Enter. */
+  keydownListener: ((event: KeyboardEvent) => void) | null;
   /** Last cols/rows reported to the backend; suppresses duplicate calls. */
   lastCols: number;
   lastRows: number;
@@ -149,35 +151,6 @@ function createEntry(sessionId: SessionId): RegistryEntry {
     });
   });
 
-  // Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a plain
-  // `\r` for both Enter and Shift+Enter, which CLIs like Claude Code and
-  // GitHub Copilot CLI interpret as "submit". The de-facto convention
-  // (matching what `claude /terminal-setup` configures in iTerm2) is to
-  // send ESC-prefixed CR for "newline without submit". We intercept at
-  // the DOM keydown level so xterm never sees the event and therefore
-  // never emits its own `\r`.
-  term.attachCustomKeyEventHandler((event) => {
-    // Skip IME composition: Enter/Shift+Enter during candidate selection
-    // belongs to the IME, not to the terminal. `keyCode === 229` is the
-    // legacy Chromium/WebView signal for "still composing".
-    if (event.isComposing || event.keyCode === 229) return true;
-    if (
-      event.type === 'keydown' &&
-      event.key === 'Enter' &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey
-    ) {
-      void sessionInput({ sessionId, data: '\x1b\r' }).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[use-terminal] session_input(${sessionId}) failed: ${message}`);
-      });
-      return false;
-    }
-    return true;
-  });
-
   return {
     term,
     fitAddon,
@@ -186,6 +159,7 @@ function createEntry(sessionId: SessionId): RegistryEntry {
     observer: null,
     resizeTimer: null,
     pasteListener: null,
+    keydownListener: null,
     lastCols: 0,
     lastRows: 0,
   };
@@ -213,9 +187,16 @@ function teardownObserver(entry: RegistryEntry): void {
 
 function teardownPasteListener(entry: RegistryEntry): void {
   if (entry.pasteListener && entry.host) {
-    entry.host.removeEventListener('paste', entry.pasteListener as EventListener);
+    entry.host.removeEventListener('paste', entry.pasteListener as EventListener, true);
   }
   entry.pasteListener = null;
+}
+
+function teardownKeydownListener(entry: RegistryEntry): void {
+  if (entry.keydownListener && entry.host) {
+    entry.host.removeEventListener('keydown', entry.keydownListener as EventListener, true);
+  }
+  entry.keydownListener = null;
 }
 
 /**
@@ -282,6 +263,7 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
   }
   teardownObserver(entry);
   teardownPasteListener(entry);
+  teardownKeydownListener(entry);
 
   const wrapper = entry.wrapper ?? document.createElement('div');
   wrapper.style.width = '100%';
@@ -301,24 +283,75 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
   // state if it fires too early).
   refitEntry(sessionId, entry);
 
-  // Paste support. xterm.js installs its own paste listener on a hidden
-  // textarea, but in the Tauri WebView that handler isn't reliably the
-  // event target (focus inside the WebView often lands on the wrapper
-  // div, not xterm's helper textarea), so Ctrl+V / Cmd+V / right-click →
-  // Paste / X11 middle-click silently no-op. Adding our own listener at
-  // the host level captures every paste affordance the OS offers and
-  // forwards via `term.paste()` so xterm wraps the content with bracketed
-  // paste markers (\x1b[200~ … \x1b[201~) when mode 2004 is active.
-  // `clipboardData` carries the data inline as part of the user gesture,
-  // so this works without any clipboard-read permission.
-  const pasteListener = (event: ClipboardEvent): void => {
-    const text = event.clipboardData?.getData('text/plain');
-    if (text) {
+  // Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a plain
+  // `\r` for both Enter and Shift+Enter, which CLIs like Claude Code and
+  // GitHub Copilot CLI interpret as "submit". The de-facto convention
+  // (matching what `claude /terminal-setup` configures in iTerm2) is to
+  // send ESC-prefixed CR for "newline without submit".
+  //
+  // We listen at the **host** in the **capture** phase so we run before
+  // xterm's own keydown listener (registered on its hidden textarea, also
+  // capture-phase). xterm's `attachCustomKeyEventHandler` is unreliable
+  // here because by the time it runs the textarea may already have
+  // committed default behaviour, and we cannot from inside it
+  // `preventDefault()` the textarea's own newline insertion. Capturing on
+  // the host fully owns the event before any descendant listener.
+  const keydownListener = (event: KeyboardEvent): void => {
+    // Skip IME composition: Enter/Shift+Enter during candidate selection
+    // belongs to the IME, not to the terminal. `keyCode === 229` is the
+    // legacy Chromium/WebView signal for "still composing".
+    if (event.isComposing || event.keyCode === 229) return;
+    if (
+      event.key === 'Enter' &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey
+    ) {
       event.preventDefault();
-      entry.term.paste(text);
+      event.stopPropagation();
+      void sessionInput({ sessionId, data: '\x1b\r' }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[use-terminal] session_input(${sessionId}) failed: ${message}`);
+      });
     }
   };
-  host.addEventListener('paste', pasteListener as EventListener);
+  host.addEventListener('keydown', keydownListener as EventListener, true);
+  entry.keydownListener = keydownListener;
+
+  // Paste support. xterm.js installs its own paste listeners on the
+  // textarea AND on its element (`xterm/src/browser/Clipboard.ts`), and
+  // its handler calls `event.stopPropagation()` — so a bubble-phase
+  // listener at the host **never fires**. Worse, in the Tauri/WebView2
+  // environment the `clipboardData` xterm receives via that path is
+  // sometimes empty (Ctrl+V / right-click → Paste / X11 middle-click all
+  // silently no-op). We capture at the host, which runs before any
+  // descendant listener; we own the event end-to-end. If `clipboardData`
+  // is populated we use it directly (works without permission, since the
+  // user gesture supplies the data). Otherwise we fall back to the async
+  // `navigator.clipboard.readText()` — slower, may prompt in some
+  // environments, but recovers when the WebView won't fill clipboardData.
+  const pasteListener = (event: ClipboardEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    const inline = event.clipboardData?.getData('text/plain') ?? '';
+    if (inline) {
+      entry.term.paste(inline);
+      return;
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
+      void navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text) entry.term.paste(text);
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[use-terminal] clipboard.readText() failed: ${message}`);
+        });
+    }
+  };
+  host.addEventListener('paste', pasteListener as EventListener, true);
   entry.pasteListener = pasteListener;
 
   if (typeof ResizeObserver !== 'undefined') {
@@ -334,6 +367,7 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
 function detachFromHost(entry: RegistryEntry): void {
   teardownObserver(entry);
   teardownPasteListener(entry);
+  teardownKeydownListener(entry);
   if (entry.wrapper && entry.wrapper.parentElement) {
     entry.wrapper.parentElement.removeChild(entry.wrapper);
   }

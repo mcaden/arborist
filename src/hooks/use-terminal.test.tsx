@@ -13,12 +13,10 @@ const mockTerminals: Array<{
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
-  attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
   paste: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
-  _keyHandler?: (event: KeyboardEvent) => boolean;
 }> = [];
 
 vi.mock('@xterm/xterm', () => {
@@ -31,16 +29,12 @@ vi.mock('@xterm/xterm', () => {
       dispose: vi.fn(),
       loadAddon: vi.fn(),
       refresh: vi.fn(),
-      attachCustomKeyEventHandler: vi.fn(),
       paste: vi.fn(),
       cols: 80,
       rows: 24,
     };
     inst.onData.mockImplementation((cb: (data: string) => void) => {
       inst._dataCb = cb;
-    });
-    inst.attachCustomKeyEventHandler.mockImplementation((cb: (event: KeyboardEvent) => boolean) => {
-      inst._keyHandler = cb;
     });
     mockTerminals.push(inst);
     return inst;
@@ -139,100 +133,153 @@ describe('useTerminal', () => {
     expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: 'hello' });
   });
 
-  it('Shift+Enter sends ESC+CR via sessionInput and suppresses xterm default', () => {
-    renderHook(() => useTerminal('s1'));
-    const handler = mockTerminals[0]!._keyHandler!;
-    expect(handler).toBeTypeOf('function');
-    const evt = {
-      type: 'keydown',
+  it('Shift+Enter on host sends ESC+CR via sessionInput and prevents default', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
       key: 'Enter',
       shiftKey: true,
-      ctrlKey: false,
-      altKey: false,
-      metaKey: false,
-    } as unknown as KeyboardEvent;
-    const result = handler(evt);
-    expect(result).toBe(false);
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(false); // preventDefault called
     expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\r' });
   });
 
-  it('plain Enter is left to xterm default (handler returns true)', () => {
-    renderHook(() => useTerminal('s1'));
-    const handler = mockTerminals[0]!._keyHandler!;
-    const evt = {
-      type: 'keydown',
+  it('plain Enter on host is left to xterm (no interception, no input sent)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
       key: 'Enter',
       shiftKey: false,
-      ctrlKey: false,
-      altKey: false,
-      metaKey: false,
-    } as unknown as KeyboardEvent;
-    expect(handler(evt)).toBe(true);
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true); // not preventDefault'd
     expect(sessionInput).not.toHaveBeenCalled();
   });
 
-  it('Shift+Enter keyup is ignored (handler returns true, no input sent)', () => {
-    renderHook(() => useTerminal('s1'));
-    const handler = mockTerminals[0]!._keyHandler!;
-    const evt = {
-      type: 'keyup',
+  it('Shift+Enter keyup is ignored (only keydown is intercepted)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keyup', {
       key: 'Enter',
       shiftKey: true,
-      ctrlKey: false,
-      altKey: false,
-      metaKey: false,
-    } as unknown as KeyboardEvent;
-    expect(handler(evt)).toBe(true);
+      bubbles: true,
+      cancelable: true,
+    });
+    host.dispatchEvent(evt);
+
     expect(sessionInput).not.toHaveBeenCalled();
   });
 
   it('Shift+Enter during IME composition is left to the IME', () => {
-    renderHook(() => useTerminal('s1'));
-    const handler = mockTerminals[0]!._keyHandler!;
-    const evt = {
-      type: 'keydown',
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
       key: 'Enter',
       shiftKey: true,
-      ctrlKey: false,
-      altKey: false,
-      metaKey: false,
       isComposing: true,
-      keyCode: 13,
-    } as unknown as KeyboardEvent;
-    expect(handler(evt)).toBe(true);
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true);
     expect(sessionInput).not.toHaveBeenCalled();
   });
 
   it('legacy IME signal (keyCode 229) is left untouched', () => {
-    renderHook(() => useTerminal('s1'));
-    const handler = mockTerminals[0]!._keyHandler!;
-    const evt = {
-      type: 'keydown',
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    // KeyboardEvent constructor doesn't accept keyCode; assign on the
+    // dispatched event to mimic legacy WebView behaviour.
+    const evt = new KeyboardEvent('keydown', {
       key: 'Process',
       shiftKey: true,
-      ctrlKey: false,
-      altKey: false,
-      metaKey: false,
-      isComposing: false,
-      keyCode: 229,
-    } as unknown as KeyboardEvent;
-    expect(handler(evt)).toBe(true);
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(evt, 'keyCode', { value: 229 });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true);
     expect(sessionInput).not.toHaveBeenCalled();
   });
 
   it('Ctrl+Shift+Enter is not intercepted (other shortcuts unaffected)', () => {
-    renderHook(() => useTerminal('s1'));
-    const handler = mockTerminals[0]!._keyHandler!;
-    const evt = {
-      type: 'keydown',
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
       key: 'Enter',
       shiftKey: true,
       ctrlKey: true,
-      altKey: false,
-      metaKey: false,
-    } as unknown as KeyboardEvent;
-    expect(handler(evt)).toBe(true);
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true);
     expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Shift+Enter listener is removed on detach', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    act(() => result.current.detach());
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host.dispatchEvent(evt);
+
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('re-attach to a new host moves the keydown listener (no leak on old host)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host1 = makeHost();
+    const host2 = makeHost();
+    act(() => result.current.attach(host1));
+    act(() => result.current.attach(host2));
+
+    const evt1 = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host1.dispatchEvent(evt1);
+    expect(sessionInput).not.toHaveBeenCalled();
+
+    const evt2 = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host2.dispatchEvent(evt2);
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\r' });
   });
 
   it('routes session://output events to the matching Terminal', async () => {
@@ -282,18 +329,105 @@ describe('useTerminal', () => {
     expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('hello world');
   });
 
-  it('paste with empty clipboard text does not call term.paste()', () => {
+  it('paste falls back to navigator.clipboard.readText when clipboardData is empty', async () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
 
+    const readText = vi.fn().mockResolvedValue('from-async-clipboard');
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
+      host.dispatchEvent(evt);
+
+      expect(readText).toHaveBeenCalled();
+      // Drain the microtask queue so the .then(...) on readText resolves.
+      // Two awaits: one for the readText resolution, one for the chained .then.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('from-async-clipboard');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('paste with empty clipboard and no async fallback does not call term.paste()', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
+      host.dispatchEvent(evt);
+
+      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('paste runs in capture phase, beating a descendants stopPropagation', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    // Mimic xterm's behaviour: a descendant listener that stops propagation.
+    // Because our host listener is in the **capture** phase, it must run
+    // BEFORE this bubble-phase descendant listener gets a chance to stop
+    // the event.
+    const descendant = document.createElement('div');
+    host.appendChild(descendant);
+    descendant.addEventListener('paste', (e) => {
+      e.stopPropagation();
+    });
+
     const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
     Object.defineProperty(evt, 'clipboardData', {
-      value: { getData: () => '' },
+      value: { getData: () => 'capture-wins' },
     });
-    host.dispatchEvent(evt);
+    descendant.dispatchEvent(evt);
 
-    expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('capture-wins');
+  });
+
+  it('Shift+Enter runs in capture phase, beating a descendants stopPropagation', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    // Same scenario for keydown — xterm registers its keydown listener on
+    // its hidden textarea (a descendant of host) with capture-phase too,
+    // but because OUR listener is registered on a closer-to-root host
+    // capture-phase fires first regardless of where focus actually is.
+    const descendant = document.createElement('div');
+    host.appendChild(descendant);
+    descendant.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+    });
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    descendant.dispatchEvent(evt);
+
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\r' });
   });
 
   it('detach removes the paste listener from the host', () => {
