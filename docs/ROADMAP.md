@@ -15,12 +15,6 @@ The settings dialog exposes global pre-launch commands but not per-worktree over
 
 ### P2 — Polish and quality
 
-#### "Starting" spinner on tabs
-Tabs show a red dot when `status === 'error'` but nothing when `status === 'starting'`. Slow pre-launch commands leave no indication the session is initialising. A subtle spinner or pulsing dot on the tab during the `starting` state would close this gap.
-
-#### "Exited" indicator on tabs
-`TerminalView` shows an overlay for both `error` and `exited` statuses, but the sidebar only renders the red dot for `error`. A clean exit (zero exit code) has no tab indicator. A grey dot for `exited` would make the session state unambiguous.
-
 #### E2E test harness
 The current test suite (Rust unit/integration + Vitest + RTL with the tauri-bridge mocked) has no layer that exercises the real Tauri shell + WebView together. Regressions in the frontend ↔ backend bridge — a renamed command, a missing capability entry, a broken event payload — are only caught by manual testing. The leading options are WebDriver via `tauri-driver` or Playwright pointed at the dev server. A decision needs to be made, documented in DESIGN, and scaffolded with a basic `e2e/` directory and CI job.
 

@@ -55,7 +55,7 @@ This starts the Vite dev server and opens Arborist in a desktop window with hot-
 
 ### First-time configuration
 
-Arborist stores its config in your OS app-data directory (`%APPDATA%\com.arborist.app\` on Windows, `~/Library/Application Support/com.arborist.app/` on macOS). On first launch it will prompt you to choose a workspace root — point it at your primary Git repository.
+Arborist stores its config in your OS app-data directory (path derived from the Tauri app identifier — currently `%APPDATA%\dev.arborist.desktop\` on Windows, `~/Library/Application Support/dev.arborist.desktop/` on macOS). On first launch it will prompt you to choose a workspace root — point it at your primary Git repository.
 
 See [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md) for the full config reference and troubleshooting steps.
 

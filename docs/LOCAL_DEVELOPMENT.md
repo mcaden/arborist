@@ -120,7 +120,7 @@ Husky v9 installs two hooks via `npm install`:
 
 - Open Chromium DevTools in the dev WebView: right-click → "Inspect" (or `Ctrl/Cmd + Shift + I`). Vite source maps resolve TS paths directly.
 - Inspect Zustand state from the console: `useSessionStore.getState()`, `useConfigStore.getState()`.
-- The xterm terminal registry is exposed in dev as `window.__getTerminalRegistryForTests()`.
+- The xterm terminal registry is accessible via the named export `__getTerminalRegistryForTests()` from `src/hooks/use-terminal.ts`. It is not attached to `window`; use it directly in tests or import the module in a dev console snippet.
 
 ### Backend
 
@@ -143,13 +143,13 @@ cargo run -p arborist --bin arborist-test-child
 
 ### Persistent state
 
-Config lives in your OS app-data directory:
+Config lives in your OS app-data directory. The exact folder name is derived from the Tauri app identifier in `src-tauri/tauri.conf.json` (currently `dev.arborist.desktop`):
 
 | OS | Path |
 |---|---|
-| Windows | `%APPDATA%\com.arborist.app\` |
-| macOS | `~/Library/Application Support/com.arborist.app/` |
-| Linux | `$XDG_DATA_HOME/com.arborist.app/` (or `~/.local/share/com.arborist.app/`) |
+| Windows | `%APPDATA%\dev.arborist.desktop\` |
+| macOS | `~/Library/Application Support/dev.arborist.desktop/` |
+| Linux | `$XDG_DATA_HOME/dev.arborist.desktop/` (or `~/.local/share/dev.arborist.desktop/`) |
 
 To debug persistence issues: stop Arborist, inspect/edit `config.json` or `sessions.json`, restart. If the loader rejects a file it renames it to `*.bad-<unix-timestamp>` and logs `code = "ConfigQuarantined"`.
 
