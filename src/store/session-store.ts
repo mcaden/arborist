@@ -20,7 +20,7 @@
 // * `useSessionActions()` returns a stable action bag so callers can pull it
 //   once and not re-render when state changes.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -30,6 +30,7 @@ import {
   sessionCreate,
   sessionFocus,
   sessionList,
+  type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
 import type {
@@ -80,14 +81,58 @@ export interface SessionStoreState {
    * don't linger in the sidebar.
    */
   metrics: Record<SessionId, SessionMetrics>;
+  /**
+   * Per-session unix-seconds timestamp of the most recent agent-turn
+   * completion. Set when a `session://activity` event with
+   * `kind: "turnEnd"` arrives. Drives the `awaiting` display state via
+   * [`selectDisplayStatus`]. Frontend-only — not persisted; cleared on
+   * close and on `starting` (restart) so the indicator goes back to
+   * `idle` until the new run finishes its first turn.
+   */
+  lastTurnEndAt: Record<SessionId, number>;
+  /**
+   * Most recently observed agent-turn duration in milliseconds, as
+   * reported by the `kind: "turnEnd"` event when the source includes it
+   * (Copilot OTel `invoke_agent` span — Claude omits). Surfaced only in
+   * tooltips; not part of any layout-affecting state.
+   */
+  lastTurnDurationMs: Record<SessionId, number>;
 }
 
 export type SessionActivity = 'working' | 'idle' | 'attention';
 
+/**
+ * Single derived state the sidebar renders as one icon. Combines
+ * lifecycle (`session.status`), PTY-derived activity, the most recent
+ * agent-turn-end timestamp, and how long the session has been alive. See
+ * [`selectDisplayStatus`] for the priority order.
+ */
+export type DisplayStatus =
+  | 'starting'
+  | 'error'
+  | 'exited'
+  | 'attention'
+  | 'working'
+  | 'awaiting'
+  | 'idle';
+
+/**
+ * Time (in seconds) a freshly-spawned, never-active session must live
+ * before the sidebar promotes it from `idle` to `awaiting` ("the agent
+ * has booted and is waiting for input"). Without this grace period the
+ * tab would flicker to `awaiting` during the first frame of a normal
+ * spawn.
+ */
+export const AWAITING_GRACE_SECONDS = 5;
+
 export interface SessionStoreActions {
   hydrate: () => Promise<void>;
   create: (args: SessionCreateArgs) => Promise<SessionView>;
-  close: (id: SessionId) => Promise<void>;
+  close: (
+    id: SessionId,
+    deleteWorktree?: boolean,
+    opts?: { pruneOnError?: boolean },
+  ) => Promise<SessionCloseResult>;
   focus: (id: SessionId) => Promise<void>;
   reorder: (ids: SessionId[]) => Promise<void>;
   requestClose: (id: SessionId) => void;
@@ -124,6 +169,8 @@ const INITIAL_STATE: SessionStoreState = {
   hasUnread: {},
   activity: {},
   metrics: {},
+  lastTurnEndAt: {},
+  lastTurnDurationMs: {},
 };
 
 /**
@@ -158,6 +205,8 @@ export const useSessionStore = create<Store>((set, get) => {
         hasUnread: {},
         activity: {},
         metrics: {},
+        lastTurnEndAt: {},
+        lastTurnDurationMs: {},
       });
     },
 
@@ -170,43 +219,99 @@ export const useSessionStore = create<Store>((set, get) => {
       return view;
     },
 
-    close: async (id) => {
-      await sessionClose({ sessionId: id });
-      const previous = get().sessions;
-      const wasActive = get().activeId === id;
-      const nextSessions = previous.filter((s) => s.id !== id);
-      const patch: Partial<SessionStoreState> = { sessions: nextSessions };
-      if (wasActive) {
-        // Always assign explicitly so `activeId` is cleared when the last
-        // session closes.
-        patch.activeId = pickNeighbour(previous, id);
+    close: async (id, deleteWorktree, opts) => {
+      // By default, converge local state to "session gone" even if the
+      // backend call rejects. The PTY may have been killed and the
+      // persisted record removed before the failure (e.g. a transient
+      // disk error in a later step), and leaving a stale row in the
+      // sidebar is a worse UX than briefly out-of-sync with the backend.
+      // Worktree-deletion failures arrive as a non-throwing
+      // `worktreeDeleteError` field; hard backend failures still
+      // propagate to the caller AFTER local pruning.
+      //
+      // Callers that need failed sessions to remain visible/retryable
+      // (e.g. the workspace-switch flow, which wants the user to resolve
+      // problems on the original workspace before changing it) can pass
+      // `{ pruneOnError: false }` to suppress the pruning side-effect on
+      // backend failure. Successful closes always prune.
+      const pruneOnError = opts?.pruneOnError ?? true;
+      const pruneLocal = (): void => {
+        // Read state *inside* the prune so we don't clobber any
+        // concurrent updates (e.g. a session created while sessionClose
+        // was in flight).
+        const {
+          sessions,
+          activeId,
+          pendingClose,
+          statusMessages,
+          hasUnread,
+          activity,
+          metrics,
+          lastTurnEndAt,
+          lastTurnDurationMs,
+        } = get();
+        if (!sessions.some((s) => s.id === id)) {
+          // Already pruned by some other path — nothing to do.
+          return;
+        }
+        const wasActive = activeId === id;
+        const nextSessions = sessions.filter((s) => s.id !== id);
+        const patch: Partial<SessionStoreState> = { sessions: nextSessions };
+        if (wasActive) {
+          // Always assign explicitly so `activeId` is cleared when the last
+          // session closes.
+          patch.activeId = pickNeighbour(sessions, id);
+        }
+        // `pendingClose` is closed automatically when the session it
+        // referenced is gone.
+        if (pendingClose === id) patch.pendingClose = undefined;
+        // Drop any orphan status-message keyed under this session id.
+        if (id in statusMessages) {
+          const next = { ...statusMessages };
+          delete next[id];
+          patch.statusMessages = next;
+        }
+        if (id in hasUnread) {
+          const nextUnread = { ...hasUnread };
+          delete nextUnread[id];
+          patch.hasUnread = nextUnread;
+        }
+        if (id in activity) {
+          const nextActivity = { ...activity };
+          delete nextActivity[id];
+          patch.activity = nextActivity;
+        }
+        if (id in metrics) {
+          const nextMetrics = { ...metrics };
+          delete nextMetrics[id];
+          patch.metrics = nextMetrics;
+        }
+        if (id in lastTurnEndAt) {
+          const next = { ...lastTurnEndAt };
+          delete next[id];
+          patch.lastTurnEndAt = next;
+        }
+        if (id in lastTurnDurationMs) {
+          const next = { ...lastTurnDurationMs };
+          delete next[id];
+          patch.lastTurnDurationMs = next;
+        }
+        set(patch);
+      };
+
+      let succeeded = false;
+      try {
+        const result = await sessionClose({
+          sessionId: id,
+          deleteWorktree: deleteWorktree ?? false,
+        });
+        succeeded = true;
+        return result;
+      } finally {
+        if (succeeded || pruneOnError) {
+          pruneLocal();
+        }
       }
-      // `pendingClose` is closed automatically when the session it referenced
-      // is gone.
-      if (get().pendingClose === id) patch.pendingClose = undefined;
-      // Drop any orphan status-message keyed under this session id.
-      const { statusMessages, hasUnread, activity, metrics } = get();
-      if (id in statusMessages) {
-        const next = { ...statusMessages };
-        delete next[id];
-        patch.statusMessages = next;
-      }
-      if (id in hasUnread) {
-        const nextUnread = { ...hasUnread };
-        delete nextUnread[id];
-        patch.hasUnread = nextUnread;
-      }
-      if (id in activity) {
-        const nextActivity = { ...activity };
-        delete nextActivity[id];
-        patch.activity = nextActivity;
-      }
-      if (id in metrics) {
-        const nextMetrics = { ...metrics };
-        delete nextMetrics[id];
-        patch.metrics = nextMetrics;
-      }
-      set(patch);
     },
 
     focus: async (id) => {
@@ -291,11 +396,26 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: nextMessages,
       };
       // On restart (back to `starting`), drop any stale metrics so the
-      // sidebar doesn't show numbers from the previous run.
-      if (evt.status === 'starting' && evt.sessionId in metrics) {
-        const nextMetrics = { ...metrics };
-        delete nextMetrics[evt.sessionId];
-        patch.metrics = nextMetrics;
+      // sidebar doesn't show numbers from the previous run. Same logic
+      // applies to the turn-end markers — a new run hasn't completed any
+      // turns yet, so the sidebar should fall back to `idle`.
+      if (evt.status === 'starting') {
+        if (evt.sessionId in metrics) {
+          const nextMetrics = { ...metrics };
+          delete nextMetrics[evt.sessionId];
+          patch.metrics = nextMetrics;
+        }
+        const { lastTurnEndAt, lastTurnDurationMs } = get();
+        if (evt.sessionId in lastTurnEndAt) {
+          const next = { ...lastTurnEndAt };
+          delete next[evt.sessionId];
+          patch.lastTurnEndAt = next;
+        }
+        if (evt.sessionId in lastTurnDurationMs) {
+          const next = { ...lastTurnDurationMs };
+          delete next[evt.sessionId];
+          patch.lastTurnDurationMs = next;
+        }
       }
       set(patch);
     },
@@ -310,9 +430,45 @@ export const useSessionStore = create<Store>((set, get) => {
     },
 
     applyActivity: (evt) => {
-      const { sessions, activity, activeId } = get();
+      const { sessions, activity, activeId, lastTurnEndAt, lastTurnDurationMs } = get();
       // Defensive: drop events for unknown sessions (race with close).
       if (!sessions.some((s) => s.id === evt.sessionId)) return;
+
+      // Turn-end is a fire-and-forget marker — it doesn't compete with the
+      // PTY-driven working/idle/attention state machine, so handle it
+      // first and return. We record both the wall-clock arrival time
+      // (drives the `awaiting` display state) and the source-reported
+      // duration (tooltip only).
+      if (evt.kind === 'turnEnd') {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const patch: Partial<SessionStoreState> = {
+          lastTurnEndAt: { ...lastTurnEndAt, [evt.sessionId]: nowSec },
+        };
+        if (typeof evt.durationMs === 'number') {
+          patch.lastTurnDurationMs = {
+            ...lastTurnDurationMs,
+            [evt.sessionId]: evt.durationMs,
+          };
+        } else if (lastTurnDurationMs[evt.sessionId] !== undefined) {
+          // Source did not report a duration this time. Drop any prior
+          // value so the tooltip doesn't show a stale number from an
+          // earlier turn (or from the other tool, after an agent swap).
+          const next = { ...lastTurnDurationMs };
+          delete next[evt.sessionId];
+          patch.lastTurnDurationMs = next;
+        }
+        // A completed turn implies the agent is no longer producing
+        // output — drop a stale `working` flag so the icon flips to
+        // `awaiting` immediately rather than waiting for the PTY-stream
+        // idle tick. Don't clobber `attention` (still user-relevant).
+        if (activity[evt.sessionId] === 'working') {
+          const nextActivity = { ...activity };
+          delete nextActivity[evt.sessionId];
+          patch.activity = nextActivity;
+        }
+        set(patch);
+        return;
+      }
 
       const current = activity[evt.sessionId];
       let next: SessionActivity | undefined;
@@ -382,6 +538,56 @@ export const selectMetrics =
   (id: SessionId | undefined) =>
   (s: Store): SessionMetrics | undefined =>
     id === undefined ? undefined : s.metrics[id];
+export const selectLastTurnEndAt =
+  (id: SessionId | undefined) =>
+  (s: Store): number | undefined =>
+    id === undefined ? undefined : s.lastTurnEndAt[id];
+export const selectLastTurnDurationMs =
+  (id: SessionId | undefined) =>
+  (s: Store): number | undefined =>
+    id === undefined ? undefined : s.lastTurnDurationMs[id];
+
+/**
+ * Derive the single icon-state the sidebar should render for `id`. The
+ * priority order is intentional and reflects what a user most needs to
+ * notice first:
+ *
+ *  1. `error` — the session can't do anything until the user reacts.
+ *  2. `starting` — the spinner; nothing else is meaningful yet.
+ *  3. `exited` — the session has terminated and won't make progress
+ *     until the user restarts or recreates it.
+ *  4. `attention` — the agent (or the OS) explicitly asked the user to
+ *     look here.
+ *  5. `working` — the PTY is streaming output, i.e. the agent is
+ *     producing tokens.
+ *  6. `awaiting` — the agent finished a turn and is parked at its
+ *     prompt, OR the session has booted but never produced a turn and
+ *     the [`AWAITING_GRACE_SECONDS`] window has elapsed (a CLI typically
+ *     drops to its REPL prompt by then).
+ *  7. `idle` — fallback for the brief boot window before
+ *     [`AWAITING_GRACE_SECONDS`] expires.
+ *
+ * `nowSec` is injected so tests can pin time deterministically.
+ */
+export function selectDisplayStatus(
+  id: SessionId | undefined,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): (s: Store) => DisplayStatus {
+  return (s: Store): DisplayStatus => {
+    if (id === undefined) return 'idle';
+    const session = s.sessions.find((x) => x.id === id);
+    if (!session) return 'idle';
+    if (session.status === 'error') return 'error';
+    if (session.status === 'starting') return 'starting';
+    if (session.status === 'exited') return 'exited';
+    const activity = s.activity[id];
+    if (activity === 'attention') return 'attention';
+    if (activity === 'working') return 'working';
+    if (s.lastTurnEndAt[id] !== undefined) return 'awaiting';
+    if (nowSec - session.createdAt >= AWAITING_GRACE_SECONDS) return 'awaiting';
+    return 'idle';
+  };
+}
 
 export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
@@ -395,6 +601,86 @@ export const useActivity = (id: SessionId | undefined): SessionActivity | undefi
   useSessionStore(selectActivity(id));
 export const useMetrics = (id: SessionId | undefined): SessionMetrics | undefined =>
   useSessionStore(selectMetrics(id));
+export const useLastTurnEndAt = (id: SessionId | undefined): number | undefined =>
+  useSessionStore(selectLastTurnEndAt(id));
+export const useLastTurnDurationMs = (id: SessionId | undefined): number | undefined =>
+  useSessionStore(selectLastTurnDurationMs(id));
+
+/**
+ * Subscribe to the derived `DisplayStatus` for `id`. Recomputes (and
+ * re-renders the caller) once a second via a tick so the time-based
+ * `idle → awaiting` promotion fires within ~1s of the
+ * [`AWAITING_GRACE_SECONDS`] boundary even if no other event touches
+ * the session. The 1s cadence is cheap (one shared timer for the whole
+ * app) and keeps the displayed status close to its documented timing.
+ */
+export function useDisplayStatus(id: SessionId | undefined): DisplayStatus {
+  const tickedNow = useNowTickSeconds();
+  return useSessionStore(selectDisplayStatus(id, tickedNow));
+}
+
+/**
+ * Returns `Math.floor(Date.now() / 1000)` and re-renders the caller
+ * roughly once a second. Used by [`useDisplayStatus`] to drive the
+ * boot-grace transition.
+ *
+ * Implemented as a single shared interval with reference-counted
+ * subscribers — N tabs ⇒ N components ⇒ one timer, not N. The interval
+ * is created lazily on first subscribe and torn down when the last
+ * subscriber unmounts. The cadence is intentionally well below
+ * [`AWAITING_GRACE_SECONDS`] (5s) so the documented transition lands
+ * close to its boundary rather than potentially trailing it. Internal —
+ * not exported as part of the public store API.
+ */
+let nowTickSubscribers = 0;
+let nowTickHandle: number | undefined;
+const nowTickListeners = new Set<(value: number) => void>();
+const NOW_TICK_INTERVAL_MS = 1_000;
+
+function ensureNowTickRunning(): void {
+  if (nowTickHandle !== undefined) return;
+  nowTickHandle = window.setInterval(() => {
+    const value = Math.floor(Date.now() / 1000);
+    for (const listener of nowTickListeners) listener(value);
+  }, NOW_TICK_INTERVAL_MS);
+}
+
+function teardownNowTickIfUnused(): void {
+  if (nowTickSubscribers > 0 || nowTickHandle === undefined) return;
+  window.clearInterval(nowTickHandle);
+  nowTickHandle = undefined;
+}
+
+// Vite HMR: when this module is hot-replaced in dev, the old module's
+// setInterval keeps firing while the new module instance creates a
+// fresh one — left unchecked, every save accumulates another ticker.
+// Clear the handle and drop subscribers on dispose so the new module
+// starts from a clean slate.
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (nowTickHandle !== undefined) {
+      window.clearInterval(nowTickHandle);
+      nowTickHandle = undefined;
+    }
+    nowTickListeners.clear();
+    nowTickSubscribers = 0;
+  });
+}
+
+function useNowTickSeconds(): number {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    nowTickSubscribers += 1;
+    nowTickListeners.add(setNow);
+    ensureNowTickRunning();
+    return () => {
+      nowTickListeners.delete(setNow);
+      nowTickSubscribers -= 1;
+      teardownNowTickIfUnused();
+    };
+  }, []);
+  return now;
+}
 
 export function useActiveSession(): SessionView | undefined {
   const sessions = useSessions();

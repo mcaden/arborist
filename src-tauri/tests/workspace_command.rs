@@ -68,6 +68,9 @@ impl GitRunner for FakeGitRunner {
             Err(msg) => Err(Error::Internal(msg.clone())),
         }
     }
+    fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 fn null_sink() -> PtySink {
@@ -85,6 +88,7 @@ fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {
         null_sink(),
         git,
         Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
         Arc::new(|_, _| {}),
     ))
 }

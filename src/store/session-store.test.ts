@@ -8,7 +8,7 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import type { SessionStatusEvent, SessionView } from '@/types/arborist';
 
-import { useSessionStore } from './session-store';
+import { useSessionStore, selectDisplayStatus, type DisplayStatus } from './session-store';
 
 function makeView(overrides: Partial<SessionView> & Pick<SessionView, 'id'>): SessionView {
   return {
@@ -34,6 +34,8 @@ function resetStore(): void {
     hasUnread: {},
     activity: {},
     metrics: {},
+    lastTurnEndAt: {},
+    lastTurnDurationMs: {},
   });
 }
 
@@ -103,7 +105,7 @@ describe('close', () => {
 
     await useSessionStore.getState().actions.close('a');
 
-    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a' });
+    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a', deleteWorktree: false });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
   });
 
@@ -158,6 +160,46 @@ describe('close', () => {
     await useSessionStore.getState().actions.close('a');
 
     expect(useSessionStore.getState().pendingClose).toBeUndefined();
+  });
+
+  it('prunes the session locally even when the backend close rejects', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+    bridgeMock.sessionClose.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(useSessionStore.getState().actions.close('a')).rejects.toThrow('boom');
+
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
+  });
+
+  it('keeps the session visible when the backend close rejects and pruneOnError is false', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+    bridgeMock.sessionClose.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      useSessionStore.getState().actions.close('a', false, { pruneOnError: false }),
+    ).rejects.toThrow('boom');
+
+    // Session row remains so the caller (e.g. workspace switch) can ask
+    // the user to resolve and retry.
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['a', 'b']);
+    expect(useSessionStore.getState().activeId).toBe('a');
+  });
+
+  it('still prunes on success even with pruneOnError: false', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+
+    await useSessionStore.getState().actions.close('a', false, { pruneOnError: false });
+
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
   });
 });
 
@@ -516,8 +558,177 @@ describe('close + metrics', () => {
         a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
       },
     });
-    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve());
+    bridgeMock.sessionClose.mockImplementation(() =>
+      Promise.resolve({ worktreeDeleteError: null }),
+    );
     await useSessionStore.getState().actions.close('a');
     expect(useSessionStore.getState().metrics['a']).toBeUndefined();
+  });
+});
+
+describe('applyActivity (turnEnd)', () => {
+  it('records the wall-clock arrival time and (when present) the source duration', () => {
+    useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
+    const beforeSec = Math.floor(Date.now() / 1000);
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: 4321 });
+    const ts = useSessionStore.getState().lastTurnEndAt['a'];
+    expect(ts).toBeDefined();
+    expect(ts!).toBeGreaterThanOrEqual(beforeSec);
+    expect(useSessionStore.getState().lastTurnDurationMs['a']).toBe(4321);
+  });
+
+  it('omits duration when the source did not provide one (Claude transcript)', () => {
+    useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
+    expect(useSessionStore.getState().lastTurnEndAt['a']).toBeDefined();
+    expect(useSessionStore.getState().lastTurnDurationMs['a']).toBeUndefined();
+  });
+
+  it('clears a previously-recorded duration when a no-duration turn arrives', () => {
+    // Guards against tooltip showing a stale "ended in 3.4s" after an
+    // agent swap (Copilot → Claude) or a transcript-only second turn.
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+      lastTurnDurationMs: { a: 3400 },
+    });
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
+    expect(useSessionStore.getState().lastTurnDurationMs['a']).toBeUndefined();
+  });
+
+  it('clears a stale `working` activity flag so the icon flips to awaiting', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+      activity: { a: 'working' },
+    });
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: 100 });
+    expect(useSessionStore.getState().activity['a']).toBeUndefined();
+  });
+
+  it('does not clear an `attention` flag', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+      activity: { b: 'attention' },
+    });
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'b', kind: 'turnEnd', durationMs: 100 });
+    expect(useSessionStore.getState().activity['b']).toBe('attention');
+  });
+
+  it('drops events for unknown sessions', () => {
+    useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'ghost', kind: 'turnEnd', durationMs: 100 });
+    expect(useSessionStore.getState().lastTurnEndAt).toEqual({});
+  });
+
+  it('a status restart clears lastTurnEndAt + lastTurnDurationMs', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      lastTurnEndAt: { a: 1700000000 },
+      lastTurnDurationMs: { a: 500 },
+    });
+    useSessionStore.getState().actions.applyStatus({ sessionId: 'a', status: 'starting' });
+    expect(useSessionStore.getState().lastTurnEndAt['a']).toBeUndefined();
+    expect(useSessionStore.getState().lastTurnDurationMs['a']).toBeUndefined();
+  });
+
+  it('close drops both lastTurnEndAt and lastTurnDurationMs', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      lastTurnEndAt: { a: 1700000000 },
+      lastTurnDurationMs: { a: 500 },
+    });
+    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve());
+    await useSessionStore.getState().actions.close('a');
+    expect(useSessionStore.getState().lastTurnEndAt).toEqual({});
+    expect(useSessionStore.getState().lastTurnDurationMs).toEqual({});
+  });
+});
+
+describe('selectDisplayStatus', () => {
+  // Per-state derivation table. `nowSec` is pinned so the boot grace
+  // window is deterministic.
+  const NOW = 2_000_000_000;
+
+  function setup(opts: {
+    status?: SessionView['status'];
+    activity?: 'working' | 'idle' | 'attention';
+    lastTurnEndAt?: number;
+    createdAt?: number;
+  }): void {
+    useSessionStore.setState({
+      sessions: [
+        makeView({
+          id: 'a',
+          status: opts.status ?? 'running',
+          createdAt: opts.createdAt ?? NOW - 60,
+        }),
+      ],
+      activity: opts.activity ? { a: opts.activity } : {},
+      lastTurnEndAt: opts.lastTurnEndAt !== undefined ? { a: opts.lastTurnEndAt } : {},
+    });
+  }
+
+  function status(): DisplayStatus {
+    return selectDisplayStatus('a', NOW)(useSessionStore.getState());
+  }
+
+  it('error overrides everything', () => {
+    setup({ status: 'error', activity: 'working', lastTurnEndAt: NOW - 1 });
+    expect(status()).toBe('error');
+  });
+
+  it('starting before activity', () => {
+    setup({ status: 'starting' });
+    expect(status()).toBe('starting');
+  });
+
+  it('exited before activity', () => {
+    setup({ status: 'exited', activity: 'working' });
+    expect(status()).toBe('exited');
+  });
+
+  it('attention beats working and awaiting', () => {
+    setup({ activity: 'attention', lastTurnEndAt: NOW - 1 });
+    expect(status()).toBe('attention');
+  });
+
+  it('working beats awaiting', () => {
+    setup({ activity: 'working', lastTurnEndAt: NOW - 1 });
+    expect(status()).toBe('working');
+  });
+
+  it('awaiting after a confirmed turnEnd', () => {
+    setup({ lastTurnEndAt: NOW - 10 });
+    expect(status()).toBe('awaiting');
+  });
+
+  it('awaiting for a fresh-but-quiescent session past the grace window', () => {
+    // createdAt is well outside AWAITING_GRACE_SECONDS (5s).
+    setup({ createdAt: NOW - 30 });
+    expect(status()).toBe('awaiting');
+  });
+
+  it('idle inside the grace window', () => {
+    setup({ createdAt: NOW - 1 });
+    expect(status()).toBe('idle');
+  });
+
+  it('idle when no session matches the id', () => {
+    useSessionStore.setState({ sessions: [] });
+    expect(status()).toBe('idle');
   });
 });

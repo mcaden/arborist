@@ -96,6 +96,17 @@ pub type MetricsCb = Arc<dyn Fn(SessionMetricsEvent) + Send + Sync>;
 /// matches.
 pub type AiSessionDiscoveryCb = Arc<dyn Fn(SessionId, String) + Send + Sync>;
 
+/// Callback the watcher invokes when an agent turn completes. Production
+/// wires this into `app.emit("session://activity", { kind: "turnEnd", ... })`
+/// via [`crate::activity::ActivityEvent::TurnEnd`]. Tests pass a channel
+/// sender.
+///
+/// `duration_ms` is the wall-clock duration of the turn when the source
+/// reports it (Copilot OTel `invoke_agent` span), or `None` when it does
+/// not (Claude transcript — we only see per-message timestamps, not a
+/// reliable turn-start marker).
+pub type TurnCb = Arc<dyn Fn(SessionId, Option<u64>) + Send + Sync>;
+
 /// Per-session running watcher handle. Drop semantics: clearing the
 /// `running` flag stops the watcher thread on its next poll iteration. We
 /// also retain the `JoinHandle` so callers that need a quiescence
@@ -129,6 +140,7 @@ impl MetricsRegistry {
     /// stopped first so the new one starts from a clean slate (used by
     /// session restart). Returns `false` if no watcher could be started
     /// (e.g. Claude session whose home dir could not be resolved).
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         &self,
         session_id: SessionId,
@@ -136,6 +148,7 @@ impl MetricsRegistry {
         cwd: PathBuf,
         spawn_instant: SystemTime,
         emit: MetricsCb,
+        emit_turn: TurnCb,
         discover: AiSessionDiscoveryCb,
     ) -> bool {
         // Stop any existing watcher first so the per-tool worker starts
@@ -160,6 +173,7 @@ impl MetricsRegistry {
                             cwd_for_thread,
                             spawn_instant,
                             emit,
+                            emit_turn,
                             discover,
                             running_for_thread,
                         );
@@ -174,6 +188,7 @@ impl MetricsRegistry {
                             session_id,
                             otel_path,
                             emit,
+                            emit_turn,
                             discover,
                             running_for_thread,
                         );
@@ -258,12 +273,14 @@ impl MetricsRegistry {
 // Per-session worker
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn run_claude_watcher(
     session_id: SessionId,
     home: PathBuf,
     cwd: PathBuf,
     spawn_instant: SystemTime,
     emit: MetricsCb,
+    emit_turn: TurnCb,
     discover: AiSessionDiscoveryCb,
     running: Arc<AtomicBool>,
 ) {
@@ -314,6 +331,11 @@ fn run_claude_watcher(
                             if let Some(m) = model {
                                 last_model = Some(m);
                             }
+                            // Each new assistant line is one completed agent
+                            // turn. Claude's transcript does not carry a
+                            // reliable turn-start timestamp distinct from
+                            // the user message, so duration is omitted.
+                            emit_turn(session_id, None);
                         }
                     });
                 }
@@ -347,6 +369,7 @@ fn run_copilot_watcher(
     session_id: SessionId,
     otel_path: PathBuf,
     emit: MetricsCb,
+    emit_turn: TurnCb,
     discover: AiSessionDiscoveryCb,
     running: Arc<AtomicBool>,
 ) {
@@ -370,6 +393,16 @@ fn run_copilot_watcher(
             if len > cursor {
                 cursor = tail_lines(&otel_path, cursor, len, |line| {
                     ingest_otel_line(line, &mut state);
+                    // Cheap byte-level pre-filter — we don't want to
+                    // re-parse every JSONL line as JSON just to discover
+                    // it isn't an `invoke_agent` span. Real Copilot OTel
+                    // logs are dominated by metric/log lines, so this
+                    // saves a full serde_json::from_slice on the hot path.
+                    if maybe_invoke_agent_span(line) {
+                        if let Some(d) = parse_invoke_agent_duration_ms(line) {
+                            emit_turn(session_id, Some(d));
+                        }
+                    }
                 });
             }
         }
@@ -882,6 +915,57 @@ pub(crate) fn ingest_otel_line(line: &[u8], state: &mut CopilotState) {
     state.seen = true;
 }
 
+/// Extract the wall-clock duration of an `invoke_agent` span (one full
+/// agent turn) in milliseconds. Returns `None` for any other line — chat
+/// spans, metric lines, malformed JSON — so the caller can call this on
+/// every JSONL line it tails.
+///
+/// We deliberately key on `invoke_agent` (not `chat`): one agent turn can
+/// involve multiple `chat` round-trips, but exactly one `invoke_agent`.
+/// This matches the user's intuition of "the agent finished" — the icon
+/// flips to *awaiting* on the outer span close, not on each LLM hop.
+pub(crate) fn parse_invoke_agent_duration_ms(line: &[u8]) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Outer {
+        #[serde(default)]
+        r#type: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default, rename = "startTime")]
+        start_time: Option<[u64; 2]>,
+        #[serde(default, rename = "endTime")]
+        end_time: Option<[u64; 2]>,
+    }
+    let outer: Outer = serde_json::from_slice(line).ok()?;
+    if outer.r#type != "span" || outer.name != "invoke_agent" {
+        return None;
+    }
+    let start = outer.start_time?;
+    let end = outer.end_time?;
+    // OTel times are `[seconds, nanos]`. Compute `end - start` in ns,
+    // saturating at 0 (some test/edge writers can produce slightly out-of-
+    // order timestamps).
+    let start_ns = start[0]
+        .saturating_mul(1_000_000_000)
+        .saturating_add(start[1]);
+    let end_ns = end[0].saturating_mul(1_000_000_000).saturating_add(end[1]);
+    Some(end_ns.saturating_sub(start_ns) / 1_000_000)
+}
+
+/// Cheap byte-level prefilter used to skip a full JSON parse on the
+/// majority of OTel lines (metrics, logs, chat spans). Tolerates either
+/// `"name":"invoke_agent"` or `"name": "invoke_agent"` spacing — real
+/// emitters use the compact form, but the OTel SDK is allowed to insert
+/// a space and we'd rather over-accept here and let
+/// [`parse_invoke_agent_duration_ms`] reject than miss a legitimate
+/// turn-end.
+fn maybe_invoke_agent_span(line: &[u8]) -> bool {
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        hay.len() >= needle.len() && hay.windows(needle.len()).any(|w| w == needle)
+    }
+    contains(line, b"\"invoke_agent\"")
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1092,12 +1176,14 @@ mod tests {
         let reg = MetricsRegistry::new();
         let id = SessionId::new();
         let cb: MetricsCb = Arc::new(|_| {});
+        let turn_cb: TurnCb = Arc::new(|_, _| {});
         let started = reg.start(
             id,
             Tool::Copilot,
             PathBuf::from("/tmp"),
             SystemTime::now(),
             cb,
+            turn_cb,
             Arc::new(|_, _| {}),
         );
         assert!(started, "Copilot watcher must start");
@@ -1323,6 +1409,77 @@ mod tests {
         assert!(snap.context_tokens_limit.is_none());
     }
 
+    #[test]
+    fn parse_invoke_agent_duration_extracts_ms() {
+        // Real fixture: invoke_agent span starts at [1777474197, 905_000_000]
+        // and ends at [1777474200, 749_237_700]. Difference is
+        // 2_844_237_700 ns ≈ 2844 ms.
+        let line = fixture_lines()
+            .into_iter()
+            .find(|l| {
+                let needle = b"invoke_agent";
+                l.starts_with(br#"{"type":"span","traceId"#)
+                    && l.windows(needle.len()).any(|w| w == needle)
+            })
+            .expect("invoke_agent span in fixture");
+        let ms = parse_invoke_agent_duration_ms(line).expect("duration parsed");
+        assert!(
+            (2_840..=2_850).contains(&ms),
+            "duration_ms ~= 2844, got {ms}",
+        );
+    }
+
+    #[test]
+    fn parse_invoke_agent_duration_ignores_chat_span() {
+        // chat <model> spans are excluded — they are LLM round-trips, not
+        // turn boundaries.
+        let line = fixture_lines()
+            .into_iter()
+            .find(|l| {
+                let needle: &[u8] = br#""name":"chat "#;
+                l.starts_with(br#"{"type":"span","#) && l.windows(needle.len()).any(|w| w == needle)
+            })
+            .expect("chat span in fixture");
+        assert!(parse_invoke_agent_duration_ms(line).is_none());
+    }
+
+    #[test]
+    fn parse_invoke_agent_duration_ignores_metric_lines() {
+        let line = b"{\"type\":\"metric\",\"name\":\"gen_ai.client.token.usage\"}";
+        assert!(parse_invoke_agent_duration_ms(line).is_none());
+    }
+
+    #[test]
+    fn parse_invoke_agent_duration_handles_missing_times() {
+        let line = br#"{"type":"span","name":"invoke_agent"}"#;
+        assert!(parse_invoke_agent_duration_ms(line).is_none());
+    }
+
+    #[test]
+    fn parse_invoke_agent_duration_saturates_for_inverted_times() {
+        // Defensive: out-of-order timestamps must yield 0, not panic.
+        let line = br#"{"type":"span","name":"invoke_agent","startTime":[10,0],"endTime":[5,0]}"#;
+        assert_eq!(parse_invoke_agent_duration_ms(line), Some(0));
+    }
+
+    #[test]
+    fn maybe_invoke_agent_span_skips_unrelated_lines() {
+        // The cheap prefilter must reject anything that doesn't even
+        // mention "invoke_agent" — that's the whole point of avoiding a
+        // serde_json::from_slice on the hot path.
+        assert!(!maybe_invoke_agent_span(b""));
+        assert!(!maybe_invoke_agent_span(b"{\"type\":\"metric\"}"));
+        assert!(!maybe_invoke_agent_span(
+            br#"{"type":"span","name":"chat claude-opus"}"#
+        ));
+    }
+
+    #[test]
+    fn maybe_invoke_agent_span_admits_real_invoke_agent_lines() {
+        let line = br#"{"type":"span","name":"invoke_agent","startTime":[1,0],"endTime":[2,0]}"#;
+        assert!(maybe_invoke_agent_span(line));
+    }
+
     // -- Copilot watcher integration -------------------------------------
 
     /// Run a Copilot watcher against an evolving JSONL file in a tempdir.
@@ -1354,6 +1511,7 @@ mod tests {
                 path_for_thread,
                 cb,
                 Arc::new(|_, _| {}),
+                Arc::new(|_, _| {}),
                 running_for_thread,
             );
         });
@@ -1371,6 +1529,50 @@ mod tests {
         assert_eq!(snap.model.as_deref(), Some("claude-opus-4.7"));
 
         // Shut the watcher down.
+        running.store(false, Ordering::SeqCst);
+        handle.join().expect("watcher thread joined");
+    }
+
+    #[test]
+    fn copilot_watcher_emits_turn_end_for_invoke_agent_span() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("otel.jsonl");
+        std::fs::write(&path, b"").unwrap();
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_for_thread = Arc::clone(&running);
+        let (tx, rx) = mpsc::channel::<(SessionId, Option<u64>)>();
+        let metrics_cb: MetricsCb = Arc::new(|_| {});
+        let turn_cb: TurnCb = Arc::new(move |sid, dur| {
+            let _ = tx.send((sid, dur));
+        });
+        let path_for_thread = path.clone();
+        let handle = std::thread::spawn(move || {
+            run_copilot_watcher(
+                session_id,
+                path_for_thread,
+                metrics_cb,
+                turn_cb,
+                Arc::new(|_, _| {}),
+                running_for_thread,
+            );
+        });
+
+        // The full fixture contains exactly one invoke_agent span.
+        std::fs::write(&path, COPILOT_OTEL_FIXTURE).unwrap();
+        let (sid, dur) = rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("watcher emitted turn-end");
+        assert_eq!(sid, session_id);
+        let dur = dur.expect("invoke_agent carries a duration");
+        assert!(
+            (2_840..=2_850).contains(&dur),
+            "expected ~2844ms duration, got {dur}",
+        );
+
         running.store(false, Ordering::SeqCst);
         handle.join().expect("watcher thread joined");
     }
@@ -1396,6 +1598,7 @@ mod tests {
                 session_id,
                 path_for_thread,
                 cb,
+                Arc::new(|_, _| {}),
                 Arc::new(|_, _| {}),
                 running_for_thread,
             );
@@ -1603,6 +1806,7 @@ mod tests {
                 cwd_for_thread,
                 spawn_instant,
                 cb,
+                Arc::new(|_, _| {}),
                 Arc::new(|_, _| {}),
                 running_for_thread,
             );

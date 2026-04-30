@@ -20,7 +20,7 @@
 //! the on-disk session record converges automatically when the production
 //! sink is wired (see [`crate::lib::run`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,10 +33,11 @@ use crate::config_store::{
 };
 use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
-use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry};
+use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
-    AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCreateArgs, SessionId,
-    SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView, Tool,
+    AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult,
+    SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView,
+    Tool,
 };
 
 /// Wiring shared by every Phase 7 session command. Built once at startup
@@ -67,6 +68,12 @@ pub struct AppContext {
     /// app-restart restore can `--resume <id>`. Tests substitute a
     /// capturing closure.
     pub ai_session_discover: AiSessionDiscoveryCb,
+    /// Callback the metrics watchers invoke when an agent turn completes
+    /// (Copilot OTel `invoke_agent` close; Claude transcript assistant
+    /// line). Production wires this into the existing
+    /// `session://activity` channel as a `TurnEnd` variant; tests
+    /// substitute a capturing closure.
+    pub turn_emit: TurnCb,
 }
 
 impl AppContext {
@@ -78,6 +85,7 @@ impl AppContext {
         git_runner: Arc<dyn GitRunner>,
         metrics_emit: MetricsCb,
         ai_session_discover: AiSessionDiscoveryCb,
+        turn_emit: TurnCb,
     ) -> Self {
         Self {
             pool,
@@ -88,6 +96,7 @@ impl AppContext {
             metrics: Arc::new(MetricsRegistry::new()),
             metrics_emit,
             ai_session_discover,
+            turn_emit,
         }
     }
 
@@ -103,6 +112,7 @@ impl AppContext {
             sink,
             Arc::new(RealGitRunner),
             Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
             Arc::new(|_, _| {}),
         )
     }
@@ -230,6 +240,7 @@ pub fn session_create_impl(
         session.worktree_path.clone(),
         SystemTime::now(),
         Arc::clone(&ctx.metrics_emit),
+        Arc::clone(&ctx.turn_emit),
         Arc::clone(&ctx.ai_session_discover),
     );
 
@@ -255,10 +266,37 @@ pub fn session_list_impl(ctx: &AppContext) -> Result<Vec<SessionView>, AppError>
 // session_close
 // ---------------------------------------------------------------------------
 
-pub async fn session_close_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppError> {
+pub async fn session_close_impl(
+    ctx: &AppContext,
+    id: SessionId,
+    delete_worktree: bool,
+) -> Result<SessionCloseResult, AppError> {
     // 0. Stop the metrics watcher (Issue #3) before tearing the rest down
     //    so it never observes a half-cleaned session.
     ctx.metrics.stop(&id);
+
+    // Capture the worktree path *before* we drop the persisted record —
+    // we need it for the optional `git worktree remove` step at the end.
+    // Use a *strict* read here so that a corrupt or unreadable
+    // sessions.json doesn't silently translate "delete the worktree"
+    // into "skip silently and report success". On read failure or
+    // missing-record we surface a `worktree_delete_error` later instead
+    // of attempting deletion.
+    let worktree_intent: WorktreeDeleteIntent = if delete_worktree {
+        match ctx.store.try_load_sessions() {
+            Ok(map) => match map.get(&id) {
+                Some(s) => WorktreeDeleteIntent::Path(s.worktree_path.clone()),
+                None => WorktreeDeleteIntent::Refused(format!(
+                    "session {id} not found in store; cannot determine worktree to delete"
+                )),
+            },
+            Err(e) => WorktreeDeleteIntent::Refused(format!(
+                "could not read sessions snapshot reliably; refusing to attempt worktree deletion: {e}"
+            )),
+        }
+    } else {
+        WorktreeDeleteIntent::None
+    };
 
     // 1. Best-effort kill (NotFound from the pool is fine — the session
     //    may have exited on its own already).
@@ -299,6 +337,150 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId) -> Result<(), A
             ..Default::default()
         })
         .map_err(AppError::from)?;
+
+    // 5. Optional: remove the git worktree from disk. The session is
+    //    already gone from the store at this point, so deletion failure
+    //    must NOT fail the overall close (that would leave the frontend
+    //    unable to converge on a "tab gone" state). Surface the error in
+    //    the result instead.
+    let mut result = SessionCloseResult::default();
+    match worktree_intent {
+        WorktreeDeleteIntent::Path(wt) => {
+            if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root) {
+                warn!(
+                    session_id = %id,
+                    worktree_path = %wt.display(),
+                    error = %error.message,
+                    "worktree deletion failed after session close",
+                );
+                result.worktree_delete_error = Some(error.message);
+            }
+        }
+        WorktreeDeleteIntent::Refused(msg) => {
+            warn!(
+                session_id = %id,
+                error = %msg,
+                "worktree deletion was requested but refused before reaching git",
+            );
+            result.worktree_delete_error = Some(msg);
+        }
+        WorktreeDeleteIntent::None => {}
+    }
+    Ok(result)
+}
+
+/// What `session_close_impl` decided to do about the optional `delete_worktree`
+/// flag, captured *before* the persisted session record is dropped so the
+/// decision is based on the pre-close state.
+enum WorktreeDeleteIntent {
+    /// Caller did not request a worktree deletion.
+    None,
+    /// Deletion was requested and the worktree path was resolved successfully.
+    Path(PathBuf),
+    /// Deletion was requested but cannot be attempted (e.g. the sessions
+    /// snapshot couldn't be read strictly, or the session record is missing).
+    /// The contained string is reported back to the frontend verbatim as
+    /// `worktree_delete_error` so the user knows why nothing was deleted.
+    Refused(String),
+}
+
+/// Helper: validate and execute `git worktree remove --force`. Refuses to
+/// touch the configured `workspace_root` itself (i.e. the main checkout),
+/// any path that is not contained under the workspace root, or any path
+/// still claimed by another live session.
+fn delete_worktree_after_close(
+    ctx: &AppContext,
+    id: &SessionId,
+    worktree_path: &Path,
+    workspace_root: &Option<PathBuf>,
+) -> Result<(), AppError> {
+    // Require an explicit workspace root. Without it we have neither a
+    // safe `-C` directory to invoke git from (running git inside the
+    // worktree we're about to delete fails on Windows because the OS
+    // locks a process's CWD) nor a basis for the containment check below.
+    let root = workspace_root.as_ref().ok_or_else(|| {
+        AppError::from(Error::Internal(
+            "cannot delete worktree without a configured workspace root".to_owned(),
+        ))
+    })?;
+    if !root.is_dir() {
+        return Err(AppError::from(Error::WorktreeMissing(root.clone())));
+    }
+
+    // Compare canonical forms so case differences, trailing slashes, and
+    // 8.3 short names don't fool us. For a destructive operation we
+    // refuse on canonicalization failure rather than fall back to the raw
+    // path: a non-normalized form (`..`, dangling symlink, junction with
+    // a missing target) could otherwise slip past the equality and
+    // containment checks below.
+    let canon_wt = dunce::canonicalize(worktree_path).map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "cannot canonicalize worktree path {}: {e}",
+            worktree_path.display()
+        )))
+    })?;
+    let canon_root = dunce::canonicalize(root).map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "cannot canonicalize workspace root {}: {e}",
+            root.display()
+        )))
+    })?;
+
+    // Safety 1: never remove the main worktree.
+    if canon_wt == canon_root {
+        return Err(AppError::from(Error::Internal(
+            "refusing to delete the workspace root (main worktree)".to_owned(),
+        )));
+    }
+    // Safety 2: only remove paths *under* the workspace root. A corrupted
+    // session record (or hostile caller) must not be able to use this code
+    // path to delete arbitrary directories.
+    if !canon_wt.starts_with(&canon_root) {
+        return Err(AppError::from(Error::Internal(format!(
+            "refusing to delete worktree outside workspace root: {}",
+            worktree_path.display()
+        ))));
+    }
+    // Safety 3: refuse if any *other* live session still references the
+    // same worktree. The session being closed has already been removed
+    // from the store at this point, so it cannot match itself. If a
+    // foreign session's path fails to canonicalize we conservatively
+    // treat it as a match — for a destructive operation, an
+    // un-canonicalizable path could refer to the same directory we're
+    // about to delete (a different textual form, dangling junction, or
+    // path made temporarily inaccessible) and we'd rather refuse than
+    // delete a worktree another session may still depend on. The session
+    // snapshot itself must be loaded *strictly* — for a destructive
+    // operation, an unreadable or quarantined sessions.json cannot be
+    // silently treated as "no other sessions exist".
+    let sessions = ctx.store.try_load_sessions().map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "refusing to delete worktree because the sessions snapshot could not be read reliably: {e}"
+        )))
+    })?;
+    let still_in_use = sessions
+        .values()
+        .any(|s| match dunce::canonicalize(&s.worktree_path) {
+            Ok(other) => other == canon_wt,
+            Err(_) => true,
+        });
+    if still_in_use {
+        return Err(AppError::from(Error::Internal(format!(
+            "refusing to delete worktree still in use by another session: {}",
+            worktree_path.display()
+        ))));
+    }
+
+    let repo_root: PathBuf = root.clone();
+
+    ctx.git_runner
+        .remove_worktree(&repo_root, worktree_path)
+        .map_err(AppError::from)?;
+    info!(
+        session_id = %id,
+        worktree = %worktree_path.display(),
+        "worktree removed after session close",
+    );
     Ok(())
 }
 
@@ -418,6 +600,7 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         session.worktree_path.clone(),
         SystemTime::now(),
         Arc::clone(&ctx.metrics_emit),
+        Arc::clone(&ctx.turn_emit),
         Arc::clone(&ctx.ai_session_discover),
     );
     Ok(())
@@ -582,6 +765,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                     session.worktree_path.clone(),
                     SystemTime::now(),
                     Arc::clone(&ctx.metrics_emit),
+                    Arc::clone(&ctx.turn_emit),
                     Arc::clone(&ctx.ai_session_discover),
                 );
             }

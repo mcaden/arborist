@@ -76,6 +76,11 @@ pub enum ActivityEvent {
     /// `OSC 133;D[;<exit>]` — command ended with optional exit code.
     /// Future-proofed.
     CommandEnd { exit: Option<i32> },
+    /// An agent turn just completed. Emitted by the per-tool metrics
+    /// watcher (Copilot OTel `invoke_agent` span close; Claude transcript
+    /// `assistant`-line arrival), not by the PTY-stream scanner. Carries
+    /// the wall-clock duration of the turn when the source provides it.
+    TurnEnd { duration_ms: Option<u64> },
 }
 
 #[derive(Debug)]

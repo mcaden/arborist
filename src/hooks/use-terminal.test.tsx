@@ -12,6 +12,7 @@ const mockTerminals: Array<{
   focus: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
+  refresh: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
@@ -26,6 +27,7 @@ vi.mock('@xterm/xterm', () => {
       focus: vi.fn(),
       dispose: vi.fn(),
       loadAddon: vi.fn(),
+      refresh: vi.fn(),
       cols: 80,
       rows: 24,
     };
@@ -72,17 +74,31 @@ function makeHost(width = 600, height = 400): HTMLDivElement {
   return el;
 }
 
+let originalResizeObserver: typeof ResizeObserver | undefined;
+
 beforeEach(() => {
   vi.useFakeTimers();
   resetBridgeMocks();
   mockTerminals.length = 0;
   mockFitAddons.length = 0;
+  originalResizeObserver = (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver })
+    .ResizeObserver;
 });
 
 afterEach(() => {
   __resetTerminalRegistryForTests();
   document.body.innerHTML = '';
   vi.useRealTimers();
+  // Restore (or delete) ResizeObserver — several tests in this file
+  // overwrite globalThis.ResizeObserver with a fake to capture the
+  // callback. Without this, the fake leaks into later tests/files and
+  // creates order-dependent behavior.
+  if (originalResizeObserver === undefined) {
+    delete (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
+  } else {
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
+      originalResizeObserver;
+  }
 });
 
 describe('useTerminal', () => {
@@ -156,7 +172,7 @@ describe('useTerminal', () => {
     expect(mockFitAddons[0]!.dispose).toHaveBeenCalled();
   });
 
-  it('debounced ResizeObserver triggers fit + sessionResize once', () => {
+  it('fits synchronously on attach and once more after debounced ResizeObserver', () => {
     // Polyfill ResizeObserver capturing the callback.
     let captured: ResizeObserverCallback | null = null;
     const observe = vi.fn();
@@ -176,7 +192,15 @@ describe('useTerminal', () => {
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    // Fire several rapid resizes; only one debounced call should fire.
+    // Initial synchronous fit happens during attach so the renderer is in
+    // a known state immediately, without waiting for the observer's first
+    // tick (which races with font loading).
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+    // First sessionResize fires because lastCols/lastRows defaulted to 0.
+    expect(sessionResize).toHaveBeenCalledTimes(1);
+    expect(sessionResize).toHaveBeenCalledWith({ sessionId: 's1', cols: 80, rows: 24 });
+
+    // Fire several rapid observer ticks; only one debounced fit follows.
     act(() => {
       captured!([], {} as ResizeObserver);
       captured!([], {} as ResizeObserver);
@@ -186,9 +210,9 @@ describe('useTerminal', () => {
       vi.advanceTimersByTime(60);
     });
 
-    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+    // Dimensions unchanged → no second sessionResize emission.
     expect(sessionResize).toHaveBeenCalledTimes(1);
-    expect(sessionResize).toHaveBeenCalledWith({ sessionId: 's1', cols: 80, rows: 24 });
   });
 
   it('initTerminalRouter is idempotent: calling twice does not double-subscribe', () => {
@@ -196,5 +220,83 @@ describe('useTerminal', () => {
     initTerminalRouter();
     initTerminalRouter();
     expect(onSessionOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('refit() runs fit + refresh and emits sessionResize only when dims change', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    // Attach already fit once and emitted one resize (0,0 → 80,24), and
+    // refreshed the renderer once (rows=24, so refresh(0, 23)).
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+    expect(sessionResize).toHaveBeenCalledTimes(1);
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalledTimes(1);
+    expect(mockTerminals[0]!.refresh).toHaveBeenLastCalledWith(0, 23);
+
+    // Same dims → fit + refresh both run (forces internal recompute and
+    // viewport repaint) but no extra sessionResize.
+    act(() => result.current.refit());
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalledTimes(2);
+    expect(sessionResize).toHaveBeenCalledTimes(1);
+
+    // Change reported dims → refit emits a new sessionResize and repaints
+    // against the new row count.
+    mockTerminals[0]!.cols = 100;
+    mockTerminals[0]!.rows = 30;
+    act(() => result.current.refit());
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(3);
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalledTimes(3);
+    expect(mockTerminals[0]!.refresh).toHaveBeenLastCalledWith(0, 29);
+    expect(sessionResize).toHaveBeenCalledTimes(2);
+    expect(sessionResize).toHaveBeenLastCalledWith({ sessionId: 's1', cols: 100, rows: 30 });
+  });
+
+  it('refit() is a no-op when the terminal is not attached', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    expect(() => act(() => result.current.refit())).not.toThrow();
+    expect(mockFitAddons[0]!.fit).not.toHaveBeenCalled();
+    expect(mockTerminals[0]!.refresh).not.toHaveBeenCalled();
+    expect(sessionResize).not.toHaveBeenCalled();
+  });
+
+  it('refit() does not cancel a pending debounced fit when fit() throws', () => {
+    let captured: ResizeObserverCallback | null = null;
+    class FakeRO {
+      constructor(cb: ResizeObserverCallback) {
+        captured = cb;
+      }
+      observe = vi.fn();
+      disconnect = vi.fn();
+      unobserve = vi.fn();
+    }
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
+      FakeRO as unknown as typeof ResizeObserver;
+
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    // Initial sync fit consumed (1 call). Now arrange for the next fit
+    // (debounced via the observer) to be in flight.
+    mockFitAddons[0]!.fit.mockClear();
+
+    act(() => {
+      captured!([], {} as ResizeObserver);
+    });
+    // Timer is pending; fit not yet called.
+    expect(mockFitAddons[0]!.fit).not.toHaveBeenCalled();
+
+    // Make the next fit() throw — simulates an ancestor going display:none
+    // mid-debounce so the host is now zero-size.
+    mockFitAddons[0]!.fit.mockImplementationOnce(() => {
+      throw new Error('zero size');
+    });
+    act(() => result.current.refit());
+    // refit threw; the pending debounce should NOT have been cancelled.
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    // Advance past the debounce window — the original pending fit fires.
+    act(() => vi.advanceTimersByTime(60));
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
   });
 });

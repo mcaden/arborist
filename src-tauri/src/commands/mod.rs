@@ -26,10 +26,10 @@ use tauri::{Emitter, Manager};
 
 use crate::config_store::{list_instructions_for, ConfigStore};
 use crate::types::{
-    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCreateArgs, SessionId,
-    SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView, WorkspaceValidateArgs, WorkspaceValidateResult,
-    WorktreeCreateArgs, WorktreeCreateResult,
+    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult,
+    SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionOutputEvent,
+    SessionResizeArgs, SessionStatus, SessionStatusEvent, SessionView, WorkspaceValidateArgs,
+    WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
 };
 
 pub use session::AppContext;
@@ -109,9 +109,12 @@ pub async fn session_list(app: tauri::AppHandle) -> Result<Vec<SessionView>, App
 }
 
 #[tauri::command]
-pub async fn session_close(app: tauri::AppHandle, args: SessionIdArg) -> Result<(), AppError> {
+pub async fn session_close(
+    app: tauri::AppHandle,
+    args: SessionCloseArgs,
+) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
-    session::session_close_impl(&ctx, args.session_id).await
+    session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
 }
 
 #[tauri::command]
@@ -300,6 +303,24 @@ pub fn build_production_ai_session_discover(
             }
         },
     )
+}
+
+/// Build the production turn-end emitter — fires a
+/// [`crate::activity::ActivityEvent::TurnEnd`] over the existing
+/// `session://activity` channel so the frontend's activity reducer
+/// handles it the same way as PTY-derived activity events. Tests
+/// substitute a capturing closure.
+#[must_use]
+pub fn build_production_turn_emit(app: tauri::AppHandle) -> crate::session_metrics::TurnCb {
+    Arc::new(move |session_id: SessionId, duration_ms: Option<u64>| {
+        let payload = crate::types::SessionActivityEvent {
+            session_id,
+            event: crate::activity::ActivityEvent::TurnEnd { duration_ms },
+        };
+        if let Err(e) = app.emit("session://activity", payload) {
+            tracing::debug!(session_id = %session_id, error = %e, "emit session://activity (turnEnd) failed");
+        }
+    })
 }
 
 #[cfg(test)]

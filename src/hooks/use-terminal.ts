@@ -20,6 +20,12 @@
 // * `ResizeObserver` is debounced ~50 ms, then drives `fitAddon.fit()` →
 //   `session_resize`. The observer is owned per-attachment (i.e. lives until
 //   `detach()`); the terminal itself outlives it.
+// * `refit()` is exposed so callers can imperatively re-measure + repaint the
+//   terminal — used on tab activation (the host doesn't change size on tab
+//   switch, so ResizeObserver wouldn't otherwise fire) and after web fonts
+//   resolve. It runs `fit()` + `term.refresh()` to recover from any stale
+//   renderer state (e.g. measurements taken pre-font-load or while the
+//   panel was `visibility: hidden`).
 
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
@@ -50,6 +56,7 @@ const registry = new Map<SessionId, RegistryEntry>();
 
 let outputUnlisten: Promise<() => void> | null = null;
 let storeUnsubscribe: (() => void) | null = null;
+let fontsReadyAttached = false;
 
 function ensureGlobalSubscriptions(): void {
   if (outputUnlisten === null) {
@@ -83,6 +90,32 @@ function ensureGlobalSubscriptions(): void {
       }
       previousIds = currentIds;
     });
+  }
+
+  // Best-effort: once web fonts have settled, refit every attached terminal.
+  // Initial fits taken before the monospace font fully loaded can produce
+  // wrong cell metrics, leaving the renderer "squished" until the next
+  // window resize. Guarded — the FontFaceSet API isn't available in older
+  // WebViews and may not exist in jsdom.
+  if (
+    !fontsReadyAttached &&
+    typeof document !== 'undefined' &&
+    'fonts' in document &&
+    document.fonts &&
+    typeof document.fonts.ready === 'object'
+  ) {
+    fontsReadyAttached = true;
+    void document.fonts.ready
+      .then(() => {
+        for (const [id, entry] of registry) {
+          if (entry.wrapper && entry.wrapper.isConnected) {
+            refitEntry(id, entry);
+          }
+        }
+      })
+      .catch(() => {
+        // ignore — refit is best-effort
+      });
   }
 }
 
@@ -146,6 +179,59 @@ function teardownObserver(entry: RegistryEntry): void {
   }
 }
 
+/**
+ * Re-measure + repaint a single terminal. Safe to call on an unattached or
+ * zero-size terminal (no-ops). Only emits `sessionResize` when cols/rows
+ * have actually changed since the last successful fit. Always calls
+ * `term.refresh()` when the renderer has a non-zero viewport — this is the
+ * recovery path for stale canvas state after a visibility transition or a
+ * pre-font-load initial measurement.
+ */
+function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
+  if (!entry.wrapper || !entry.wrapper.isConnected) return;
+  try {
+    entry.fitAddon.fit();
+  } catch {
+    // fit() throws on zero-size hosts (e.g. an ancestor is display:none).
+    // Bail without clearing any pending debounced fit — that fit was
+    // queued for a reason (a real ResizeObserver tick) and may still be
+    // wanted once the host is sized again. The next observer tick when
+    // the host gains a non-zero rect will also reschedule.
+    return;
+  }
+
+  // Successful fit — we own the freshly-measured state, so any pending
+  // debounced fit is now redundant. Clear it before any further bail-outs
+  // so the invariant "successful fit ⇒ no stale debounce" always holds.
+  if (entry.resizeTimer !== null) {
+    clearTimeout(entry.resizeTimer);
+    entry.resizeTimer = null;
+  }
+
+  const cols = entry.term.cols;
+  const rows = entry.term.rows;
+  if (cols <= 0 || rows <= 0) return;
+
+  // Force the renderer to repaint the visible viewport. xterm's canvas
+  // renderer can hold stale state when the element transitioned from
+  // visibility:hidden → visible, or when fit() computed the same dims as
+  // last time and skipped the implicit refresh. `refresh()` is bounded
+  // (viewport only, not scrollback) so this is cheap.
+  try {
+    entry.term.refresh(0, rows - 1);
+  } catch {
+    // Ignore — xterm versions without refresh() are extremely old.
+  }
+
+  if (cols === entry.lastCols && rows === entry.lastRows) return;
+  entry.lastCols = cols;
+  entry.lastRows = rows;
+  void sessionResize({ sessionId, cols, rows }).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[use-terminal] session_resize(${sessionId}) failed: ${message}`);
+  });
+}
+
 function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivElement): void {
   if (entry.host === host && entry.wrapper && entry.wrapper.isConnected) {
     return;
@@ -170,40 +256,18 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
     entry.term.open(wrapper);
   }
 
-  const fire = (): void => {
-    entry.resizeTimer = null;
-    try {
-      entry.fitAddon.fit();
-    } catch {
-      // fit() throws if the wrapper has zero dimensions (e.g. while the
-      // host is `display: none`). Silently skip — the next observer tick
-      // will retry once the host is sized.
-      return;
-    }
-    const cols = entry.term.cols;
-    const rows = entry.term.rows;
-    if (cols <= 0 || rows <= 0) return;
-    if (cols === entry.lastCols && rows === entry.lastRows) return;
-    entry.lastCols = cols;
-    entry.lastRows = rows;
-    void sessionResize({ sessionId, cols, rows }).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[use-terminal] session_resize(${sessionId}) failed: ${message}`);
-    });
-  };
+  // Synchronous initial fit — don't rely on ResizeObserver's first tick
+  // (which races with font loading and can leave the renderer in a stale
+  // state if it fires too early).
+  refitEntry(sessionId, entry);
 
   if (typeof ResizeObserver !== 'undefined') {
     const observer = new ResizeObserver(() => {
       if (entry.resizeTimer !== null) clearTimeout(entry.resizeTimer);
-      entry.resizeTimer = setTimeout(fire, RESIZE_DEBOUNCE_MS);
+      entry.resizeTimer = setTimeout(() => refitEntry(sessionId, entry), RESIZE_DEBOUNCE_MS);
     });
     observer.observe(host);
     entry.observer = observer;
-  } else {
-    // Fallback for jsdom and other no-ResizeObserver environments: fire
-    // once synchronously so tests can still drive the resize path via
-    // container dimension setters.
-    fire();
   }
 }
 
@@ -221,6 +285,14 @@ export interface UseTerminalApi {
   attach: (el: HTMLDivElement) => void;
   detach: () => void;
   focus: () => void;
+  /**
+   * Imperatively re-measure + repaint the terminal. Use after a parent
+   * visibility transition (e.g. tab activation) — the host's CSS box
+   * doesn't change size on `visibility: hidden` ↔ `visible`, so
+   * ResizeObserver wouldn't fire on its own. No-op if the terminal isn't
+   * attached or has zero dimensions.
+   */
+  refit: () => void;
 }
 
 export function useTerminal(sessionId: SessionId): UseTerminalApi {
@@ -246,13 +318,20 @@ export function useTerminal(sessionId: SessionId): UseTerminalApi {
     entry?.term.focus();
   }, []);
 
+  const refit = useCallback(() => {
+    const id = sessionIdRef.current;
+    const entry = registry.get(id);
+    if (!entry) return;
+    refitEntry(id, entry);
+  }, []);
+
   // Eagerly create the terminal so `session://output` events are buffered
   // by xterm even before `attach` runs.
   useEffect(() => {
     getOrCreate(sessionId);
   }, [sessionId]);
 
-  return useMemo(() => ({ attach, detach, focus }), [attach, detach, focus]);
+  return useMemo(() => ({ attach, detach, focus, refit }), [attach, detach, focus, refit]);
 }
 
 export function disposeTerminal(sessionId: SessionId): void {
@@ -305,6 +384,7 @@ export function __resetTerminalRegistryForTests(): void {
     }
     storeUnsubscribe = null;
   }
+  fontsReadyAttached = false;
 }
 
 /** Test-only: peek at the registry. */
