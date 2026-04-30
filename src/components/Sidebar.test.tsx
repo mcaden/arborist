@@ -369,6 +369,26 @@ describe('Sidebar', () => {
   });
 });
 
+describe('Sidebar unread accessibility', () => {
+  it("appends '(unread output)' to inactive tabs' aria-label so screen readers hear it", () => {
+    seed([makeView('a'), makeView('b')], 'b');
+    useSessionStore.setState({ hasUnread: { a: true } });
+    render(<Sidebar />);
+    expect(tabByLabel('claude session a')).toHaveAttribute(
+      'aria-label',
+      'claude session a (unread output)',
+    );
+    // Active tab never carries the unread suffix — focusing it clears the flag.
+    expect(tabByLabel('claude session b')).toHaveAttribute('aria-label', 'claude session b');
+  });
+
+  it('does not append the suffix when hasUnread is false', () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    expect(tabByLabel('claude session a')).toHaveAttribute('aria-label', 'claude session a');
+  });
+});
+
 describe('Sidebar metrics indicator (Issue #3)', () => {
   it('renders a compact metrics line under the label when metrics are present', () => {
     seed([makeView('a')], 'a');

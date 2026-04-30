@@ -33,7 +33,7 @@ use crate::config_store::{
 };
 use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
-use crate::session_metrics::{MetricsCb, MetricsRegistry};
+use crate::session_metrics::{MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult,
     SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView,
@@ -62,6 +62,12 @@ pub struct AppContext {
     /// Production wires this into `app.emit("session://metrics", …)`;
     /// tests substitute a capturing closure.
     pub metrics_emit: MetricsCb,
+    /// Callback the metrics watchers invoke when an agent turn completes
+    /// (Copilot OTel `invoke_agent` close; Claude transcript assistant
+    /// line). Production wires this into the existing
+    /// `session://activity` channel as a `TurnEnd` variant; tests
+    /// substitute a capturing closure.
+    pub turn_emit: TurnCb,
 }
 
 impl AppContext {
@@ -72,6 +78,7 @@ impl AppContext {
         sink: PtySink,
         git_runner: Arc<dyn GitRunner>,
         metrics_emit: MetricsCb,
+        turn_emit: TurnCb,
     ) -> Self {
         Self {
             pool,
@@ -81,6 +88,7 @@ impl AppContext {
             restored: AtomicBool::new(false),
             metrics: Arc::new(MetricsRegistry::new()),
             metrics_emit,
+            turn_emit,
         }
     }
 
@@ -90,7 +98,14 @@ impl AppContext {
     /// fake [`GitRunner`].
     #[must_use]
     pub fn with_real_git(pool: Arc<PtyPool>, store: ConfigStore, sink: PtySink) -> Self {
-        Self::new(pool, store, sink, Arc::new(RealGitRunner), Arc::new(|_| {}))
+        Self::new(
+            pool,
+            store,
+            sink,
+            Arc::new(RealGitRunner),
+            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
+        )
     }
 }
 
@@ -215,6 +230,7 @@ pub fn session_create_impl(
         session.worktree_path.clone(),
         SystemTime::now(),
         Arc::clone(&ctx.metrics_emit),
+        Arc::clone(&ctx.turn_emit),
     );
 
     info!(session_id = %session.id, pid, label = %label, "session created");
@@ -554,6 +570,7 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         session.worktree_path.clone(),
         SystemTime::now(),
         Arc::clone(&ctx.metrics_emit),
+        Arc::clone(&ctx.turn_emit),
     );
     Ok(())
 }
@@ -639,6 +656,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                     session.worktree_path.clone(),
                     SystemTime::now(),
                     Arc::clone(&ctx.metrics_emit),
+                    Arc::clone(&ctx.turn_emit),
                 );
             }
             Err(e) => {

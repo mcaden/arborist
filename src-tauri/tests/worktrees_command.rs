@@ -71,6 +71,7 @@ fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {
         null_sink(),
         git,
         Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
     ))
 }
 

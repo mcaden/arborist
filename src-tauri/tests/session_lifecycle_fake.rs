@@ -276,7 +276,14 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let pool = Arc::new(PtyPool::new(spawner.clone() as Arc<dyn PtySpawner>));
     let events = Arc::new(CapturedEvents::default());
     let sink = capture_sink(Arc::clone(&events), store.clone());
-    let ctx = Arc::new(AppContext::new(pool, store, sink, git, Arc::new(|_| {})));
+    let ctx = Arc::new(AppContext::new(
+        pool,
+        store,
+        sink,
+        git,
+        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
+    ));
 
     Harness {
         ctx,
