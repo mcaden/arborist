@@ -181,6 +181,48 @@ describe('Sidebar', () => {
     expect(checkbox2).not.toBeChecked();
   });
 
+  it('alerts the user and still removes the tab when the worktree-delete step fails', async () => {
+    seed([makeView('a', { worktreePath: '/repo/.worktrees/feature-x' })], 'a');
+    bridgeMock.sessionClose.mockResolvedValueOnce({
+      worktreeDeleteError: 'git worktree remove failed: locked',
+    });
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    render(<Sidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /delete the worktree/i }));
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: /terminate.*delete worktree/i }));
+    });
+
+    // Tab is gone (UI converged on "session closed") even though deletion failed.
+    expect(useSessionStore.getState().sessions).toHaveLength(0);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0]?.[0]).toMatch(/worktree remove failed: locked/);
+    alertSpy.mockRestore();
+  });
+
+  it('alerts the user and still removes the tab when sessionClose throws', async () => {
+    seed([makeView('a')], 'a');
+    bridgeMock.sessionClose.mockRejectedValueOnce(new Error('pty kill timed out'));
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    render(<Sidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }),
+      );
+    });
+
+    // UI converges to "tab gone" so the user is never stuck with a stale row.
+    expect(useSessionStore.getState().sessions).toHaveLength(0);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0]?.[0]).toMatch(/pty kill timed out/);
+    alertSpy.mockRestore();
+  });
+
   it('keyboard nav: ArrowDown / Home / End / Enter / Delete', () => {
     seed([makeView('a'), makeView('b'), makeView('c')], 'a');
     render(<Sidebar />);

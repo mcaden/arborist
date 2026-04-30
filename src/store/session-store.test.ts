@@ -516,7 +516,9 @@ describe('close + metrics', () => {
         a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
       },
     });
-    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve());
+    bridgeMock.sessionClose.mockImplementation(() =>
+      Promise.resolve({ worktreeDeleteError: null }),
+    );
     await useSessionStore.getState().actions.close('a');
     expect(useSessionStore.getState().metrics['a']).toBeUndefined();
   });

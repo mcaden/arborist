@@ -48,10 +48,25 @@ export function CloseConfirmDialog(): JSX.Element | null {
   };
 
   const onConfirm = async (): Promise<void> => {
+    let alertMessage: string | null = null;
     try {
-      await actions.close(pendingId, deleteWorktree);
+      const result = await actions.close(pendingId, deleteWorktree);
+      if (result.worktreeDeleteError !== null) {
+        alertMessage = `Session terminated, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`;
+      }
+    } catch (error: unknown) {
+      const detail =
+        error instanceof Error && error.message.length > 0 ? error.message : String(error);
+      alertMessage = `Failed to terminate session:\n\n${detail}`;
     } finally {
       actions.cancelClose();
+    }
+    if (
+      alertMessage !== null &&
+      typeof window !== 'undefined' &&
+      typeof window.alert === 'function'
+    ) {
+      window.alert(alertMessage);
     }
   };
 

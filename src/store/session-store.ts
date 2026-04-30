@@ -30,6 +30,7 @@ import {
   sessionCreate,
   sessionFocus,
   sessionList,
+  type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
 import type {
@@ -87,7 +88,7 @@ export type SessionActivity = 'working' | 'idle' | 'attention';
 export interface SessionStoreActions {
   hydrate: () => Promise<void>;
   create: (args: SessionCreateArgs) => Promise<SessionView>;
-  close: (id: SessionId, deleteWorktree?: boolean) => Promise<void>;
+  close: (id: SessionId, deleteWorktree?: boolean) => Promise<SessionCloseResult>;
   focus: (id: SessionId) => Promise<void>;
   reorder: (ids: SessionId[]) => Promise<void>;
   requestClose: (id: SessionId) => void;
@@ -171,42 +172,61 @@ export const useSessionStore = create<Store>((set, get) => {
     },
 
     close: async (id, deleteWorktree) => {
-      await sessionClose({ sessionId: id, deleteWorktree: deleteWorktree ?? false });
+      // Always converge local state to "session gone" even if the backend
+      // call rejects. The PTY may have been killed and the persisted
+      // record removed before the failure (e.g. a transient disk error in
+      // a later step), and leaving a stale row in the sidebar is a worse
+      // UX than briefly out-of-sync with the backend. Worktree-deletion
+      // failures arrive as a non-throwing `worktreeDeleteError` field;
+      // hard backend failures still propagate to the caller AFTER local
+      // pruning.
       const previous = get().sessions;
       const wasActive = get().activeId === id;
-      const nextSessions = previous.filter((s) => s.id !== id);
-      const patch: Partial<SessionStoreState> = { sessions: nextSessions };
-      if (wasActive) {
-        // Always assign explicitly so `activeId` is cleared when the last
-        // session closes.
-        patch.activeId = pickNeighbour(previous, id);
+      const pruneLocal = (): void => {
+        const nextSessions = previous.filter((s) => s.id !== id);
+        const patch: Partial<SessionStoreState> = { sessions: nextSessions };
+        if (wasActive) {
+          // Always assign explicitly so `activeId` is cleared when the last
+          // session closes.
+          patch.activeId = pickNeighbour(previous, id);
+        }
+        // `pendingClose` is closed automatically when the session it
+        // referenced is gone.
+        if (get().pendingClose === id) patch.pendingClose = undefined;
+        // Drop any orphan status-message keyed under this session id.
+        const { statusMessages, hasUnread, activity, metrics } = get();
+        if (id in statusMessages) {
+          const next = { ...statusMessages };
+          delete next[id];
+          patch.statusMessages = next;
+        }
+        if (id in hasUnread) {
+          const nextUnread = { ...hasUnread };
+          delete nextUnread[id];
+          patch.hasUnread = nextUnread;
+        }
+        if (id in activity) {
+          const nextActivity = { ...activity };
+          delete nextActivity[id];
+          patch.activity = nextActivity;
+        }
+        if (id in metrics) {
+          const nextMetrics = { ...metrics };
+          delete nextMetrics[id];
+          patch.metrics = nextMetrics;
+        }
+        set(patch);
+      };
+
+      try {
+        const result = await sessionClose({
+          sessionId: id,
+          deleteWorktree: deleteWorktree ?? false,
+        });
+        return result;
+      } finally {
+        pruneLocal();
       }
-      // `pendingClose` is closed automatically when the session it referenced
-      // is gone.
-      if (get().pendingClose === id) patch.pendingClose = undefined;
-      // Drop any orphan status-message keyed under this session id.
-      const { statusMessages, hasUnread, activity, metrics } = get();
-      if (id in statusMessages) {
-        const next = { ...statusMessages };
-        delete next[id];
-        patch.statusMessages = next;
-      }
-      if (id in hasUnread) {
-        const nextUnread = { ...hasUnread };
-        delete nextUnread[id];
-        patch.hasUnread = nextUnread;
-      }
-      if (id in activity) {
-        const nextActivity = { ...activity };
-        delete nextActivity[id];
-        patch.activity = nextActivity;
-      }
-      if (id in metrics) {
-        const nextMetrics = { ...metrics };
-        delete nextMetrics[id];
-        patch.metrics = nextMetrics;
-      }
-      set(patch);
     },
 
     focus: async (id) => {

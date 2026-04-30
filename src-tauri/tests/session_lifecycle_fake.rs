@@ -521,13 +521,15 @@ async fn close_with_delete_worktree_refuses_main_workspace_root() {
         .unwrap();
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
-    let err = session_close_impl(&h.ctx, view.id, true)
+    let result = session_close_impl(&h.ctx, view.id, true)
         .await
-        .expect_err("must refuse to delete the main worktree");
+        .expect("close itself should succeed even when worktree deletion is refused");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected a worktree-delete-error in the result");
     assert!(
-        err.message.contains("workspace root") || err.message.contains("main worktree"),
-        "expected a workspace-root refusal message, got: {}",
-        err.message
+        msg.contains("workspace root") || msg.contains("main worktree"),
+        "expected a workspace-root refusal message, got: {msg}",
     );
     assert!(
         git.removes.lock().unwrap().is_empty(),
@@ -554,19 +556,23 @@ async fn close_with_delete_worktree_propagates_git_failure() {
         .unwrap();
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
-    let err = session_close_impl(&h.ctx, view.id, true)
+    let result = session_close_impl(&h.ctx, view.id, true)
         .await
-        .expect_err("git failure must surface to caller");
+        .expect("close itself should succeed even when git fails");
+    let msg = result
+        .worktree_delete_error
+        .expect("git failure must surface as a worktree-delete-error");
     assert!(
-        err.message.contains("not a working tree"),
-        "expected the git stderr to bubble up, got: {}",
-        err.message
+        msg.contains("not a working tree"),
+        "expected the git stderr to bubble up, got: {msg}",
     );
     assert_eq!(
         git.removes.lock().unwrap().len(),
         1,
         "remove_worktree should still have been attempted"
     );
+    // Session record is gone regardless of the post-close worktree failure.
+    assert!(session_list_impl(&h.ctx).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -576,18 +582,21 @@ async fn close_with_delete_worktree_refuses_when_no_workspace_root() {
     // No workspace_root configured.
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
-    let err = session_close_impl(&h.ctx, view.id, true)
+    let result = session_close_impl(&h.ctx, view.id, true)
         .await
-        .expect_err("must refuse without workspace_root");
+        .expect("close itself should succeed even without workspace_root");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected workspace-root error in result");
     assert!(
-        err.message.contains("workspace root"),
-        "expected workspace-root error, got: {}",
-        err.message
+        msg.contains("workspace root"),
+        "expected workspace-root error, got: {msg}",
     );
     assert!(
         git.removes.lock().unwrap().is_empty(),
         "remove_worktree must not be invoked"
     );
+    assert!(session_list_impl(&h.ctx).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -606,13 +615,15 @@ async fn close_with_delete_worktree_refuses_when_outside_workspace_root() {
         .unwrap();
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
-    let err = session_close_impl(&h.ctx, view.id, true)
+    let result = session_close_impl(&h.ctx, view.id, true)
         .await
-        .expect_err("must refuse paths outside workspace_root");
+        .expect("close itself should succeed even when path is outside workspace_root");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected containment error in result");
     assert!(
-        err.message.contains("outside workspace root"),
-        "expected containment error, got: {}",
-        err.message
+        msg.contains("outside workspace root"),
+        "expected containment error, got: {msg}",
     );
     assert!(
         git.removes.lock().unwrap().is_empty(),

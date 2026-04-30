@@ -35,8 +35,9 @@ use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
 use crate::session_metrics::{MetricsCb, MetricsRegistry};
 use crate::types::{
-    AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCreateArgs, SessionId,
-    SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView, Tool,
+    AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult,
+    SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView,
+    Tool,
 };
 
 /// Wiring shared by every Phase 7 session command. Built once at startup
@@ -242,7 +243,7 @@ pub async fn session_close_impl(
     ctx: &AppContext,
     id: SessionId,
     delete_worktree: bool,
-) -> Result<(), AppError> {
+) -> Result<SessionCloseResult, AppError> {
     // 0. Stop the metrics watcher (Issue #3) before tearing the rest down
     //    so it never observes a half-cleaned session.
     ctx.metrics.stop(&id);
@@ -299,13 +300,23 @@ pub async fn session_close_impl(
         .map_err(AppError::from)?;
 
     // 5. Optional: remove the git worktree from disk. The session is
-    //    already gone from the store at this point — failing here surfaces
-    //    a toast but does not resurrect the tab. The user explicitly
-    //    opted in via the close-confirm dialog.
+    //    already gone from the store at this point, so deletion failure
+    //    must NOT fail the overall close (that would leave the frontend
+    //    unable to converge on a "tab gone" state). Surface the error in
+    //    the result instead.
+    let mut result = SessionCloseResult::default();
     if let Some(wt) = worktree_path {
-        delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root)?;
+        if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root) {
+            warn!(
+                session_id = %id,
+                worktree_path = %wt.display(),
+                error = %error.message,
+                "worktree deletion failed after session close",
+            );
+            result.worktree_delete_error = Some(error.message);
+        }
     }
-    Ok(())
+    Ok(result)
 }
 
 /// Helper: validate and execute `git worktree remove --force`. Refuses to

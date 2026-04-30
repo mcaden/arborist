@@ -549,6 +549,21 @@ pub struct SessionCloseArgs {
     pub delete_worktree: bool,
 }
 
+/// Result of `session_close`. The session record and PTY are always torn
+/// down on success; if the user opted into worktree deletion and the
+/// `git worktree remove` step failed, the failure is reported here as a
+/// warning string rather than as a hard error so callers can converge UI
+/// state regardless.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SessionCloseResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCloseResult {
+    /// Human-readable error message from `git worktree remove`. `None`
+    /// when worktree deletion was not requested or succeeded.
+    pub worktree_delete_error: Option<String>,
+}
+
 /// Arguments for `session_resize`.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SessionResizeArgs`.

@@ -69,6 +69,19 @@ export interface SessionCloseArgs {
   deleteWorktree?: boolean;
 }
 
+/**
+ * Result of `session_close`. The session record + PTY are always torn
+ * down on success; if the user opted into worktree deletion and the
+ * `git worktree remove` step failed, that failure is reported here as a
+ * warning string instead of as a hard error so the UI can converge on a
+ * "tab gone" state regardless.
+ *
+ * MIRROR: `src-tauri/src/types.rs::SessionCloseResult`.
+ */
+export interface SessionCloseResult {
+  worktreeDeleteError: string | null;
+}
+
 export interface SessionResizeArgs {
   sessionId: SessionId;
   cols: number;
@@ -118,10 +131,13 @@ export function sessionList(): Promise<SessionView[]> {
  * session out of `lastOpenSessions`/`tabOrder`/`activeSessionId`. Idempotent
  * for already-exited sessions. When `deleteWorktree` is `true`, the backend
  * additionally runs `git worktree remove --force` on the session's
- * worktree.
+ * worktree; failures of that step surface in
+ * [`SessionCloseResult.worktreeDeleteError`] rather than as a thrown
+ * error, so callers can always treat a fulfilled promise as "session
+ * gone".
  */
-export function sessionClose(args: SessionCloseArgs): Promise<void> {
-  return invoke<void>('session_close', { args });
+export function sessionClose(args: SessionCloseArgs): Promise<SessionCloseResult> {
+  return invoke<SessionCloseResult>('session_close', { args });
 }
 
 /**
