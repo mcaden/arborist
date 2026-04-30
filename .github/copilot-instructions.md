@@ -11,6 +11,20 @@ Read both before proposing implementation work. When the codebase is scaffolded,
 
 This repo has a remote at `origin` -> `https://github.com/mcaden/arborist.git`. Agents may commit, push feature branches, and open pull requests. Do not push directly to `main` and do not force-push shared branches; land changes through PRs.
 
+## Dogfooding safety — don't kill the host
+
+This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or `arborist` on macOS/Linux) and you, the agent, are executing inside one of its PTY sessions. Killing the host crashes the user's editor and every sibling session, including yours. **A previous agent killed the host this way — do not repeat it.**
+
+Hard rules:
+
+- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `npm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
+- **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host. The runtime already forbids these; do not work around the rule.
+- **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
+- If your `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
+- Do not run `npm run tauri:dev` or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `npm run build`, or `npm test -- --run` for verification instead.
+
+If a task genuinely requires restarting the host, ask the user to do it — never do it yourself.
+
 ## What Arborist is
 
 A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git worktree, in a sidebar of vertical tabs with a single visible PTY terminal in the main area.
@@ -175,7 +189,7 @@ For exact commands, watcher setup, Husky configuration, test layout, and end-of-
 A change is mergeable when **all** of these hold:
 1. New/changed behavior has direct test coverage that fails without the change.
 2. `npm run lint`, `npm test`, `cargo clippy -D warnings`, `cargo test` all pass locally.
-3. The app launches via `npm run tauri dev` and the touched flow works end-to-end manually at least once.
+3. The app launches via `npm run tauri dev` (run by the **user**, not the agent — see "Dogfooding safety") and the touched flow works end-to-end manually at least once.
 4. No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()`, `console.log`, or `dbg!()` added without justification in a code comment.
 5. If a Rust struct in `types.rs` changed, its TS mirror changed in the same commit.
 
@@ -188,3 +202,4 @@ A change is mergeable when **all** of these hold:
 - Forgetting to add a new command to `capabilities/main.json` — the call will be rejected at runtime with no compile-time warning.
 - Holding a `Mutex` guard across `.await` — deadlocks under load.
 - Storing credentials anywhere — auth is the CLI tool's job. (SPEC NF-05)
+- Killing the host `arborist` process or its dev-server parents to "clean up" or break a target lock — see "Dogfooding safety". A previous agent crashed the user's editor doing this.
