@@ -316,14 +316,43 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 /// so appending binds correctly even when the user has prelaunch hooks
 /// that themselves contain `&&` inside quoted strings.
 ///
-/// `ai_session_id` is shell-quoted using the host quoter; in practice
-/// CLI session ids are UUIDs, but defensive quoting keeps a future
-/// non-UUID id (e.g. Copilot's session-by-name resume) from corrupting
-/// the command.
+/// `ai_session_id` is shell-quoted using the host quoter only when it
+/// contains characters that could be interpreted by the shell. In
+/// practice CLI session ids are UUIDs (ASCII alphanumerics + `-`), and
+/// quoting them is actively harmful on Windows: the `cmd.exe` quoter
+/// wraps the value in literal `"…"`, and CLIs distributed as `.cmd`
+/// shims (like `copilot.cmd`) forward `%*` verbatim to the underlying
+/// `node` process, which then sees the surrounding quotes as part of
+/// the argument value — `--resume "<uuid>"` reaches the CLI with the
+/// quotes attached and resume fails. Defensive quoting is still applied
+/// for any future non-safe id (e.g. Copilot's session-by-name resume).
 #[must_use]
 pub fn with_resume(composed_command: &str, _tool: Tool, ai_session_id: &str) -> String {
-    let quoter = platform_shell().quoter;
-    format!("{composed_command} --resume {}", quoter(ai_session_id))
+    if is_shell_safe_token(ai_session_id) {
+        format!("{composed_command} --resume {ai_session_id}")
+    } else {
+        let quoter = platform_shell().quoter;
+        format!("{composed_command} --resume {}", quoter(ai_session_id))
+    }
+}
+
+/// True for non-empty values composed entirely of characters that have
+/// no special meaning to either `sh` or `cmd.exe`: ASCII letters,
+/// digits, `-`, `_`, and `.`. UUIDs and similar slugs trivially satisfy
+/// this and can be appended to a composed command without quoting.
+///
+/// The set is intentionally conservative — other characters (`@ + : = ,`
+/// etc.) are also unquoted-safe on both shells, but the conservative
+/// floor covers every realistic AI-session id today (UUIDs from both
+/// Claude and Copilot) and any value outside it falls through to the
+/// host quoter, which is correct, just verbose. Do not expand this set
+/// without auditing every shell context the resulting command flows
+/// through (`cmd.exe /c`, `.cmd` shim → CRT re-parse, `sh -c`).
+fn is_shell_safe_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 // ---------------------------------------------------------------------------
@@ -864,9 +893,11 @@ mod tests {
     // -- with_resume ----------------------------------------------------
 
     #[test]
-    fn with_resume_appends_quoted_id_to_bare_claude() {
+    fn with_resume_appends_verbatim_id_to_bare_claude() {
         let out = with_resume("claude", Tool::Claude, "abc-123");
-        assert_eq!(out, format!("claude --resume {}", host_quote("abc-123")));
+        // Slug-safe id: appended verbatim, no shell quoting (avoids
+        // `.cmd`-shim quote leakage on Windows).
+        assert_eq!(out, "claude --resume abc-123");
     }
 
     #[test]
@@ -875,7 +906,7 @@ mod tests {
         let out = with_resume(base, Tool::Claude, "uuid-1");
         assert_eq!(
             out,
-            format!("{base} --resume {}", host_quote("uuid-1")),
+            format!("{base} --resume uuid-1"),
             "resume must be appended after existing flags"
         );
     }
@@ -886,7 +917,24 @@ mod tests {
         // Appending --resume at the end binds to the trailing CLI token.
         let base = "echo hi && nvm use 20 && copilot";
         let out = with_resume(base, Tool::Copilot, "sess-9");
-        assert_eq!(out, format!("{base} --resume {}", host_quote("sess-9")));
+        assert_eq!(out, format!("{base} --resume sess-9"));
+    }
+
+    #[test]
+    fn with_resume_does_not_quote_uuid_ids() {
+        // Regression: cmd.exe quoting of a plain UUID wraps it in
+        // literal `"…"`, which `.cmd` shims (e.g. copilot.cmd) forward
+        // verbatim to node, making the CLI see `--resume "<uuid>"` and
+        // fail to resume. Safe tokens must be appended unquoted on
+        // every platform.
+        let uuid = "1eed651b-6a1b-4c7e-9646-7132eae8c6e9";
+        let out = with_resume("copilot", Tool::Copilot, uuid);
+        assert_eq!(out, format!("copilot --resume {uuid}"));
+        assert!(!out.contains('"'), "no double quotes around safe id: {out}");
+        assert!(
+            !out.contains('\''),
+            "no single quotes around safe id: {out}"
+        );
     }
 
     #[test]
