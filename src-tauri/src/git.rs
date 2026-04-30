@@ -80,6 +80,7 @@ impl GitRunner for RealGitRunner {
         }
 
         let output = match Command::new("git")
+            .current_dir(repo_root)
             .arg("-C")
             .arg(repo_root)
             .args(["worktree", "list", "--porcelain"])
@@ -119,6 +120,7 @@ impl GitRunner for RealGitRunner {
             return Ok(None);
         }
         let output = match Command::new("git")
+            .current_dir(path)
             .arg("-C")
             .arg(path)
             .args(["rev-parse", "--show-toplevel"])
@@ -158,6 +160,7 @@ impl GitRunner for RealGitRunner {
             return Err(Error::WorktreeMissing(repo_root.to_path_buf()));
         }
         let output = Command::new("git")
+            .current_dir(repo_root)
             .arg("-C")
             .arg(repo_root)
             .args(["worktree", "add"])
@@ -383,6 +386,14 @@ locked migrating to slow disk
         use std::process::Command;
         let run = |args: &[&str]| {
             let s = Command::new("git")
+                // Pin process CWD to the tempdir as well as `-C`. On Windows,
+                // `git worktree add` resolves the new worktree's relative
+                // path *and* picks the repo to register against using the
+                // process CWD, not just `-C`. Without this, a test run from
+                // inside another git repo (which is the normal case for
+                // `cargo test`) can end up registering a worktree against
+                // the *outer* repo, polluting it with stale entries.
+                .current_dir(dir)
                 .arg("-C")
                 .arg(dir)
                 .args(args)
@@ -400,6 +411,111 @@ locked migrating to slow disk
         std::fs::write(dir.join("README"), b"hi").unwrap();
         run(&["add", "README"]);
         run(&["commit", "-q", "-m", "init"]);
+    }
+
+    /// RAII guard that force-removes any worktrees registered against
+    /// `repo_root` and prunes stale entries before the underlying `TempDir`
+    /// is dropped. Required on Windows where lingering files inside
+    /// `.git/worktrees/<name>/` can defeat `TempDir`'s recursive-delete and
+    /// leave junk on disk.
+    ///
+    /// As an extra safety net, also scrubs any worktree pointing into the
+    /// tempdir from the *outer* repo containing the test process's CWD
+    /// (typically the arborist checkout that hosts `cargo test`). This
+    /// guards against regression of the historical bug where
+    /// `git -C <tempdir> worktree add` registered against the outer repo
+    /// instead of the tempdir repo.
+    struct WorktreeCleanup {
+        repo_root: PathBuf,
+        tempdir: tempfile::TempDir,
+    }
+
+    impl WorktreeCleanup {
+        fn new(tempdir: tempfile::TempDir) -> Self {
+            let repo_root = tempdir.path().to_path_buf();
+            Self { repo_root, tempdir }
+        }
+
+        fn path(&self) -> &Path {
+            self.tempdir.path()
+        }
+    }
+
+    impl Drop for WorktreeCleanup {
+        fn drop(&mut self) {
+            use std::process::Command;
+
+            // Helper: in-repo cleanup of any linked worktrees.
+            let scrub = |repo: &Path, predicate: &dyn Fn(&Path) -> bool| {
+                let Ok(out) = Command::new("git")
+                    .current_dir(repo)
+                    .arg("-C")
+                    .arg(repo)
+                    .args(["worktree", "list", "--porcelain"])
+                    .output()
+                else {
+                    return;
+                };
+                if !out.status.success() {
+                    return;
+                }
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let parsed = parse_porcelain(&stdout);
+                // Skip the first entry (the main worktree).
+                for wt in parsed.into_iter().skip(1) {
+                    if !predicate(&wt.path) {
+                        continue;
+                    }
+                    // Retry once: under parallel test contention, a transient
+                    // git lock can fail the first remove. Swallow the second
+                    // failure — Drop must not panic.
+                    let mut ok = false;
+                    for _ in 0..2 {
+                        let st = Command::new("git")
+                            .current_dir(repo)
+                            .arg("-C")
+                            .arg(repo)
+                            .args(["worktree", "remove", "--force"])
+                            .arg(&wt.path)
+                            .output();
+                        if matches!(&st, Ok(o) if o.status.success()) {
+                            ok = true;
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    if !ok {
+                        eprintln!(
+                            "WorktreeCleanup: failed to remove {} from {}",
+                            wt.path.display(),
+                            repo.display()
+                        );
+                    }
+                }
+                let _ = Command::new("git")
+                    .current_dir(repo)
+                    .arg("-C")
+                    .arg(repo)
+                    .args(["worktree", "prune"])
+                    .output();
+            };
+
+            // 1. Clean every linked worktree registered in the tempdir repo.
+            scrub(&self.repo_root, &|_| true);
+
+            // 2. Belt-and-braces: if the test process's CWD is inside another
+            //    git repo, scrub any worktree there whose path lies under our
+            //    tempdir. This is the safety net for the historical
+            //    outer-repo-pollution bug.
+            if let Ok(cwd) = std::env::current_dir() {
+                let canon_temp = dunce::canonicalize(&self.repo_root)
+                    .unwrap_or_else(|_| self.repo_root.clone());
+                scrub(&cwd, &|p| {
+                    let cp = dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                    cp.starts_with(&canon_temp)
+                });
+            }
+        }
     }
 
     #[test]
@@ -450,9 +566,14 @@ locked migrating to slow disk
 
     #[test]
     fn real_runner_create_worktree_creates_branch_and_directory() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = WorktreeCleanup::new(tempfile::TempDir::new().unwrap());
         init_git_repo(dir.path());
         let runner = RealGitRunner;
+        // Pass a *relative* path — this matches the production contract
+        // (`worktree_create_impl` always passes `.worktrees/<branch>`) and
+        // is exactly the input shape that previously triggered the
+        // outer-repo-pollution bug. The cleanup guard + production
+        // current_dir fix together keep this hermetic.
         let new_path = runner
             .create_worktree(dir.path(), Path::new(".worktrees/feat-x"), "feat-x")
             .expect("create");
