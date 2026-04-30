@@ -332,16 +332,18 @@ function ParentTabGroup({
         onOpenContextMenu={onOpenContextMenu}
       />
       {subSessions.length > 0 && (
-        <ul role="group" aria-label="Sub-sessions" className="flex flex-col gap-0.5">
-          {subSessions.map((sub) => (
-            <SidebarSubTab
-              key={sub.id}
-              parentId={id}
-              subSessionId={sub.id}
-              parentIsActive={isActive}
-            />
-          ))}
-        </ul>
+        <li role="presentation">
+          <ul role="group" aria-label="Sub-sessions" className="flex flex-col gap-0.5">
+            {subSessions.map((sub) => (
+              <SidebarSubTab
+                key={sub.id}
+                parentId={id}
+                subSessionId={sub.id}
+                parentIsActive={isActive}
+              />
+            ))}
+          </ul>
+        </li>
       )}
     </>
   );
