@@ -72,7 +72,9 @@ export function SidebarTab({
         role="tab"
         id={`session-tab-${id}`}
         aria-selected={isActive}
-        aria-label={`${session.tool} session ${session.label}`}
+        aria-label={`${session.tool} session ${session.label}${
+          hasUnread && !isActive ? ' (unread output)' : ''
+        }`}
         tabIndex={isFocused ? 0 : -1}
         onClick={() => {
           void actions.focus(id);

@@ -558,11 +558,11 @@ export const useLastTurnDurationMs = (id: SessionId | undefined): number | undef
 
 /**
  * Subscribe to the derived `DisplayStatus` for `id`. Recomputes (and
- * re-renders the caller) every minute via a tick so the time-based
- * `idle → awaiting` promotion eventually fires even if no other event
- * touches the session. The 60s cadence is fine because the only
- * threshold we care about is [`AWAITING_GRACE_SECONDS`] and the
- * derivation is pure / cheap.
+ * re-renders the caller) once a second via a tick so the time-based
+ * `idle → awaiting` promotion fires within ~1s of the
+ * [`AWAITING_GRACE_SECONDS`] boundary even if no other event touches
+ * the session. The 1s cadence is cheap (one shared timer for the whole
+ * app) and keeps the displayed status close to its documented timing.
  */
 export function useDisplayStatus(id: SessionId | undefined): DisplayStatus {
   const tickedNow = useNowTickSeconds();
@@ -571,25 +571,28 @@ export function useDisplayStatus(id: SessionId | undefined): DisplayStatus {
 
 /**
  * Returns `Math.floor(Date.now() / 1000)` and re-renders the caller
- * roughly once a minute. Used by [`useDisplayStatus`] to drive the
+ * roughly once a second. Used by [`useDisplayStatus`] to drive the
  * boot-grace transition.
  *
  * Implemented as a single shared interval with reference-counted
  * subscribers — N tabs ⇒ N components ⇒ one timer, not N. The interval
  * is created lazily on first subscribe and torn down when the last
- * subscriber unmounts. Internal — not exported as part of the public
- * store API.
+ * subscriber unmounts. The cadence is intentionally well below
+ * [`AWAITING_GRACE_SECONDS`] (5s) so the documented transition lands
+ * close to its boundary rather than potentially trailing it. Internal —
+ * not exported as part of the public store API.
  */
 let nowTickSubscribers = 0;
 let nowTickHandle: number | undefined;
 const nowTickListeners = new Set<(value: number) => void>();
+const NOW_TICK_INTERVAL_MS = 1_000;
 
 function ensureNowTickRunning(): void {
   if (nowTickHandle !== undefined) return;
   nowTickHandle = window.setInterval(() => {
     const value = Math.floor(Date.now() / 1000);
     for (const listener of nowTickListeners) listener(value);
-  }, 60_000);
+  }, NOW_TICK_INTERVAL_MS);
 }
 
 function teardownNowTickIfUnused(): void {
