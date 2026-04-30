@@ -76,6 +76,12 @@ struct Session {
                                    // (e.g. Claude's --system-prompt file). Persisted so
                                    // respawn_existing can rematerialise them after a
                                    // crash/restart. Omitted from SessionView.
+    ai_session_id: Option<String>, // Backend-only; the underlying CLI's session id
+                                   // (Claude's JSONL stem; Copilot's gen_ai.conversation.id).
+                                   // Discovered by the metrics watcher post-spawn and
+                                   // persisted so restore_all_sessions can append
+                                   // `--resume <id>` and continue the conversation
+                                   // across an app restart. Cleared on session_create.
 }
 
 struct TempFileSpec {
@@ -347,6 +353,11 @@ User clicks "Restart"
   → Frontend clears error overlay, re-attaches xterm.js to new PTY stream
 ```
 
+User-initiated restart deliberately starts a fresh AI conversation —
+`Session.aiSessionId` is **not** appended on this path. The user clicked
+"Restart" (not "Resume"); honouring that contract avoids surprising them
+when a session has gotten into a bad state mid-conversation.
+
 ### 5.5 Session Restore on Launch
 
 ```
@@ -373,8 +384,15 @@ App.tsx mounts (frontend)
              2. flips the persisted status to Starting and emits
                 session://status,
              3. calls pty_pool::respawn_existing using the stored
-                composedCommand and worktreePath verbatim (DESIGN §5.4 —
-                never re-composes); the wait thread later flips the
+                composedCommand and worktreePath; if Session.aiSessionId
+                is set and the underlying transcript still exists on disk
+                (`~/.claude/projects/<encoded-cwd>/<id>.jsonl` for Claude,
+                `~/.copilot/session-state/<id>/` for Copilot), the spawn
+                command is *augmented* (not recomposed) by appending
+                `--resume <quoted-id>` to the trailing CLI invocation so
+                the AI conversation continues across the restart. The
+                persisted Session.composedCommand is never mutated by
+                this augmentation. The wait thread later flips the
                 status to Running / Exited / Error as the child reports.
            Spawn or temp-file failures map per-session to Error and
            never abort the loop.

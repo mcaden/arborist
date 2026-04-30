@@ -89,6 +89,7 @@ fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {
         git,
         Arc::new(|_| {}),
         Arc::new(|_, _| {}),
+        Arc::new(|_, _| {}),
     ))
 }
 

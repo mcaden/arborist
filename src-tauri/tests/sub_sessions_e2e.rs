@@ -245,6 +245,7 @@ fn build_harness() -> Harness {
         Arc::new(arborist_lib::git::RealGitRunner),
         Arc::new(|_| {}),
         Arc::new(|_, _| {}),
+        Arc::new(|_, _| {}),
     ));
 
     let sub_spawner = Arc::new(FakeSpawner::new());

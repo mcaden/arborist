@@ -119,7 +119,7 @@ describe('arborist type mirrors', () => {
         'tabIndex',
         'tempFiles',
       ],
-      ['pid', 'instructionSetId'],
+      ['pid', 'instructionSetId', 'aiSessionId'],
       'Session',
     );
   });
@@ -155,6 +155,7 @@ describe('arborist type mirrors', () => {
         'worktreeRoots',
         'prelaunchCommands',
         'worktreePrelaunchCommands',
+        'aiLaunchCommands',
         'lastOpenSessions',
         'tabOrder',
         'activeSessionId',
@@ -176,6 +177,7 @@ describe('arborist type mirrors', () => {
       'worktreeRoots',
       'prelaunchCommands',
       'worktreePrelaunchCommands',
+      'aiLaunchCommands',
       'lastOpenSessions',
       'tabOrder',
       'activeSessionId',

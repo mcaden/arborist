@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (e.g. v0.1.0). The tag must already exist on the repo; this workflow does not create it.'
+        required: true
+        type: string
+
+jobs:
+  verify:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.normalize.outputs.tag }}
+    steps:
+      # Fail loudly (not silently skip) if the user picked a non-main branch
+      # as the workflow source in the Run workflow dialog. Combined with the
+      # tag-reachability check below, this prevents shipping a release built
+      # from an unmerged or feature-branch commit.
+      - name: Assert workflow source is main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" != "refs/heads/main" ]; then
+            echo "::error::This workflow must be run from the 'main' branch (got: ${REF}). Re-run from the Actions tab and select 'main' as the workflow source."
+            exit 1
+          fi
+      # Normalize the input: trim whitespace and strip an optional
+      # 'refs/tags/' prefix (common when copy-pasting from `git show-ref` or
+      # the Actions UI). Reject empty input.
+      - name: Normalize tag input
+        id: normalize
+        env:
+          RAW: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$(printf '%s' "${RAW}" | tr -d '[:space:]')"
+          tag="${tag#refs/tags/}"
+          if [ -z "${tag}" ]; then
+            echo "::error::tag input is empty after normalization (raw: '${RAW}'). Provide just the tag name, e.g. 'v0.1.0'."
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Normalized tag: '${tag}' (raw: '${RAW}')"
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Assert tag exists and is reachable from main
+        env:
+          TAG: ${{ steps.normalize.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet
+          if ! git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag '${TAG}' does not exist on origin."
+            exit 1
+          fi
+          tag_sha="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          # HEAD is 'main' (checked out above); is_ancestor checks reachability.
+          if ! git merge-base --is-ancestor "${tag_sha}" HEAD; then
+            echo "::error::Tag '${TAG}' (${tag_sha}) is not reachable from main. Releases must be built from commits on main."
+            exit 1
+          fi
+          echo "Tag ${TAG} (${tag_sha}) is on main — proceeding."
+
+  build:
+    name: Build (${{ matrix.platform.name }})
+    needs: verify
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: macos-universal
+            os: macos-latest
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+            args: '--target universal-apple-darwin'
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            rust-targets: ''
+            args: ''
+          - name: windows-x86_64
+            os: windows-latest
+            rust-targets: ''
+            args: ''
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      # Check out the exact tag the user requested (normalized by the verify
+      # job) so the built binaries correspond to the release tag rather than
+      # the default branch HEAD.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.verify.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # Tauri's Linux build needs system libraries (must match ci.yml).
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ needs.verify.outputs.tag }}
+          releaseName: 'Arborist ${{ needs.verify.outputs.tag }}'
+          releaseBody: |
+            See the assets below to download installers for your platform.
+
+            **Note:** these builds are unsigned. See the
+            [README](https://github.com/${{ github.repository }}#install) for
+            first-run instructions on macOS, Windows, and Linux.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.platform.args }}

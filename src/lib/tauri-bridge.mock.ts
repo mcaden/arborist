@@ -95,6 +95,7 @@ const defaultAppConfig = (): AppConfig => ({
   worktreeRoots: [],
   prelaunchCommands: [],
   worktreePrelaunchCommands: {},
+  aiLaunchCommands: { claude: '', copilot: '' },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,

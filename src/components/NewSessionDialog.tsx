@@ -58,6 +58,19 @@ export function NewSessionDialog(): JSX.Element | null {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
   const stepBodyRef = useRef<HTMLDivElement | null>(null);
+  const existingConfirmRef = useRef<HTMLButtonElement | null>(null);
+  const isMountedRef = useRef<boolean>(false);
+  // Monotonic request counter for worktree-list loads. Both the Step-2
+  // useEffect and the post-create failure refresh kick off `worktreesList`
+  // calls; the latest call wins so a slow earlier response can never
+  // overwrite a fresher one with stale data.
+  const worktreesRequestIdRef = useRef<number>(0);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   // Track the previous step so the focus-management effect only fires on
   // an actual transition, not on every step-body re-render (which would
   // steal focus away from the user as they typed).
@@ -124,8 +137,12 @@ export function NewSessionDialog(): JSX.Element | null {
   // Worktrees outside that directory (the main checkout, ad-hoc paths)
   // are still reachable via "Browse…".
   useEffect(() => {
+    // Invalidate any in-flight worktreesList from a prior render of this
+    // effect first thing — including when the new render bails on the
+    // isOpen/step/workspaceRoot guards below — so a stale earlier request
+    // can never win the latest-id check after any dependency changes.
+    const requestId = ++worktreesRequestIdRef.current;
     if (!isOpen || step !== 2) return;
-    let cancelled = false;
     setWorktreesLoading(true);
     if (workspaceRoot === null || workspaceRoot.length === 0) {
       setWorktrees([]);
@@ -136,16 +153,15 @@ export function NewSessionDialog(): JSX.Element | null {
     worktreesList(root)
       .catch(() => [] as WorktreeInfo[])
       .then((list) => {
-        if (cancelled) return;
+        if (!isMountedRef.current) return;
+        if (requestId !== worktreesRequestIdRef.current) return;
         const filtered = list.filter((w) => isInsideWorktreesDir(root, w.path));
         setWorktrees(filtered);
       })
       .finally(() => {
-        if (!cancelled) setWorktreesLoading(false);
+        if (!isMountedRef.current) return;
+        if (requestId === worktreesRequestIdRef.current) setWorktreesLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [isOpen, step, workspaceRoot]);
 
   // Resolve the prelaunchCommands the backend would actually run for the
@@ -205,32 +221,70 @@ export function NewSessionDialog(): JSX.Element | null {
     }
   };
 
-  const newNameError = useMemo<string | null>(
-    () => (newName.length === 0 ? null : validateWorktreeName(newName)),
-    [newName],
-  );
+  const newNameError = useMemo<string | null>(() => {
+    const trimmed = newName.trim();
+    if (trimmed.length === 0) return null;
+    return validateWorktreeName(trimmed);
+  }, [newName]);
 
   const onCreateWorktree = async (): Promise<void> => {
-    if (newName.length === 0 || newNameError !== null || creating) return;
+    const trimmed = newName.trim();
+    if (trimmed.length === 0 || newNameError !== null || creating || !tool) return;
     setCreating(true);
     setCreateError(null);
+    setSubmitError(null);
     try {
-      const result = await worktreeCreate(newName.trim());
-      // Auto-select the newly created worktree and switch back to the
-      // Existing tab so the selection is visible alongside the rest.
-      setWorktree({ path: result.path, branch: newName.trim(), isMain: false });
-      setWorktreeMode('existing');
-      // Refresh the listing so the user can see it in the list too.
-      if (workspaceRoot !== null && workspaceRoot.length > 0) {
-        const root = workspaceRoot;
-        try {
-          const list = await worktreesList(root);
-          setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
-        } catch {
-          // Listing failure is non-fatal; the selection above is enough.
-        }
-      }
+      const result = await worktreeCreate(trimmed);
+      // Pre-select the new worktree so it's ready to use if session creation
+      // fails and we fall back to the Existing tab. We deliberately do NOT
+      // switch `worktreeMode` to 'existing' yet — doing so would swap the
+      // footer to the Existing-mode "Create session" button while the chained
+      // session-create is still in flight, allowing the user to trigger a
+      // second concurrent session for the same worktree.
+      setWorktree({ path: result.path, branch: trimmed, isMain: false });
       setNewName('');
+      // The "New worktree" flow is one-shot: creating the worktree
+      // immediately starts the session and closes the dialog. If session
+      // creation fails, surface the error and switch to the Existing tab so
+      // the user can retry via "Create session" without losing the worktree.
+      // We refresh the worktree list lazily only on the failure path — on
+      // success the dialog closes and the listing is never shown.
+      try {
+        await actions.create({ tool, worktreePath: result.path });
+        close();
+      } catch (sessionErr) {
+        setSubmitError(formatError(sessionErr));
+        // Switch to the Existing tab and surface the retry button immediately
+        // — don't make the user wait on a worktree listing refresh before they
+        // can react to the failure. The list refresh runs in the background.
+        setWorktreeMode('existing');
+        if (workspaceRoot !== null && workspaceRoot.length > 0) {
+          const root = workspaceRoot;
+          const requestId = ++worktreesRequestIdRef.current;
+          setWorktreesLoading(true);
+          worktreesList(root)
+            .catch(() => [] as WorktreeInfo[])
+            .then((list) => {
+              // Dialog may have been closed and the component unmounted
+              // (e.g. by a fresh open + close) by the time this resolves.
+              if (!isMountedRef.current) return;
+              // A newer list request has been issued in the meantime; let
+              // the latest one win to avoid stale data overwriting fresh.
+              if (requestId !== worktreesRequestIdRef.current) return;
+              setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
+            })
+            .finally(() => {
+              if (!isMountedRef.current) return;
+              if (requestId === worktreesRequestIdRef.current) setWorktreesLoading(false);
+            });
+        }
+        // Move focus to the now-visible "Create session" button so keyboard
+        // and screen-reader users land on the retry action rather than on
+        // the body/document after the New-mode button unmounts.
+        requestAnimationFrame(() => {
+          existingConfirmRef.current?.focus();
+        });
+      }
     } catch (err) {
       setCreateError(formatError(err));
     } finally {
@@ -275,6 +329,7 @@ export function NewSessionDialog(): JSX.Element | null {
       aria-labelledby="new-session-title"
       onCancel={(e) => {
         e.preventDefault();
+        if (creating || submitting) return;
         onCancel();
       }}
       className="w-[28rem] rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
@@ -327,6 +382,7 @@ export function NewSessionDialog(): JSX.Element | null {
                   e.key !== 'End'
                 )
                   return;
+                if (creating || submitting) return;
                 e.preventDefault();
                 const nextMode: WorktreeMode =
                   e.key === 'Home'
@@ -348,7 +404,11 @@ export function NewSessionDialog(): JSX.Element | null {
                 aria-selected={worktreeMode === 'new'}
                 aria-controls="worktree-panel-new"
                 tabIndex={worktreeMode === 'new' ? 0 : -1}
-                onClick={() => setWorktreeMode('new')}
+                onClick={() => {
+                  if (creating || submitting) return;
+                  setWorktreeMode('new');
+                }}
+                disabled={creating || submitting}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
                   worktreeMode === 'new'
                     ? 'border-sky-600 text-sky-700 dark:text-sky-300'
@@ -364,7 +424,11 @@ export function NewSessionDialog(): JSX.Element | null {
                 aria-selected={worktreeMode === 'existing'}
                 aria-controls="worktree-panel-existing"
                 tabIndex={worktreeMode === 'existing' ? 0 : -1}
-                onClick={() => setWorktreeMode('existing')}
+                onClick={() => {
+                  if (creating || submitting) return;
+                  setWorktreeMode('existing');
+                }}
+                disabled={creating || submitting}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
                   worktreeMode === 'existing'
                     ? 'border-sky-600 text-sky-700 dark:text-sky-300'
@@ -480,7 +544,8 @@ export function NewSessionDialog(): JSX.Element | null {
                 <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
                   Will run{' '}
                   <span className="font-mono">
-                    git worktree add .worktrees/{newName || 'NAME'} -b {newName || 'NAME'}
+                    git worktree add .worktrees/{newName.trim() || 'NAME'} -b{' '}
+                    {newName.trim() || 'NAME'}
                   </span>
                 </p>
               )}
@@ -493,14 +558,6 @@ export function NewSessionDialog(): JSX.Element | null {
                   {createError}
                 </p>
               )}
-              <button
-                type="button"
-                onClick={() => void onCreateWorktree()}
-                disabled={newName.length === 0 || newNameError !== null || creating}
-                className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
-              >
-                {creating ? 'Creating…' : 'Create worktree'}
-              </button>
             </div>
 
             {worktree && (
@@ -532,7 +589,11 @@ export function NewSessionDialog(): JSX.Element | null {
       </div>
 
       {submitError && (
-        <p className="mb-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100">
+        <p
+          role="alert"
+          aria-live="polite"
+          className="mb-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
+        >
           {submitError}
         </p>
       )}
@@ -541,7 +602,8 @@ export function NewSessionDialog(): JSX.Element | null {
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
+          disabled={creating || submitting}
+          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
         >
           Cancel
         </button>
@@ -550,7 +612,8 @@ export function NewSessionDialog(): JSX.Element | null {
             <button
               type="button"
               onClick={back}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
+              disabled={creating || submitting}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
             >
               Back
             </button>
@@ -565,16 +628,29 @@ export function NewSessionDialog(): JSX.Element | null {
               Next
             </button>
           )}
-          {step === 2 && (
+          {step === 2 && worktreeMode === 'new' && (
             <button
+              type="button"
+              onClick={() => void onCreateWorktree()}
+              disabled={
+                creating || submitting || newName.trim().length === 0 || newNameError !== null
+              }
+              className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+            >
+              {creating ? 'Creating…' : 'Create worktree & session'}
+            </button>
+          )}
+          {step === 2 && worktreeMode === 'existing' && (
+            <button
+              ref={existingConfirmRef}
               type="button"
               onClick={() => {
                 void onConfirm();
               }}
-              disabled={submitting || !worktree}
+              disabled={submitting || creating || !worktree}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
-              {submitting ? 'Creating...' : 'Create session'}
+              {submitting ? 'Creating…' : 'Create session'}
             </button>
           )}
         </div>

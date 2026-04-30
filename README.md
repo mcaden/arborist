@@ -1,26 +1,48 @@
+<img src="splash.png" alt="Arborist — Manage Your Git Worktrees" width="160" align="right" />
+
 # Arborist
 
-Arborist is a cross-platform desktop application that provides a unified workspace
-for managing multiple AI coding-assistant sessions (Claude CLI and GitHub
-Copilot CLI) across Git worktrees. Each session runs in its own PTY, bound to a
-specific worktree, and is presented as a vertical tab in a sidebar with a
-single integrated terminal area for the active session.
+**Arborist is a cross-platform desktop app for managing multiple AI coding-assistant sessions across Git worktrees.**
 
-## Requirements
+It gives each worktree its own persistent terminal session — Claude CLI or GitHub Copilot CLI — all reachable from a single sidebar. Switch branches, switch contexts, no context lost.
 
-- **Node.js 20+** (this repo pins Node 24 via `.nvmrc` — `nvm use` will pick it
-  up).
-- **Rust toolchain** — install via [`rustup`](https://rustup.rs/). The Tauri
-  backend builds with the stable channel.
-- **Platform build tools** for Tauri v2 (see the
-  [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-  OS): on Windows the Visual Studio C++ Build Tools, on macOS the Xcode
-  command-line tools, on Linux the GTK / WebKit2GTK development packages.
-- **`claude` and/or `copilot` CLIs** on `PATH` — Arborist launches whichever you
-  pick when creating a session. They are not required to build or test the app
-  itself.
+---
 
-## Optional system dependencies
+## What it does
+
+- **One sidebar, many sessions.** Each session is a vertical tab. Click a tab to bring that terminal to the front; background sessions keep running.
+- **Worktree-native.** Sessions are tied to Git worktrees. Arborist creates and discovers worktrees under `<repo>/.worktrees/` and passes the path to the CLI as `cwd` — never baked into the command.
+- **Instruction sets.** Drop Markdown files into a configured directory; Arborist injects them into Claude sessions at launch as a system prompt. Copilot sessions continue to use their own `.github/copilot-instructions.md` auto-discovery.
+- **Restore on launch.** Every session you had open is re-spawned automatically when you restart the app, in the same tab order.
+- **Error recovery.** If a session's process exits unexpectedly, the tab shows an error indicator and a **Restart** button that re-runs the original invocation verbatim.
+
+## Install
+
+Pre-built installers for Windows, macOS, and Linux are published on the
+[Releases page](https://github.com/mcaden/arborist/releases). Download the
+asset for your platform and follow the first-run notes below — the binaries
+are **unsigned**, so each OS will show a one-time warning.
+
+- **Windows** (`Arborist_<version>_x64-setup.exe` or `Arborist_<version>_x64_en-US.msi`)
+  — double-click to install. Windows SmartScreen will say "Windows protected
+  your PC"; click **More info → Run anyway**.
+- **macOS** (`Arborist_<version>_universal.dmg`) — open the DMG and drag
+  Arborist to Applications. The first launch must be **right-click → Open**
+  (not double-click), then confirm in the Gatekeeper dialog. The build is a
+  universal binary and runs natively on both Apple Silicon and Intel.
+- **Linux — AppImage** (`arborist_<version>_amd64.AppImage`) — `chmod +x` the
+  file and run it. Works on most modern x86_64 distros.
+- **Linux — Debian/Ubuntu** (`arborist_<version>_amd64.deb`) —
+  `sudo apt install ./arborist_<version>_amd64.deb`.
+
+Arborist requires `git` on `PATH`, plus at least one of `claude` or `gh
+copilot` for actual session work. On Windows, the installer uses Tauri's
+default WebView2 bootstrapper, which downloads the WebView2 runtime at
+install time if it isn't already present (preinstalled on Windows 10/11).
+
+Updates are manual: re-download the latest release when a new version ships.
+
+### Optional system dependencies
 
 Arborist's "application" custom-process sub-tabs (right-click a session tab →
 Launch… → e.g. _Open Folder_, _VS Code_) attempt to focus the spawned
@@ -37,53 +59,81 @@ program's OS window when you click the sub-tab.
 - **macOS / Windows**: no extra dependencies. macOS uses `osascript` (always
   present); Windows uses native `user32` FFI.
 
-## Quickstart
+## Built with
+
+| Layer         | Technology                                                           |
+| ------------- | -------------------------------------------------------------------- |
+| Desktop shell | [Tauri v2](https://v2.tauri.app/) (Rust + OS WebView — not Electron) |
+| Frontend      | React 18 + TypeScript, Vite, Tailwind CSS, Zustand, xterm.js         |
+| Backend       | Rust, `portable-pty` (ConPTY on Windows), `tauri-plugin-store`       |
+
+## Getting started
+
+### Prerequisites
+
+| Tool                             | Notes                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------- |
+| **Node.js 20+**                  | Repo pins Node 24 via `.nvmrc` — `nvm use` picks it up                          |
+| **Rust (stable)**                | Install via [rustup.rs](https://rustup.rs/)                                     |
+| **Platform build tools**         | [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS |
+| **`claude` and/or `gh copilot`** | Only needed at runtime — not required to build or test                          |
+
+Platform specifics:
+
+- **Windows** — Visual Studio 2022 "Desktop development with C++" workload + Windows 10/11 SDK
+- **macOS** — `xcode-select --install`
+- **Linux** — `sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev`
+
+### Install and run
 
 ```sh
+git clone https://github.com/mcaden/arborist.git
+cd arborist
+nvm use          # optional — picks up .nvmrc
 npm install
 npm run tauri:dev
 ```
 
-This boots the Vite dev server and launches the Tauri shell in a desktop
-window with hot-reload for the frontend.
+This starts the Vite dev server and opens Arborist in a desktop window with hot-reload.
 
-## Build (production)
+### First-time configuration
 
-```sh
-npm run tauri:build
+Arborist stores its config in your OS app-data directory (path derived from the Tauri app identifier — currently `%APPDATA%\dev.arborist.desktop\` on Windows, `~/Library/Application Support/dev.arborist.desktop/` on macOS). On first launch it will prompt you to choose a workspace root — point it at your primary Git repository.
+
+See [dev/docs/CONFIGURATION.md](dev/docs/CONFIGURATION.md) for the full config reference and [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md) for setup and troubleshooting.
+
+## How sessions work
+
+```
+New session dialog
+  1. Pick tool:        Claude  /  Copilot
+  2. Pick worktree:    quick-pick from <repo>/.worktrees/  or  Browse…
+  3. Launch
 ```
 
-Produces a platform-specific bundle under `src-tauri/target/release/bundle/`.
+Arborist composes one shell string — `[prelaunchCmds &&] <cli>` — stores it, and reuses it verbatim on every restart and restore. The worktree path is always passed as the process `cwd`, never embedded in the command.
 
-## Test
+## Contributing
 
-The acceptance gate for any change is these six commands, all green:
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full contribution guide including the acceptance gate, code conventions, and the checklist for adding new Tauri commands.
 
-```sh
-npm run lint
-npm test -- --run
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-npm run build
-```
+## Documentation
 
-`npm test -- --run` runs Vitest once (no watch); `npm run test:watch` is the
-inner-loop equivalent. `cargo test --workspace` includes the integration tests
-under `src-tauri/tests/`, which build the in-tree `arborist-test-child` binary so
-PTY tests don't depend on `claude` or `copilot` being installed.
-
-## Architecture
-
-See [`dev/docs/SPEC.md`](dev/docs/SPEC.md) and
-[`dev/docs/DESIGN.md`](dev/docs/DESIGN.md) for the full product requirements
-and architecture, including the command/event API, the boot/restore sequence,
-the PTY pool design, and the on-disk layout of the persisted store.
-The skill at `.github/skills/quality-workflow/SKILL.md` documents the exact
-build/lint/test workflow and the end-of-feature smoke-test procedure.
+| Doc                                                    | What's in it                                                                      |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md) | Full dev-environment setup, inner-loop watcher config, debugging, troubleshooting |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)           | Contribution rules, PR workflow, acceptance gate, architecture conventions        |
+| [docs/ROADMAP.md](docs/ROADMAP.md)                     | Upcoming features by priority, known issues                                       |
+| [dev/docs/ARCHITECTURE.md](dev/docs/ARCHITECTURE.md)   | Deep codebase tour — module map, boot sequence, capability gating                 |
+| [dev/docs/SPEC.md](dev/docs/SPEC.md)                   | Product requirements (the spec is the source of truth)                            |
+| [dev/docs/DESIGN.md](dev/docs/DESIGN.md)               | Architecture, data model, command/event API                                       |
+| [dev/docs/CONFIGURATION.md](dev/docs/CONFIGURATION.md) | On-disk config format, fields, quarantine behaviour                               |
+| [dev/docs/TESTING.md](dev/docs/TESTING.md)             | Test layout, seams, smoke-test procedure                                          |
 
 ## Status
 
-Arborist is at the end of its v1 implementation. Out-of-scope for v1 (per
-SPEC §7): a built-in chat UI, remote/SSH worktrees, a plugin system,
-multi-window support, and an in-app instruction-set editor.
+Arborist is at the end of its v1 implementation. Out of scope for v1: built-in chat UI, remote/SSH worktrees, plugin system, multi-window support, in-app instruction-set editor.
+
+## License
+
+[MIT](LICENSE)

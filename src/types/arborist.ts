@@ -61,6 +61,13 @@ export interface Session {
   createdAt: number;
   tabIndex: number;
   tempFiles: TempFileSpec[];
+  /**
+   * Most recently observed AI-side session id. When set, the backend
+   * augments the spawn command with `--resume <id>` on app-restart
+   * restore so the conversation continues. Backend-only — currently
+   * not exposed on `SessionView`.
+   */
+  aiSessionId?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::SessionView
@@ -93,6 +100,16 @@ export interface DefaultInstructionSets {
   copilot: InstructionSetId;
 }
 
+// MIRROR: src-tauri/src/types.rs::AiLaunchCommands
+// Per-agent CLI launch override. Each field is a verbatim shell snippet
+// (e.g. `"npx claude --model sonnet"`) interpolated into the composed
+// command in place of the bare program token. Empty string = use default
+// (`claude` / `copilot`). Added in `configVersion = 4`.
+export interface AiLaunchCommands {
+  claude: string;
+  copilot: string;
+}
+
 // MIRROR: src-tauri/src/types.rs::AppConfig
 export interface AppConfig {
   configVersion: number;
@@ -107,6 +124,9 @@ export interface AppConfig {
   worktreeRoots: string[];
   prelaunchCommands: string[];
   worktreePrelaunchCommands: Record<string, string[]>;
+  /** Per-agent CLI launch override. Empty string fields fall back to the
+   * hardcoded defaults. Added in `configVersion = 4`. */
+  aiLaunchCommands: AiLaunchCommands;
   lastOpenSessions: SessionId[];
   tabOrder: SessionId[];
   /** Persisted active-session selection. `null` when no session is active. */
@@ -131,6 +151,12 @@ export interface PartialDefaultInstructionSets {
   copilot?: InstructionSetId;
 }
 
+// MIRROR: src-tauri/src/types.rs::PartialAiLaunchCommands
+export interface PartialAiLaunchCommands {
+  claude?: string;
+  copilot?: string;
+}
+
 // MIRROR: src-tauri/src/types.rs::PartialAppConfig
 // Every field optional so Phase 4's `config_set` can deep-merge updates.
 // `activeSessionId` is tri-state: omit to leave alone, `null` to clear,
@@ -148,6 +174,7 @@ export interface PartialAppConfig {
   worktreeRoots?: string[];
   prelaunchCommands?: string[];
   worktreePrelaunchCommands?: Record<string, string[]>;
+  aiLaunchCommands?: PartialAiLaunchCommands;
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
   activeSessionId?: SessionId | null;

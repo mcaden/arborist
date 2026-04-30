@@ -72,6 +72,13 @@ pub struct ComposeInputs<'a> {
     /// stays pure. Must be `Some` when [`Self::instruction_set`] is `Some`,
     /// `None` otherwise. Ignored for Copilot.
     pub instruction_set_contents: Option<&'a str>,
+    /// Optional user override for the CLI launch command. When `Some` and
+    /// non-empty, replaces the bare program token (`claude` / `copilot`)
+    /// in the composed command. The string is treated as a verbatim shell
+    /// snippet — *not* a single quoted token — so users can put extra
+    /// arguments in it (e.g. `"npx claude --model sonnet"`). Empty strings
+    /// behave the same as `None` (use the default).
+    pub cli_launch_command: Option<&'a str>,
 }
 
 /// Compose the shell command for a session.
@@ -296,6 +303,58 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
     }
 }
 
+/// Augment a stored `composed_command` with `--resume <ai_session_id>` so
+/// the AI conversation continues across an app restart. Used by
+/// `restore_all_sessions`; **not** by `session_create` (which has no AI
+/// id yet) and **not** by user-initiated `session_restart` (DESIGN §5.4 —
+/// restart is fresh from the user's POV).
+///
+/// We append at the end of the command rather than parse and re-emit the
+/// CLI invocation. Both `claude` and `copilot` accept positional flags
+/// in any order, and the trailing token of `composed_command` is always
+/// the CLI invocation (DESIGN §5.6 step 3 — `[prelaunch && ]<cli>`),
+/// so appending binds correctly even when the user has prelaunch hooks
+/// that themselves contain `&&` inside quoted strings.
+///
+/// `ai_session_id` is shell-quoted using the host quoter only when it
+/// contains characters that could be interpreted by the shell. In
+/// practice CLI session ids are UUIDs (ASCII alphanumerics + `-`), and
+/// quoting them is actively harmful on Windows: the `cmd.exe` quoter
+/// wraps the value in literal `"…"`, and CLIs distributed as `.cmd`
+/// shims (like `copilot.cmd`) forward `%*` verbatim to the underlying
+/// `node` process, which then sees the surrounding quotes as part of
+/// the argument value — `--resume "<uuid>"` reaches the CLI with the
+/// quotes attached and resume fails. Defensive quoting is still applied
+/// for any future non-safe id (e.g. Copilot's session-by-name resume).
+#[must_use]
+pub fn with_resume(composed_command: &str, _tool: Tool, ai_session_id: &str) -> String {
+    if is_shell_safe_token(ai_session_id) {
+        format!("{composed_command} --resume {ai_session_id}")
+    } else {
+        let quoter = platform_shell().quoter;
+        format!("{composed_command} --resume {}", quoter(ai_session_id))
+    }
+}
+
+/// True for non-empty values composed entirely of characters that have
+/// no special meaning to either `sh` or `cmd.exe`: ASCII letters,
+/// digits, `-`, `_`, and `.`. UUIDs and similar slugs trivially satisfy
+/// this and can be appended to a composed command without quoting.
+///
+/// The set is intentionally conservative — other characters (`@ + : = ,`
+/// etc.) are also unquoted-safe on both shells, but the conservative
+/// floor covers every realistic AI-session id today (UUIDs from both
+/// Claude and Copilot) and any value outside it falls through to the
+/// host quoter, which is correct, just verbose. Do not expand this set
+/// without auditing every shell context the resulting command flows
+/// through (`cmd.exe /c`, `.cmd` shim → CRT re-parse, `sh -c`).
+fn is_shell_safe_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 // ---------------------------------------------------------------------------
 // Shell quoting
 // ---------------------------------------------------------------------------
@@ -453,7 +512,7 @@ fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
 }
 
 fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
-    let program = cli_program_for_tool(Tool::Claude, quoter);
+    let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command, quoter);
 
     // No user instruction set: launch plain `claude`. The agent still
     // auto-discovers `CLAUDE.md` from its `cwd` (the worktree). Skipping
@@ -489,7 +548,7 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
     )
 }
 
-fn build_copilot(_inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+fn build_copilot(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     // Modern `copilot` (the standalone GitHub Copilot CLI) starts in
     // interactive mode by default. The legacy `--interactive <string>`
     // flag was removed and now triggers a "too many arguments" usage
@@ -499,7 +558,7 @@ fn build_copilot(_inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Te
     // PTY pool already passes the worktree as `cwd`. The worktree
     // context block (label + path) is intentionally dropped here; the
     // agent can derive its location from `pwd`/`git` if it needs to.
-    let cli_cmd = cli_program_for_tool(Tool::Copilot, quoter);
+    let cli_cmd = cli_program_for_tool(Tool::Copilot, inputs.cli_launch_command, quoter);
     (cli_cmd, Vec::new())
 }
 
@@ -513,14 +572,29 @@ pub const CLAUDE_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_CLAUDE";
 /// Sibling of [`CLAUDE_OVERRIDE_ENV`] for the `copilot` executable.
 pub const COPILOT_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_COPILOT";
 
-/// Resolve the program token for `tool`. Returns the bare CLI name in
-/// production (`claude` / `copilot`); when the matching `ARBORIST_CLI_OVERRIDE_*`
-/// env var is set, returns the override **already shell-quoted** so it can
-/// be interpolated into the composed command without re-quoting at the call
-/// site. The override path is invisible to the persisted `composed_command`
-/// once the env var is unset, so do not rely on it across restarts — it's
-/// purely a test-time seam.
-fn cli_program_for_tool(tool: Tool, quoter: Quoter) -> String {
+/// Resolve the program token for `tool`. Precedence (highest first):
+///
+/// 1. **User config override** (`config_override`, when `Some` and non-empty):
+///    inserted **verbatim** into the composed command. This is a shell
+///    snippet authored by the user — not a single argument — so callers can
+///    add flags like `--model sonnet` directly. Persisted by the Settings
+///    dialog into `AppConfig.ai_launch_commands`.
+/// 2. **Test-seam env var** (`ARBORIST_CLI_OVERRIDE_*`): set by integration
+///    tests to point at `arborist-test-child`. Returned **shell-quoted** so
+///    paths with spaces still work.
+/// 3. **Default**: the bare CLI name (`claude` / `copilot`).
+///
+/// The override path is invisible to the persisted `composed_command` once
+/// the env var is unset, so do not rely on the env-var path across restarts.
+fn cli_program_for_tool(tool: Tool, config_override: Option<&str>, quoter: Quoter) -> String {
+    // 1. Config override (verbatim).
+    if let Some(s) = config_override {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_owned();
+        }
+    }
+    // 2. Test-seam env override (quoted).
     let var = match tool {
         Tool::Claude => CLAUDE_OVERRIDE_ENV,
         Tool::Copilot => COPILOT_OVERRIDE_ENV,
@@ -530,6 +604,7 @@ fn cli_program_for_tool(tool: Tool, quoter: Quoter) -> String {
             return quoter(&path);
         }
     }
+    // 3. Default.
     match tool {
         Tool::Claude => "claude".to_owned(),
         Tool::Copilot => "copilot".to_owned(),
@@ -581,6 +656,7 @@ mod tests {
             instruction_set: is,
             prelaunch_commands: prelaunch,
             instruction_set_contents: body,
+            cli_launch_command: None,
         }
     }
 
@@ -766,6 +842,110 @@ mod tests {
         // pre-removal behaviour where we used to interpolate the path into
         // a quoted `--interactive` argument.
         assert_eq!(r.composed_command, "copilot");
+    }
+
+    // -- composition: cli_launch_command override ----------------------
+
+    #[test]
+    fn claude_compose_uses_cli_launch_command_override() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let is = instr_set(Tool::Claude);
+        let mut i = inputs(Tool::Claude, &wt, "wt", Some(&is), &[], Some("body"));
+        i.cli_launch_command = Some("npx claude --model sonnet");
+        let r = compose_command(&i).expect("compose");
+        // Override is inserted verbatim in place of the bare `claude`
+        // token; the `--system-prompt` flag is still appended.
+        assert!(r
+            .composed_command
+            .starts_with("npx claude --model sonnet --system-prompt "));
+    }
+
+    #[test]
+    fn copilot_compose_uses_cli_launch_command_override() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let mut i = inputs(Tool::Copilot, &wt, "wt", None, &[], None);
+        i.cli_launch_command = Some("gh copilot");
+        let r = compose_command(&i).expect("compose");
+        assert_eq!(r.composed_command, "gh copilot");
+    }
+
+    #[test]
+    fn empty_or_whitespace_override_falls_back_to_default() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        for s in [Some(""), Some("   "), None] {
+            let mut i = inputs(Tool::Copilot, &wt, "wt", None, &[], None);
+            i.cli_launch_command = s;
+            let r = compose_command(&i).expect("compose");
+            assert_eq!(r.composed_command, "copilot", "override={:?}", s);
+        }
+    }
+
+    #[test]
+    fn override_composes_with_prelaunch_commands() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let pre = vec!["nvm use 20".to_owned()];
+        let mut i = inputs(Tool::Copilot, &wt, "wt", None, &pre, None);
+        i.cli_launch_command = Some("copilot --foo bar");
+        let r = compose_command(&i).expect("compose");
+        assert_eq!(r.composed_command, "nvm use 20 && copilot --foo bar");
+    }
+
+    // -- with_resume ----------------------------------------------------
+
+    #[test]
+    fn with_resume_appends_verbatim_id_to_bare_claude() {
+        let out = with_resume("claude", Tool::Claude, "abc-123");
+        // Slug-safe id: appended verbatim, no shell quoting (avoids
+        // `.cmd`-shim quote leakage on Windows).
+        assert_eq!(out, "claude --resume abc-123");
+    }
+
+    #[test]
+    fn with_resume_appends_after_system_prompt() {
+        let base = "claude --system-prompt /tmp/x.txt";
+        let out = with_resume(base, Tool::Claude, "uuid-1");
+        assert_eq!(
+            out,
+            format!("{base} --resume uuid-1"),
+            "resume must be appended after existing flags"
+        );
+    }
+
+    #[test]
+    fn with_resume_keeps_prelaunch_chain_intact() {
+        // Prelaunch commands chained via && precede the CLI invocation.
+        // Appending --resume at the end binds to the trailing CLI token.
+        let base = "echo hi && nvm use 20 && copilot";
+        let out = with_resume(base, Tool::Copilot, "sess-9");
+        assert_eq!(out, format!("{base} --resume sess-9"));
+    }
+
+    #[test]
+    fn with_resume_does_not_quote_uuid_ids() {
+        // Regression: cmd.exe quoting of a plain UUID wraps it in
+        // literal `"…"`, which `.cmd` shims (e.g. copilot.cmd) forward
+        // verbatim to node, making the CLI see `--resume "<uuid>"` and
+        // fail to resume. Safe tokens must be appended unquoted on
+        // every platform.
+        let uuid = "1eed651b-6a1b-4c7e-9646-7132eae8c6e9";
+        let out = with_resume("copilot", Tool::Copilot, uuid);
+        assert_eq!(out, format!("copilot --resume {uuid}"));
+        assert!(!out.contains('"'), "no double quotes around safe id: {out}");
+        assert!(
+            !out.contains('\''),
+            "no single quotes around safe id: {out}"
+        );
+    }
+
+    #[test]
+    fn with_resume_quotes_ids_with_shell_metachars() {
+        // Defensive: a future name-based resume id must not corrupt the
+        // command. The host quoter should fully escape it.
+        let nasty = "id with space&danger";
+        let out = with_resume("claude", Tool::Claude, nasty);
+        assert_eq!(out, format!("claude --resume {}", host_quote(nasty)));
+        // Extra sanity: the raw id substring must not appear unquoted.
+        assert!(!out.ends_with(nasty));
     }
 
     // -- POSIX quoting --------------------------------------------------

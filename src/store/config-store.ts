@@ -32,6 +32,7 @@ const EMPTY_CONFIG: AppConfig = {
   worktreeRoots: [],
   prelaunchCommands: [],
   worktreePrelaunchCommands: {},
+  aiLaunchCommands: { claude: '', copilot: '' },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -89,6 +90,12 @@ function applyPatch(config: AppConfig, patch: PartialAppConfig): AppConfig {
   if (patch.worktreePrelaunchCommands !== undefined) {
     next.worktreePrelaunchCommands = patch.worktreePrelaunchCommands;
   }
+  if (patch.aiLaunchCommands !== undefined) {
+    next.aiLaunchCommands = {
+      ...next.aiLaunchCommands,
+      ...patch.aiLaunchCommands,
+    };
+  }
   if (patch.lastOpenSessions !== undefined) next.lastOpenSessions = patch.lastOpenSessions;
   if (patch.tabOrder !== undefined) next.tabOrder = patch.tabOrder;
   if (patch.activeSessionId !== undefined) next.activeSessionId = patch.activeSessionId;
@@ -136,6 +143,8 @@ export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] =>
   s.config.worktreeRoots;
 export const selectPrelaunchCommands = (s: ConfigStoreState): readonly string[] =>
   s.config.prelaunchCommands;
+export const selectAiLaunchCommands = (s: ConfigStoreState): AppConfig['aiLaunchCommands'] =>
+  s.config.aiLaunchCommands;
 export const selectDefaultInstructionSets = (
   s: ConfigStoreState,
 ): AppConfig['defaultInstructionSets'] => s.config.defaultInstructionSets;

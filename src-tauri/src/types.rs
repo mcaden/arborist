@@ -230,6 +230,14 @@ pub struct Session {
     /// [`SessionView`].
     #[serde(default)]
     pub temp_files: Vec<TempFileSpec>,
+    /// Most recently observed AI-side session id (Claude transcript file
+    /// stem; Copilot OTel `gen_ai.conversation.id` / session-state dir
+    /// name). When set, `restore_all_sessions` augments the spawn command
+    /// with `--resume <id>` so the conversation continues across an app
+    /// restart. Backend-only — omitted from [`SessionView`]; not surfaced
+    /// to the frontend today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_session_id: Option<String>,
 }
 
 /// Frontend-facing projection of [`Session`]. Intentionally drops
@@ -323,12 +331,25 @@ pub struct DefaultInstructionSets {
 /// * `1` — initial release.
 /// * `2` — added `active_session_id` (Phase 7).
 /// * `3` — added `workspace_root` (single-workspace model, Roadmap §1).
-/// * `4` — added `custom_processes` and `last_open_sub_sessions`
-///   (context-menu / sub-tab feature). Migration seeds the built-in
-///   custom-process defs (`shell`, `open-folder`, `vscode`) additively —
-///   only IDs not already present are inserted, never overwriting a
-///   user-edited def.
+/// * `4` — added `ai_launch_commands` (per-agent CLI launch override),
+///   `custom_processes`, and `last_open_sub_sessions` (context-menu /
+///   sub-tab feature). Migration seeds the built-in custom-process defs
+///   (`shell`, `open-folder`, `vscode`) additively — only IDs not already
+///   present are inserted, never overwriting a user-edited def.
 pub const CONFIG_VERSION_CURRENT: u32 = 4;
+
+/// Per-agent CLI launch command override. Each field is a verbatim shell
+/// snippet (e.g. `"npx claude --model sonnet"`) interpolated into the
+/// composed command in place of the bare program token. Empty string means
+/// "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AiLaunchCommands {
+    #[serde(default)]
+    pub claude: String,
+    #[serde(default)]
+    pub copilot: String,
+}
 
 /// Persisted application configuration. Lives in `config.json` (Phase 4).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -350,6 +371,11 @@ pub struct AppConfig {
     pub prelaunch_commands: Vec<String>,
     /// Per-worktree overrides. Key = canonicalized worktree path as a string.
     pub worktree_prelaunch_commands: BTreeMap<String, Vec<String>>,
+    /// Per-agent CLI launch override. Empty fields fall back to the
+    /// hardcoded defaults (`claude` / `copilot`). Added in
+    /// `configVersion = 4`.
+    #[serde(default)]
+    pub ai_launch_commands: AiLaunchCommands,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
     /// ID of the most recently focused session. Persisted by `session_focus`
@@ -385,6 +411,7 @@ impl Default for AppConfig {
             worktree_roots: Vec::new(),
             prelaunch_commands: Vec::new(),
             worktree_prelaunch_commands: BTreeMap::new(),
+            ai_launch_commands: AiLaunchCommands::default(),
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
             active_session_id: None,
@@ -403,6 +430,18 @@ pub struct PartialDefaultInstructionSets {
     pub claude: Option<InstructionSetId>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub copilot: Option<InstructionSetId>,
+}
+
+/// Partial form of [`AiLaunchCommands`]. Each field is `Some` to overwrite
+/// that agent's launch command (set empty string to clear / revert to
+/// default), or `None` to leave it alone.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialAiLaunchCommands {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claude: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub copilot: Option<String>,
 }
 
 /// Patch over [`AppConfig`]: every field optional so callers can update one
@@ -430,6 +469,8 @@ pub struct PartialAppConfig {
     pub prelaunch_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub worktree_prelaunch_commands: Option<BTreeMap<String, Vec<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ai_launch_commands: Option<PartialAiLaunchCommands>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_open_sessions: Option<Vec<SessionId>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1128,6 +1169,7 @@ mod tests {
                 path: PathBuf::from("/tmp/arborist/abc/sp.md"),
                 contents: "context".to_owned(),
             }],
+            ai_session_id: None,
         }
     }
 
@@ -1200,6 +1242,10 @@ mod tests {
             worktree_roots: vec![PathBuf::from("/repo")],
             prelaunch_commands: vec!["source ~/.zshenv".to_owned()],
             worktree_prelaunch_commands: overrides,
+            ai_launch_commands: AiLaunchCommands {
+                claude: "npx claude".to_owned(),
+                copilot: String::new(),
+            },
             last_open_sessions: vec![SessionId(
                 Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
             )],
@@ -1242,6 +1288,10 @@ mod tests {
             "prelaunchCommands": ["source ~/.zshenv"],
             "worktreePrelaunchCommands": {
                 "/repo/feature-x": ["nvm use", "asdf reshim"]
+            },
+            "aiLaunchCommands": {
+                "claude": "npx claude",
+                "copilot": ""
             },
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
             "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
@@ -1355,6 +1405,7 @@ mod tests {
             worktree_roots: Some(vec![PathBuf::from("/repo")]),
             prelaunch_commands: None,
             worktree_prelaunch_commands: None,
+            ai_launch_commands: None,
             last_open_sessions: None,
             tab_order: None,
             active_session_id: None,

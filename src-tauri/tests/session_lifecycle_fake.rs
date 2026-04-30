@@ -283,6 +283,7 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         git,
         Arc::new(|_| {}),
         Arc::new(|_, _| {}),
+        Arc::new(|_, _| {}),
     ));
 
     Harness {

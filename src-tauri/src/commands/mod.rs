@@ -46,6 +46,13 @@ pub async fn ping() -> Result<String, AppError> {
 }
 
 /// Resolve the [`ConfigStore`] for the current Tauri app instance.
+///
+/// **Avoid in command handlers** — prefer `ctx_of(&app)?.store.clone()`
+/// so all writes share the managed `AppContext`'s mutex (otherwise each
+/// fresh `ConfigStore::open` gets its own mutex and load-modify-write
+/// races between command threads silently lose updates). This helper
+/// remains for boot-time wiring in `lib.rs`, before `AppContext` is
+/// constructed.
 pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
     let dir: PathBuf = app
         .path()
@@ -57,15 +64,15 @@ pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
 /// Returns the persisted [`AppConfig`].
 #[tauri::command]
 pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
-    let store = store_for(&app)?;
-    Ok(store.load_config())
+    let ctx = ctx_of(&app)?;
+    Ok(ctx.store.load_config())
 }
 
 /// Deep-merges `partial` into the persisted [`AppConfig`].
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
-    let store = store_for(&app)?;
-    store.save_config(partial).map_err(AppError::from)?;
+    let ctx = ctx_of(&app)?;
+    ctx.store.save_config(partial).map_err(AppError::from)?;
     Ok(())
 }
 
@@ -73,8 +80,8 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
 /// configured `instructionSetsDir`.
 #[tauri::command]
 pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionSet>, AppError> {
-    let store = store_for(&app)?;
-    let cfg = store.load_config();
+    let ctx = ctx_of(&app)?;
+    let cfg = ctx.store.load_config();
     list_instructions_for(&cfg)
 }
 
@@ -288,6 +295,33 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_me
             tracing::debug!(error = %e, "emit session://metrics failed");
         }
     })
+}
+
+/// Production AI-session discovery callback. Persists the discovered AI
+/// session id on the matching `Session` record so the next app-restart
+/// restore can `--resume <id>` and continue the conversation.
+///
+/// Errors are intentionally swallowed (with a debug log) — discovery is
+/// a best-effort signal that fires every metrics-watcher poll, and a
+/// transient store error must not crash the watcher thread or surface
+/// to the UI.
+#[must_use]
+pub fn build_production_ai_session_discover(
+    store: crate::config_store::ConfigStore,
+) -> crate::session_metrics::AiSessionDiscoveryCb {
+    Arc::new(
+        move |session_id: crate::types::SessionId, ai_session_id: String| match store
+            .update_session_ai_session_id(&session_id, Some(ai_session_id.clone()))
+        {
+            Ok(true) => {
+                tracing::debug!(%session_id, %ai_session_id, "ai session id discovered");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::debug!(%session_id, error = ?e, "failed to persist ai session id");
+            }
+        },
+    )
 }
 
 /// Build the production turn-end emitter — fires a
