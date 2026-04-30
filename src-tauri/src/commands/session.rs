@@ -20,9 +20,10 @@
 //! the on-disk session record converges automatically when the production
 //! sink is wired (see [`crate::lib::run`]).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tracing::{debug, info, warn};
@@ -68,6 +69,14 @@ pub struct AppContext {
     /// `session://activity` channel as a `TurnEnd` variant; tests
     /// substitute a capturing closure.
     pub turn_emit: TurnCb,
+    /// Phase 7 closing-parent tombstone (see CONTEXT_MENU_PLAN.md). Holds
+    /// the `SessionId`s of parent sessions whose `session_close` is
+    /// currently mid-cascade. `subsession_create_impl` and the sub-session
+    /// restore second pass consult this set so a child cannot be created
+    /// or restored under a parent that's about to disappear. The lock is
+    /// only ever held for the trivial "is X in the set?" check, so it
+    /// never blocks for a meaningful duration.
+    pub closing_parents: Arc<Mutex<HashSet<SessionId>>>,
 }
 
 impl AppContext {
@@ -89,6 +98,31 @@ impl AppContext {
             metrics: Arc::new(MetricsRegistry::new()),
             metrics_emit,
             turn_emit,
+            closing_parents: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// True iff `session_close` is currently mid-cascade for `id`.
+    /// Used by `subsession_create_impl` and the sub-session restore
+    /// second pass to refuse new children under a closing parent.
+    #[must_use]
+    pub fn is_parent_closing(&self, id: &SessionId) -> bool {
+        self.closing_parents
+            .lock()
+            .map(|g| g.contains(id))
+            .unwrap_or(false)
+    }
+
+    /// Mark a parent as mid-close. Returns a guard that removes the id
+    /// on drop — guaranteed cleanup even if the close path panics.
+    #[must_use]
+    pub fn mark_parent_closing(&self, id: SessionId) -> ClosingParentGuard {
+        if let Ok(mut g) = self.closing_parents.lock() {
+            g.insert(id);
+        }
+        ClosingParentGuard {
+            set: Arc::clone(&self.closing_parents),
+            id,
         }
     }
 
@@ -106,6 +140,22 @@ impl AppContext {
             Arc::new(|_| {}),
             Arc::new(|_, _| {}),
         )
+    }
+}
+
+/// RAII guard returned by [`AppContext::mark_parent_closing`]. Removes
+/// the id from the closing-parents set when dropped so the tombstone
+/// never outlives the cascade — even on panic.
+pub struct ClosingParentGuard {
+    set: Arc<Mutex<HashSet<SessionId>>>,
+    id: SessionId,
+}
+
+impl Drop for ClosingParentGuard {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.set.lock() {
+            g.remove(&self.id);
+        }
     }
 }
 

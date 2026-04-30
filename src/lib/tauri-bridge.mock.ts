@@ -182,6 +182,11 @@ export const subSessionResize: Mock<
   ReturnType<typeof realBridge.subSessionResize>
 > = vi.fn(() => Promise.resolve());
 
+export const subSessionRelaunch: Mock<
+  Parameters<typeof realBridge.subSessionRelaunch>,
+  ReturnType<typeof realBridge.subSessionRelaunch>
+> = vi.fn(rejectNotImplemented);
+
 export const onSubSessionStatus: Mock<
   Parameters<typeof realBridge.onSubSessionStatus>,
   ReturnType<typeof realBridge.onSubSessionStatus>
@@ -190,6 +195,11 @@ export const onSubSessionStatus: Mock<
 export const onSubSessionExited: Mock<
   Parameters<typeof realBridge.onSubSessionExited>,
   ReturnType<typeof realBridge.onSubSessionExited>
+> = vi.fn(() => Promise.resolve(noopUnlisten));
+
+export const onSubSessionRestored: Mock<
+  Parameters<typeof realBridge.onSubSessionRestored>,
+  ReturnType<typeof realBridge.onSubSessionRestored>
 > = vi.fn(() => Promise.resolve(noopUnlisten));
 
 // Re-export the bridge's argument-shape interfaces so consumers importing
@@ -234,8 +244,10 @@ export function resetBridgeMocks(): void {
   subSessionList.mockReset().mockImplementation(() => Promise.resolve([]));
   subSessionInput.mockReset().mockImplementation(() => Promise.resolve());
   subSessionResize.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionRelaunch.mockReset().mockImplementation(rejectNotImplemented);
   onSubSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSubSessionExited.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  onSubSessionRestored.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }
 
 // Compile-time guard: this module must export every member of the real
@@ -270,7 +282,9 @@ const _shapeCheck = {
   subSessionList,
   subSessionInput,
   subSessionResize,
+  subSessionRelaunch,
   onSubSessionStatus,
   onSubSessionExited,
+  onSubSessionRestored,
 } satisfies typeof realBridge;
 void _shapeCheck;

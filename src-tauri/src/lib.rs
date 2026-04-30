@@ -186,6 +186,7 @@ pub fn run() {
             commands::subsession_list,
             commands::subsession_input,
             commands::subsession_resize,
+            commands::subsession_relaunch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arborist");

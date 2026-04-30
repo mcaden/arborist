@@ -18,6 +18,7 @@ import type {
   SessionStatusEvent,
   SubSessionStatusEvent,
   SubSessionExitedEvent,
+  SubSessionRestoredEvent,
   SessionView,
   SubSession,
   SubSessionRecord,
@@ -36,6 +37,7 @@ import subSessionFixture from './fixtures/subSession.json';
 import subSessionRecordFixture from './fixtures/subSessionRecord.json';
 import subSessionStatusEventFixture from './fixtures/subSessionStatusEvent.json';
 import subSessionExitedEventFixture from './fixtures/subSessionExitedEvent.json';
+import subSessionRestoredEventFixture from './fixtures/subSessionRestoredEvent.json';
 
 // --- Compile-time assertions ------------------------------------------------
 //
@@ -60,6 +62,7 @@ const _subSession = subSessionFixture satisfies SubSession;
 const _subSessionRecord = subSessionRecordFixture satisfies SubSessionRecord;
 const _subSessionStatusEvent = subSessionStatusEventFixture satisfies SubSessionStatusEvent;
 const _subSessionExitedEvent = subSessionExitedEventFixture satisfies SubSessionExitedEvent;
+const _subSessionRestoredEvent = subSessionRestoredEventFixture satisfies SubSessionRestoredEvent;
 
 // Silence "unused" lint without losing the satisfies assertion.
 void _session;
@@ -75,6 +78,7 @@ void _subSession;
 void _subSessionRecord;
 void _subSessionStatusEvent;
 void _subSessionExitedEvent;
+void _subSessionRestoredEvent;
 
 // --- Runtime key-set assertions --------------------------------------------
 
@@ -259,6 +263,15 @@ describe('arborist type mirrors', () => {
       ['id'],
       ['exitCode'],
       'SubSessionExitedEvent',
+    );
+  });
+
+  it('SubSessionRestoredEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionRestoredEventFixture as unknown as Record<string, unknown>,
+      ['subSession'],
+      [],
+      'SubSessionRestoredEvent',
     );
   });
 

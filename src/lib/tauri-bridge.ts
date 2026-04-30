@@ -38,6 +38,7 @@ import type {
   SubSessionInputArgs,
   SubSessionListArgs,
   SubSessionResizeArgs,
+  SubSessionRestoredEvent,
   SubSessionStatusEvent,
   Tool,
   WorktreeInfo,
@@ -320,6 +321,21 @@ export function subSessionResize(args: SubSessionResizeArgs): Promise<void> {
   return invoke<void>('subsession_resize', { args });
 }
 
+/**
+ * Re-spawn a sub-session under its existing id (Phase 7). Used when the
+ * user clicks a greyed-out application sub-tab whose external process has
+ * already exited; also valid for terminal sub-tabs whose PTY has died.
+ *
+ * The persisted record (id, parent, defId, kind) is unchanged. The
+ * `composedCommand` is re-derived from the current
+ * `AppConfig.customProcesses` entry, so user edits to the def take effect
+ * on relaunch. Status flows back via the existing `subsession://status`
+ * channel.
+ */
+export function subSessionRelaunch(id: SubSessionId): Promise<SubSession> {
+  return invoke<SubSession>('subsession_relaunch', { args: { id } });
+}
+
 export function onSubSessionStatus(
   cb: (payload: SubSessionStatusEvent) => void,
 ): Promise<UnlistenFn> {
@@ -330,4 +346,16 @@ export function onSubSessionExited(
   cb: (payload: SubSessionExitedEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<SubSessionExitedEvent>('subsession://exited', (event) => cb(event.payload));
+}
+
+/**
+ * Subscribe to `subsession://restored` events emitted once per sub-session
+ * by the restore-on-launch second pass (Phase 7). Carries the full
+ * `SubSession` payload so the frontend store can hydrate the row in a
+ * single update without an extra `subsession_list` round-trip.
+ */
+export function onSubSessionRestored(
+  cb: (payload: SubSessionRestoredEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SubSessionRestoredEvent>('subsession://restored', (event) => cb(event.payload));
 }

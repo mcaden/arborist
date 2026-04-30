@@ -3,7 +3,7 @@
 // idempotent attach, returns an unlisten that resets module state, and
 // a `__resetForTests` escape hatch.
 
-import { onSubSessionExited, onSubSessionStatus } from '@/lib/tauri-bridge';
+import { onSubSessionExited, onSubSessionRestored, onSubSessionStatus } from '@/lib/tauri-bridge';
 import { useSubSessionStore } from '@/store/sub-session-store';
 
 type Unlisten = () => void;
@@ -14,6 +14,8 @@ let statusAttached = false;
 let statusUnlistenPromise: Promise<Unlisten> | null = null;
 let exitedAttached = false;
 let exitedUnlistenPromise: Promise<Unlisten> | null = null;
+let restoredAttached = false;
+let restoredUnlistenPromise: Promise<Unlisten> | null = null;
 
 /**
  * Attach the single app-lifetime listener for `subsession://status`.
@@ -63,16 +65,48 @@ export function subscribeToSubExited(): Unlisten {
 }
 
 /**
+ * Attach the single app-lifetime listener for `subsession://restored`
+ * (Phase 7). Hands the carried `SubSession` to
+ * `useSubSessionStore.actions.applyRestored`, which inserts the row if
+ * not already present. Idempotent. Same contract as
+ * {@link subscribeToSubStatus}.
+ *
+ * MUST be attached BEFORE `frontendReady()` so restore events that fire
+ * during the post-hydrate restore second pass land in the cache.
+ */
+export function subscribeToSubRestored(): Unlisten {
+  if (restoredAttached) return NOOP_UNLISTEN;
+  restoredAttached = true;
+
+  restoredUnlistenPromise = onSubSessionRestored((payload) => {
+    useSubSessionStore.getState().actions.applyRestored(payload);
+  });
+
+  return () => {
+    const pending = restoredUnlistenPromise;
+    restoredAttached = false;
+    restoredUnlistenPromise = null;
+    if (!pending) return;
+    void pending.then((unlisten) => {
+      unlisten();
+    });
+  };
+}
+
+/**
  * Test-only: forcibly detach active subscriptions and reset internal
  * state so subsequent `subscribeTo*` calls re-attach fresh.
  */
 export function __resetForTests(): void {
   const pendingStatus = statusUnlistenPromise;
   const pendingExited = exitedUnlistenPromise;
+  const pendingRestored = restoredUnlistenPromise;
   statusAttached = false;
   statusUnlistenPromise = null;
   exitedAttached = false;
   exitedUnlistenPromise = null;
+  restoredAttached = false;
+  restoredUnlistenPromise = null;
   if (pendingStatus) {
     void pendingStatus.then((unlisten) => {
       unlisten();
@@ -80,6 +114,11 @@ export function __resetForTests(): void {
   }
   if (pendingExited) {
     void pendingExited.then((unlisten) => {
+      unlisten();
+    });
+  }
+  if (pendingRestored) {
+    void pendingRestored.then((unlisten) => {
       unlisten();
     });
   }

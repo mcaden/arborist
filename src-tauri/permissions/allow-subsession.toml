@@ -10,4 +10,5 @@ commands.allow = [
     "subsession_list",
     "subsession_input",
     "subsession_resize",
+    "subsession_relaunch",
 ]

@@ -32,6 +32,7 @@ import {
   subSessionCreate,
   subSessionFocus,
   subSessionList,
+  subSessionRelaunch,
 } from '@/lib/tauri-bridge';
 import type {
   SessionId,
@@ -39,6 +40,7 @@ import type {
   SubSessionCreateArgs,
   SubSessionExitedEvent,
   SubSessionId,
+  SubSessionRestoredEvent,
   SubSessionStatusEvent,
 } from '@/types/arborist';
 
@@ -86,9 +88,22 @@ export interface SubSessionStoreActions {
    * consistent immediately).
    */
   dropForParent: (parentId: SessionId) => void;
+  /**
+   * Re-spawn a sub-session under its existing id (Phase 7). Used by
+   * `SidebarSubTab` when the user clicks a greyed-out application
+   * sub-tab; also valid for terminal sub-tabs whose PTY died. Per-id
+   * dedupe prevents a double-click from spawning twice.
+   */
+  relaunch: (id: SubSessionId) => Promise<void>;
   // --- event handlers (called from sub-session-events.ts) ---
   applyStatus: (event: SubSessionStatusEvent) => void;
   applyExited: (event: SubSessionExitedEvent) => void;
+  /**
+   * Insert a sub-session received via `subsession://restored` (Phase 7
+   * restore-on-launch). Idempotent on duplicate restores; never steals
+   * `activeByParent` away from a sub-tab the parent already owns.
+   */
+  applyRestored: (event: SubSessionRestoredEvent) => void;
 }
 
 type Store = SubSessionStoreState & { actions: SubSessionStoreActions };
@@ -111,6 +126,13 @@ function isTerminalStatus(status: SubStatus): boolean {
 }
 
 export const useSubSessionStore = create<Store>((set, get) => {
+  // Per-id dedupe set for in-flight `relaunch` calls. Lives outside
+  // the Zustand state object because it's purely operational and would
+  // cause needless re-renders if it triggered subscribers. A second
+  // click on the same sub-tab while the first relaunch is in flight is
+  // a no-op.
+  const relaunchPending = new Set<SubSessionId>();
+
   const actions: SubSessionStoreActions = {
     hydrate: async () => {
       const all = await subSessionList();
@@ -214,6 +236,38 @@ export const useSubSessionStore = create<Store>((set, get) => {
       });
     },
 
+    relaunch: async (id) => {
+      // Per-id dedupe — second click while the first call is in flight
+      // is a no-op. Prevents accidental double-spawns from a quick
+      // double-click on a greyed app tab.
+      if (relaunchPending.has(id)) return;
+      relaunchPending.add(id);
+
+      // Optimistic UI: flip status to `starting` immediately so the
+      // greyed row visually transitions before the real status event
+      // arrives. We deliberately don't touch `activeByParent` — for
+      // application kind that's a focus gesture and clicking a greyed
+      // tab to relaunch shouldn't steal viewport focus.
+      set((s) => {
+        const idx = s.subSessions.findIndex((sub) => sub.id === id);
+        if (idx === -1) return {};
+        const current = s.subSessions[idx]!;
+        const nextSubs = [...s.subSessions];
+        nextSubs[idx] = { ...current, status: 'starting', pid: undefined };
+        const nextMsgs: Record<SubSessionId, string> = { ...s.statusMessages };
+        delete nextMsgs[id];
+        return { subSessions: nextSubs, statusMessages: nextMsgs };
+      });
+
+      try {
+        await subSessionRelaunch(id);
+        // Status flows back via subsession://status — no further local
+        // mutation needed.
+      } finally {
+        relaunchPending.delete(id);
+      }
+    },
+
     applyStatus: (event) => {
       set((s) => {
         const idx = s.subSessions.findIndex((sub) => sub.id === event.id);
@@ -255,6 +309,36 @@ export const useSubSessionStore = create<Store>((set, get) => {
         const nextSubs = [...s.subSessions];
         nextSubs[idx] = { ...current, status: synthetic, pid: undefined };
         return { subSessions: nextSubs };
+      });
+    },
+
+    applyRestored: (event) => {
+      // Phase 7: insert a sub-session received from the restore-on-launch
+      // second pass. Idempotent — if the row is already in the cache
+      // (e.g. a duplicate restored event, or the user has already
+      // hydrated via subsession_list) we leave it alone. We also never
+      // steal `activeByParent` from a tab the parent already owns —
+      // restore happens before the user has clicked anything but the
+      // hydrate path may have repopulated `activeByParent` from the
+      // session-store's persisted active sub-tab.
+      set((s) => {
+        const incoming = event.subSession;
+        if (s.subSessions.some((sub) => sub.id === incoming.id)) return {};
+        const nextSubs = [...s.subSessions, incoming];
+        const nextActive: Record<SessionId, SubSessionId> = { ...s.activeByParent };
+        if (!(incoming.parentSessionId in nextActive)) {
+          // Parent has no active sub-tab yet — adopt this one so the
+          // restored row is visible if the parent gets focused. For
+          // application kind this is harmless (clicking an app sub-tab
+          // doesn't swap the viewport anyway).
+          //
+          // We DON'T set this for application kind to preserve the
+          // existing rule that app sub-tabs never claim the viewport.
+          if (incoming.kind === 'terminal') {
+            nextActive[incoming.parentSessionId] = incoming.id;
+          }
+        }
+        return { subSessions: nextSubs, activeByParent: nextActive };
       });
     },
   };

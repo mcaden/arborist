@@ -1,0 +1,12 @@
+{
+  "subSession": {
+    "id": "00000000-0000-0000-0000-000000000aaa",
+    "parentSessionId": "11111111-1111-1111-1111-11111111aaaa",
+    "defId": "shell",
+    "kind": "terminal",
+    "label": "shell",
+    "status": "starting",
+    "composedCommand": "bash -l",
+    "createdAt": 1730390400
+  }
+}

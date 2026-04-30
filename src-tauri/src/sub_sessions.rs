@@ -81,21 +81,35 @@ pub type SubStatusCb =
 /// [`SubSessionStatus::Exited`]); kept on the sink so production wiring
 /// has a single place to emit `subsession://exited`.
 pub type SubExitedCb = Arc<dyn Fn(&SubSessionId, Option<i32>) + Send + Sync>;
+/// Phase 7 restore-on-launch notification. Fired once per sub-session
+/// re-materialised from `AppConfig.lastOpenSubSessions` so the frontend
+/// store can insert the entry **before** any subsequent
+/// `subsession://status` event for that id (otherwise the status event
+/// would be ignored as "unknown id"). Carries the full [`SubSession`]
+/// because hydrate has already returned by the time restore runs.
+pub type SubRestoredCb = Arc<dyn Fn(&SubSession) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SubPtySink {
     pub output: SubOutputCb,
     pub status: SubStatusCb,
     pub exited: SubExitedCb,
+    pub restored: SubRestoredCb,
 }
 
 impl SubPtySink {
     #[must_use]
-    pub fn new(output: SubOutputCb, status: SubStatusCb, exited: SubExitedCb) -> Self {
+    pub fn new(
+        output: SubOutputCb,
+        status: SubStatusCb,
+        exited: SubExitedCb,
+        restored: SubRestoredCb,
+    ) -> Self {
         Self {
             output,
             status,
             exited,
+            restored,
         }
     }
 
@@ -106,6 +120,7 @@ impl SubPtySink {
             output: Arc::new(|_, _| {}),
             status: Arc::new(|_, _, _, _| {}),
             exited: Arc::new(|_, _| {}),
+            restored: Arc::new(|_| {}),
         }
     }
 }
@@ -947,6 +962,7 @@ mod tests {
                 observed_for_status.lock().unwrap().push((status, pid));
             }),
             Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
         );
 
         let id = SubSessionId::default();
@@ -1045,6 +1061,7 @@ mod tests {
             Arc::new(move |_, chunk| captured_for_out.lock().unwrap().push_str(&chunk)),
             Arc::new(|_, _, _, _| {}),
             Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
         );
         let id = SubSessionId::default();
         pool.spawn_terminal(id, "x".to_owned(), PathBuf::from("."), sink)

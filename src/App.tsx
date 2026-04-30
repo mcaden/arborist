@@ -23,7 +23,11 @@ import { Sidebar } from '@/components/Sidebar';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
-import { subscribeToSubExited, subscribeToSubStatus } from '@/lib/sub-session-events';
+import {
+  subscribeToSubExited,
+  subscribeToSubRestored,
+  subscribeToSubStatus,
+} from '@/lib/sub-session-events';
 import { frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
@@ -106,6 +110,7 @@ export function App(): JSX.Element {
     let unlistenMetrics: (() => void) | null = null;
     let unlistenSubStatus: (() => void) | null = null;
     let unlistenSubExited: (() => void) | null = null;
+    let unlistenSubRestored: (() => void) | null = null;
 
     const boot = async (): Promise<void> => {
       try {
@@ -119,6 +124,11 @@ export function App(): JSX.Element {
         unlistenMetrics = subscribeToMetrics();
         unlistenSubStatus = subscribeToSubStatus();
         unlistenSubExited = subscribeToSubExited();
+        // `subsession://restored` MUST be attached before `frontendReady()`
+        // — the restore-on-launch second pass emits one event per
+        // sub-session and the frontend store needs the row hydrated
+        // before any subsequent status event can update it.
+        unlistenSubRestored = subscribeToSubRestored();
         await useSessionStore.getState().actions.hydrate();
         if (cancelled) return;
         await useSubSessionStore.getState().actions.hydrate();
@@ -170,6 +180,13 @@ export function App(): JSX.Element {
       if (unlistenSubExited) {
         try {
           unlistenSubExited();
+        } catch {
+          // ignore
+        }
+      }
+      if (unlistenSubRestored) {
+        try {
+          unlistenSubRestored();
         } catch {
           // ignore
         }

@@ -111,6 +111,13 @@ pub async fn session_close(
     args: SessionCloseArgs,
 ) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
+    // Phase 7 cascade: mark the parent as closing (RAII guard ensures
+    // removal even on panic), tear down its sub-sessions, then close the
+    // parent itself. The tombstone closes the door on a concurrent
+    // `subsession_create` racing into the close window.
+    let _guard = ctx.mark_parent_closing(args.session_id);
+    subsession::close_for_parent_impl(&ctx, &sub_ctx, args.session_id).await;
     session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
 }
 
@@ -147,14 +154,22 @@ pub async fn session_restart(app: tauri::AppHandle, args: SessionIdArg) -> Resul
 #[tauri::command]
 pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
     if session::frontend_ready_impl(&ctx) {
         let ctx_for_task = Arc::clone(&ctx);
+        let sub_ctx_for_task = Arc::clone(&sub_ctx);
         // `restore_all_sessions` does blocking IO and PTY spawn — run it
         // on a blocking thread so we don't hold the executor. We
         // intentionally don't await the JoinHandle: restore is fire-and-
         // forget from the frontend's perspective.
+        //
+        // Phase 7: after the parent-session restore completes, kick off
+        // the sub-session restore second pass on the SAME blocking
+        // thread so children only attempt to spawn after their parents
+        // have been re-materialised in `sessions.json`.
         std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
             session::restore_all_sessions(&ctx_for_task);
+            subsession::restore_all_sub_sessions_impl(&ctx_for_task, &sub_ctx_for_task);
         }));
     }
     Ok(())
@@ -361,6 +376,20 @@ pub async fn subsession_resize(
     subsession::subsession_resize_impl(&sub_ctx, args)
 }
 
+/// Phase 7: relaunch a sub-session under the **same id**. For a greyed
+/// Application sub-tab (status `exited`/`error`) this re-spawns the
+/// external app; for a Terminal sub-tab it kills the old PTY and spawns
+/// a fresh one. The persisted record is unchanged (id stable).
+#[tauri::command]
+pub async fn subsession_relaunch(
+    app: tauri::AppHandle,
+    args: SubSessionIdArg,
+) -> Result<SubSession, AppError> {
+    let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
+    subsession::subsession_relaunch_impl(&ctx, &sub_ctx, args.id).await
+}
+
 /// Build the production [`crate::sub_sessions::SubPtySink`] whose callbacks
 /// emit Tauri events over `session://output` (shared UUID id space) and the
 /// new `subsession://status` / `subsession://exited` channels. The status
@@ -413,7 +442,7 @@ pub fn build_production_sub_sink(
         },
     );
 
-    let app_for_exit = app;
+    let app_for_exit = app.clone();
     let exited = Arc::new(
         move |id: &crate::types::SubSessionId, exit_code: Option<i32>| {
             let payload = crate::types::SubSessionExitedEvent { id: *id, exit_code };
@@ -423,7 +452,17 @@ pub fn build_production_sub_sink(
         },
     );
 
-    crate::sub_sessions::SubPtySink::new(output, status, exited)
+    let app_for_restored = app;
+    let restored = Arc::new(move |sub: &crate::types::SubSession| {
+        let payload = crate::types::SubSessionRestoredEvent {
+            sub_session: sub.clone(),
+        };
+        if let Err(e) = app_for_restored.emit("subsession://restored", payload) {
+            tracing::debug!(sub_session_id = %sub.id, error = %e, "emit subsession://restored failed");
+        }
+    });
+
+    crate::sub_sessions::SubPtySink::new(output, status, exited, restored)
 }
 
 #[cfg(test)]

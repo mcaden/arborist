@@ -41,6 +41,15 @@ export function SidebarSubTab({
   const isViewportOwner = sub.kind === 'terminal' && activeSubId === subSessionId && parentIsActive;
 
   const handleClick = (): void => {
+    // Phase 7: clicking a greyed-out application sub-tab triggers a
+    // relaunch (re-spawn under the same id). Status flows back via
+    // `subsession://status`; the row visually transitions starting →
+    // running. Per-id dedupe in the store action prevents double-clicks
+    // from spawning two processes.
+    if (sub.kind === 'application' && (sub.status === 'exited' || sub.status === 'error')) {
+      void subActions.relaunch(subSessionId);
+      return;
+    }
     // For terminal sub-sessions, also bring the parent into view if the
     // user clicked from another parent (otherwise activeByParent[parent]
     // is set but `activeId` still points elsewhere — the viewport

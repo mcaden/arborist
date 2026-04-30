@@ -283,6 +283,19 @@ export interface SubSessionExitedEvent {
   exitCode?: number;
 }
 
+// MIRROR: src-tauri/src/types.rs::SubSessionRestoredEvent
+// Payload of the `subsession://restored` Tauri event (Phase 7).
+//
+// Emitted once per sub-session by the restore-on-launch second pass
+// (see `commands::subsession::restore_all_sub_sessions_impl`). Carries
+// the full `SubSession` snapshot so the frontend store can insert the
+// row in a single `applyRestored` call without an extra round-trip to
+// `subsession_list`. Status events for the same id (Running, Exited,
+// Error) follow the restore event in normal flow.
+export interface SubSessionRestoredEvent {
+  subSession: SubSession;
+}
+
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent
 // Tagged union; matches `#[serde(tag = "kind", rename_all = "camelCase")]`.
 export type ActivityEvent =

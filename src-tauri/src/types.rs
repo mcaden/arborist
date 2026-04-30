@@ -779,6 +779,23 @@ pub struct SubSessionExitedEvent {
     pub exit_code: Option<i32>,
 }
 
+/// Payload of `subsession://restored`. Emitted by the Phase 7 restore
+/// second pass for every sub-session re-materialised from
+/// `AppConfig.lastOpenSubSessions`. The frontend store's `applyRestored`
+/// reducer inserts the entry idempotently so subsequent `subsession://
+/// status` events for the same id land on a real row.
+///
+/// Carrying the full [`SubSession`] (rather than just the id) means the
+/// frontend doesn't have to issue a follow-up `subsession_list` after
+/// restore — it has the data it needs immediately.
+///
+/// MIRROR: `src/types/arborist.ts::SubSessionRestoredEvent`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionRestoredEvent {
+    pub sub_session: SubSession,
+}
+
 /// Arguments for `workspace_validate` (Roadmap §1.1).
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::WorkspaceValidateArgs`.

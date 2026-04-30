@@ -583,6 +583,7 @@ mod tests {
                 s_for_status.lock().unwrap().push((status, pid));
             }),
             Arc::new(move |_, code| s_for_exit.lock().unwrap().push(code)),
+            Arc::new(|_| {}),
         );
         (sink, status_obs, exit_obs)
     }

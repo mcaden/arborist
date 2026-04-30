@@ -31,9 +31,11 @@ vi.mock('@/lib/session-events', () => ({
 
 const subscribeToSubStatusMock = vi.fn(() => () => {});
 const subscribeToSubExitedMock = vi.fn(() => () => {});
+const subscribeToSubRestoredMock = vi.fn(() => () => {});
 vi.mock('@/lib/sub-session-events', () => ({
   subscribeToSubStatus: () => subscribeToSubStatusMock(),
   subscribeToSubExited: () => subscribeToSubExitedMock(),
+  subscribeToSubRestored: () => subscribeToSubRestoredMock(),
 }));
 
 import { App } from './App';

@@ -281,4 +281,113 @@ describe('useSubSessionStore', () => {
       expect(useSubSessionStore.getState().subSessions[0]!.status).toBe('exited');
     });
   });
+
+  describe('applyRestored (Phase 7)', () => {
+    it('inserts a sub-session received from restore-on-launch', () => {
+      const sub = makeSub({ id: id('20'), kind: 'terminal' });
+      useSubSessionStore.getState().actions.applyRestored({ subSession: sub });
+      const state = useSubSessionStore.getState();
+      expect(state.subSessions).toEqual([sub]);
+      // Terminal restore claims activeByParent if no other sub-tab has it.
+      expect(state.activeByParent[PARENT_A]).toBe(sub.id);
+    });
+
+    it('is idempotent on duplicate restore', () => {
+      const sub = makeSub({ id: id('21'), kind: 'terminal' });
+      useSubSessionStore.setState({ subSessions: [sub] });
+      useSubSessionStore.getState().actions.applyRestored({ subSession: sub });
+      expect(useSubSessionStore.getState().subSessions).toHaveLength(1);
+    });
+
+    it('does not steal activeByParent if parent already owns one', () => {
+      const existing = makeSub({ id: id('22'), kind: 'terminal' });
+      useSubSessionStore.setState({
+        subSessions: [existing],
+        activeByParent: { [PARENT_A]: existing.id },
+      });
+      const restored = makeSub({ id: id('23'), kind: 'terminal' });
+      useSubSessionStore.getState().actions.applyRestored({ subSession: restored });
+      // activeByParent must still point at `existing`, not the new row.
+      expect(useSubSessionStore.getState().activeByParent[PARENT_A]).toBe(existing.id);
+    });
+
+    it('does not claim activeByParent for application kind', () => {
+      const sub = makeSub({ id: id('24'), kind: 'application', status: 'exited' });
+      useSubSessionStore.getState().actions.applyRestored({ subSession: sub });
+      const state = useSubSessionStore.getState();
+      expect(state.subSessions).toEqual([sub]);
+      // Application sub-tabs never claim viewport — activeByParent stays clear.
+      expect(state.activeByParent[PARENT_A]).toBeUndefined();
+    });
+  });
+
+  describe('relaunch (Phase 7)', () => {
+    it('flips status to starting and calls subSessionRelaunch', async () => {
+      const sub = makeSub({
+        id: id('30'),
+        kind: 'application',
+        status: 'exited',
+        pid: undefined,
+      });
+      useSubSessionStore.setState({ subSessions: [sub] });
+      bridgeMock.subSessionRelaunch.mockResolvedValueOnce({ ...sub, status: 'running', pid: 99 });
+
+      await useSubSessionStore.getState().actions.relaunch(sub.id);
+
+      expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
+      // After awaited completion, the optimistic `starting` flip is still
+      // visible — the real status update arrives later via the
+      // subsession://status channel which this test doesn't simulate.
+      const updated = useSubSessionStore.getState().subSessions[0]!;
+      expect(updated.status).toBe('starting');
+      expect(updated.pid).toBeUndefined();
+    });
+
+    it('dedupes concurrent calls per id', async () => {
+      const sub = makeSub({ id: id('31'), kind: 'application', status: 'error' });
+      useSubSessionStore.setState({ subSessions: [sub] });
+
+      let resolveFirst: (() => void) | null = null;
+      bridgeMock.subSessionRelaunch.mockImplementationOnce(
+        () =>
+          new Promise<SubSession>((resolve) => {
+            resolveFirst = () => resolve({ ...sub, status: 'running', pid: 1 });
+          }),
+      );
+
+      const first = useSubSessionStore.getState().actions.relaunch(sub.id);
+      // Second call while first is pending — must be a no-op.
+      const second = useSubSessionStore.getState().actions.relaunch(sub.id);
+      await second; // resolves immediately (no-op)
+
+      expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledTimes(1);
+
+      resolveFirst!();
+      await first;
+    });
+
+    it('is a no-op for unknown id', async () => {
+      bridgeMock.subSessionRelaunch.mockResolvedValueOnce(makeSub({ id: id('32') }));
+      // Does NOT throw — the optimistic-status update is a setState that
+      // bails out early when the row is absent.
+      await useSubSessionStore.getState().actions.relaunch(id('99'));
+      // The bridge call still goes out — the backend is the source of
+      // truth for "id not found" and will reject. We just check we
+      // didn't crash and the store stayed empty.
+      expect(useSubSessionStore.getState().subSessions).toEqual([]);
+    });
+
+    it('clears the dedupe set even when the bridge rejects', async () => {
+      const sub = makeSub({ id: id('33'), kind: 'application', status: 'exited' });
+      useSubSessionStore.setState({ subSessions: [sub] });
+      bridgeMock.subSessionRelaunch.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(useSubSessionStore.getState().actions.relaunch(sub.id)).rejects.toThrow('boom');
+
+      // A subsequent retry must NOT be deduped.
+      bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
+      await useSubSessionStore.getState().actions.relaunch(sub.id);
+      expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledTimes(2);
+    });
+  });
 });

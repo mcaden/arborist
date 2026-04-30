@@ -121,4 +121,34 @@ describe('SidebarSubTab', () => {
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
     expect(screen.getByRole('tab').getAttribute('aria-selected')).toBe('false');
   });
+
+  it('clicking a greyed exited application sub-tab triggers relaunch (Phase 7)', () => {
+    const sub = makeSub({ id: id('07'), kind: 'application', status: 'exited', pid: undefined });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    fireEvent.click(screen.getByRole('tab'));
+    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
+    // Focus must NOT be called — the click is a relaunch gesture, not a
+    // focus gesture.
+    expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+  });
+
+  it('clicking a greyed errored application sub-tab triggers relaunch (Phase 7)', () => {
+    const sub = makeSub({ id: id('08'), kind: 'application', status: 'error', pid: undefined });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    fireEvent.click(screen.getByRole('tab'));
+    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
+  });
+
+  it('clicking a running application sub-tab focuses, does NOT relaunch (Phase 7)', () => {
+    const sub = makeSub({ id: id('09'), kind: 'application', status: 'running', pid: 42 });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    fireEvent.click(screen.getByRole('tab'));
+    expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
+    expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
+  });
 });
