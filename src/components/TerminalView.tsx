@@ -28,7 +28,7 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   const containerRef = useRef<HTMLDivElement | null>(null);
   const session = useSessionById(sessionId);
   const statusMessage = useStatusMessage(sessionId);
-  const { attach, detach, focus } = useTerminal(sessionId);
+  const { attach, detach, focus, refit } = useTerminal(sessionId);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -39,10 +39,22 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
     };
   }, [attach, detach]);
 
-  // Steal focus to the terminal whenever this view becomes the active tab.
+  // When this view becomes the active tab, the host's CSS box doesn't
+  // change size (we hide inactive panels with `visibility: hidden`, which
+  // preserves layout) — so ResizeObserver wouldn't fire. Re-measure and
+  // repaint the renderer here to recover from any stale state, then steal
+  // focus. rAF ensures the visibility:visible style has been applied
+  // before we measure / focus the textarea (visibility:hidden elements
+  // are unfocusable). The cleanup cancels the frame so a rapid tab
+  // switch can't focus a now-inactive terminal.
   useEffect(() => {
-    if (isActive) focus();
-  }, [isActive, focus]);
+    if (!isActive) return;
+    const handle = requestAnimationFrame(() => {
+      refit();
+      focus();
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [isActive, refit, focus]);
 
   const status = session?.status;
   const showOverlay = status === 'error' || status === 'exited';

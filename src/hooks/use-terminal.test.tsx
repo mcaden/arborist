@@ -156,7 +156,7 @@ describe('useTerminal', () => {
     expect(mockFitAddons[0]!.dispose).toHaveBeenCalled();
   });
 
-  it('debounced ResizeObserver triggers fit + sessionResize once', () => {
+  it('fits synchronously on attach and once more after debounced ResizeObserver', () => {
     // Polyfill ResizeObserver capturing the callback.
     let captured: ResizeObserverCallback | null = null;
     const observe = vi.fn();
@@ -176,7 +176,15 @@ describe('useTerminal', () => {
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    // Fire several rapid resizes; only one debounced call should fire.
+    // Initial synchronous fit happens during attach so the renderer is in
+    // a known state immediately, without waiting for the observer's first
+    // tick (which races with font loading).
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+    // First sessionResize fires because lastCols/lastRows defaulted to 0.
+    expect(sessionResize).toHaveBeenCalledTimes(1);
+    expect(sessionResize).toHaveBeenCalledWith({ sessionId: 's1', cols: 80, rows: 24 });
+
+    // Fire several rapid observer ticks; only one debounced fit follows.
     act(() => {
       captured!([], {} as ResizeObserver);
       captured!([], {} as ResizeObserver);
@@ -186,9 +194,9 @@ describe('useTerminal', () => {
       vi.advanceTimersByTime(60);
     });
 
-    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+    // Dimensions unchanged → no second sessionResize emission.
     expect(sessionResize).toHaveBeenCalledTimes(1);
-    expect(sessionResize).toHaveBeenCalledWith({ sessionId: 's1', cols: 80, rows: 24 });
   });
 
   it('initTerminalRouter is idempotent: calling twice does not double-subscribe', () => {
@@ -196,5 +204,34 @@ describe('useTerminal', () => {
     initTerminalRouter();
     initTerminalRouter();
     expect(onSessionOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('refit() runs fit + refresh and emits sessionResize only when dims change', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    // Attach already fit once and emitted one resize (0,0 → 80,24).
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+    expect(sessionResize).toHaveBeenCalledTimes(1);
+
+    // Same dims → fit runs (forces internal recompute) but no extra resize.
+    act(() => result.current.refit());
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+    expect(sessionResize).toHaveBeenCalledTimes(1);
+
+    // Change reported dims → refit emits a new sessionResize.
+    mockTerminals[0]!.cols = 100;
+    mockTerminals[0]!.rows = 30;
+    act(() => result.current.refit());
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(3);
+    expect(sessionResize).toHaveBeenCalledTimes(2);
+    expect(sessionResize).toHaveBeenLastCalledWith({ sessionId: 's1', cols: 100, rows: 30 });
+  });
+
+  it('refit() is a no-op when the terminal is not attached', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    expect(() => act(() => result.current.refit())).not.toThrow();
+    expect(mockFitAddons[0]!.fit).not.toHaveBeenCalled();
+    expect(sessionResize).not.toHaveBeenCalled();
   });
 });
