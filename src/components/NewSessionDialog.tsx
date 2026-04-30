@@ -211,16 +211,16 @@ export function NewSessionDialog(): JSX.Element | null {
   );
 
   const onCreateWorktree = async (): Promise<void> => {
-    if (newName.length === 0 || newNameError !== null || creating) return;
+    if (newName.length === 0 || newNameError !== null || creating || !tool) return;
     setCreating(true);
     setCreateError(null);
+    setSubmitError(null);
     try {
       const result = await worktreeCreate(newName.trim());
-      // Auto-select the newly created worktree and switch back to the
-      // Existing tab so the selection is visible alongside the rest.
+      // Reflect the new selection in local state in case session creation
+      // fails and the user falls back to the Existing tab.
       setWorktree({ path: result.path, branch: newName.trim(), isMain: false });
       setWorktreeMode('existing');
-      // Refresh the listing so the user can see it in the list too.
       if (workspaceRoot !== null && workspaceRoot.length > 0) {
         const root = workspaceRoot;
         try {
@@ -231,6 +231,16 @@ export function NewSessionDialog(): JSX.Element | null {
         }
       }
       setNewName('');
+      // The "New worktree" flow is one-shot: creating the worktree
+      // immediately starts the session and closes the dialog. If session
+      // creation fails, the worktree is preserved and the user can retry
+      // from the Existing tab via the Create session button.
+      try {
+        await actions.create({ tool, worktreePath: result.path });
+        close();
+      } catch (sessionErr) {
+        setSubmitError(formatError(sessionErr));
+      }
     } catch (err) {
       setCreateError(formatError(err));
     } finally {
@@ -493,14 +503,6 @@ export function NewSessionDialog(): JSX.Element | null {
                   {createError}
                 </p>
               )}
-              <button
-                type="button"
-                onClick={() => void onCreateWorktree()}
-                disabled={newName.length === 0 || newNameError !== null || creating}
-                className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
-              >
-                {creating ? 'Creating…' : 'Create worktree'}
-              </button>
             </div>
 
             {worktree && (
@@ -565,7 +567,19 @@ export function NewSessionDialog(): JSX.Element | null {
               Next
             </button>
           )}
-          {step === 2 && (
+          {step === 2 && worktreeMode === 'new' && (
+            <button
+              type="button"
+              onClick={() => void onCreateWorktree()}
+              disabled={
+                creating || submitting || newName.length === 0 || newNameError !== null
+              }
+              className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+            >
+              {creating ? 'Creating…' : 'Create worktree & session'}
+            </button>
+          )}
+          {step === 2 && worktreeMode === 'existing' && (
             <button
               type="button"
               onClick={() => {

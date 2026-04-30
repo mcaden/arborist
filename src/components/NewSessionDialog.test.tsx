@@ -159,11 +159,21 @@ describe('NewSessionDialog', () => {
     expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
   });
 
-  it('Step 2 New tab validates the name and creates a worktree on submit', async () => {
+  it('Step 2 New tab validates the name and creates worktree+session on submit', async () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
     });
+    bridgeMock.sessionCreate.mockResolvedValue({
+      id: 'new-id',
+      tool: 'claude',
+      worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+      worktreeName: 'my-feature',
+      label: 'my-feature',
+      status: 'running',
+      createdAt: 1,
+      tabIndex: 0,
+    } satisfies SessionView);
 
     render(<NewSessionDialog />);
     openDialog();
@@ -171,29 +181,34 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
     await screen.findByText(/step 2 of 2/i);
 
-    // Switch to the New tab.
-    fireEvent.click(screen.getByRole('tab', { name: /^new$/i }));
+    // New tab is the default landing tab on Step 2.
     const input = await screen.findByLabelText(/branch \/ worktree name/i);
 
     // Invalid name: contains a space.
     fireEvent.change(input, { target: { value: 'bad name' } });
     expect(await screen.findByRole('alert')).toHaveTextContent(/space/i);
-    expect(screen.getByRole('button', { name: /^create worktree$/i })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: /^create worktree & session$/i }),
+    ).toBeDisabled();
 
     // Valid name enables the Create button.
     fireEvent.change(input, { target: { value: 'my-feature' } });
-    const createBtn = screen.getByRole('button', { name: /^create worktree$/i });
+    const createBtn = screen.getByRole('button', { name: /^create worktree & session$/i });
     expect(createBtn).toBeEnabled();
 
-    // Create — bridge called, the new worktree is auto-selected and the
-    // wizard switches back to the Existing tab so the user can confirm.
+    // Create — both bridge calls happen and the dialog closes.
     fireEvent.click(createBtn);
     await waitFor(() => expect(bridgeMock.worktreeCreate).toHaveBeenCalledWith('my-feature'));
-    expect(await screen.findByText(/Label will be:/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
+    await waitFor(() =>
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
+        tool: 'claude',
+        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+      }),
+    );
+    await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
 
-  it('Step 2 New tab surfaces backend create errors', async () => {
+  it('Step 2 New tab surfaces backend worktree-create errors', async () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockRejectedValue(new Error('branch already exists'));
 
@@ -201,15 +216,39 @@ describe('NewSessionDialog', () => {
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    fireEvent.click(await screen.findByRole('tab', { name: /^new$/i }));
+    await screen.findByText(/step 2 of 2/i);
 
     const input = await screen.findByLabelText(/branch \/ worktree name/i);
     fireEvent.change(input, { target: { value: 'already-there' } });
-    fireEvent.click(screen.getByRole('button', { name: /^create worktree$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
 
     expect(await screen.findByText(/branch already exists/i)).toBeInTheDocument();
-    // No selection happened, so Create session stays disabled.
-    expect(screen.getByRole('button', { name: /create session/i })).toBeDisabled();
+    expect(bridgeMock.sessionCreate).not.toHaveBeenCalled();
+    expect(useNewSessionDialog.getState().isOpen).toBe(true);
+  });
+
+  it('Step 2 New tab surfaces session-create failures while preserving the worktree', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+    });
+    bridgeMock.sessionCreate.mockRejectedValue(new Error('spawn failed'));
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+    fireEvent.change(input, { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    expect(await screen.findByText(/spawn failed/i)).toBeInTheDocument();
+    // Dialog stays open; user can retry from the Existing tab.
+    expect(useNewSessionDialog.getState().isOpen).toBe(true);
+    expect(await screen.findByText(/Label will be:/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
   });
 
   it('Confirm submits without an instructionSetId so the backend launches the CLI from the worktree cwd', async () => {
