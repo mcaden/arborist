@@ -58,7 +58,7 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
     <div
       role="tabpanel"
       aria-label={session ? `Terminal for ${session.label}` : 'Terminal'}
-      className="relative h-full w-full"
+      className="relative h-full w-full bg-black p-2"
     >
       <div ref={containerRef} className="h-full w-full bg-black" />
       {showOverlay && (
