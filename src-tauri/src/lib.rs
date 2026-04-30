@@ -73,6 +73,23 @@ pub fn init_tracing(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
     }
 }
 
+/// Compute the main window title for a given build branch.
+///
+/// On `main` (or when no branch could be detected) the title is just
+/// `"Arborist"`.  On any other branch the title becomes
+/// `"Arborist - <branch>"` so it is obvious which build is running.
+pub(crate) fn window_title_for_branch(branch: &str) -> String {
+    let trimmed = branch.trim();
+    if trimmed.is_empty() || trimmed == "main" {
+        "Arborist".to_string()
+    } else {
+        format!("Arborist - {trimmed}")
+    }
+}
+
+/// Branch this binary was built from, captured at compile time by `build.rs`.
+pub(crate) const BUILD_BRANCH: &str = env!("ARBORIST_BUILD_BRANCH");
+
 /// Build and run the Tauri application.
 pub fn run() {
     tauri::Builder::default()
@@ -88,6 +105,16 @@ pub fn run() {
                 app.manage(LogGuard(guard));
             }
             tracing::info!("Arborist starting up");
+
+            // If this build came from a branch other than `main`, surface the
+            // branch name in the window title bar so it's obvious which build
+            // is running.
+            if let Some(window) = app.get_webview_window("main") {
+                let title = window_title_for_branch(BUILD_BRANCH);
+                if let Err(err) = window.set_title(&title) {
+                    tracing::warn!(%err, "failed to set main window title");
+                }
+            }
 
             // Build the production AppContext: portable-pty spawner, the
             // on-disk ConfigStore, and a PtySink that bridges back into
@@ -140,5 +167,25 @@ mod tests {
         // Calling twice must not panic — the global subscriber may already be set.
         init_tracing(None);
         init_tracing(None);
+    }
+
+    #[test]
+    fn title_on_main_is_plain() {
+        assert_eq!(window_title_for_branch("main"), "Arborist");
+    }
+
+    #[test]
+    fn title_on_empty_branch_is_plain() {
+        assert_eq!(window_title_for_branch(""), "Arborist");
+        assert_eq!(window_title_for_branch("   "), "Arborist");
+    }
+
+    #[test]
+    fn title_on_feature_branch_includes_name() {
+        assert_eq!(window_title_for_branch("feature/x"), "Arborist - feature/x");
+        assert_eq!(
+            window_title_for_branch("  branch-name  "),
+            "Arborist - branch-name"
+        );
     }
 }
