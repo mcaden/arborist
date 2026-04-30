@@ -1,5 +1,5 @@
 # Arborist — Design Document
-_Version 0.5_
+_Version 0.6_
 
 ## 1. Technology Stack
 
@@ -119,7 +119,7 @@ interface InstructionSet {
 
 ```typescript
 interface AppConfig {
-  configVersion: number; // On-disk schema version (currently 2; bumped on breaking changes)
+  configVersion: number; // On-disk schema version (currently 4; bumped on breaking changes)
   defaultInstructionSets: {
     claude: string; // InstructionSet ID
     copilot: string; // InstructionSet ID
@@ -132,27 +132,129 @@ interface AppConfig {
   lastOpenSessions: string[]; // Session IDs to restore on next launch
   tabOrder: string[]; // Session IDs in sidebar display order
   activeSessionId: string | null; // Focused session at last shutdown (restored on launch)
+  aiLaunchCommands: { claude: string; copilot: string }; // Per-agent CLI launch overrides ('' = built-in default)
+  customProcesses: CustomProcessDef[]; // User-defined launchers exposed in the tab context menu (§3.4)
+  lastOpenSubSessions: SubSessionRecord[]; // Sub-tabs to restore on next launch (§3.4)
 }
 ```
+
+Schema version history (`configVersion`):
+
+- `1` — initial release.
+- `2` — added `activeSessionId`.
+- `3` — added `workspaceRoot` (single-workspace model, Roadmap §1).
+- `4` — added `customProcesses` and `lastOpenSubSessions` (custom-process /
+  sub-tab feature, §3.4). Migration seeds the built-in `shell`,
+  `open-folder`, and `vscode` defs **additively** — only IDs not already
+  present are inserted, so user edits to a built-in def are never
+  overwritten. Future versions (`> CONFIG_VERSION_CURRENT`) are quarantined
+  on load and replaced with defaults to protect downgrade scenarios.
 
 `AppConfig` lives in `<app-data>/config.json`. A separate
 `<app-data>/sessions.json` file holds the full `Session` records; the path
 discipline, atomic-write semantics, and quarantine behaviour for both files
 are documented in `dev/docs/CONFIGURATION.md`.
 
+### 3.4 Custom Processes & Sub-Sessions
+
+Custom processes are user-defined launchers exposed by right-clicking a
+session tab. Two flavours, distinguished by `kind`:
+
+- **`terminal`** — a PTY child hosted in-app. Reuses the same `portable-pty`
+  machinery as top-level sessions (in a parallel `SubPtyPool`). The sub-tab
+  renders an `xterm.js` viewport just like a session.
+- **`application`** — an external GUI program spawned **detached** from
+  Arborist. The sub-tab tracks only the OS PID; clicking it focuses the
+  program's window via the platform-specific `WindowFocuser` (see §5.7.4).
+  Closing the sub-tab does **not** kill the external app — closing
+  Arborist's tab must not terminate the user's editor / file browser.
+
+```typescript
+type CustomProcessKind = 'terminal' | 'application';
+
+interface CustomProcessDef {
+  id: string;            // Slug matching [A-Za-z0-9_-]+; user-editable for new rows, locked once persisted
+  name: string;          // User-facing label (shown in the Launch submenu and on the sub-tab)
+  kind: CustomProcessKind;
+  command: string;       // Composed once at sub-session creation; passed verbatim to $SHELL -c (or %COMSPEC% /c)
+  enabled: boolean;      // false hides the def from the Launch submenu (existing sub-sessions keep running)
+  icon?: string;         // Optional UI hint (reserved; v1 sidebar renders a generic icon)
+}
+
+type SubSessionStatus = 'starting' | 'running' | 'exited' | 'error';
+
+interface SubSession {
+  id: string;            // UUID v4; distinct type (SubSessionId) from SessionId at the Rust level
+  parentSessionId: string;
+  defId: string;
+  kind: CustomProcessKind;
+  label: string;
+  status: SubSessionStatus;
+  pid?: number;          // Cleared on exit
+  composedCommand: string; // Captured at creation time; reused verbatim on relaunch (§5.4 mirror)
+  createdAt: number;     // Unix epoch (whole seconds)
+}
+
+interface SubSessionRecord {  // Lightweight restore record persisted in lastOpenSubSessions
+  id: string;
+  parentSessionId: string;
+  defId: string;
+  kind: CustomProcessKind;
+  label: string;
+  composedCommand: string;
+}
+```
+
+**Default seeded defs** (inserted on fresh install and additively at v3→v4
+migration):
+
+| id            | name        | kind        | command                                  | enabled by default |
+|---------------|-------------|-------------|------------------------------------------|--------------------|
+| `shell`       | Shell       | terminal    | `$SHELL -i` on Unix, `%COMSPEC%` on Windows | true |
+| `open-folder` | Open Folder | application | `xdg-open .` / `open .` / `explorer .`   | true |
+| `vscode`      | VS Code     | application | `code .`                                  | auto: true if `code` is on `PATH` at seed time, else false |
+
+`default_shell_command` rejects suspicious `$SHELL` values (relative paths,
+embedded shell metacharacters/whitespace) and falls back to `sh -i`.
+`command_on_path` requires the executable bit on Unix (`mode & 0o111`); on
+Windows it accepts the `.exe`/`.cmd`/`.bat` suffix without a bit check.
+
+Built-in defs are user-editable and user-deletable just like custom ones;
+nothing special-cases them after seeding.
+
+**Validation** (`config_store::validate_custom_processes`, enforced at the
+`config_set` boundary; the Settings tab mirrors the same rules):
+
+- `id` matches `^[A-Za-z0-9_-]+$` and is unique within the list.
+- `name` and `command` non-empty after trim.
+- `kind` is `terminal` or `application`.
+
+A weaker `sanitize_loaded_custom_processes` runs on load: invalid
+persisted defs (empty/garbage id, blank command, duplicate id) are dropped
+with a warn log rather than poisoning the whole config.
+
 ## 4. Component Hierarchy
 
 ```
 <App>
   <Sidebar>
-    <SidebarTab />       // One per session (icon + worktree name)
+    <SidebarTab />          // One per session (icon + worktree name)
+      <SidebarSubTab />     // Indented sub-tab (one per SubSession)
+      <SidebarSubTab />
     <SidebarTab />
     <NewSessionButton />
   </Sidebar>
   <MainArea>
-    <TerminalView />     // Active session's xterm.js instance
+    <TerminalView />        // Active session's xterm.js instance, OR…
+    <SubTerminalView />     // …active terminal sub-session's xterm.js instance
+                            //   (application sub-tabs leave the previous viewport visible)
   </MainArea>
-  <NewSessionDialog />   // Modal: tool picker → worktree picker → confirm
+  <TabContextMenu />        // Right-click / Shift+F10 / Apps key on a SidebarTab
+  <NewSessionDialog />      // Modal: tool picker → worktree picker → confirm
+  <SettingsDialog>          // Tabbed: General / Custom Processes
+    <GeneralTab />
+    <CustomProcessesTab />  // CRUD over AppConfig.customProcesses
+  </SettingsDialog>
 </App>
 ```
 
@@ -391,6 +493,162 @@ launch don't replay old spans and double-count totals.
 | Compose-time temp file | Only when an instruction set is attached; cleaned up on session close | No |
 | Telemetry env injected at spawn | None (Claude transcripts under `~/.claude/projects/` are read directly) | Three OTel env vars enable the file exporter (see above) |
 
+### 5.7 Custom Process Sub-Sessions
+
+Sub-tabs are launched from the tab context menu's "Launch…" submenu, which
+lists every enabled `CustomProcessDef` from `AppConfig.customProcesses`.
+
+#### 5.7.1 Create
+
+```
+User right-clicks a SidebarTab → TabContextMenu opens
+  → Selects an enabled def from the Launch submenu
+    → Frontend invokes Tauri command: subsession_create { parentSessionId, defId }
+      → Backend (subsession_create_impl):
+          1. Refuses if the parent session is in the closing-parent tombstone (Phase 7).
+          2. Loads the def by id; refuses if missing or disabled.
+          3. Loads the parent Session; refuses with WorktreeMissing if the worktree path is gone.
+          4. Composes once: composedCommand = def.command (captured-and-stored, mirroring §5.4).
+          5. Inserts the SubSession into the in-memory SubSessionStore FIRST,
+             then appends a SubSessionRecord to AppConfig.lastOpenSubSessions.
+             On persist failure, rolls back the in-memory insert so a record can never be orphaned.
+          6. Branches on kind:
+             - terminal:   SubPtyPool.spawn_terminal(id, composedCommand, cwd=parent.worktreePath, sink)
+             - application: AppPool.spawn(id, composedCommand, cwd=parent.worktreePath, sink)
+          7. On spawn failure: removes the in-memory entry and prunes the persisted record.
+      → Sink callbacks emit subsession://status (with PID once Running) and the in-memory
+        store is updated by the production sink before the event is dispatched.
+```
+
+The composed command is **never** built by interpolating the worktree path
+into the command string — `cwd` is always passed as a discrete argument to
+the spawner (DESIGN §8.1).
+
+#### 5.7.2 Focus
+
+```
+Frontend invokes Tauri command: subsession_focus { id }
+  → terminal kind:    no-op on the backend; the frontend swaps the active
+                      terminal viewport in MainArea.
+  → application kind: WindowFocuser.focus_pid(pid). Returns NotApplicable if
+                      the captured PID is a launcher wrapper that has already
+                      exited (e.g. `code .` on PATH delegates to a daemon);
+                      the frontend surfaces the error code without rolling
+                      back the selection.
+```
+
+Focus delegation is best-effort. For launcher wrappers (`code .`,
+`explorer .`) the captured PID is the wrapper, not the GUI window owner;
+the wrapper may have exited cleanly while the GUI is alive, in which case
+focus is impossible without OS-level enumeration of all windows owned by
+related processes. Documented as a v1 limitation.
+
+#### 5.7.3 Close
+
+```
+Frontend invokes Tauri command: subsession_close { id }
+  → terminal kind:    SubPtyPool.kill(id) — drains the read/wait threads,
+                      removes the runtime entry, then prunes the in-memory
+                      and persisted records.
+  → application kind: AppPool.detach(id) — drops Arborist's tracking only.
+                      The external process keeps running. Sub-tab disappears.
+```
+
+#### 5.7.4 Window Focus (application kind)
+
+`window_focus::WindowFocuser` is a trait with platform-gated implementations:
+
+- **Windows**: hand-rolled minimal `user32` FFI (`EnumWindows` to find the
+  HWND for the PID, `AllowSetForegroundWindow`, `SetForegroundWindow`,
+  `ShowWindow(SW_RESTORE)`).
+- **macOS**: `osascript -e 'tell application "System Events" to set
+  frontmost of (first process whose unix id is <pid>) to true'`. AppleScript
+  errors `-1743` and `-1728` map to `PermissionDenied` and `NotFound`.
+- **Linux**: detects Wayland (`WAYLAND_DISPLAY` set with no `DISPLAY`) and
+  returns `Unsupported`; otherwise shells out to `wmctrl -lp` to find the
+  window id, then `wmctrl -ia <wid>`. Returns `ToolMissing("wmctrl")` if
+  the binary is absent.
+
+`wmctrl` is documented as an optional system dependency in the README; its
+absence degrades gracefully to a no-op (with a `tracing::warn`).
+
+#### 5.7.5 Parent-Close Cascade
+
+Closing a top-level session must tear down its sub-sessions atomically:
+
+```
+Frontend invokes Tauri command: session_close { sessionId, deleteWorktree? }
+  → session_close wrapper (commands/mod.rs):
+      1. Sets a tombstone: AppContext.closing_parents.insert(sessionId).
+         Held via an RAII ClosingParentGuard so the entry is removed even
+         if the close path panics. Refuses concurrent subsession_create
+         and skips orphaned restore records under this parent.
+      2. Calls subsession::close_for_parent_impl(parent):
+         - terminal subs: SubPtyPool.kill(). On real failure (NotFound is
+           treated as success), emits Error status and KEEPS the orphan
+           record visible — a visible orphan beats a silent leak.
+         - application subs: AppPool.detach() only. The user's editor must
+           outlive the parent close.
+         - On success, prunes both the in-memory entry and the persisted
+           SubSessionRecord.
+      3. Calls session::session_close_impl as before.
+      4. Guard drops → tombstone cleared.
+```
+
+#### 5.7.6 Restore on Launch (second pass)
+
+The existing `restore_all_sessions` runs first; the sub-session second pass
+is dispatched on the **same** blocking thread so children only spawn after
+their parents are present in `sessions.json`:
+
+```
+frontend_ready (one-shot) →
+  spawn_blocking { restore_all_sessions(ctx); restore_all_sub_sessions_impl(ctx, sub_ctx) }
+
+restore_all_sub_sessions_impl iterates AppConfig.lastOpenSubSessions:
+  - If the parent session is missing or in closing_parents: drop the
+    persisted record + skip (treats as orphan).
+  - If def deleted: drop the persisted record + skip (sanitize_loaded_sub_session_records
+    also runs at config-load time as a defence in depth).
+  - Insert the SubSession into the in-memory store and emit
+    subsession://restored with the full record so the frontend hydrates.
+  - terminal:    spawn_terminal(record.composedCommand, parent.worktreePath).
+                 Spawn failure flips status to Error but KEEPS the persisted
+                 record so a future relaunch can retry.
+  - application: leave as Exited (greyed). User click triggers relaunch.
+```
+
+The frontend attaches the `subsession://restored` listener **before**
+calling `frontend_ready`, so events from the restore pass are not dropped
+against the post-hydrate listener gap.
+
+#### 5.7.7 Relaunch
+
+Mirrors session_restart semantics — swaps the child under the **same** sub
+id so the persisted record (and the user's tab position) is preserved:
+
+```
+Frontend invokes Tauri command: subsession_relaunch { id }
+  → subsession_relaunch_impl:
+      1. Looks up the existing SubSession; refuses if def deleted, disabled,
+         or parent is closing.
+      2. Best-effort tear-down of the prior child:
+         - terminal:    SubPtyPool.kill (removes the runtime entry from the
+                        pool synchronously before awaiting drain, so the
+                        slot is free for the fresh spawn).
+         - application: AppPool.detach.
+      3. Re-derives composedCommand from the CURRENT def, so Settings-tab
+         edits to the def take effect at relaunch time.
+      4. Resets status to Starting, refreshes the persisted SubSessionRecord,
+         and emits subsession://status before spawning so the UI can update
+         immediately.
+      5. Spawns under the same id. On failure: emits Error and keeps the row
+         + persistence so the user can retry.
+```
+
+The frontend deduplicates rapid double-clicks via a per-id `relaunchPending`
+set in the sub-session store.
+
 ## 6. Tauri Command & Event API
 
 Frontend ↔ backend communication uses Tauri's typed command/event system. Commands
@@ -417,6 +675,13 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `worktrees_list` | `{ repoRoot: string }` | `WorktreeInfo[]` | Enumerate git worktrees rooted at `repoRoot`. Implemented via the injectable `GitRunner` seam (production: `git worktree list --porcelain`, parsed in `src-tauri/src/git.rs`). **Always returns `Ok(vec![])` on failure** — git missing, repo_root not a directory, repo_root is not a git repository, or any IO/parse error degrades to an empty list (logged with `code="GitUnavailable"`) so the UI's "Browse…" fallback is never blocked by an error toast. `WorktreeInfo = { path, branch?, isMain, isLocked }`. |
 | `workspace_validate` | `{ path: string }` | `{ valid: boolean, error?: string }` | Validate a candidate workspace root for the first-boot picker (Roadmap §1.1). Returns `valid: true` only when `path` is an absolute, existing directory that contains a git repository (probed via `git -C <path> rev-parse --is-inside-work-tree`). On failure, `error` carries a short human-readable reason (`"path is not an absolute directory"`, `"not a git repository"`, …). Never throws an `AppError` for the "invalid" case — the picker shows inline feedback. |
 | `worktree_create` | `{ name: string }` | `{ path: string }` | Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2). Requires `workspaceRoot` to be set in `AppConfig`; errors with `NotFound` otherwise. The `name` is re-validated server-side via the same rules as `validateWorktreeName` (no spaces; no `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\\`; cannot start/end with `.` or `/`; cannot end with `.lock`; cannot be `@`; 1–255 chars); `InvalidPath` is returned for any rule violation. Runs `git -C <workspaceRoot> worktree add .worktrees/<name> -b <name>` via the injected `GitRunner`; bubbles up the captured stderr in the `Internal` error message on git failure. Returns the canonical absolute path to the new worktree directory. |
+| `subsession_create` | `{ parentSessionId, defId }` | `SubSession` | Compose and spawn a sub-session under the named parent. See §5.7.1. Errors: `NotFound` (def or parent missing), `InvalidArgument` (def disabled, or parent in closing tombstone), `WorktreeMissing`, `PtySpawnFailed`/`AppSpawnFailed`/`ToolMissing`. |
+| `subsession_close` | `{ id }` | — | Tear down a sub-session. Terminal kind kills the PTY; application kind only detaches Arborist's tracking (the external program keeps running). See §5.7.3. |
+| `subsession_focus` | `{ id }` | — | For application kind, focus the OS window via `WindowFocuser` (§5.7.4). Errors: `NotApplicable` (PID is a launcher wrapper that exited), `PermissionDenied`, `ToolMissing`, `Unsupported` (Wayland). For terminal kind, no-op on the backend; the frontend swaps viewports. |
+| `subsession_list` | `{ parentSessionId? }` | `SubSession[]` | List sub-sessions for a parent (or all sub-sessions if omitted). |
+| `subsession_input` | `{ id, data }` | — | Send keystrokes to a terminal sub-session's PTY. Returns `NotApplicable` for application kind. |
+| `subsession_resize` | `{ id, cols, rows }` | — | Resize a terminal sub-session's PTY. Returns `NotApplicable` for application kind. |
+| `subsession_relaunch` | `{ id }` | `SubSession` | Re-spawn a sub-session under the same id, refreshing `composedCommand` from the current def. See §5.7.7. Errors: `NotFound` (def deleted), `InvalidArgument` (def disabled or parent closing), `WorktreeMissing`, `PtySpawnFailed`/`AppSpawnFailed`/`ToolMissing`. |
 
 > **Test-only seam.** The Rust backend consults two env vars,
 > `ARBORIST_CLI_OVERRIDE_CLAUDE` and `ARBORIST_CLI_OVERRIDE_COPILOT`, when composing
@@ -436,6 +701,10 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `session://status` | `{ sessionId, status }` | Notify session state changes (including `'error'`) |
 | `session://activity` | `{ sessionId, kind: 'title' \| 'attention' \| 'working' \| 'idle' \| 'promptStart' \| 'commandStart' \| 'commandEnd', value?, exit? }` | Per-session activity inferred from the PTY stream by `src-tauri/src/activity.rs` (OSC parsing + output byte-rate). Drives sidebar tab state indicators (working spinner, attention dot). Best-effort & advisory — UI must degrade gracefully if a CLI emits nothing. |
 | `session://metrics` | `{ sessionId, model?, contextUsedPct?, contextTokensUsed?, contextTokensLimit?, inputTokens?, outputTokens?, observedAt }` | Per-session token usage / context-window utilization. Emitted by `src-tauri/src/session_metrics.rs`, which polls Claude's `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` transcripts (heuristic cwd+mtime mapping) and extracts cumulative `usage` from the latest assistant turn. Claude-only in v1; Copilot tabs receive no events. Drives the compact second line on each sidebar tab. Best-effort & debounced — UI must degrade gracefully when no snapshot is present. |
+| `subsession://status` | `{ id, status, pid?, message? }` | Sub-session lifecycle change. The production sink mutates the in-memory `SubSessionStore` *before* dispatching the event so a `subsession_list` race observes the new value. PID is forced to `None` for terminal states (`exited`/`error`). |
+| `subsession://exited` | `{ id, exitCode? }` | Application sub-session's external process closed itself (or its launcher wrapper exited). The frontend reducer maps `exitCode != 0` to status `error`; otherwise `exited`. |
+| `subsession://restored` | `{ subSession }` | Emitted by the restore second pass (§5.7.6) for each `lastOpenSubSessions` record successfully re-materialised in the in-memory store. The frontend's `applyRestored` reducer is idempotent and never steals `activeByParent` from a tab the parent already owns. |
+| `session://output` (sub) | `{ sessionId, data }` | Terminal sub-session output reuses the existing channel — the UUID id space is global across `Session` and `SubSession`, and the frontend filters by id when subscribing. |
 
 ### Plugin commands routed via the bridge
 
@@ -484,9 +753,17 @@ arborist/
 │   ├── src/
 │   │   ├── main.rs
 │   │   ├── pty_pool.rs           # portable-pty session management
+│   │   ├── sub_sessions.rs       # SubPtyPool + SubSessionStore (terminal sub-tabs)
+│   │   ├── app_launcher.rs       # AppPool + AppSpawner (application sub-tabs)
+│   │   ├── window_focus.rs       # Platform-gated WindowFocuser (Win32/osascript/wmctrl)
 │   │   ├── config_store.rs       # tauri-plugin-store wrapper
-│   │   ├── commands.rs           # #[tauri::command] handlers
-│   │   └── types.rs              # Session, InstructionSet, AppConfig (serde)
+│   │   ├── commands/             # #[tauri::command] handlers
+│   │   │   ├── mod.rs            #   wiring + production sinks
+│   │   │   ├── session.rs        #   session_* + restore
+│   │   │   └── subsession.rs     #   subsession_* + cascade + restore second pass
+│   │   └── types.rs              # Session, SubSession, CustomProcessDef, AppConfig (serde)
+│   ├── permissions/
+│   │   └── allow-subsession.toml # Tauri capability allow-list for subsession_* commands
 │   ├── capabilities/
 │   │   └── main.json             # Tauri capability declarations
 │   ├── Cargo.toml
@@ -521,6 +798,16 @@ shell command that runs something unintended on the user's machine.
 - **`prelaunchCommands` execute as the user**: Users who configure `prelaunchCommands`
   are intentionally running shell commands. The session creation dialog displays the
   active pre-launch commands so users can review them before confirming.
+- **Custom-process commands**: A `CustomProcessDef.command` is composed at
+  sub-session creation time and stored verbatim in `SubSession.composedCommand`,
+  then passed to the platform shell (`$SHELL -c <cmd>` on Unix, `%COMSPEC% /c
+  <cmd>` on Windows) with `cwd` set to the parent session's worktree path. The
+  worktree path is **never** interpolated into the command string. Defs come
+  exclusively from validated config (the Settings tab applies the same rules as
+  `validate_custom_processes`); free-form user input from the chat / terminal
+  is never spliced into a shell command. `subsession_relaunch` re-derives
+  `composedCommand` from the current def at relaunch time so Settings-tab edits
+  take effect, but the same path-as-`cwd` discipline applies.
 
 ### 8.2 Path & File Robustness
 

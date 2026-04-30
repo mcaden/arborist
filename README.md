@@ -20,6 +20,23 @@ single integrated terminal area for the active session.
   pick when creating a session. They are not required to build or test the app
   itself.
 
+## Optional system dependencies
+
+Arborist's "application" custom-process sub-tabs (right-click a session tab →
+Launch… → e.g. _Open Folder_, _VS Code_) attempt to focus the spawned
+program's OS window when you click the sub-tab.
+
+- **Linux (X11)**: requires [`wmctrl`](https://sites.google.com/site/tstyblo/wmctrl/)
+  on `PATH`. Without it, focusing an application sub-tab is a no-op
+  (logged warning, no error). Install via your distro's package manager
+  (`apt install wmctrl`, `dnf install wmctrl`, etc.).
+- **Linux (Wayland)**: window focus from another process is blocked by the
+  protocol; Arborist reports `Unsupported` rather than attempting an
+  X11-only call. Sub-tabs still spawn and track the application; only the
+  click-to-focus action is unavailable.
+- **macOS / Windows**: no extra dependencies. macOS uses `osascript` (always
+  present); Windows uses native `user32` FFI.
+
 ## Quickstart
 
 ```sh
