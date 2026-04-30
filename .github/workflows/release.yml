@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -34,13 +31,11 @@ jobs:
             args: ''
     runs-on: ${{ matrix.platform.os }}
     steps:
-      # On workflow_dispatch, check out the exact tag the user requested so
-      # the built binaries correspond to the release tag rather than the
-      # default branch HEAD. On tag pushes, GITHUB_REF already points at the
-      # tag, so the default checkout behaviour is correct.
+      # Check out the exact tag the user requested so the built binaries
+      # correspond to the release tag rather than the default branch HEAD.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: refs/tags/${{ inputs.tag }}
 
       - uses: actions/setup-node@v4
         with:
@@ -71,22 +66,12 @@ jobs:
 
       - run: npm ci
 
-      - name: Resolve release tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ steps.tag.outputs.name }}
-          releaseName: 'Arborist ${{ steps.tag.outputs.name }}'
+          tagName: ${{ inputs.tag }}
+          releaseName: 'Arborist ${{ inputs.tag }}'
           releaseBody: |
             See the assets below to download installers for your platform.
 
