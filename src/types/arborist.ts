@@ -81,6 +81,16 @@ export interface DefaultInstructionSets {
   copilot: InstructionSetId;
 }
 
+// MIRROR: src-tauri/src/types.rs::AiLaunchCommands
+// Per-agent CLI launch override. Each field is a verbatim shell snippet
+// (e.g. `"npx claude --model sonnet"`) interpolated into the composed
+// command in place of the bare program token. Empty string = use default
+// (`claude` / `copilot`). Added in `configVersion = 4`.
+export interface AiLaunchCommands {
+  claude: string;
+  copilot: string;
+}
+
 // MIRROR: src-tauri/src/types.rs::AppConfig
 export interface AppConfig {
   configVersion: number;
@@ -95,6 +105,9 @@ export interface AppConfig {
   worktreeRoots: string[];
   prelaunchCommands: string[];
   worktreePrelaunchCommands: Record<string, string[]>;
+  /** Per-agent CLI launch override. Empty string fields fall back to the
+   * hardcoded defaults. Added in `configVersion = 4`. */
+  aiLaunchCommands: AiLaunchCommands;
   lastOpenSessions: SessionId[];
   tabOrder: SessionId[];
   /** Persisted active-session selection. `null` when no session is active. */
@@ -105,6 +118,12 @@ export interface AppConfig {
 export interface PartialDefaultInstructionSets {
   claude?: InstructionSetId;
   copilot?: InstructionSetId;
+}
+
+// MIRROR: src-tauri/src/types.rs::PartialAiLaunchCommands
+export interface PartialAiLaunchCommands {
+  claude?: string;
+  copilot?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialAppConfig
@@ -124,6 +143,7 @@ export interface PartialAppConfig {
   worktreeRoots?: string[];
   prelaunchCommands?: string[];
   worktreePrelaunchCommands?: Record<string, string[]>;
+  aiLaunchCommands?: PartialAiLaunchCommands;
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
   activeSessionId?: SessionId | null;

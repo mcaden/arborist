@@ -1,12 +1,13 @@
 // In-app settings panel — Roadmap §3.1.
 //
-// Reachable from the sidebar footer. Exposes the three workspace-level
+// Reachable from the sidebar footer. Exposes the workspace-level
 // configuration knobs that users would otherwise have to edit by hand:
 //   * workspace root (delegates to the existing WorkspacePicker so the
 //     close-all-sessions invariant lives in one place — see
 //     `lib/workspace-switch.ts`),
 //   * instruction sets directory (path picker),
-//   * pre-launch commands (one shell command per line).
+//   * pre-launch commands (one shell command per line),
+//   * per-agent CLI launch overrides (claude / copilot).
 //
 // Per-worktree pre-launch overrides remain config-file–only in v1.
 
@@ -16,6 +17,7 @@ import { WorkspacePicker } from './WorkspacePicker';
 import { pickDirectory } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
 import {
+  selectAiLaunchCommands,
   selectInstructionSetsDir,
   selectPrelaunchCommands,
   selectWorkspaceRoot,
@@ -54,10 +56,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
+  const aiLaunchCommands = useConfigStore(selectAiLaunchCommands);
   const setConfig = useConfigStore((s) => s.set);
 
   const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(prelaunchCommands));
+  const [claudeCmdInput, setClaudeCmdInput] = useState<string>(aiLaunchCommands.claude);
+  const [copilotCmdInput, setCopilotCmdInput] = useState<string>(aiLaunchCommands.copilot);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -77,9 +82,21 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
   useEffect(() => {
     setCmdsInput(commandsToText(prelaunchCommands));
   }, [prelaunchCommands]);
+  useEffect(() => {
+    setClaudeCmdInput(aiLaunchCommands.claude);
+  }, [aiLaunchCommands.claude]);
+  useEffect(() => {
+    setCopilotCmdInput(aiLaunchCommands.copilot);
+  }, [aiLaunchCommands.copilot]);
 
   const parsedCmds = textToCommands(cmdsInput);
-  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, prelaunchCommands);
+  const claudeCmdTrimmed = claudeCmdInput.trim();
+  const copilotCmdTrimmed = copilotCmdInput.trim();
+  const dirty =
+    instrInput !== instructionSetsDir ||
+    !arraysEqual(parsedCmds, prelaunchCommands) ||
+    claudeCmdTrimmed !== aiLaunchCommands.claude ||
+    copilotCmdTrimmed !== aiLaunchCommands.copilot;
 
   const handleBrowseInstructions = useCallback(async () => {
     const picked = await pickDirectory();
@@ -93,9 +110,17 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
     setSubmitError(null);
     setSaving(true);
     try {
-      const patch: { instructionSetsDir?: string; prelaunchCommands?: string[] } = {};
+      const patch: {
+        instructionSetsDir?: string;
+        prelaunchCommands?: string[];
+        aiLaunchCommands?: { claude?: string; copilot?: string };
+      } = {};
       if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
       if (!arraysEqual(parsedCmds, prelaunchCommands)) patch.prelaunchCommands = parsedCmds;
+      const launchPatch: { claude?: string; copilot?: string } = {};
+      if (claudeCmdTrimmed !== aiLaunchCommands.claude) launchPatch.claude = claudeCmdTrimmed;
+      if (copilotCmdTrimmed !== aiLaunchCommands.copilot) launchPatch.copilot = copilotCmdTrimmed;
+      if (Object.keys(launchPatch).length > 0) patch.aiLaunchCommands = launchPatch;
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
     } catch (err) {
@@ -104,7 +129,18 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
     } finally {
       setSaving(false);
     }
-  }, [instrInput, instructionSetsDir, parsedCmds, prelaunchCommands, setConfig, onClose]);
+  }, [
+    instrInput,
+    instructionSetsDir,
+    parsedCmds,
+    prelaunchCommands,
+    claudeCmdTrimmed,
+    copilotCmdTrimmed,
+    aiLaunchCommands.claude,
+    aiLaunchCommands.copilot,
+    setConfig,
+    onClose,
+  ]);
 
   const handleWorkspaceConfirm = useCallback(async (path: string) => {
     await changeWorkspace(path);
@@ -214,6 +250,59 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Run before every CLI session, in order. Blank lines are ignored.
             </p>
+          </section>
+
+          <section className="mb-4">
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              AI agent launch commands
+            </h3>
+            <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+              Replace the default CLI invocation for each agent. The text is passed to the shell
+              verbatim, so you may include arguments (e.g. <code>npx claude --model sonnet</code>).
+              Leave blank to use the default.
+            </p>
+            <div className="mb-2">
+              <label
+                htmlFor="settings-launch-claude"
+                className="mb-1 block text-xs text-slate-600 dark:text-slate-300"
+              >
+                Claude
+              </label>
+              <input
+                id="settings-launch-claude"
+                type="text"
+                value={claudeCmdInput}
+                onChange={(e) => {
+                  setSubmitError(null);
+                  setClaudeCmdInput(e.target.value);
+                }}
+                placeholder="claude"
+                spellCheck={false}
+                data-testid="settings-launch-claude"
+                className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="settings-launch-copilot"
+                className="mb-1 block text-xs text-slate-600 dark:text-slate-300"
+              >
+                GitHub Copilot
+              </label>
+              <input
+                id="settings-launch-copilot"
+                type="text"
+                value={copilotCmdInput}
+                onChange={(e) => {
+                  setSubmitError(null);
+                  setCopilotCmdInput(e.target.value);
+                }}
+                placeholder="copilot"
+                spellCheck={false}
+                data-testid="settings-launch-copilot"
+                className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
           </section>
 
           {submitError && (
