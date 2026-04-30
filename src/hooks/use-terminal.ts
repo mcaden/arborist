@@ -207,16 +207,27 @@ function teardownKeydownListener(entry: RegistryEntry): void {
  * `paste` event listener fallback (when `clipboardData` is empty, as
  * happens in some WebView2 right-click → Paste flows).
  *
+ * The async resolution of `readText()` is racy with session disposal:
+ * the user could dispatch Ctrl+V and then close the tab before the
+ * clipboard read resolves. We re-check the registry by `sessionId`
+ * before calling `term.paste(text)` so we don't write into a disposed
+ * (or replaced) terminal.
+ *
  * Failures are logged but otherwise silent — there's no useful UI
  * recovery and we don't want to spam the user with toasts every time
  * they paste an empty clipboard.
  */
-function pasteFromClipboard(entry: RegistryEntry): void {
+function pasteFromClipboard(sessionId: SessionId, entry: RegistryEntry): void {
   if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) return;
   void navigator.clipboard
     .readText()
     .then((text) => {
-      if (text) entry.term.paste(text);
+      if (!text) return;
+      // Guard against a concurrent disposeTerminal(): if the registry
+      // entry for this session is gone or has been replaced, drop the
+      // paste rather than writing to a stale Terminal instance.
+      if (registry.get(sessionId) !== entry) return;
+      entry.term.paste(text);
     })
     .catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -350,17 +361,28 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
       });
       return;
     }
-    // Ctrl+V (Windows/Linux) or Cmd+V (macOS), no other modifiers. We
-    // also accept Ctrl+Shift+V which is the conventional "paste" combo
-    // in many Linux terminals.
-    const isPasteCombo =
-      event.key.toLowerCase() === 'v' &&
-      !event.altKey &&
-      ((event.ctrlKey && !event.metaKey) || (event.metaKey && !event.ctrlKey));
-    if (isPasteCombo) {
+    // Paste shortcuts. The accepted matrix is asymmetric on purpose:
+    //   - Ctrl+V         (Windows/Linux convention)
+    //   - Ctrl+Shift+V   (Linux terminal convention — many emulators)
+    //   - Cmd+V          (macOS convention; **without** Shift)
+    // Cmd+Shift+V on macOS is "paste and match style" in apps that
+    // implement formatted clipboard semantics; it has no useful meaning
+    // in a terminal and we leave it to pass through unchanged. Alt is
+    // never accepted (Ctrl+Alt+V / Cmd+Alt+V / Alt+V are not paste).
+    //
+    // We match on `event.code === 'KeyV'` rather than `event.key`. `key`
+    // is the produced character — on a Russian keyboard layout the
+    // physical V position prints `м`, so a `key === 'v'` test would miss
+    // the user's normal paste shortcut. `code` reflects the **physical**
+    // key location and is layout-independent, which is what every other
+    // major terminal app keys off for shortcut matching.
+    const v = event.code === 'KeyV';
+    const isCtrlPaste = v && event.ctrlKey && !event.metaKey && !event.altKey;
+    const isMetaPaste = v && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+    if (isCtrlPaste || isMetaPaste) {
       event.preventDefault();
       event.stopPropagation();
-      pasteFromClipboard(entry);
+      pasteFromClipboard(sessionId, entry);
     }
   };
   host.addEventListener('keydown', keydownListener as EventListener, true);
@@ -386,7 +408,7 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
       entry.term.paste(inline);
       return;
     }
-    pasteFromClipboard(entry);
+    pasteFromClipboard(sessionId, entry);
   };
   host.addEventListener('paste', pasteListener as EventListener, true);
   entry.pasteListener = pasteListener;

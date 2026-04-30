@@ -254,6 +254,7 @@ describe('useTerminal', () => {
     try {
       const evt = new KeyboardEvent('keydown', {
         key: 'v',
+        code: 'KeyV',
         ctrlKey: true,
         bubbles: true,
         cancelable: true,
@@ -285,6 +286,7 @@ describe('useTerminal', () => {
     try {
       const evt = new KeyboardEvent('keydown', {
         key: 'v',
+        code: 'KeyV',
         metaKey: true,
         bubbles: true,
         cancelable: true,
@@ -316,6 +318,7 @@ describe('useTerminal', () => {
     try {
       const evt = new KeyboardEvent('keydown', {
         key: 'v',
+        code: 'KeyV',
         ctrlKey: true,
         shiftKey: true,
         bubbles: true,
@@ -345,8 +348,99 @@ describe('useTerminal', () => {
     try {
       const evt = new KeyboardEvent('keydown', {
         key: 'v',
+        code: 'KeyV',
         ctrlKey: true,
         altKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+Shift+V is not intercepted (passthrough; "paste and match style" on macOS)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+Alt+V is not intercepted (Alt-modifier passthrough on macOS)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        metaKey: true,
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+Cmd+V is not intercepted (both ctrl and meta together is undefined)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        metaKey: true,
         bubbles: true,
         cancelable: true,
       });
@@ -374,6 +468,7 @@ describe('useTerminal', () => {
     try {
       const evt = new KeyboardEvent('keydown', {
         key: 'v',
+        code: 'KeyV',
         bubbles: true,
         cancelable: true,
       });
@@ -381,6 +476,126 @@ describe('useTerminal', () => {
 
       expect(dispatched).toBe(true);
       expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+V on a non-Latin keyboard layout still triggers paste (matches by code, not key)', async () => {
+    // On a Russian QWERTY layout the V position prints `м`, so `event.key`
+    // is `'м'` — not `'v'`. We deliberately match on `event.code === 'KeyV'`
+    // (physical key) rather than `event.key` so the user's normal paste
+    // shortcut works regardless of active keyboard layout.
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn().mockResolvedValue('layout-clip');
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'м',
+        code: 'KeyV',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(readText).toHaveBeenCalled();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('layout-clip');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl + non-V key with key:"v" is not intercepted (matches by code, not by produced character)', () => {
+    // Inverse of the layout test: on a Russian layout, the key that
+    // produces `'v'` is at a different physical position (code `KeyM`,
+    // since Cyrillic `в` is on a different key entirely — but for this
+    // test the important property is that `event.key === 'v'` does not
+    // imply the user pressed the V shortcut). Anything that isn't
+    // `code === 'KeyV'` must pass through unchanged.
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyM',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+V resolved after disposeTerminal does not write to a stale terminal', async () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    const term = mockTerminals[0]!;
+
+    // Hand-rolled deferred so we can dispatch the keydown, dispose the
+    // session, and only THEN resolve `readText` — exactly the race we're
+    // guarding against.
+    let resolveReadText!: (text: string) => void;
+    const readText = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveReadText = resolve;
+        }),
+    );
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      host.dispatchEvent(evt);
+      expect(readText).toHaveBeenCalled();
+
+      // Dispose the session BEFORE the clipboard read resolves.
+      act(() => disposeTerminal('s1'));
+
+      // Now resolve the pending readText. The guard inside
+      // pasteFromClipboard should drop the paste because the registry
+      // entry is gone.
+      resolveReadText('stale-paste');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(term.paste).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
     }
