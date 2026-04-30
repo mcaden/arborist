@@ -1,28 +1,28 @@
 name: Rust
 
-# Approval-gated via the `rust-ok` label. The companion `rust-gate.yml`
-# workflow adds the label when a reviewer approves the PR and removes it on
-# any new push. Triggering on `pull_request: [labeled]` (rather than
-# `pull_request_review`) is what makes the resulting check_runs attach to
-# the PR head SHA, which is required for branch protection enforcement.
+# Manual / approval-gated. The companion `rust-gate.yml` workflow dispatches
+# this workflow against the PR head branch when a reviewer approves the PR;
+# `workflow_dispatch` is also kept available for manual re-runs (e.g., after
+# a flake) without needing fresh approval.
 #
-# `workflow_dispatch` is kept as a manual fallback (e.g., to re-run after a
-# flake without needing fresh approval).
+# Why dispatch instead of `pull_request: [labeled]`? Two reasons:
+#   1. `pull_request: [labeled]` fires on *any* label, not just a chosen
+#      gate label. The job-level `if` would skip for unrelated labels, but
+#      GitHub treats skipped checks as passing for required status checks
+#      (https://github.com/orgs/community/discussions/13690), which would
+#      let any label silently satisfy the gate.
+#   2. Dispatching against the PR head ref produces check_runs attached to
+#      the PR head SHA, so branch protection enforces them correctly.
 on:
-  pull_request:
-    types: [labeled]
   workflow_dispatch:
 
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
+  group: rust-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   rust:
     name: Rust (${{ matrix.os }})
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'rust-ok')
     strategy:
       fail-fast: false
       matrix:

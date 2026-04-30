@@ -1,52 +1,36 @@
 name: Rust Gate
 
-# Manages the `rust-ok` label that triggers `rust.yml`. Splitting this from
-# rust.yml is necessary because `pull_request_review`-triggered runs do not
-# attach to the PR head SHA and therefore cannot satisfy required status
-# checks. Instead we use the review event to apply a label, and rust.yml
-# triggers off the `pull_request: [labeled]` event, which does attach
-# correctly.
+# Dispatches `rust.yml` against the PR head branch when a reviewer approves
+# the PR. The dispatched run produces check_runs attached to the PR head
+# SHA, which is what makes branch protection able to require them.
 #
-#   - On approving review: add `rust-ok` -> rust.yml runs against PR head.
-#   - On new push (synchronize): remove `rust-ok` so a fresh approval is
-#     required before the expensive workflow runs against the new SHA.
+# Pair this with branch protection rules:
+#   - "Dismiss stale pull request approvals when new commits are pushed"
+#     so that any push after approval drops the approval, requiring a fresh
+#     review (and therefore a fresh rust dispatch) against the new SHA.
 on:
   pull_request_review:
     types: [submitted]
-  pull_request:
-    types: [synchronize]
 
 permissions:
-  pull-requests: write
+  actions: write   # required for `gh workflow run` to create workflow_dispatch
   contents: read
 
 jobs:
-  add-label-on-approval:
-    if: >
-      github.event_name == 'pull_request_review' &&
-      github.event.review.state == 'approved'
+  dispatch-rust:
+    if: github.event.review.state == 'approved'
     runs-on: ubuntu-latest
     steps:
-      - name: Ensure label exists and apply it
+      - name: Dispatch Rust workflow against PR head branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # `--ref` targets the branch; the dispatched run picks up the tip of
+        # that branch. We log the SHA at approval time so a reviewer can
+        # confirm the run is against the commit they actually approved.
         run: |
-          gh label create rust-ok \
-            --color BFD4F2 \
-            --description "Rust workflow approved to run" \
-            --force
-          gh pr edit "$PR_NUMBER" --add-label rust-ok
-
-  remove-label-on-push:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Remove rust-ok label
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        # `|| true` because the label may not be present on the PR.
-        run: gh pr edit "$PR_NUMBER" --remove-label rust-ok || true
+          echo "Approved SHA: $PR_HEAD_SHA"
+          echo "Dispatching rust.yml against ref: $PR_HEAD_REF"
+          gh workflow run rust.yml --ref "$PR_HEAD_REF"
