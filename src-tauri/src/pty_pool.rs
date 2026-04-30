@@ -146,6 +146,34 @@ pub trait PtyKiller: Send + Sync {
 // Production spawner (portable-pty)
 // ---------------------------------------------------------------------------
 
+/// Strip every `ARBORIST_*` env var from the inherited environment of `builder`.
+///
+/// `portable_pty::CommandBuilder` snapshots the current process env at
+/// construction; `env_remove` records an unset that overrides those entries
+/// when the child is spawned. We enumerate `keys` and remove anything
+/// beginning with the `ARBORIST_` prefix — that namespace is reserved for
+/// Arborist's own build/dev tooling (e.g. `ARBORIST_BUILD_BRANCH` from
+/// build.rs, `ARBORIST_DEV_PORT` from `scripts/tauri-dev.mjs`) and must
+/// never leak into the user shells we spawn.
+fn strip_arborist_env_keys<I, K>(builder: &mut CommandBuilder, keys: I)
+where
+    I: IntoIterator<Item = K>,
+    K: AsRef<std::ffi::OsStr>,
+{
+    for k in keys {
+        if let Some(s) = k.as_ref().to_str() {
+            if s.starts_with("ARBORIST_") {
+                builder.env_remove(k.as_ref());
+            }
+        }
+    }
+}
+
+/// Production wrapper: feed the current process env into [`strip_arborist_env_keys`].
+fn strip_arborist_env(builder: &mut CommandBuilder) {
+    strip_arborist_env_keys(builder, std::env::vars_os().map(|(k, _)| k));
+}
+
 /// Production [`PtySpawner`] backed by `portable_pty::native_pty_system()`.
 pub struct PortablePtySpawner;
 
@@ -176,6 +204,15 @@ impl PtySpawner for PortablePtySpawner {
         // DESIGN §5.6: cwd is the discrete worktree path — never spliced into
         // the command string.
         builder.cwd(cwd);
+        // Strip Arborist build/dev tooling env vars from the inherited
+        // environment so they don't leak into PTY children. The running app
+        // inherits its launching shell's env, and any `ARBORIST_*` var set
+        // there (e.g. `ARBORIST_BUILD_BRANCH`, `ARBORIST_DEV_PORT` set by
+        // `scripts/tauri-dev.mjs`) would otherwise propagate to user shells
+        // and to nested `tauri:dev` invocations launched from a session,
+        // baking the wrong values into those builds. These vars are only
+        // meaningful at Arborist's own build/launch time.
+        strip_arborist_env(&mut builder);
         // Per-session env additions. The child still inherits the parent
         // process's env (we never call `env_clear`); these are
         // overrides/additions only — see `compose::env_for_tool`.
@@ -1060,5 +1097,57 @@ mod tests {
         assert!(!is_possible_partial(&[0xFF])); // invalid lead
         assert!(!is_possible_partial(&[0x80])); // continuation
         assert!(!is_possible_partial(&[]));
+    }
+
+    /// Build a probe builder seeded with the supplied env, then strip
+    /// `ARBORIST_*` keys and return the remaining keys.
+    fn keys_after_strip(seed: &[(&str, &str)], strip_keys: &[&str]) -> Vec<String> {
+        let mut b = CommandBuilder::new("/bin/true");
+        // Replace the auto-inherited env with a known-good set so the
+        // assertion isn't perturbed by the actual host environment.
+        b.env_clear();
+        for (k, v) in seed {
+            b.env(*k, *v);
+        }
+        strip_arborist_env_keys(&mut b, strip_keys.iter().copied());
+        b.iter_full_env_as_str()
+            .map(|(k, _)| k.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn strip_arborist_env_removes_prefixed_keys() {
+        let keys = keys_after_strip(
+            &[
+                ("PATH", "/usr/bin"),
+                ("ARBORIST_BUILD_BRANCH", "main"),
+                ("ARBORIST_DEV_PORT", "1494"),
+                ("HOME", "/home/u"),
+            ],
+            &["PATH", "ARBORIST_BUILD_BRANCH", "ARBORIST_DEV_PORT", "HOME"],
+        );
+        assert!(keys.iter().any(|k| k == "PATH"));
+        assert!(keys.iter().any(|k| k == "HOME"));
+        assert!(!keys.iter().any(|k| k.starts_with("ARBORIST_")));
+    }
+
+    #[test]
+    fn strip_arborist_env_preserves_lookalike_keys() {
+        // Names that contain but don't start with the prefix must survive.
+        let keys = keys_after_strip(
+            &[
+                ("MY_ARBORIST_VAR", "x"),
+                ("arborist_lower", "x"), // case-sensitive: must survive
+            ],
+            &["MY_ARBORIST_VAR", "arborist_lower"],
+        );
+        assert!(keys.iter().any(|k| k == "MY_ARBORIST_VAR"));
+        assert!(keys.iter().any(|k| k == "arborist_lower"));
+    }
+
+    #[test]
+    fn strip_arborist_env_is_noop_when_no_match() {
+        let before = keys_after_strip(&[("PATH", "/usr/bin")], &["PATH"]);
+        assert_eq!(before, vec!["PATH".to_string()]);
     }
 }
