@@ -188,19 +188,26 @@ function teardownObserver(entry: RegistryEntry): void {
  * pre-font-load initial measurement.
  */
 function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
-  // Cancel any debounced fire so we don't double-fit moments later.
-  if (entry.resizeTimer !== null) {
-    clearTimeout(entry.resizeTimer);
-    entry.resizeTimer = null;
-  }
   if (!entry.wrapper || !entry.wrapper.isConnected) return;
   try {
     entry.fitAddon.fit();
   } catch {
-    // fit() throws on zero-size hosts. Skip — a later refit / observer
-    // tick will retry once the host is sized.
+    // fit() throws on zero-size hosts (e.g. an ancestor is display:none).
+    // Bail without clearing any pending debounced fit — that fit was
+    // queued for a reason (a real ResizeObserver tick) and may still be
+    // wanted once the host is sized again. The next observer tick when
+    // the host gains a non-zero rect will also reschedule.
     return;
   }
+
+  // Successful fit — we own the freshly-measured state, so any pending
+  // debounced fit is now redundant. Clear it before any further bail-outs
+  // so the invariant "successful fit ⇒ no stale debounce" always holds.
+  if (entry.resizeTimer !== null) {
+    clearTimeout(entry.resizeTimer);
+    entry.resizeTimer = null;
+  }
+
   const cols = entry.term.cols;
   const rows = entry.term.rows;
   if (cols <= 0 || rows <= 0) return;

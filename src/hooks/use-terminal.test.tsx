@@ -234,4 +234,44 @@ describe('useTerminal', () => {
     expect(mockFitAddons[0]!.fit).not.toHaveBeenCalled();
     expect(sessionResize).not.toHaveBeenCalled();
   });
+
+  it('refit() does not cancel a pending debounced fit when fit() throws', () => {
+    let captured: ResizeObserverCallback | null = null;
+    class FakeRO {
+      constructor(cb: ResizeObserverCallback) {
+        captured = cb;
+      }
+      observe = vi.fn();
+      disconnect = vi.fn();
+      unobserve = vi.fn();
+    }
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
+      FakeRO as unknown as typeof ResizeObserver;
+
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    // Initial sync fit consumed (1 call). Now arrange for the next fit
+    // (debounced via the observer) to be in flight.
+    mockFitAddons[0]!.fit.mockClear();
+
+    act(() => {
+      captured!([], {} as ResizeObserver);
+    });
+    // Timer is pending; fit not yet called.
+    expect(mockFitAddons[0]!.fit).not.toHaveBeenCalled();
+
+    // Make the next fit() throw — simulates an ancestor going display:none
+    // mid-debounce so the host is now zero-size.
+    mockFitAddons[0]!.fit.mockImplementationOnce(() => {
+      throw new Error('zero size');
+    });
+    act(() => result.current.refit());
+    // refit threw; the pending debounce should NOT have been cancelled.
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    // Advance past the debounce window — the original pending fit fires.
+    act(() => vi.advanceTimersByTime(60));
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+  });
 });
