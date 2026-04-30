@@ -68,26 +68,34 @@ process.on('exit', cleanup);
 console.log(`[arborist] tauri dev on port ${port}`);
 
 const isWindows = process.platform === 'win32';
+const tauriDevArgs = ['tauri', 'dev', '--config', overridePath, ...process.argv.slice(2)];
 
 // On POSIX we can spawn `npx` directly without a shell and put the child in
 // its own process group (`detached: true`); this lets us deliver signals to
 // the whole tree (`tauri dev`, `vite`, …) via `process.kill(-pid, sig)`.
 //
-// On Windows we still need `shell: true` because Node's `spawn` refuses to
-// execute `.cmd`/`.bat` files directly without a shell since the CVE-2024-27980
-// fix.  In return we use `taskkill /pid <pid> /T /F` to terminate the whole
-// process tree on shutdown — `child.kill()` against the wrapping `cmd.exe`
-// alone does not reliably reach `tauri`/`vite`.
-const child = spawn(
-  isWindows ? 'npx.cmd' : 'npx',
-  ['tauri', 'dev', '--config', overridePath, ...process.argv.slice(2)],
-  {
-    stdio: 'inherit',
-    env: process.env,
-    shell: isWindows,
-    detached: !isWindows,
-  },
-);
+// On Windows Node's `spawn` won't execute `.cmd`/`.bat` files directly since
+// the CVE-2024-27980 fix, so we invoke `%COMSPEC%` (`cmd.exe`) explicitly and
+// pass a single carefully-quoted command string. This keeps `--config
+// <overridePath>` intact even when the temp path contains spaces (e.g. user
+// profiles like `C:\Users\Jane Doe\AppData\Local\Temp\...`).  Shutdown still
+// goes through `taskkill /pid <pid> /T /F` to terminate the full tree because
+// killing `cmd.exe` alone doesn't reliably reach `npx`/`tauri`/`vite`.
+function quoteCmdArg(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+const child = isWindows
+  ? spawn(
+      process.env.ComSpec ?? 'cmd.exe',
+      ['/d', '/s', '/c', [quoteCmdArg('npx.cmd'), ...tauriDevArgs.map(quoteCmdArg)].join(' ')],
+      { stdio: 'inherit', env: process.env, windowsVerbatimArguments: true },
+    )
+  : spawn('npx', tauriDevArgs, {
+      stdio: 'inherit',
+      env: process.env,
+      detached: true,
+    });
 
 function killChildTree(sig) {
   if (isWindows) {
