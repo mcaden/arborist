@@ -66,4 +66,6 @@ supports.
 
 Code signing, notarization, auto-updates, ARM Linux builds, and distribution
 to package managers (Homebrew, winget, Chocolatey, Flathub, AUR) are not
-configured. See `dev/ai/installer.md` for the rationale.
+configured. The trade-off accepted for v1: users see a one-time OS warning
+on first run (macOS Gatekeeper / Windows SmartScreen) and update by
+re-downloading from the Releases page.

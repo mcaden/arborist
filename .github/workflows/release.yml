@@ -12,12 +12,20 @@ jobs:
   verify:
     name: Verify tag is on main
     runs-on: ubuntu-latest
-    # Only allow this workflow to run from the main branch (i.e. the user
-    # picked 'main' as the workflow source in the Run workflow dialog).
-    # Combined with the tag-reachability check below, this prevents shipping
-    # a release built from an unmerged or feature-branch commit.
-    if: github.ref == 'refs/heads/main'
     steps:
+      # Fail loudly (not silently skip) if the user picked a non-main branch
+      # as the workflow source in the Run workflow dialog. Combined with the
+      # tag-reachability check below, this prevents shipping a release built
+      # from an unmerged or feature-branch commit.
+      - name: Assert workflow source is main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" != "refs/heads/main" ]; then
+            echo "::error::This workflow must be run from the 'main' branch (got: ${REF}). Re-run from the Actions tab and select 'main' as the workflow source."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           ref: main
