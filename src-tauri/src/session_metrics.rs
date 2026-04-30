@@ -220,11 +220,11 @@ impl MetricsRegistry {
     /// `Session.ai_session_id`) that the worker's discovery callback
     /// could otherwise overwrite from a final in-flight poll iteration.
     ///
-    /// Worst-case wait is one `POLL_INTERVAL` (~200ms) since the worker
-    /// only re-checks `running` at the top of its loop. Errors from the
-    /// underlying thread `join()` are swallowed — there is nothing
-    /// meaningful the caller can do, and the registry entry has already
-    /// been removed.
+    /// Worst-case wait is one `POLL_INTERVAL` (~2s with the current
+    /// configuration) since the worker only re-checks `running` at the
+    /// top of its loop. Errors from the underlying thread `join()` are
+    /// swallowed — there is nothing meaningful the caller can do, and
+    /// the registry entry has already been removed.
     pub fn stop_and_join(&self, session_id: &SessionId) {
         let removed = self
             .inner
