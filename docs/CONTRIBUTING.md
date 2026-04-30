@@ -57,7 +57,7 @@ The full conventions are in `.github/copilot-instructions.md`. Key rules:
 
 ## Adding a new Tauri command
 
-Follow this checklist in order (the structural test in `tests/capability_gating.rs` will fail if any step is skipped):
+Follow this checklist in order (the structural test in `src-tauri/tests/capability_gating.rs` will fail if any step is skipped):
 
 1. Write the handler logic in `src-tauri/src/commands/session.rs`.
 2. Add a thin `#[tauri::command]` wrapper in `src-tauri/src/commands/mod.rs`.

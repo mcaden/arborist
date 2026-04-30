@@ -47,8 +47,8 @@ The sidebar token-usage display (`78% · 12.3k tok`) is sourced by matching Clau
 ### Per-worktree pre-launch overrides require manual config editing
 `worktreePrelaunchCommands` (per-worktree overrides for pre-launch commands) is not exposed in the settings dialog. Editing them requires manually modifying `config.json` in the OS app-data directory with the app closed. See `dev/docs/CONFIGURATION.md`.
 
-### Worktree deletion between sessions surfaces a terse error
-If a worktree directory is deleted while sessions are persisted, `restore_all_sessions` marks the affected session as `error` with a `WorktreeMissing` code. The terminal overlay does not yet surface the deleted path in a human-readable message — users must check the `RUST_LOG=debug` trace output to see which path is missing.
+### Stale sessions from deleted worktrees require manual recovery
+If a worktree directory is deleted while sessions are persisted, `restore_all_sessions` marks the affected session as `error` and the terminal overlay surfaces a friendly message that includes the missing path (e.g. "Worktree path is no longer available: /path/to/worktree"). The remaining UX gap is recovery: users must currently recreate the worktree or close the stale session themselves — there is no guided action in the UI to remove, relink, or recreate the missing worktree from the error state.
 
 ### `aria-hidden` not confirmed on decorative SVG icons
 `ToolIcon` renders SVGs for the Claude and Copilot logos. `SidebarTab` sets `aria-label` on the button, but `aria-hidden="true"` on the SVG itself has not been audited across all placements. Screen readers may read the icon's implicit accessible name alongside the button label.
