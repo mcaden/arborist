@@ -213,25 +213,27 @@ export function NewSessionDialog(): JSX.Element | null {
     }
   };
 
-  const newNameError = useMemo<string | null>(
-    () => (newName.length === 0 ? null : validateWorktreeName(newName)),
-    [newName],
-  );
+  const newNameError = useMemo<string | null>(() => {
+    const trimmed = newName.trim();
+    if (trimmed.length === 0) return null;
+    return validateWorktreeName(trimmed);
+  }, [newName]);
 
   const onCreateWorktree = async (): Promise<void> => {
-    if (newName.length === 0 || newNameError !== null || creating || !tool) return;
+    const trimmed = newName.trim();
+    if (trimmed.length === 0 || newNameError !== null || creating || !tool) return;
     setCreating(true);
     setCreateError(null);
     setSubmitError(null);
     try {
-      const result = await worktreeCreate(newName.trim());
+      const result = await worktreeCreate(trimmed);
       // Pre-select the new worktree so it's ready to use if session creation
       // fails and we fall back to the Existing tab. We deliberately do NOT
       // switch `worktreeMode` to 'existing' yet — doing so would swap the
       // footer to the Existing-mode "Create session" button while the chained
       // session-create is still in flight, allowing the user to trigger a
       // second concurrent session for the same worktree.
-      setWorktree({ path: result.path, branch: newName.trim(), isMain: false });
+      setWorktree({ path: result.path, branch: trimmed, isMain: false });
       setNewName('');
       // The "New worktree" flow is one-shot: creating the worktree
       // immediately starts the session and closes the dialog. If session
@@ -527,7 +529,8 @@ export function NewSessionDialog(): JSX.Element | null {
                 <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
                   Will run{' '}
                   <span className="font-mono">
-                    git worktree add .worktrees/{newName || 'NAME'} -b {newName || 'NAME'}
+                    git worktree add .worktrees/{newName.trim() || 'NAME'} -b{' '}
+                    {newName.trim() || 'NAME'}
                   </span>
                 </p>
               )}
@@ -571,7 +574,11 @@ export function NewSessionDialog(): JSX.Element | null {
       </div>
 
       {submitError && (
-        <p className="mb-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100">
+        <p
+          role="alert"
+          aria-live="polite"
+          className="mb-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
+        >
           {submitError}
         </p>
       )}
@@ -610,7 +617,9 @@ export function NewSessionDialog(): JSX.Element | null {
             <button
               type="button"
               onClick={() => void onCreateWorktree()}
-              disabled={creating || submitting || newName.length === 0 || newNameError !== null}
+              disabled={
+                creating || submitting || newName.trim().length === 0 || newNameError !== null
+              }
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
               {creating ? 'Creating…' : 'Create worktree & session'}
