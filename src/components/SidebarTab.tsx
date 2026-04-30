@@ -228,21 +228,22 @@ function SessionStatusIndicator({
   lastTurnEndAt,
   lastTurnDurationMs,
 }: SessionStatusIndicatorProps): JSX.Element | null {
-  const iconClasses = statusIconClasses(status);
-  const tooltip = statusTooltip(status, lastTurnEndAt, lastTurnDurationMs);
-
   // When the icon collapses to nothing (idle), still show the unread dot
-  // on its own so the user has *some* signal that output arrived.
+  // on its own so the user has *some* signal that output arrived. The
+  // dot is decorative — the parent tab's aria-label already conveys
+  // unread state to assistive tech, so no role/aria-label here.
   if (status === 'idle') {
     return hasUnread ? (
       <span
-        role="img"
-        aria-label="Unread output"
+        aria-hidden="true"
         data-testid="status-unread"
         className="h-2 w-2 shrink-0 rounded-full bg-sky-500"
       />
     ) : null;
   }
+
+  const iconClasses = statusIconClasses(status);
+  const tooltip = statusTooltip(status, lastTurnEndAt, lastTurnDurationMs);
 
   return (
     <span className="relative inline-flex shrink-0">
