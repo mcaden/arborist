@@ -1,0 +1,52 @@
+name: Rust Gate
+
+# Manages the `rust-ok` label that triggers `rust.yml`. Splitting this from
+# rust.yml is necessary because `pull_request_review`-triggered runs do not
+# attach to the PR head SHA and therefore cannot satisfy required status
+# checks. Instead we use the review event to apply a label, and rust.yml
+# triggers off the `pull_request: [labeled]` event, which does attach
+# correctly.
+#
+#   - On approving review: add `rust-ok` -> rust.yml runs against PR head.
+#   - On new push (synchronize): remove `rust-ok` so a fresh approval is
+#     required before the expensive workflow runs against the new SHA.
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  add-label-on-approval:
+    if: >
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure label exists and apply it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create rust-ok \
+            --color BFD4F2 \
+            --description "Rust workflow approved to run" \
+            --force
+          gh pr edit "$PR_NUMBER" --add-label rust-ok
+
+  remove-label-on-push:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove rust-ok label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # `|| true` because the label may not be present on the PR.
+        run: gh pr edit "$PR_NUMBER" --remove-label rust-ok || true
