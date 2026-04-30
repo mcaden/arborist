@@ -601,6 +601,22 @@ function teardownNowTickIfUnused(): void {
   nowTickHandle = undefined;
 }
 
+// Vite HMR: when this module is hot-replaced in dev, the old module's
+// setInterval keeps firing while the new module instance creates a
+// fresh one — left unchecked, every save accumulates another ticker.
+// Clear the handle and drop subscribers on dispose so the new module
+// starts from a clean slate.
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (nowTickHandle !== undefined) {
+      window.clearInterval(nowTickHandle);
+      nowTickHandle = undefined;
+    }
+    nowTickListeners.clear();
+    nowTickSubscribers = 0;
+  });
+}
+
 function useNowTickSeconds(): number {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
