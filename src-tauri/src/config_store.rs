@@ -71,20 +71,27 @@ pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 ///
 /// All write paths (`save_config`, `save_session`, `remove_session`,
 /// `update_session_status`, `update_session_ai_session_id`) are
-/// serialized through a process-wide mutex shared by clones of the same
-/// handle. Without this, load-modify-write paths called from different
-/// threads in the same process (e.g. the PTY wait thread updating
-/// `status` while a metrics watcher updates `ai_session_id`) would race
-/// and silently lose updates. Atomic file writes (`tempfile::persist`)
-/// only protect against torn reads, not against lost updates.
+/// serialized through a mutex shared by clones of the same handle.
+/// Without this, load-modify-write paths called from different threads
+/// using the same `ConfigStore` instance (e.g. the PTY wait thread
+/// updating `status` while a metrics watcher updates `ai_session_id`)
+/// would race and silently lose updates. Atomic file writes
+/// (`tempfile::persist`) only protect against torn reads, not against
+/// lost updates.
 ///
-/// Scope: this guard covers **intra-process** races only. Concurrent
-/// access from a second Arborist process (or a user editing
-/// `sessions.json` by hand while the app is running) is **not**
-/// supported — those races would require OS-level advisory file locking
-/// or a single-writer daemon, neither of which we implement today. The
-/// app is designed for one running instance per user; the store path
-/// itself is per-user via `tauri-plugin-store`.
+/// Scope: this guard covers writes performed through clones of the same
+/// `ConfigStore` only. Separately opened `ConfigStore` instances
+/// pointing at the same directory do **not** share this mutex and are
+/// therefore not serialized against each other — which is why
+/// command handlers route through the managed `AppContext`'s store
+/// (see `commands::store_for` rustdoc) rather than calling
+/// `ConfigStore::open` per request. Concurrent access from a second
+/// Arborist process (or a user editing `sessions.json` by hand while
+/// the app is running) is also **not** supported — those races would
+/// require OS-level advisory file locking or a single-writer daemon,
+/// neither of which we implement today. The app is designed for one
+/// running instance per user; the store path itself is per-user via
+/// `tauri-plugin-store`.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     dir: PathBuf,

@@ -42,6 +42,13 @@ pub async fn ping() -> Result<String, AppError> {
 }
 
 /// Resolve the [`ConfigStore`] for the current Tauri app instance.
+///
+/// **Avoid in command handlers** — prefer `ctx_of(&app)?.store.clone()`
+/// so all writes share the managed `AppContext`'s mutex (otherwise each
+/// fresh `ConfigStore::open` gets its own mutex and load-modify-write
+/// races between command threads silently lose updates). This helper
+/// remains for boot-time wiring in `lib.rs`, before `AppContext` is
+/// constructed.
 pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
     let dir: PathBuf = app
         .path()
@@ -53,15 +60,15 @@ pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
 /// Returns the persisted [`AppConfig`].
 #[tauri::command]
 pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
-    let store = store_for(&app)?;
-    Ok(store.load_config())
+    let ctx = ctx_of(&app)?;
+    Ok(ctx.store.load_config())
 }
 
 /// Deep-merges `partial` into the persisted [`AppConfig`].
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
-    let store = store_for(&app)?;
-    store.save_config(partial).map_err(AppError::from)?;
+    let ctx = ctx_of(&app)?;
+    ctx.store.save_config(partial).map_err(AppError::from)?;
     Ok(())
 }
 
@@ -69,8 +76,8 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
 /// configured `instructionSetsDir`.
 #[tauri::command]
 pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionSet>, AppError> {
-    let store = store_for(&app)?;
-    let cfg = store.load_config();
+    let ctx = ctx_of(&app)?;
+    let cfg = ctx.store.load_config();
     list_instructions_for(&cfg)
 }
 
