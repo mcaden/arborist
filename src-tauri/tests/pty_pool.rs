@@ -143,9 +143,18 @@ fn rt() -> tokio::runtime::Runtime {
 
 // ---------------------------------------------------------------------------
 // Real-spawner end-to-end tests
+//
+// Every test in this section drives a real ConPTY/portable-pty child. Spawning
+// many ConPTY consoles in parallel is contended on Windows: under load (e.g.
+// the husky pre-push hook running `npm test` and `cargo test --workspace`
+// concurrently with linker work), the initial banner from the test child can
+// stall well past the per-test 5s budget, causing intermittent
+// `banner not seen` failures. Force these tests to run serially so they only
+// ever compete with one PTY at a time.
 // ---------------------------------------------------------------------------
 
 #[test]
+#[serial_test::serial(real_pty)]
 fn spawn_banner_then_quit_yields_exited_status() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
@@ -187,6 +196,7 @@ fn spawn_banner_then_quit_yields_exited_status() {
 }
 
 #[test]
+#[serial_test::serial(real_pty)]
 fn echoes_input_back_through_sink() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
@@ -207,6 +217,7 @@ fn echoes_input_back_through_sink() {
 }
 
 #[test]
+#[serial_test::serial(real_pty)]
 fn resize_calls_do_not_disrupt_io() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
@@ -230,6 +241,7 @@ fn resize_calls_do_not_disrupt_io() {
 }
 
 #[test]
+#[serial_test::serial(real_pty)]
 fn nonzero_exit_yields_error_status() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
@@ -255,6 +267,7 @@ fn nonzero_exit_yields_error_status() {
 }
 
 #[test]
+#[serial_test::serial(real_pty)]
 fn kill_terminates_child_and_removes_entry_and_temp_dir() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
@@ -281,6 +294,7 @@ fn kill_terminates_child_and_removes_entry_and_temp_dir() {
 }
 
 #[test]
+#[serial_test::serial(real_pty)]
 fn respawn_existing_yields_a_new_pid() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());

@@ -1,4 +1,17 @@
 #!/usr/bin/env sh
 
+# Issue #13: when `git push` invokes this hook, it exports repo-selection
+# variables (GIT_DIR, GIT_WORK_TREE, ...) into the child environment. They
+# take precedence over `-C <path>` / `current_dir(...)` in any `git`
+# subprocess we spawn from `cargo test`, which historically resulted in
+# unregistered worktrees and stray commits on the developer's checked-out
+# branch. Strip them here as defense-in-depth; the Rust test suite also
+# scrubs them per-Command via `git::git_command()` / `clean_test_git_command`.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+      GIT_NAMESPACE GIT_PREFIX \
+      GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+      GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+
 npm test -- --run || exit 1
 cargo test --workspace || exit 1

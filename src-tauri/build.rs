@@ -1,5 +1,30 @@
 use std::process::Command;
 
+/// Build a `git` Command with repo-selection environment variables stripped.
+///
+/// build.rs runs as a child of `cargo`, which under a husky pre-push hook
+/// inherits `GIT_DIR`/`GIT_WORK_TREE`/etc. from the outer `git push`. Without
+/// stripping them, our branch detection would report the *outer* repo's
+/// branch and bake the wrong value into `ARBORIST_BUILD_BRANCH`. Mirrors
+/// `git::git_command()` (kept duplicated because build scripts can't depend
+/// on the crate being built).
+fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 /// Detect the git branch name this build is being produced from.
 ///
 /// Resolution order:
@@ -21,7 +46,7 @@ fn detect_branch() -> String {
             }
         }
     }
-    let out = Command::new("git")
+    let out = git_command()
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output();
     if let Ok(out) = out {
@@ -64,7 +89,7 @@ fn main() {
 
     // Re-run when HEAD moves. In a linked worktree `.git` is a file, so resolve
     // the real HEAD path via `git rev-parse --git-path HEAD`.
-    if let Ok(out) = Command::new("git")
+    if let Ok(out) = git_command()
         .args(["rev-parse", "--git-path", "HEAD"])
         .output()
     {
