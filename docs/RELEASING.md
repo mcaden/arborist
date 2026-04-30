@@ -12,6 +12,11 @@ None. The workflow uses the default `GITHUB_TOKEN`; no secrets to configure.
 
 ## Cutting a release
 
+> **Workflow guards:** the Release workflow only runs when dispatched from
+> `main`, and the verify job will refuse to build a tag whose commit is not
+> reachable from `origin/main`. Releases must be built from commits already
+> on `main`.
+
 1. **Bump the version** in all three places (they must match):
    - `package.json` → `"version"`
    - `src-tauri/tauri.conf.json` → `"version"`

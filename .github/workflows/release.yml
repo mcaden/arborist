@@ -9,8 +9,40 @@ on:
         type: string
 
 jobs:
+  verify:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    # Only allow this workflow to run from the main branch (i.e. the user
+    # picked 'main' as the workflow source in the Run workflow dialog).
+    # Combined with the tag-reachability check below, this prevents shipping
+    # a release built from an unmerged or feature-branch commit.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Assert tag exists and is reachable from main
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet
+          if ! git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag '${TAG}' does not exist on origin."
+            exit 1
+          fi
+          tag_sha="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          # HEAD is 'main' (checked out above); is_ancestor checks reachability.
+          if ! git merge-base --is-ancestor "${tag_sha}" HEAD; then
+            echo "::error::Tag '${TAG}' (${tag_sha}) is not reachable from main. Releases must be built from commits on main."
+            exit 1
+          fi
+          echo "Tag ${TAG} (${tag_sha}) is on main — proceeding."
+
   build:
     name: Build (${{ matrix.platform.name }})
+    needs: verify
     permissions:
       contents: write
     strategy:
