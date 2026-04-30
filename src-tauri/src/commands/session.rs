@@ -383,6 +383,23 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         .map_err(AppError::from)?;
     (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
+    // Restart starts a fresh AI conversation (DESIGN §5.4). The previous
+    // ai_session_id refers to a transcript the new CLI invocation will
+    // not be writing to, so we clear it eagerly — otherwise a crash
+    // between restart and the new watcher's first discovery would let
+    // the next restore `--resume` the *pre-restart* conversation.
+    //
+    // Order matters: stop the OLD watcher first, *then* clear. If we
+    // cleared while the old watcher was still polling, it could discover
+    // the (still-on-disk) old transcript one more time and persist the
+    // stale id back, undoing the clear. After this stop the new watcher
+    // is started below by `metrics.start`, which will repopulate the
+    // field with the new conversation's id once the CLI starts writing.
+    ctx.metrics.stop(&id);
+    if let Err(e) = ctx.store.update_session_ai_session_id(&id, None) {
+        warn!(session_id = %id, error = ?e, "restart: failed to clear ai_session_id");
+    }
+
     if let Err(e) = ctx.pool.respawn_existing(&session, ctx.sink.clone()) {
         let msg = format!("Failed to restart session: {e}");
         let _ = ctx
