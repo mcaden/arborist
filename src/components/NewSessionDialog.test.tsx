@@ -216,26 +216,30 @@ describe('NewSessionDialog', () => {
     );
 
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { unmount } = render(<NewSessionDialog />);
-    openDialog();
-    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
-    await screen.findByText(/step 2 of 2/i);
-    await waitFor(() => expect(bridgeMock.worktreesList).toHaveBeenCalledTimes(1));
 
-    unmount();
+    try {
+      const { unmount } = render(<NewSessionDialog />);
+      openDialog();
+      fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+      await screen.findByText(/step 2 of 2/i);
+      await waitFor(() => expect(bridgeMock.worktreesList).toHaveBeenCalledTimes(1));
 
-    // Late response after unmount must not trigger setState (no React act
-    // warning, no "update on unmounted component" warning).
-    await act(async () => {
-      resolveList([{ path: `${REPO_ROOT}/.worktrees/late`, branch: 'late', isMain: false }]);
-    });
-    const offending = errorSpy.mock.calls.find((args) => {
-      const msg = String(args[0] ?? '');
-      return msg.includes('not wrapped in act') || msg.includes('unmounted component');
-    });
-    expect(offending).toBeUndefined();
-    errorSpy.mockRestore();
+      unmount();
+
+      // Late response after unmount must not trigger setState (no React act
+      // warning, no "update on unmounted component" warning).
+      await act(async () => {
+        resolveList([{ path: `${REPO_ROOT}/.worktrees/late`, branch: 'late', isMain: false }]);
+      });
+      const offending = errorSpy.mock.calls.find((args) => {
+        const msg = String(args[0] ?? '');
+        return msg.includes('not wrapped in act') || msg.includes('unmounted component');
+      });
+      expect(offending).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('does not let a stale Step-2 worktreesList overwrite the post-failure refresh result', async () => {
