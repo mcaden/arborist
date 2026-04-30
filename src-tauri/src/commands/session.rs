@@ -113,12 +113,19 @@ impl AppContext {
     /// True iff `session_close` is currently mid-cascade for `id`.
     /// Used by `subsession_create_impl` and the sub-session restore
     /// second pass to refuse new children under a closing parent.
+    ///
+    /// Fails *closed* on a poisoned mutex: a panic while holding
+    /// `closing_parents` could otherwise let a sub-session be spawned
+    /// under a parent mid-close (the cascade would then race to kill
+    /// it). Returning `true` on poisoning preserves the tombstone
+    /// invariant — the caller will refuse the operation, which is
+    /// the safe failure mode.
     #[must_use]
     pub fn is_parent_closing(&self, id: &SessionId) -> bool {
-        self.closing_parents
-            .lock()
-            .map(|g| g.contains(id))
-            .unwrap_or(false)
+        match self.closing_parents.lock() {
+            Ok(g) => g.contains(id),
+            Err(_) => true,
+        }
     }
 
     /// Mark a parent as mid-close. Returns a guard that removes the id

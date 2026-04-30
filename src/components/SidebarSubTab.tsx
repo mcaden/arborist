@@ -6,6 +6,17 @@
 //     and brings the parent into view;
 //   * for application sub-sessions, raises the OS window without touching
 //     the viewport (the parent terminal stays visible).
+//
+// Accessibility: the row is a plain `<button>` (implicit `role="button"`),
+// not `role="tab"`. Sub-tabs live inside the parent's `<ul role="group">`
+// rather than the sidebar's `<ul role="tablist">`, so giving them the
+// `tab` role would violate the WAI-ARIA tabs pattern (which requires
+// `role="tab"` to be a child of `role="tablist"`) and would also confuse
+// the sidebar's roving-tabindex model — sub-tabs are *not* part of the
+// parent-tab Up/Down navigation. `aria-current="true"` indicates the
+// terminal sub-tab that currently owns the viewport (analogous to "current
+// item in a set"); application sub-tabs never set it because they don't
+// own the viewport.
 
 import { useSessionActions } from '@/store/session-store';
 import {
@@ -74,8 +85,7 @@ export function SidebarSubTab({
     <li className="group relative px-2">
       <button
         type="button"
-        role="tab"
-        aria-selected={isViewportOwner}
+        aria-current={isViewportOwner ? 'true' : undefined}
         onClick={handleClick}
         className={`flex w-full items-center gap-2 rounded-md py-1 pl-7 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
       >

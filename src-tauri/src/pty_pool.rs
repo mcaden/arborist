@@ -353,13 +353,17 @@ impl PtySink {
 /// Design rule: **on each `feed`, return a `String` containing every fully
 /// decoded scalar; retain any trailing partial sequence for the next call**.
 /// Invalid bytes are replaced with U+FFFD (REPLACEMENT CHARACTER).
+///
+/// Visibility is `pub(crate)` rather than `pub`: the only external
+/// caller is `crate::sub_sessions`, and we don't want to commit to
+/// this type as part of the crate's public API surface.
 #[derive(Debug, Default)]
-pub struct Utf8Stream {
+pub(crate) struct Utf8Stream {
     pending: Vec<u8>,
 }
 
 impl Utf8Stream {
-    pub fn feed(&mut self, bytes: &[u8]) -> String {
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
         if self.pending.is_empty() && bytes.is_empty() {
             return String::new();
         }

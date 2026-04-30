@@ -79,7 +79,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('02') });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    fireEvent.click(screen.getByRole('tab'));
+    fireEvent.click(screen.getByRole('button', { name: sub.label }));
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
 
@@ -87,7 +87,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('03'), parentSessionId: PARENT_OTHER });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SidebarSubTab parentId={PARENT_OTHER} subSessionId={sub.id} parentIsActive={false} />);
-    fireEvent.click(screen.getByRole('tab'));
+    fireEvent.click(screen.getByRole('button', { name: sub.label }));
     expect(bridgeMock.sessionFocus).toHaveBeenCalledWith({ sessionId: PARENT_OTHER });
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
@@ -102,24 +102,40 @@ describe('SidebarSubTab', () => {
     expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
   });
 
-  it('shows aria-selected only when terminal sub owns the viewport', () => {
+  it('uses role=button (not role=tab) so it stays out of the sidebar tablist roving-tabindex model', () => {
+    const sub = makeSub({ id: id('05a') });
+    useSubSessionStore.setState({
+      subSessions: [sub],
+      activeByParent: { [PARENT]: sub.id },
+    });
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    // Sub-tabs live inside <ul role="group"> — using role=tab here would
+    // violate the WAI-ARIA tabs pattern (tab must be a child of tablist)
+    // and confuse the parent tablist's keyboard model.
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.getByRole('button', { name: sub.label })).toBeInTheDocument();
+  });
+
+  it('shows aria-current only when terminal sub owns the viewport', () => {
     const sub = makeSub({ id: id('05') });
     useSubSessionStore.setState({
       subSessions: [sub],
       activeByParent: { [PARENT]: sub.id },
     });
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('tab').getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('button', { name: sub.label }).getAttribute('aria-current')).toBe(
+      'true',
+    );
   });
 
-  it('application kind is never aria-selected by viewport rule', () => {
+  it('application kind is never aria-current by viewport rule', () => {
     const sub = makeSub({ id: id('06'), kind: 'application' });
     useSubSessionStore.setState({
       subSessions: [sub],
       activeByParent: { [PARENT]: sub.id },
     });
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('tab').getAttribute('aria-selected')).toBe('false');
+    expect(screen.getByRole('button', { name: sub.label }).getAttribute('aria-current')).toBeNull();
   });
 
   it('clicking a greyed exited application sub-tab triggers relaunch (Phase 7)', () => {
@@ -127,7 +143,7 @@ describe('SidebarSubTab', () => {
     useSubSessionStore.setState({ subSessions: [sub] });
     bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    fireEvent.click(screen.getByRole('tab'));
+    fireEvent.click(screen.getByRole('button', { name: sub.label }));
     expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
     // Focus must NOT be called — the click is a relaunch gesture, not a
     // focus gesture.
@@ -139,7 +155,7 @@ describe('SidebarSubTab', () => {
     useSubSessionStore.setState({ subSessions: [sub] });
     bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    fireEvent.click(screen.getByRole('tab'));
+    fireEvent.click(screen.getByRole('button', { name: sub.label }));
     expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
   });
 
@@ -147,7 +163,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('09'), kind: 'application', status: 'running', pid: 42 });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    fireEvent.click(screen.getByRole('tab'));
+    fireEvent.click(screen.getByRole('button', { name: sub.label }));
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
     expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
   });

@@ -17,10 +17,10 @@
 //   * Escape          close the menu (and restore focus to the tab).
 //   * Tab             closes the menu (don't let focus wander silently).
 //
-// Closes on: outside pointer-down, Escape, blur of the menu container,
-// after activating any item. Restores DOM focus to the triggering tab on
-// close, except when handing off to the Settings dialog (Settings will
-// take focus management itself).
+// Closes on: outside pointer-down, Escape, Tab (don't let focus wander
+// silently), and after activating any item. Restores DOM focus to the
+// triggering tab on close, except when handing off to the Settings
+// dialog (Settings will take focus management itself).
 
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -176,7 +176,7 @@ export function TabContextMenu({
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[TabContextMenu] sub_session_create(${def.id}) failed: ${message}`);
+        console.warn(`[TabContextMenu] subsession_create(${def.id}) failed: ${message}`);
       });
     closeMenu();
   };
