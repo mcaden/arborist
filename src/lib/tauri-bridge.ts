@@ -56,6 +56,19 @@ export interface SessionIdArg {
   sessionId: SessionId;
 }
 
+/**
+ * Arguments for `session_close`. The optional `deleteWorktree` flag asks
+ * the backend to run `git worktree remove --force` on the session's
+ * worktree after the PTY is torn down. The backend refuses to delete the
+ * configured workspace root (main worktree).
+ *
+ * MIRROR: `src-tauri/src/types.rs::SessionCloseArgs`.
+ */
+export interface SessionCloseArgs {
+  sessionId: SessionId;
+  deleteWorktree?: boolean;
+}
+
 export interface SessionResizeArgs {
   sessionId: SessionId;
   cols: number;
@@ -103,9 +116,11 @@ export function sessionList(): Promise<SessionView[]> {
 /**
  * Kill the PTY child, drop the persisted session record, and trim the
  * session out of `lastOpenSessions`/`tabOrder`/`activeSessionId`. Idempotent
- * for already-exited sessions.
+ * for already-exited sessions. When `deleteWorktree` is `true`, the backend
+ * additionally runs `git worktree remove --force` on the session's
+ * worktree.
  */
-export function sessionClose(args: SessionIdArg): Promise<void> {
+export function sessionClose(args: SessionCloseArgs): Promise<void> {
   return invoke<void>('session_close', { args });
 }
 

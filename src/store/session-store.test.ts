@@ -103,7 +103,7 @@ describe('close', () => {
 
     await useSessionStore.getState().actions.close('a');
 
-    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a' });
+    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a', deleteWorktree: false });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
   });
 

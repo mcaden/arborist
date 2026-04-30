@@ -133,8 +133,52 @@ describe('Sidebar', () => {
       );
     });
 
-    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a' });
+    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a', deleteWorktree: false });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
+  });
+
+  it('passes deleteWorktree=true when the checkbox is ticked before confirming', async () => {
+    seed([makeView('a', { worktreePath: '/repo/.worktrees/feature-x' })], 'a');
+    render(<Sidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
+    const dialog = screen.getByRole('dialog');
+    const checkbox = within(dialog).getByRole('checkbox', { name: /delete the worktree/i });
+    expect(checkbox).not.toBeChecked();
+    expect(within(dialog).getByText('/repo/.worktrees/feature-x')).toBeInTheDocument();
+
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: /terminate.*delete worktree/i }));
+    });
+
+    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({
+      sessionId: 'a',
+      deleteWorktree: true,
+    });
+  });
+
+  it('resets the delete-worktree checkbox each time the dialog reopens', async () => {
+    seed([makeView('a'), makeView('b')], 'a');
+    render(<Sidebar />);
+
+    // Open for "a", tick, cancel.
+    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
+    const checkbox1 = within(screen.getByRole('dialog')).getByRole('checkbox', {
+      name: /delete the worktree/i,
+    });
+    fireEvent.click(checkbox1);
+    expect(checkbox1).toBeChecked();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /cancel/i }));
+
+    // Reopen for "b" — checkbox should NOT carry over its prior tick.
+    fireEvent.click(screen.getByRole('button', { name: /close session b/i }));
+    const checkbox2 = within(screen.getByRole('dialog')).getByRole('checkbox', {
+      name: /delete the worktree/i,
+    });
+    expect(checkbox2).not.toBeChecked();
   });
 
   it('keyboard nav: ArrowDown / Home / End / Enter / Delete', () => {

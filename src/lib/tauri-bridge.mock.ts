@@ -154,6 +154,7 @@ export const onSessionMetrics: Mock<
 export type {
   SessionCreateArgs,
   SessionIdArg,
+  SessionCloseArgs,
   SessionResizeArgs,
   SessionInputArgs,
 } from './tauri-bridge';

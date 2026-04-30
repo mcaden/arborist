@@ -87,7 +87,7 @@ export type SessionActivity = 'working' | 'idle' | 'attention';
 export interface SessionStoreActions {
   hydrate: () => Promise<void>;
   create: (args: SessionCreateArgs) => Promise<SessionView>;
-  close: (id: SessionId) => Promise<void>;
+  close: (id: SessionId, deleteWorktree?: boolean) => Promise<void>;
   focus: (id: SessionId) => Promise<void>;
   reorder: (ids: SessionId[]) => Promise<void>;
   requestClose: (id: SessionId) => void;
@@ -170,8 +170,8 @@ export const useSessionStore = create<Store>((set, get) => {
       return view;
     },
 
-    close: async (id) => {
-      await sessionClose({ sessionId: id });
+    close: async (id, deleteWorktree) => {
+      await sessionClose({ sessionId: id, deleteWorktree: deleteWorktree ?? false });
       const previous = get().sessions;
       const wasActive = get().activeId === id;
       const nextSessions = previous.filter((s) => s.id !== id);

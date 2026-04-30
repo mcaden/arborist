@@ -93,6 +93,19 @@ pub trait GitRunner: Send + Sync {
         relative_path: &Path,
         branch: &str,
     ) -> Result<PathBuf, Error>;
+
+    /// Run `git -C <repo_root> worktree remove --force <worktree_path>`.
+    /// `--force` is used because the user has explicitly confirmed
+    /// deletion in the UI (CloseConfirmDialog) and we have just torn down
+    /// the PTY that owned the cwd.
+    ///
+    /// `repo_root` is any checkout of the same repository — typically the
+    /// configured `workspace_root`, but `worktree_path` itself works as a
+    /// fallback while it still exists on disk.
+    ///
+    /// Errors are surfaced as [`Error::Internal`] carrying git's stderr so
+    /// the frontend can show the user a meaningful message.
+    fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error>;
 }
 
 /// Production [`GitRunner`] that shells out to the system `git`.
@@ -219,6 +232,32 @@ impl GitRunner for RealGitRunner {
                 new_path.display()
             ))
         })
+    }
+
+    fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error> {
+        if !repo_root.is_dir() {
+            return Err(Error::WorktreeMissing(repo_root.to_path_buf()));
+        }
+        let output = git_command()
+            .current_dir(repo_root)
+            .arg("-C")
+            .arg(repo_root)
+            .args(["worktree", "remove", "--force"])
+            .arg(worktree_path)
+            .output()
+            .map_err(|e| Error::Internal(format!("git worktree remove: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(Error::Internal(format!(
+                "git worktree remove failed: {}",
+                if stderr.is_empty() {
+                    "<no stderr>".to_owned()
+                } else {
+                    stderr
+                }
+            )));
+        }
+        Ok(())
     }
 }
 

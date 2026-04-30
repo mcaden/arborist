@@ -519,14 +519,34 @@ pub struct SessionCreateArgs {
     pub instruction_set_id: Option<InstructionSetId>,
 }
 
-/// Arguments for any command keyed only by session id (`session_close`,
-/// `session_focus`, `session_restart`).
+/// Arguments for any command keyed only by session id
+/// (`session_focus`, `session_restart`). `session_close` uses the richer
+/// [`SessionCloseArgs`] so the user can opt into worktree deletion.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SessionIdArg`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionIdArg {
     pub session_id: SessionId,
+}
+
+/// Arguments for `session_close`. Extends [`SessionIdArg`] with an opt-in
+/// flag that removes the session's git worktree from disk after the PTY is
+/// torn down. The backend gates removal behind safety checks (never the
+/// main worktree, never a path outside the configured workspace root); see
+/// `commands::session::session_close_impl`.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SessionCloseArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCloseArgs {
+    pub session_id: SessionId,
+    /// When `true`, run `git worktree remove --force <worktree_path>` after
+    /// terminating the PTY. Defaults to `false` so legacy callers (and any
+    /// future code that forgets to set the flag) preserve existing
+    /// behaviour.
+    #[serde(default)]
+    pub delete_worktree: bool,
 }
 
 /// Arguments for `session_resize`.

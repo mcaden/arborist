@@ -2,7 +2,7 @@
 // presses `Delete` on a focused tab. Uses the native <dialog> element so
 // we get a focus trap and Esc-to-close for free, no extra deps.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { usePendingClose, useSessionActions, useSessionById } from '@/store/session-store';
 
@@ -13,11 +13,15 @@ export function CloseConfirmDialog(): JSX.Element | null {
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const [deleteWorktree, setDeleteWorktree] = useState<boolean>(false);
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
     if (pendingId !== undefined) {
+      // Reset the opt-in checkbox every time the dialog opens — deletion
+      // is destructive and should never be sticky across tabs.
+      setDeleteWorktree(false);
       if (!dialog.open) {
         // Some test environments (jsdom) don't ship a working showModal.
         if (typeof dialog.showModal === 'function') {
@@ -45,7 +49,7 @@ export function CloseConfirmDialog(): JSX.Element | null {
 
   const onConfirm = async (): Promise<void> => {
     try {
-      await actions.close(pendingId);
+      await actions.close(pendingId, deleteWorktree);
     } finally {
       actions.cancelClose();
     }
@@ -66,6 +70,30 @@ export function CloseConfirmDialog(): JSX.Element | null {
       <h2 id="close-confirm-title" className="mb-3 text-base font-semibold">
         Terminate session &ldquo;{session.label}&rdquo;?
       </h2>
+      <label className="mb-4 flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={deleteWorktree}
+          onChange={(e) => setDeleteWorktree(e.target.checked)}
+          className="mt-0.5 h-4 w-4 cursor-pointer accent-red-600"
+        />
+        <span className="flex flex-col">
+          <span>
+            Also delete the worktree directory
+            {deleteWorktree ? (
+              <span className="ml-1 font-medium text-red-700 dark:text-red-400">
+                (cannot be undone)
+              </span>
+            ) : null}
+          </span>
+          <span
+            className="mt-0.5 break-all font-mono text-xs text-slate-500 dark:text-slate-400"
+            title={session.worktreePath}
+          >
+            {session.worktreePath}
+          </span>
+        </span>
+      </label>
       <div className="flex justify-end gap-2">
         <button
           ref={cancelRef}
@@ -82,7 +110,7 @@ export function CloseConfirmDialog(): JSX.Element | null {
           }}
           className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
         >
-          Terminate
+          {deleteWorktree ? 'Terminate & delete worktree' : 'Terminate'}
         </button>
       </div>
     </dialog>

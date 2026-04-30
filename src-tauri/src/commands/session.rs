@@ -20,7 +20,7 @@
 //! the on-disk session record converges automatically when the production
 //! sink is wired (see [`crate::lib::run`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -238,10 +238,25 @@ pub fn session_list_impl(ctx: &AppContext) -> Result<Vec<SessionView>, AppError>
 // session_close
 // ---------------------------------------------------------------------------
 
-pub async fn session_close_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppError> {
+pub async fn session_close_impl(
+    ctx: &AppContext,
+    id: SessionId,
+    delete_worktree: bool,
+) -> Result<(), AppError> {
     // 0. Stop the metrics watcher (Issue #3) before tearing the rest down
     //    so it never observes a half-cleaned session.
     ctx.metrics.stop(&id);
+
+    // Capture the worktree path *before* we drop the persisted record —
+    // we need it for the optional `git worktree remove` step at the end.
+    let worktree_path: Option<PathBuf> = if delete_worktree {
+        ctx.store
+            .load_sessions()
+            .get(&id)
+            .map(|s| s.worktree_path.clone())
+    } else {
+        None
+    };
 
     // 1. Best-effort kill (NotFound from the pool is fine — the session
     //    may have exited on its own already).
@@ -282,6 +297,92 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId) -> Result<(), A
             ..Default::default()
         })
         .map_err(AppError::from)?;
+
+    // 5. Optional: remove the git worktree from disk. The session is
+    //    already gone from the store at this point — failing here surfaces
+    //    a toast but does not resurrect the tab. The user explicitly
+    //    opted in via the close-confirm dialog.
+    if let Some(wt) = worktree_path {
+        delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root)?;
+    }
+    Ok(())
+}
+
+/// Helper: validate and execute `git worktree remove --force`. Refuses to
+/// touch the configured `workspace_root` itself (i.e. the main checkout),
+/// any path that is not contained under the workspace root, or any path
+/// still claimed by another live session.
+fn delete_worktree_after_close(
+    ctx: &AppContext,
+    id: &SessionId,
+    worktree_path: &Path,
+    workspace_root: &Option<PathBuf>,
+) -> Result<(), AppError> {
+    // Require an explicit workspace root. Without it we have neither a
+    // safe `-C` directory to invoke git from (running git inside the
+    // worktree we're about to delete fails on Windows because the OS
+    // locks a process's CWD) nor a basis for the containment check below.
+    let root = workspace_root.as_ref().ok_or_else(|| {
+        AppError::from(Error::Internal(
+            "cannot delete worktree without a configured workspace root".to_owned(),
+        ))
+    })?;
+    if !root.is_dir() {
+        return Err(AppError::from(Error::WorktreeMissing(root.clone())));
+    }
+
+    // Compare canonical forms so case differences, trailing slashes, and
+    // 8.3 short names don't fool us.
+    let canon_wt =
+        dunce::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+    let canon_root = dunce::canonicalize(root).unwrap_or_else(|_| root.clone());
+
+    // Safety 1: never remove the main worktree.
+    if canon_wt == canon_root {
+        return Err(AppError::from(Error::Internal(
+            "refusing to delete the workspace root (main worktree)".to_owned(),
+        )));
+    }
+    // Safety 2: only remove paths *under* the workspace root. A corrupted
+    // session record (or hostile caller) must not be able to use this code
+    // path to delete arbitrary directories.
+    if !canon_wt.starts_with(&canon_root) {
+        return Err(AppError::from(Error::Internal(format!(
+            "refusing to delete worktree outside workspace root: {}",
+            worktree_path.display()
+        ))));
+    }
+    // Safety 3: refuse if any *other* live session still references the
+    // same worktree. The session being closed has already been removed
+    // from the store at this point, so it cannot match itself.
+    let still_in_use = ctx.store.load_sessions().values().any(|s| {
+        let other =
+            dunce::canonicalize(&s.worktree_path).unwrap_or_else(|_| s.worktree_path.clone());
+        other == canon_wt
+    });
+    if still_in_use {
+        return Err(AppError::from(Error::Internal(format!(
+            "refusing to delete worktree still in use by another session: {}",
+            worktree_path.display()
+        ))));
+    }
+
+    let repo_root: PathBuf = root.clone();
+
+    if let Err(e) = ctx.git_runner.remove_worktree(&repo_root, worktree_path) {
+        warn!(
+            session_id = %id,
+            worktree = %worktree_path.display(),
+            error = ?e,
+            "git worktree remove failed",
+        );
+        return Err(AppError::from(e));
+    }
+    info!(
+        session_id = %id,
+        worktree = %worktree_path.display(),
+        "worktree removed after session close",
+    );
     Ok(())
 }
 

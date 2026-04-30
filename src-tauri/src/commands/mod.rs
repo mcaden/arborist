@@ -26,9 +26,9 @@ use tauri::{Emitter, Manager};
 
 use crate::config_store::{list_instructions_for, ConfigStore};
 use crate::types::{
-    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCreateArgs, SessionId,
-    SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView, WorkspaceValidateArgs, WorkspaceValidateResult,
+    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCreateArgs,
+    SessionId, SessionIdArg, SessionInputArgs, SessionOutputEvent, SessionResizeArgs,
+    SessionStatus, SessionStatusEvent, SessionView, WorkspaceValidateArgs, WorkspaceValidateResult,
     WorktreeCreateArgs, WorktreeCreateResult,
 };
 
@@ -102,9 +102,9 @@ pub async fn session_list(app: tauri::AppHandle) -> Result<Vec<SessionView>, App
 }
 
 #[tauri::command]
-pub async fn session_close(app: tauri::AppHandle, args: SessionIdArg) -> Result<(), AppError> {
+pub async fn session_close(app: tauri::AppHandle, args: SessionCloseArgs) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    session::session_close_impl(&ctx, args.session_id).await
+    session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
 }
 
 #[tauri::command]
