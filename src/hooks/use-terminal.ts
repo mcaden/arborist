@@ -200,6 +200,31 @@ function teardownKeydownListener(entry: RegistryEntry): void {
 }
 
 /**
+ * Read text from the system clipboard via `navigator.clipboard.readText()`
+ * and forward it to the terminal via `term.paste()`. Used by both the
+ * Ctrl/Cmd+V keydown branch (where xterm's keydown handler would
+ * otherwise eat the keystroke before any `paste` event fires) and the
+ * `paste` event listener fallback (when `clipboardData` is empty, as
+ * happens in some WebView2 right-click → Paste flows).
+ *
+ * Failures are logged but otherwise silent — there's no useful UI
+ * recovery and we don't want to spam the user with toasts every time
+ * they paste an empty clipboard.
+ */
+function pasteFromClipboard(entry: RegistryEntry): void {
+  if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) return;
+  void navigator.clipboard
+    .readText()
+    .then((text) => {
+      if (text) entry.term.paste(text);
+    })
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[use-terminal] clipboard.readText() failed: ${message}`);
+    });
+}
+
+/**
  * Re-measure + repaint a single terminal. Safe to call on an unattached or
  * zero-size terminal (no-ops). Only emits `sessionResize` when cols/rows
  * have actually changed since the last successful fit. Always calls
@@ -283,11 +308,20 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
   // state if it fires too early).
   refitEntry(sessionId, entry);
 
-  // Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a plain
-  // `\r` for both Enter and Shift+Enter, which CLIs like Claude Code and
-  // GitHub Copilot CLI interpret as "submit". The de-facto convention
-  // (matching what `claude /terminal-setup` configures in iTerm2) is to
-  // send ESC-prefixed CR for "newline without submit".
+  // Capture-phase keydown listener on the host. Two responsibilities:
+  //
+  // 1. Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a
+  //    plain `\r` for both Enter and Shift+Enter, which CLIs like Claude
+  //    Code and GitHub Copilot CLI interpret as "submit". The de-facto
+  //    convention (matching what `claude /terminal-setup` configures in
+  //    iTerm2) is to send ESC-prefixed CR for "newline without submit".
+  //
+  // 2. Ctrl+V / Cmd+V → trigger paste via `navigator.clipboard.readText()`
+  //    and write the result through `term.paste()`. If we don't intercept,
+  //    xterm's own keydown handler eats the keypress (sending the literal
+  //    `\x16` SYN byte to the PTY) and the browser never fires a `paste`
+  //    event, so our capture-phase paste listener has nothing to handle.
+  //    Right-click → Paste still goes through the paste listener below.
   //
   // We listen at the **host** in the **capture** phase so we run before
   // xterm's own keydown listener (registered on its hidden textarea, also
@@ -314,6 +348,19 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[use-terminal] session_input(${sessionId}) failed: ${message}`);
       });
+      return;
+    }
+    // Ctrl+V (Windows/Linux) or Cmd+V (macOS), no other modifiers. We
+    // also accept Ctrl+Shift+V which is the conventional "paste" combo
+    // in many Linux terminals.
+    const isPasteCombo =
+      event.key.toLowerCase() === 'v' &&
+      !event.altKey &&
+      ((event.ctrlKey && !event.metaKey) || (event.metaKey && !event.ctrlKey));
+    if (isPasteCombo) {
+      event.preventDefault();
+      event.stopPropagation();
+      pasteFromClipboard(entry);
     }
   };
   host.addEventListener('keydown', keydownListener as EventListener, true);
@@ -339,17 +386,7 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
       entry.term.paste(inline);
       return;
     }
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
-      void navigator.clipboard
-        .readText()
-        .then((text) => {
-          if (text) entry.term.paste(text);
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(`[use-terminal] clipboard.readText() failed: ${message}`);
-        });
-    }
+    pasteFromClipboard(entry);
   };
   host.addEventListener('paste', pasteListener as EventListener, true);
   entry.pasteListener = pasteListener;
