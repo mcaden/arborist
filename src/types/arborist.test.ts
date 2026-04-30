@@ -95,7 +95,7 @@ describe('arborist type mirrors', () => {
         'tabIndex',
         'tempFiles',
       ],
-      ['pid', 'instructionSetId'],
+      ['pid', 'instructionSetId', 'aiSessionId'],
       'Session',
     );
   });

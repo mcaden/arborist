@@ -147,6 +147,14 @@ pub struct Session {
     /// [`SessionView`].
     #[serde(default)]
     pub temp_files: Vec<TempFileSpec>,
+    /// Most recently observed AI-side session id (Claude transcript file
+    /// stem; Copilot OTel `gen_ai.conversation.id` / session-state dir
+    /// name). When set, `restore_all_sessions` augments the spawn command
+    /// with `--resume <id>` so the conversation continues across an app
+    /// restart. Backend-only — omitted from [`SessionView`]; not surfaced
+    /// to the frontend today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_session_id: Option<String>,
 }
 
 /// Frontend-facing projection of [`Session`]. Intentionally drops
@@ -784,6 +792,7 @@ mod tests {
                 path: PathBuf::from("/tmp/arborist/abc/sp.md"),
                 contents: "context".to_owned(),
             }],
+            ai_session_id: None,
         }
     }
 

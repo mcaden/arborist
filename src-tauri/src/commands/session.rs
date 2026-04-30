@@ -33,7 +33,7 @@ use crate::config_store::{
 };
 use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
-use crate::session_metrics::{MetricsCb, MetricsRegistry, TurnCb};
+use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult,
     SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView,
@@ -62,6 +62,12 @@ pub struct AppContext {
     /// Production wires this into `app.emit("session://metrics", …)`;
     /// tests substitute a capturing closure.
     pub metrics_emit: MetricsCb,
+    /// Callback the metrics watchers invoke when they discover (or learn
+    /// of a change to) the AI-side session id. Production wires this to
+    /// persist via `ConfigStore::update_session_ai_session_id` so the next
+    /// app-restart restore can `--resume <id>`. Tests substitute a
+    /// capturing closure.
+    pub ai_session_discover: AiSessionDiscoveryCb,
     /// Callback the metrics watchers invoke when an agent turn completes
     /// (Copilot OTel `invoke_agent` close; Claude transcript assistant
     /// line). Production wires this into the existing
@@ -78,6 +84,7 @@ impl AppContext {
         sink: PtySink,
         git_runner: Arc<dyn GitRunner>,
         metrics_emit: MetricsCb,
+        ai_session_discover: AiSessionDiscoveryCb,
         turn_emit: TurnCb,
     ) -> Self {
         Self {
@@ -88,6 +95,7 @@ impl AppContext {
             restored: AtomicBool::new(false),
             metrics: Arc::new(MetricsRegistry::new()),
             metrics_emit,
+            ai_session_discover,
             turn_emit,
         }
     }
@@ -104,6 +112,7 @@ impl AppContext {
             sink,
             Arc::new(RealGitRunner),
             Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
             Arc::new(|_, _| {}),
         )
     }
@@ -189,6 +198,7 @@ pub fn session_create_impl(
         created_at: now_unix_seconds(),
         tab_index,
         temp_files: composed.temp_files,
+        ai_session_id: None,
     };
 
     // 8. Persist before spawning so a crash mid-spawn still leaves an
@@ -231,6 +241,7 @@ pub fn session_create_impl(
         SystemTime::now(),
         Arc::clone(&ctx.metrics_emit),
         Arc::clone(&ctx.turn_emit),
+        Arc::clone(&ctx.ai_session_discover),
     );
 
     info!(session_id = %session.id, pid, label = %label, "session created");
@@ -554,6 +565,25 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         .map_err(AppError::from)?;
     (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
+    // Restart starts a fresh AI conversation (DESIGN §5.4). The previous
+    // ai_session_id refers to a transcript the new CLI invocation will
+    // not be writing to, so we clear it eagerly — otherwise a crash
+    // between restart and the new watcher's first discovery would let
+    // the next restore `--resume` the *pre-restart* conversation.
+    //
+    // Order matters: stop the OLD watcher first, *then* clear. We need
+    // `stop_and_join` (not just `stop`) because the worker only re-checks
+    // its `running` flag at the top of each poll iteration — a fire-and-
+    // forget stop would let the in-flight iteration call `discover()` one
+    // more time and persist the stale id back, undoing the clear. After
+    // join returns, the worker thread has fully exited; the new watcher
+    // started below by `metrics.start` will repopulate the field with
+    // the new conversation's id once the CLI starts writing.
+    ctx.metrics.stop_and_join(&id);
+    if let Err(e) = ctx.store.update_session_ai_session_id(&id, None) {
+        warn!(session_id = %id, error = ?e, "restart: failed to clear ai_session_id");
+    }
+
     if let Err(e) = ctx.pool.respawn_existing(&session, ctx.sink.clone()) {
         let msg = format!("Failed to restart session: {e}");
         let _ = ctx
@@ -571,6 +601,7 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         SystemTime::now(),
         Arc::clone(&ctx.metrics_emit),
         Arc::clone(&ctx.turn_emit),
+        Arc::clone(&ctx.ai_session_discover),
     );
     Ok(())
 }
@@ -592,6 +623,45 @@ pub fn frontend_ready_impl(ctx: &AppContext) -> bool {
 /// both restore and restart so the wording stays consistent.
 fn stale_worktree_message(path: &std::path::Path) -> String {
     format!("Worktree path is no longer available: {}", path.display())
+}
+
+/// Best-effort preflight check that the AI tool's transcript for
+/// `ai_session_id` still exists on disk. If it doesn't (user deleted it
+/// between launches, OS tmp clean, etc.), `restore_all_sessions` skips
+/// the `--resume` augmentation rather than handing the CLI a stale id
+/// that would error out before the user sees anything useful.
+///
+/// On any I/O failure we conservatively return `true` so the worst case
+/// is the CLI reports its own "no such session" error, which is no worse
+/// than today's behaviour.
+fn ai_session_transcript_exists(
+    tool: Tool,
+    worktree_path: &std::path::Path,
+    ai_session_id: &str,
+) -> bool {
+    let Some(home) = crate::session_metrics::home_dir() else {
+        return true;
+    };
+    let path = match tool {
+        Tool::Claude => home
+            .join(".claude")
+            .join("projects")
+            .join(crate::session_metrics::encode_cwd(worktree_path))
+            .join(format!("{ai_session_id}.jsonl")),
+        Tool::Copilot => home
+            .join(".copilot")
+            .join("session-state")
+            .join(ai_session_id),
+    };
+    // `try_exists` distinguishes "definitely missing" from "couldn't tell"
+    // (e.g. permission denied on a parent dir). `Path::is_file`/`is_dir`
+    // would conflate both as `false`, which would silently strip a valid
+    // `--resume` whenever the home dir is briefly unreadable.
+    match path.try_exists() {
+        Ok(true) => true,
+        Ok(false) => false,
+        Err(_) => true,
+    }
 }
 
 /// Re-spawn every persisted session. Called once after the frontend signals
@@ -644,7 +714,46 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         }
         (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
-        match ctx.pool.respawn_existing(&session, ctx.sink.clone()) {
+        // AI-session resume — DESIGN §5.5. Augment composed_command with
+        // `--resume <ai_session_id>` so the underlying CLI continues the
+        // prior conversation. We *augment*, never *recompose from inputs*
+        // (DESIGN §5.4 still holds for the persisted record). We only
+        // resume on app-restart restore — user-initiated `session_restart`
+        // intentionally launches a fresh CLI conversation.
+        //
+        // Known limitation (ROADMAP §4.5): for Claude, the `ai_session_id`
+        // is discovered heuristically from the newest JSONL in the project
+        // dir post-spawn. If two Arborist sessions share the same worktree
+        // (same `<encoded-cwd>`), the watchers can converge on the same
+        // file and persist the same id for both. On restart, both sessions
+        // would then try to `--resume` the same Claude conversation; only
+        // one resumes faithfully and the other will see Claude's own "no
+        // such session" / "conversation in use" error in its terminal.
+        // The fix is a hook-driven session-id source (tracked in #4); the
+        // single-session-per-worktree case (the common one) is unaffected.
+        // Copilot is not affected — its OTel file is per-Arborist-session,
+        // so `gen_ai.conversation.id` is unambiguous.
+        let mut session_to_spawn = session.clone();
+        if let Some(aid) = session.ai_session_id.as_deref() {
+            if ai_session_transcript_exists(session.tool, &session.worktree_path, aid) {
+                session_to_spawn.composed_command =
+                    compose::with_resume(&session.composed_command, session.tool, aid);
+            } else {
+                // Transcript was deleted between launches. Drop the stored
+                // id so we don't keep trying to resume it, and start fresh.
+                warn!(
+                    session_id = %id,
+                    ai_session_id = %aid,
+                    "restore: AI transcript missing on disk; starting fresh conversation",
+                );
+                let _ = ctx.store.update_session_ai_session_id(&id, None);
+            }
+        }
+
+        match ctx
+            .pool
+            .respawn_existing(&session_to_spawn, ctx.sink.clone())
+        {
             Ok(pid) => {
                 info!(session_id = %id, pid, "restored session");
                 // Issue #3: spin up the metrics watcher for restored sessions
@@ -657,6 +766,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                     SystemTime::now(),
                     Arc::clone(&ctx.metrics_emit),
                     Arc::clone(&ctx.turn_emit),
+                    Arc::clone(&ctx.ai_session_discover),
                 );
             }
             Err(e) => {
