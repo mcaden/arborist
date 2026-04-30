@@ -147,6 +147,35 @@ function createEntry(sessionId: SessionId): RegistryEntry {
     });
   });
 
+  // Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a plain
+  // `\r` for both Enter and Shift+Enter, which CLIs like Claude Code and
+  // GitHub Copilot CLI interpret as "submit". The de-facto convention
+  // (matching what `claude /terminal-setup` configures in iTerm2) is to
+  // send ESC-prefixed CR for "newline without submit". We intercept at
+  // the DOM keydown level so xterm never sees the event and therefore
+  // never emits its own `\r`.
+  term.attachCustomKeyEventHandler((event) => {
+    // Skip IME composition: Enter/Shift+Enter during candidate selection
+    // belongs to the IME, not to the terminal. `keyCode === 229` is the
+    // legacy Chromium/WebView signal for "still composing".
+    if (event.isComposing || event.keyCode === 229) return true;
+    if (
+      event.type === 'keydown' &&
+      event.key === 'Enter' &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey
+    ) {
+      void sessionInput({ sessionId, data: '\x1b\r' }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[use-terminal] session_input(${sessionId}) failed: ${message}`);
+      });
+      return false;
+    }
+    return true;
+  });
+
   return {
     term,
     fitAddon,

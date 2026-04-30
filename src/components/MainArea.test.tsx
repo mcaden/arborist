@@ -10,6 +10,7 @@ const mockTerminals: Array<{
   focus: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
+  attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
 }> = [];
@@ -23,6 +24,7 @@ vi.mock('@xterm/xterm', () => {
       focus: vi.fn(),
       dispose: vi.fn(),
       loadAddon: vi.fn(),
+      attachCustomKeyEventHandler: vi.fn(),
       cols: 80,
       rows: 24,
     };

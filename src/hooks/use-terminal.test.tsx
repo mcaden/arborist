@@ -13,9 +13,11 @@ const mockTerminals: Array<{
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
+  attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
+  _keyHandler?: (event: KeyboardEvent) => boolean;
 }> = [];
 
 vi.mock('@xterm/xterm', () => {
@@ -28,11 +30,15 @@ vi.mock('@xterm/xterm', () => {
       dispose: vi.fn(),
       loadAddon: vi.fn(),
       refresh: vi.fn(),
+      attachCustomKeyEventHandler: vi.fn(),
       cols: 80,
       rows: 24,
     };
     inst.onData.mockImplementation((cb: (data: string) => void) => {
       inst._dataCb = cb;
+    });
+    inst.attachCustomKeyEventHandler.mockImplementation((cb: (event: KeyboardEvent) => boolean) => {
+      inst._keyHandler = cb;
     });
     mockTerminals.push(inst);
     return inst;
@@ -129,6 +135,102 @@ describe('useTerminal', () => {
     const cb = mockTerminals[0]!._dataCb!;
     act(() => cb('hello'));
     expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: 'hello' });
+  });
+
+  it('Shift+Enter sends ESC+CR via sessionInput and suppresses xterm default', () => {
+    renderHook(() => useTerminal('s1'));
+    const handler = mockTerminals[0]!._keyHandler!;
+    expect(handler).toBeTypeOf('function');
+    const evt = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+    } as unknown as KeyboardEvent;
+    const result = handler(evt);
+    expect(result).toBe(false);
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\r' });
+  });
+
+  it('plain Enter is left to xterm default (handler returns true)', () => {
+    renderHook(() => useTerminal('s1'));
+    const handler = mockTerminals[0]!._keyHandler!;
+    const evt = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+    } as unknown as KeyboardEvent;
+    expect(handler(evt)).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Shift+Enter keyup is ignored (handler returns true, no input sent)', () => {
+    renderHook(() => useTerminal('s1'));
+    const handler = mockTerminals[0]!._keyHandler!;
+    const evt = {
+      type: 'keyup',
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+    } as unknown as KeyboardEvent;
+    expect(handler(evt)).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Shift+Enter during IME composition is left to the IME', () => {
+    renderHook(() => useTerminal('s1'));
+    const handler = mockTerminals[0]!._keyHandler!;
+    const evt = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      isComposing: true,
+      keyCode: 13,
+    } as unknown as KeyboardEvent;
+    expect(handler(evt)).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('legacy IME signal (keyCode 229) is left untouched', () => {
+    renderHook(() => useTerminal('s1'));
+    const handler = mockTerminals[0]!._keyHandler!;
+    const evt = {
+      type: 'keydown',
+      key: 'Process',
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      isComposing: false,
+      keyCode: 229,
+    } as unknown as KeyboardEvent;
+    expect(handler(evt)).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+Shift+Enter is not intercepted (other shortcuts unaffected)', () => {
+    renderHook(() => useTerminal('s1'));
+    const handler = mockTerminals[0]!._keyHandler!;
+    const evt = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+      altKey: false,
+      metaKey: false,
+    } as unknown as KeyboardEvent;
+    expect(handler(evt)).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
   });
 
   it('routes session://output events to the matching Terminal', async () => {
