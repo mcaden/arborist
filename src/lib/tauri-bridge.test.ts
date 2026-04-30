@@ -68,6 +68,8 @@ describe('sessionCreate', () => {
       tool: 'claude' as const,
       worktreePath: '/repo/feat',
       instructionSetId: 'claude-default',
+      cols: 100,
+      rows: 30,
     };
 
     const result = await bridge.sessionCreate(args);
@@ -90,12 +92,18 @@ describe('session id-only commands', () => {
   it.each([
     ['sessionClose', 'session_close'],
     ['sessionFocus', 'session_focus'],
-    ['sessionRestart', 'session_restart'],
   ] as const)('%s wraps args under `args`', async (fn, command) => {
     invokeMock.mockResolvedValueOnce(undefined);
     const args = { sessionId: 'sid-1' };
     await (bridge[fn] as (a: { sessionId: string }) => Promise<void>)(args);
     expect(invokeMock).toHaveBeenCalledWith(command, { args });
+  });
+
+  it('sessionRestart wraps {sessionId, cols, rows} under `args`', async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    const args = { sessionId: 'sid-1', cols: 120, rows: 40 };
+    await bridge.sessionRestart(args);
+    expect(invokeMock).toHaveBeenCalledWith('session_restart', { args });
   });
 });
 

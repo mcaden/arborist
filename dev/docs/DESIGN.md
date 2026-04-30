@@ -178,7 +178,7 @@ User clicks [+]
           list, so the manual "Browse…" button (powered by
           `tauri-plugin-dialog`) is always available.
   → User optionally selects instruction set (default pre-selected)
-  → Frontend invokes Tauri command: session_create { tool, worktreePath } (instructionSetId is optional and currently never sent by the new-session wizard)
+  → Frontend invokes Tauri command: session_create { tool, worktreePath, cols, rows } (instructionSetId is optional and currently never sent by the new-session wizard; cols/rows are measured from the host before invocation, see §5.5b)
   → Rust backend:
       1. Creates Session record; assigns label — appends " N" suffix if a session
          with the same tool + worktreePath already exists (e.g., "my-feature 2")
@@ -243,7 +243,7 @@ PTY process exits with non-zero code
       2. Displays error overlay in terminal area with a "Restart" button
 
 User clicks "Restart"
-  → Frontend invokes Tauri command: session_restart { sessionId }
+  → Frontend invokes Tauri command: session_restart { sessionId, cols, rows }
   → Rust backend:
       1. Re-spawns PTY using stored Session.composedCommand and Session.worktreePath
       2. Records new pid on Session; sets status → 'starting'
@@ -275,39 +275,82 @@ App.tsx mounts (frontend)
                                      below)
   → initTerminalRouter()            (attaches global session://output)
   → subscribeToStatus()             (attaches global session://status)
-  → frontendReady()                 (one-shot CAS on the backend)
-       └─ backend kicks off restore_all_sessions on a blocking thread:
+  → frontendReady()                 (one-shot CAS on the backend; awaits restore registration before resolving)
+       └─ backend dispatches restore_all_sessions to a blocking thread
+          and *awaits* its completion before frontend_ready returns:
            for each persisted Session in tabOrder order it
              1. (re-)materialises any persisted temp_files,
              2. flips the persisted status to Starting and emits
                 session://status,
-             3. calls pty_pool::respawn_existing using the stored
-                composedCommand and worktreePath; if Session.aiSessionId
-                is set and the underlying transcript still exists on disk
+             3. registers the (possibly AI-resume-augmented) Session
+                in the backend's `pending_spawn` claim map. The actual
+                PTY spawn is deferred until the frontend issues its
+                first `session_resize` for that session id (see §5.5b).
+                If Session.aiSessionId is set and the underlying
+                transcript still exists on disk
                 (`~/.claude/projects/<encoded-cwd>/<id>.jsonl` for Claude,
-                `~/.copilot/session-state/<id>/` for Copilot), the spawn
-                command is *augmented* (not recomposed) by appending
-                `--resume <quoted-id>` to the trailing CLI invocation so
-                the AI conversation continues across the restart. The
-                persisted Session.composedCommand is never mutated by
-                this augmentation. The wait thread later flips the
-                status to Running / Exited / Error as the child reports.
-           Spawn or temp-file failures map per-session to Error and
-           never abort the loop.
+                `~/.copilot/session-state/<id>/` for Copilot), the
+                stored composedCommand is *augmented* (not recomposed)
+                with `--resume <quoted-id>` on the spawn-time copy only.
+                The persisted Session.composedCommand is never mutated.
+           Temp-file or status-update failures map per-session to Error
+           and never abort the loop. Awaiting restore creates the
+           happens-before edge that the frontend's first
+           `session_resize` (issued synchronously by `attachToHost`
+           → `refitEntry` once `setStatus('ready')` triggers MainArea
+           to mount) needs in order to find the pending entry.
   → first session in tabOrder remains the active session
 ```
 
 This ordering guarantees:
 
-- The window is interactive within the SPEC NF-03 startup budget,
-  regardless of how slow individual sessions are to start (restore is
-  fire-and-forget from the frontend's perspective).
+- The window is interactive within the SPEC NF-03 startup budget. Restore
+  registration is bounded — disk IO + HashMap inserts only — so awaiting
+  it does not blow the budget.
 - `session://output` and `session://status` listeners are attached
   *before* any spawn happens, so early output and status events cannot
   be lost.
 - Restore is driven by the Rust backend (`restore_all_sessions`), not by
   re-invoking `session_create` from the frontend — the frontend never
   has to reconstruct a `composedCommand`.
+- The PTY child's first paint (splash, prompt) sees the actual host
+  cols/rows the user will see, not the historical 80×24 default — see
+  §5.5b for the deferred-spawn rationale.
+
+
+### 5.5b Deferred-spawn-on-first-resize (avoiding the splash-too-narrow bug)
+
+A pre-fix bug: every PTY was opened at a hardcoded 80×24 default, even
+on hosts that ended up rendering at e.g. 114 cols. The CLI's first paint
+(splash, first prompt) was drawn at 80 cols and sat permanently in
+xterm's scrollback at the wrong layout — Copilot's splash logo broke
+visibly, prompt input columns drifted, etc.
+
+The fix plumbs the host's actual cols/rows into the spawn at every
+entrypoint:
+
+- **`session_create`** and **`session_restart`**: the frontend measures
+  its host *before* invoking the command (`measureInitialPtyDimensions`
+  in `src/hooks/use-terminal.ts`) and passes `cols`/`rows` in the args.
+  The backend forwards the same `PtySize` straight to
+  `PtySpawner::spawn` — no default fallback in the live spawn path.
+- **`restore_all_sessions`**: the host doesn't yet exist when restore
+  runs (the frontend hasn't laid out MainArea), so the spawn is
+  *deferred*. Restore registers the prepared `Session` (already
+  AI-resume-augmented if applicable) in `pending_spawn`. The first
+  `session_resize` for that session id atomically `remove()`s the entry,
+  spawns at the resize's `PtySize`, and starts the metrics watcher. A
+  later resize hits the regular `pool.resize` path.
+
+Race notes:
+- `frontend_ready` awaits restore completion before resolving, so the
+  frontend's first synchronous `session_resize` (from `attachToHost` →
+  `refitEntry`) cannot lose the pending entry.
+- A second resize that lands while the deferred spawn is still in flight
+  may transiently get `NotFound` from `pool.resize`. The frontend logs
+  and continues; the next ResizeObserver tick (debounced 50 ms) corrects.
+  The window is short enough that we accept it rather than complicate
+  the synchronisation further.
 
 
 ### 5.6 CLI Launch Commands
@@ -421,14 +464,14 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 
 | Command | Payload | Return | Description |
 |---------|---------|--------|-------------|
-| `session_create` | `{ tool, worktreePath, instructionSetId? }` | `SessionView` | Compose and spawn a new session. `instructionSetId` is optional; when omitted, Claude is launched without `--system-prompt` and the CLI relies on `cwd`-based discovery for repo instructions. |
+| `session_create` | `{ tool, worktreePath, instructionSetId?, cols, rows }` | `SessionView` | Compose and spawn a new session. `instructionSetId` is optional; when omitted, Claude is launched without `--system-prompt` and the CLI relies on `cwd`-based discovery for repo instructions. `cols`/`rows` are the frontend-measured initial PTY dimensions — required so the CLI's first paint matches the actual host width (see §5.5b). |
 | `session_list` | — | `SessionView[]` | Return all current sessions (without composedCommand/tempFiles) |
 | `session_close` | `{ sessionId, deleteWorktree? }` | `SessionCloseResult` | Terminate a session (after UI confirmation). When `deleteWorktree` is `true`, the backend additionally runs `git worktree remove --force <worktreePath>` after killing the PTY. Refuses to remove the configured `workspaceRoot` (main worktree), any path outside the workspace root, or a path still referenced by another live session. The session record + PTY are always torn down on success; if the worktree-remove step fails, the message is reported via `worktreeDeleteError` rather than as a hard error. |
 | `session_focus` | `{ sessionId }` | — | Mark session as active |
 | `session_resize` | `{ sessionId, cols, rows }` | — | Resize PTY |
 | `session_input` | `{ sessionId, data }` | — | Send keystrokes to PTY |
-| `session_restart` | `{ sessionId }` | — | Re-spawn a session using its stored `composedCommand` verbatim (DESIGN §5.4) |
-| `frontend_ready` | — | — | One-shot signal from the frontend after first paint; triggers restore-on-launch (re-spawns every session in `lastOpenSessions` via `respawn_existing`). Idempotent — subsequent calls are no-ops. |
+| `session_restart` | `{ sessionId, cols, rows }` | — | Re-spawn a session using its stored `composedCommand` verbatim (DESIGN §5.4). `cols`/`rows` are the frontend-measured current PTY dimensions so the new child paints at the right size from the first byte (see §5.5b). |
+| `frontend_ready` | — | — | One-shot signal from the frontend after first paint; **awaits** restore-on-launch completion so the frontend's first `session_resize` is guaranteed to find the pending session entry registered (see §5.5/§5.5b). Idempotent — subsequent calls are no-ops. |
 | `config_get` | — | `AppConfig` | Retrieve AppConfig |
 | `config_set` | `Partial<AppConfig>` | — | Update AppConfig (`activeSessionId` is tri-state: omit to leave alone, `null` to clear, value to set) |
 | `instructions_list` | — | `InstructionSet[]` | List available instruction sets from `instructionSetsDir` |
