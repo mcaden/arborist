@@ -51,10 +51,11 @@ export interface SessionCreateArgs {
   worktreePath: string;
   instructionSetId?: InstructionSetId;
   /**
-   * Initial PTY dimensions in character cells. Required so the CLI's first
-   * paint (e.g. a Claude/Copilot splash) is rendered at the actual host
-   * width — see DESIGN §5.1 step 4 and the regression in
-   * `tests/session_lifecycle_fake.rs::create_passes_initial_size_to_spawner`.
+   * Initial PTY dimensions in character cells. Required: the backend
+   * opens the child PTY at exactly this size so the CLI's first paint
+   * (e.g. a Claude/Copilot splash) renders at the host's actual width
+   * instead of the OS-default 80 cols. Frontend callers should derive
+   * these from `measureInitialPtyDimensions()` (see DESIGN §5.5b).
    *
    * MIRROR: `src-tauri/src/types.rs::SessionCreateArgs`.
    */

@@ -391,18 +391,67 @@ describe('initial PTY dimension helpers', () => {
     expect(getTerminalDimensions('s1')).toBeNull();
   });
 
-  it('measureInitialPtyDimensions reuses an attached terminal when present', () => {
+  it('measureInitialPtyDimensions reuses an attached, proven-fit terminal when present', () => {
     renderHook(() => useTerminal('s1'));
-    // Without an attach() the entry exists but `host` is null, so the
-    // helper falls through. Force-mark the terminal's measured cols/rows
-    // and attach a host so the registry-reuse branch is exercised.
+    // Force-mark the entry as both attached AND proven-fit (lastCols/Rows
+    // > 0 — the same gate getTerminalDimensions uses). Without
+    // lastCols/Rows the helper would correctly fall through to the DOM
+    // probe even though host is connected, since the terminal was never
+    // actually fit.
     const entry = __getTerminalRegistryForTests().get('s1')!;
     const host = document.createElement('div');
     document.body.appendChild(host);
-    (entry as unknown as { host: HTMLElement | null }).host = host;
-    mockTerminals[0]!.cols = 173;
-    mockTerminals[0]!.rows = 47;
+    type Mut = {
+      host: HTMLElement | null;
+      wrapper: HTMLElement | null;
+      lastCols: number;
+      lastRows: number;
+    };
+    const mut = entry as unknown as Mut;
+    mut.host = host;
+    // measureInitialPtyDimensions delegates to getTerminalDimensions,
+    // which checks `wrapper?.isConnected` not `host.isConnected`.
+    const wrapper = document.createElement('div');
+    host.appendChild(wrapper);
+    mut.wrapper = wrapper;
+    mut.lastCols = 173;
+    mut.lastRows = 47;
     expect(measureInitialPtyDimensions()).toEqual({ cols: 173, rows: 47 });
+  });
+
+  it('measureInitialPtyDimensions does NOT reuse a connected-but-unfitted entry (lastCols/Rows still 0)', () => {
+    // Regression for the "splash too narrow" risk that survived the
+    // first round of review fixes: an entry whose host is connected
+    // but whose first fitAddon.fit() threw (e.g. host was zero-size
+    // mid-transition) leaves lastCols/lastRows at 0 even though
+    // term.cols/rows still default to 80/24. Reusing those would feed
+    // 80x24 straight back into session_create — exactly the bug we're
+    // closing. The helper must skip the entry and fall through.
+    renderHook(() => useTerminal('s1'));
+    const entry = __getTerminalRegistryForTests().get('s1')!;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const wrapper = document.createElement('div');
+    host.appendChild(wrapper);
+    type Mut = {
+      host: HTMLElement | null;
+      wrapper: HTMLElement | null;
+      lastCols: number;
+      lastRows: number;
+    };
+    const mut = entry as unknown as Mut;
+    mut.host = host;
+    mut.wrapper = wrapper;
+    // term.cols/rows still default to 80/24 from the xterm mock (the
+    // exact OS-default we want to avoid leaking). lastCols/lastRows
+    // remain 0 — the proven-fit signal. No <main> in the DOM ⇒ helper
+    // must reach the FALLBACK branch instead of returning {80,24}.
+    expect(mockTerminals[0]!.cols).toBe(80);
+    expect(mockTerminals[0]!.rows).toBe(24);
+    expect(mut.lastCols).toBe(0);
+    expect(mut.lastRows).toBe(0);
+    expect(document.querySelector('main')).toBeNull();
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
   });
 
   it('measureInitialPtyDimensions ignores stale registry entries whose host is not connected', () => {

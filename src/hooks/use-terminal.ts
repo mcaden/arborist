@@ -477,9 +477,11 @@ export function getTerminalDimensions(sessionId: SessionId): InitialPtyDims | nu
  * so the CLI's first paint matches the eventual `fitAddon.fit()` size.
  *
  * Strategy, in order:
- *   1. Reuse any already-attached terminal's `cols`/`rows`. All sessions
- *      share the same `<main>` host, so cell metrics (and therefore
- *      cols/rows) are identical.
+ *   1. Reuse any *proven-fit* terminal's measured cols/rows (delegates
+ *      to [`getTerminalDimensions`], which gates on a successful fit
+ *      so the xterm 80×24 default never leaks out). All sessions share
+ *      the same `<main>` host, so cell metrics (and therefore cols/rows)
+ *      are identical between proven-fit entries.
  *   2. Fall back to a one-off DOM probe: measure a hidden monospace
  *      `<span>` for cell-width × cell-height and divide the `<main>`
  *      element's rect (minus `TerminalView`'s 8-px padding) by it.
@@ -487,19 +489,18 @@ export function getTerminalDimensions(sessionId: SessionId): InitialPtyDims | nu
  *      probe failure), return [`FALLBACK_PTY_DIMS`].
  */
 export function measureInitialPtyDimensions(): InitialPtyDims {
-  for (const entry of registry.values()) {
-    // Require an *attached and connected* host: a stale registry entry
-    // whose host has been detached (e.g. a session whose
-    // `TerminalView` has unmounted but the dispose subscription
-    // hasn't fired yet) would happily pass the truthy-`host` check
-    // and could hand back stale cols/rows from the previous parent's
-    // size. The cell metrics still match — every host shares the
-    // same `<main>` font — but cols/rows reflect the OLD host, which
-    // can be wrong if the layout has changed since.
-    const host = entry.host;
-    if (host !== null && host.isConnected && entry.term.cols > 0 && entry.term.rows > 0) {
-      return { cols: entry.term.cols, rows: entry.term.rows };
-    }
+  // Reuse fast-path: any *proven-fit* terminal entry. We delegate to
+  // `getTerminalDimensions`, which gates on `wrapper.isConnected` AND
+  // `entry.lastCols/lastRows > 0`. A plain `entry.term.cols/rows`
+  // check here would silently hand back the xterm 80×24 default for
+  // an entry whose host is connected but currently zero-size (so its
+  // first `fitAddon.fit()` threw and `lastCols/lastRows` stayed 0) —
+  // exactly the splash-too-narrow regression we're guarding against.
+  // Cell metrics are identical across entries (all share the same
+  // `<main>` font), so any proven-fit entry is as good as another.
+  for (const id of registry.keys()) {
+    const dims = getTerminalDimensions(id);
+    if (dims !== null) return dims;
   }
 
   if (typeof document === 'undefined') {
