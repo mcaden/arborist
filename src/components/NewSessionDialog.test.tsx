@@ -249,6 +249,43 @@ describe('NewSessionDialog', () => {
     expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
   });
 
+  it('exposes the retry button immediately after session-create failure even if worktreesList is slow', async () => {
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+    });
+    bridgeMock.sessionCreate.mockRejectedValue(new Error('spawn failed'));
+    // Hold the post-failure worktreesList refresh pending — the user must
+    // not be made to wait on it before they can retry.
+    let resolveList: (value: WorktreeInfo[]) => void = () => {};
+    bridgeMock.worktreesList.mockImplementation(
+      () =>
+        new Promise<WorktreeInfo[]>((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+    fireEvent.change(input, { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    // The Existing-mode retry button is enabled and the New-mode "Creating…"
+    // affordance is gone, even though worktreesList hasn't resolved yet.
+    const retry = await screen.findByRole('button', { name: /^create session$/i });
+    expect(retry).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /^create worktree & session$/i })).toBeNull();
+
+    // Background list refresh eventually resolves; nothing should explode.
+    act(() => {
+      resolveList([]);
+    });
+  });
+
   it('does not expose the Existing-mode "Create session" button while the chained session-create is in flight', async () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({

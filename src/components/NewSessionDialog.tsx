@@ -237,16 +237,20 @@ export function NewSessionDialog(): JSX.Element | null {
         close();
       } catch (sessionErr) {
         setSubmitError(formatError(sessionErr));
+        // Switch to the Existing tab and surface the retry button immediately
+        // — don't make the user wait on a worktree listing refresh before they
+        // can react to the failure. The list refresh runs in the background.
+        setWorktreeMode('existing');
         if (workspaceRoot !== null && workspaceRoot.length > 0) {
           const root = workspaceRoot;
-          try {
-            const list = await worktreesList(root);
-            setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
-          } catch {
-            // Listing failure is non-fatal; the selection above is enough.
-          }
+          void worktreesList(root)
+            .then((list) => {
+              setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
+            })
+            .catch(() => {
+              // Listing failure is non-fatal; the selection above is enough.
+            });
         }
-        setWorktreeMode('existing');
         // Move focus to the now-visible "Create session" button so keyboard
         // and screen-reader users land on the retry action rather than on
         // the body/document after the New-mode button unmounts.
