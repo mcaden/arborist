@@ -8,6 +8,20 @@ A cross-platform desktop app (Tauri v2 + React/TypeScript) that manages multiple
 
 Authoritative specs: `dev/docs/SPEC.md` (requirements), `dev/docs/DESIGN.md` (architecture + data model + command/event API). Engineering conventions live in `.github/copilot-instructions.md`. Read those before proposing structural changes.
 
+## Dogfooding safety — don't kill the host
+
+This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or `arborist` on macOS/Linux) and you, the agent, are executing inside one of its PTY sessions. Killing the host crashes the user's editor and every sibling session, including yours. **A previous agent killed the host this way — do not repeat it.**
+
+Hard rules:
+
+- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `npm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
+- **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host.
+- **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
+- If `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
+- Do not run `npm run tauri:dev` or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `npm run build`, or `npm test -- --run` for verification instead.
+
+If a task genuinely requires restarting the host, ask the user to do it — never do it yourself.
+
 ## Stack
 
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS (class dark-mode strategy), Zustand, xterm.js
