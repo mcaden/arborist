@@ -57,7 +57,7 @@ export function CloseConfirmDialog(): JSX.Element | null {
     } catch (error: unknown) {
       const detail =
         error instanceof Error && error.message.length > 0 ? error.message : String(error);
-      alertMessage = `Failed to terminate session:\n\n${detail}`;
+      alertMessage = `Close request failed (the session may already be terminated):\n\n${detail}`;
     } finally {
       actions.cancelClose();
     }
