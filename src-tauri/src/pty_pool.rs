@@ -146,6 +146,9 @@ pub trait PtyKiller: Send + Sync {
 // Production spawner (portable-pty)
 // ---------------------------------------------------------------------------
 
+/// The reserved env-var namespace prefix for Arborist's own build/dev tooling.
+const ARBORIST_ENV_PREFIX: &str = "ARBORIST_";
+
 /// Strip every `ARBORIST_*` env var from the inherited environment of `builder`.
 ///
 /// `portable_pty::CommandBuilder` snapshots the current process env at
@@ -155,6 +158,13 @@ pub trait PtyKiller: Send + Sync {
 /// Arborist's own build/dev tooling (e.g. `ARBORIST_BUILD_BRANCH` from
 /// build.rs, `ARBORIST_DEV_PORT` from `scripts/tauri-dev.mjs`) and must
 /// never leak into the user shells we spawn.
+///
+/// Prefix matching is **case-insensitive** (ASCII): on Windows env-var names
+/// are themselves case-insensitive, so a stray `Arborist_Dev_Port` set by an
+/// outer shell is the same variable as `ARBORIST_DEV_PORT` and must be
+/// stripped too. On Unix the names are technically distinct but the prefix
+/// is by convention reserved regardless of case, so this is also defensible
+/// (and safer than surprising callers with platform-divergent behaviour).
 fn strip_arborist_env_keys<I, K>(builder: &mut CommandBuilder, keys: I)
 where
     I: IntoIterator<Item = K>,
@@ -162,7 +172,10 @@ where
 {
     for k in keys {
         if let Some(s) = k.as_ref().to_str() {
-            if s.starts_with("ARBORIST_") {
+            if s.len() >= ARBORIST_ENV_PREFIX.len()
+                && s.as_bytes()[..ARBORIST_ENV_PREFIX.len()]
+                    .eq_ignore_ascii_case(ARBORIST_ENV_PREFIX.as_bytes())
+            {
                 builder.env_remove(k.as_ref());
             }
         }
@@ -1100,7 +1113,9 @@ mod tests {
     }
 
     /// Build a probe builder seeded with the supplied env, then strip
-    /// `ARBORIST_*` keys and return the remaining keys.
+    /// `ARBORIST_*` keys and return the remaining keys. Mirrors production
+    /// by feeding the strip helper an iterator of owned `OsString`s — the
+    /// same shape `std::env::vars_os()` produces.
     fn keys_after_strip(seed: &[(&str, &str)], strip_keys: &[&str]) -> Vec<String> {
         let mut b = CommandBuilder::new("/bin/true");
         // Replace the auto-inherited env with a known-good set so the
@@ -1109,7 +1124,8 @@ mod tests {
         for (k, v) in seed {
             b.env(*k, *v);
         }
-        strip_arborist_env_keys(&mut b, strip_keys.iter().copied());
+        let owned: Vec<std::ffi::OsString> = strip_keys.iter().map(|s| (*s).into()).collect();
+        strip_arborist_env_keys(&mut b, owned);
         b.iter_full_env_as_str()
             .map(|(k, _)| k.to_string())
             .collect()
@@ -1128,26 +1144,84 @@ mod tests {
         );
         assert!(keys.iter().any(|k| k == "PATH"));
         assert!(keys.iter().any(|k| k == "HOME"));
-        assert!(!keys.iter().any(|k| k.starts_with("ARBORIST_")));
+        assert!(!keys
+            .iter()
+            .any(|k| k.to_ascii_uppercase().starts_with("ARBORIST_")));
     }
 
     #[test]
     fn strip_arborist_env_preserves_lookalike_keys() {
-        // Names that contain but don't start with the prefix must survive.
+        // Names that *contain* but don't *start with* the prefix must survive.
         let keys = keys_after_strip(
-            &[
-                ("MY_ARBORIST_VAR", "x"),
-                ("arborist_lower", "x"), // case-sensitive: must survive
-            ],
-            &["MY_ARBORIST_VAR", "arborist_lower"],
+            &[("MY_ARBORIST_VAR", "x"), ("ARBORISH_DEV", "x")],
+            &["MY_ARBORIST_VAR", "ARBORISH_DEV"],
         );
         assert!(keys.iter().any(|k| k == "MY_ARBORIST_VAR"));
-        assert!(keys.iter().any(|k| k == "arborist_lower"));
+        assert!(keys.iter().any(|k| k == "ARBORISH_DEV"));
+    }
+
+    #[test]
+    fn strip_arborist_env_is_case_insensitive() {
+        // On Windows env-var names are case-insensitive, so any casing of
+        // the prefix is the same variable and must be stripped. Unix
+        // matches the same behaviour for namespace-hygiene consistency.
+        let keys = keys_after_strip(
+            &[
+                ("Arborist_Build_Branch", "main"),
+                ("arborist_dev_port", "1494"),
+                ("ARBORIST_FOO", "x"),
+                ("PATH", "/usr/bin"),
+            ],
+            &[
+                "Arborist_Build_Branch",
+                "arborist_dev_port",
+                "ARBORIST_FOO",
+                "PATH",
+            ],
+        );
+        assert_eq!(keys, vec!["PATH".to_string()]);
+    }
+
+    #[test]
+    fn strip_arborist_env_ignores_short_or_empty_keys() {
+        // Keys shorter than the prefix can't match; ensure the length
+        // guard doesn't underflow / panic.
+        let keys = keys_after_strip(&[("AR", "x"), ("A", "y")], &["AR", "A"]);
+        assert!(keys.iter().any(|k| k == "AR"));
+        assert!(keys.iter().any(|k| k == "A"));
     }
 
     #[test]
     fn strip_arborist_env_is_noop_when_no_match() {
         let before = keys_after_strip(&[("PATH", "/usr/bin")], &["PATH"]);
         assert_eq!(before, vec!["PATH".to_string()]);
+    }
+
+    #[test]
+    fn strip_arborist_env_production_path_strips_real_env_var() {
+        // Exercise the production wrapper that reads `std::env::vars_os()`,
+        // ensuring the OsString-based iteration path actually removes a
+        // matching key from the resulting CommandBuilder. Use a
+        // unique-per-test key so concurrent tests can't false-positive
+        // (std::env mutations are process-global).
+        let key = "ARBORIST_TEST_PROBE_PRODUCTION_PATH_8C4A";
+        std::env::set_var(key, "1");
+        let mut b = CommandBuilder::new("/bin/true");
+        // Don't env_clear here — we need the inherited env to include our key.
+        strip_arborist_env(&mut b);
+        let remaining: Vec<String> = b
+            .iter_full_env_as_str()
+            .map(|(k, _)| k.to_string())
+            .collect();
+        // Cleanup before assertion so a failure doesn't leak into other tests.
+        std::env::remove_var(key);
+        assert!(
+            !remaining.iter().any(|k| k == key),
+            "production strip_arborist_env failed to remove {key} via vars_os(); remaining keys with ARBORIST prefix: {:?}",
+            remaining
+                .iter()
+                .filter(|k| k.to_ascii_uppercase().starts_with("ARBORIST_"))
+                .collect::<Vec<_>>()
+        );
     }
 }
