@@ -280,8 +280,9 @@ describe('NewSessionDialog', () => {
     expect(retry).toBeEnabled();
     expect(screen.queryByRole('button', { name: /^create worktree & session$/i })).toBeNull();
 
-    // Background list refresh eventually resolves; nothing should explode.
-    act(() => {
+    // Background list refresh eventually resolves; flush the resulting
+    // setState within act so React doesn't warn about updates outside act.
+    await act(async () => {
       resolveList([]);
     });
   });
