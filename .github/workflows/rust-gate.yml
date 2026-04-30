@@ -1,0 +1,59 @@
+name: Rust Gate
+
+# Dispatches `rust.yml` against the PR head branch when a reviewer approves
+# the PR. The dispatched run produces check_runs attached to the PR head
+# SHA, which is what makes branch protection able to require them.
+#
+# Pair this with branch protection rules:
+#   - "Dismiss stale pull request approvals when new commits are pushed"
+#     so that any push after approval drops the approval, requiring a fresh
+#     review (and therefore a fresh rust dispatch) against the new SHA.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  actions: write   # required for `gh workflow run` to create workflow_dispatch
+  contents: read
+
+jobs:
+  dispatch-rust:
+    # Skip non-approving reviews and fork PRs. Fork PRs are skipped because
+    # `pull_request.head.ref` is just the fork branch name (e.g., `patch-1`)
+    # and not a ref in this repository — `gh workflow run --ref` would
+    # either 404 or, worse, dispatch against an unrelated base-repo branch
+    # that happens to share the name.
+    if: >
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch Rust workflow against PR head branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # `--ref` targets the branch; the dispatched run picks up the tip of
+        # that branch. We log the SHA at approval time so a reviewer can
+        # confirm the run is against the commit they actually approved.
+        run: |
+          echo "Approved SHA: $PR_HEAD_SHA"
+          echo "Dispatching rust.yml against ref: $PR_HEAD_REF"
+          gh workflow run rust.yml --ref "$PR_HEAD_REF"
+
+  notify-fork-skip:
+    # Fork PRs cannot use the dispatch gate (see dispatch-rust comment).
+    # Surface this clearly so reviewers know to trigger rust.yml manually
+    # from the Actions tab against a maintainer-pushed mirror branch.
+    if: >
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log fork-PR skip
+        env:
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "::warning::Approving review on fork PR ($PR_HEAD_REPO:$PR_HEAD_REF) — rust.yml was NOT dispatched. A maintainer must push the PR head to a branch in this repo and trigger rust.yml manually via workflow_dispatch."
