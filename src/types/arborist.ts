@@ -42,6 +42,13 @@ export interface Session {
   createdAt: number;
   tabIndex: number;
   tempFiles: TempFileSpec[];
+  /**
+   * Most recently observed AI-side session id. When set, the backend
+   * augments the spawn command with `--resume <id>` on app-restart
+   * restore so the conversation continues. Backend-only — currently
+   * not exposed on `SessionView`.
+   */
+  aiSessionId?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::SessionView

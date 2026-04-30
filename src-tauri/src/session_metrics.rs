@@ -85,6 +85,17 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(2000);
 /// channel sender.
 pub type MetricsCb = Arc<dyn Fn(SessionMetricsEvent) + Send + Sync>;
 
+/// Callback the watcher invokes when it discovers (or learns of a change
+/// to) the AI-side session id for an Arborist session. Production wires
+/// this into `ConfigStore::update_session_ai_session_id` so the next
+/// app-restart restore can inject `--resume <id>` and continue the AI
+/// conversation. Tests substitute a capturing closure.
+///
+/// Idempotent: the watcher fires this on every detected change, but
+/// `update_session_ai_session_id` is a no-op when the value already
+/// matches.
+pub type AiSessionDiscoveryCb = Arc<dyn Fn(SessionId, String) + Send + Sync>;
+
 /// Per-session running watcher handle. Drop semantics: clearing the
 /// `running` flag stops the watcher thread on its next poll iteration; the
 /// thread's `JoinHandle` is detached so dropping the registry entry never
@@ -122,6 +133,7 @@ impl MetricsRegistry {
         cwd: PathBuf,
         spawn_instant: SystemTime,
         emit: MetricsCb,
+        discover: AiSessionDiscoveryCb,
     ) -> bool {
         // Stop any existing watcher first so the per-tool worker starts
         // from a clean slate (used by session restart).
@@ -145,6 +157,7 @@ impl MetricsRegistry {
                             cwd_for_thread,
                             spawn_instant,
                             emit,
+                            discover,
                             running_for_thread,
                         );
                     })
@@ -154,7 +167,13 @@ impl MetricsRegistry {
                 thread::Builder::new()
                     .name(format!("arborist-metrics-{}", session_id))
                     .spawn(move || {
-                        run_copilot_watcher(session_id, otel_path, emit, running_for_thread);
+                        run_copilot_watcher(
+                            session_id,
+                            otel_path,
+                            emit,
+                            discover,
+                            running_for_thread,
+                        );
                     })
             }
         };
@@ -210,6 +229,7 @@ fn run_claude_watcher(
     cwd: PathBuf,
     spawn_instant: SystemTime,
     emit: MetricsCb,
+    discover: AiSessionDiscoveryCb,
     running: Arc<AtomicBool>,
 ) {
     let project_dir = home.join(".claude").join("projects").join(encode_cwd(&cwd));
@@ -233,6 +253,13 @@ fn run_claude_watcher(
                 tracked_len = 0;
                 totals = TurnTotals::default();
                 last_model = None;
+                // The tracked file's stem is Claude's session id (the
+                // directory layout is `<encoded-cwd>/<sessionId>.jsonl`).
+                // Fire the AI-session discovery callback so the next
+                // app-restart restore can `--resume <id>`.
+                if let Some(stem) = c.file_stem().and_then(|s| s.to_str()) {
+                    discover(session_id, stem.to_owned());
+                }
             }
 
             if let Ok(meta) = std::fs::metadata(&c) {
@@ -285,11 +312,13 @@ fn run_copilot_watcher(
     session_id: SessionId,
     otel_path: PathBuf,
     emit: MetricsCb,
+    discover: AiSessionDiscoveryCb,
     running: Arc<AtomicBool>,
 ) {
     let mut state = CopilotState::default();
     let mut cursor: u64 = 0;
     let mut last_emitted: Option<SessionMetricsEvent> = None;
+    let mut last_announced_conversation: Option<String> = None;
 
     while running.load(Ordering::SeqCst) {
         if let Ok(meta) = std::fs::metadata(&otel_path) {
@@ -301,11 +330,25 @@ fn run_copilot_watcher(
                 cursor = 0;
                 state = CopilotState::default();
                 last_emitted = None;
+                last_announced_conversation = None;
             }
             if len > cursor {
                 cursor = tail_lines(&otel_path, cursor, len, |line| {
                     ingest_otel_line(line, &mut state);
                 });
+            }
+        }
+
+        // Surface the Copilot conversation id as soon as we see it. The
+        // OTel file is per-Arborist-session (controlled by `env_for_tool`
+        // via `COPILOT_OTEL_FILE_EXPORTER_PATH`), so this is unambiguous
+        // even when multiple Copilot sessions run concurrently — unlike
+        // a directory-scan of `~/.copilot/session-state/`. Fire only on
+        // change to keep the per-poll work cheap.
+        if let Some(conv) = state.conversation_id.as_ref() {
+            if last_announced_conversation.as_ref() != Some(conv) {
+                discover(session_id, conv.clone());
+                last_announced_conversation = Some(conv.clone());
             }
         }
 
@@ -668,6 +711,11 @@ pub(crate) struct CopilotState {
     /// the conversational context the agent had in front of it at the
     /// moment of the span. Drives the sidebar's "context % used".
     current_tokens: Option<u64>,
+    /// Copilot's conversation/session id (`gen_ai.conversation.id`),
+    /// matching the directory name under `~/.copilot/session-state/<id>/`
+    /// and accepted by `copilot --resume <id>`. Captured for AI-session
+    /// discovery; not part of the metrics snapshot.
+    pub(crate) conversation_id: Option<String>,
     /// True once at least one chat span has been ingested.
     seen: bool,
 }
@@ -764,6 +812,15 @@ pub(crate) fn ingest_otel_line(line: &[u8], state: &mut CopilotState) {
         })
     {
         state.last_model = Some(model.to_owned());
+    }
+
+    if let Some(conv) = attrs
+        .and_then(|a| a.get("gen_ai.conversation.id"))
+        .and_then(|v| v.as_str())
+    {
+        if !conv.is_empty() {
+            state.conversation_id = Some(conv.to_owned());
+        }
     }
 
     if let Some(events) = outer.events.as_ref() {
@@ -1006,6 +1063,7 @@ mod tests {
             PathBuf::from("/tmp"),
             SystemTime::now(),
             cb,
+            Arc::new(|_, _| {}),
         );
         assert!(started, "Copilot watcher must start");
         assert!(
@@ -1081,6 +1139,28 @@ mod tests {
         assert_eq!(state.last_model.as_deref(), Some("claude-opus-4.7"));
         assert_eq!(state.token_limit, Some(168_000));
         assert_eq!(state.current_tokens, Some(29_461));
+    }
+
+    #[test]
+    fn ingest_otel_chat_span_extracts_conversation_id() {
+        // The chat span carries `gen_ai.conversation.id` — that's the
+        // Copilot session id we feed back into `--resume`.
+        let chat_line = fixture_lines()
+            .into_iter()
+            .find(|l| {
+                std::str::from_utf8(l)
+                    .unwrap_or("")
+                    .contains(r#""name":"chat "#)
+            })
+            .expect("chat span in fixture");
+        let mut state = CopilotState::default();
+        ingest_otel_line(chat_line, &mut state);
+        assert!(
+            state.conversation_id.is_some(),
+            "chat span must populate conversation_id",
+        );
+        let id = state.conversation_id.as_deref().expect("present");
+        assert!(!id.is_empty(), "conversation id must be non-empty");
     }
 
     #[test]
@@ -1234,7 +1314,13 @@ mod tests {
         });
         let path_for_thread = path.clone();
         let handle = std::thread::spawn(move || {
-            run_copilot_watcher(session_id, path_for_thread, cb, running_for_thread);
+            run_copilot_watcher(
+                session_id,
+                path_for_thread,
+                cb,
+                Arc::new(|_, _| {}),
+                running_for_thread,
+            );
         });
 
         // Append the fixture (one chat span + invoke_agent + metrics) and
@@ -1271,7 +1357,13 @@ mod tests {
         });
         let path_for_thread = path.clone();
         let handle = std::thread::spawn(move || {
-            run_copilot_watcher(session_id, path_for_thread, cb, running_for_thread);
+            run_copilot_watcher(
+                session_id,
+                path_for_thread,
+                cb,
+                Arc::new(|_, _| {}),
+                running_for_thread,
+            );
         });
 
         // 1) Initial usage from the full fixture.
@@ -1476,6 +1568,7 @@ mod tests {
                 cwd_for_thread,
                 spawn_instant,
                 cb,
+                Arc::new(|_, _| {}),
                 running_for_thread,
             );
         });

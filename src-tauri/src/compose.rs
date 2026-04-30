@@ -296,6 +296,29 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
     }
 }
 
+/// Augment a stored `composed_command` with `--resume <ai_session_id>` so
+/// the AI conversation continues across an app restart. Used by
+/// `restore_all_sessions`; **not** by `session_create` (which has no AI
+/// id yet) and **not** by user-initiated `session_restart` (DESIGN §5.4 —
+/// restart is fresh from the user's POV).
+///
+/// We append at the end of the command rather than parse and re-emit the
+/// CLI invocation. Both `claude` and `copilot` accept positional flags
+/// in any order, and the trailing token of `composed_command` is always
+/// the CLI invocation (DESIGN §5.6 step 3 — `[prelaunch && ]<cli>`),
+/// so appending binds correctly even when the user has prelaunch hooks
+/// that themselves contain `&&` inside quoted strings.
+///
+/// `ai_session_id` is shell-quoted using the host quoter; in practice
+/// CLI session ids are UUIDs, but defensive quoting keeps a future
+/// non-UUID id (e.g. Copilot's session-by-name resume) from corrupting
+/// the command.
+#[must_use]
+pub fn with_resume(composed_command: &str, _tool: Tool, ai_session_id: &str) -> String {
+    let quoter = platform_shell().quoter;
+    format!("{composed_command} --resume {}", quoter(ai_session_id))
+}
+
 // ---------------------------------------------------------------------------
 // Shell quoting
 // ---------------------------------------------------------------------------
@@ -766,6 +789,45 @@ mod tests {
         // pre-removal behaviour where we used to interpolate the path into
         // a quoted `--interactive` argument.
         assert_eq!(r.composed_command, "copilot");
+    }
+
+    // -- with_resume ----------------------------------------------------
+
+    #[test]
+    fn with_resume_appends_quoted_id_to_bare_claude() {
+        let out = with_resume("claude", Tool::Claude, "abc-123");
+        assert_eq!(out, format!("claude --resume {}", host_quote("abc-123")));
+    }
+
+    #[test]
+    fn with_resume_appends_after_system_prompt() {
+        let base = "claude --system-prompt /tmp/x.txt";
+        let out = with_resume(base, Tool::Claude, "uuid-1");
+        assert_eq!(
+            out,
+            format!("{base} --resume {}", host_quote("uuid-1")),
+            "resume must be appended after existing flags"
+        );
+    }
+
+    #[test]
+    fn with_resume_keeps_prelaunch_chain_intact() {
+        // Prelaunch commands chained via && precede the CLI invocation.
+        // Appending --resume at the end binds to the trailing CLI token.
+        let base = "echo hi && nvm use 20 && copilot";
+        let out = with_resume(base, Tool::Copilot, "sess-9");
+        assert_eq!(out, format!("{base} --resume {}", host_quote("sess-9")));
+    }
+
+    #[test]
+    fn with_resume_quotes_ids_with_shell_metachars() {
+        // Defensive: a future name-based resume id must not corrupt the
+        // command. The host quoter should fully escape it.
+        let nasty = "id with space&danger";
+        let out = with_resume("claude", Tool::Claude, nasty);
+        assert_eq!(out, format!("claude --resume {}", host_quote(nasty)));
+        // Extra sanity: the raw id substring must not appear unquoted.
+        assert!(!out.ends_with(nasty));
     }
 
     // -- POSIX quoting --------------------------------------------------

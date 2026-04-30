@@ -125,6 +125,7 @@ pub fn run() {
             )));
             let sink = commands::build_production_sink(app.handle().clone(), store.clone());
             let metrics_emit = commands::build_production_metrics_emit(app.handle().clone());
+            let ai_session_discover = commands::build_production_ai_session_discover(store.clone());
             let git_runner: std::sync::Arc<dyn git::GitRunner> =
                 std::sync::Arc::new(git::RealGitRunner);
             let ctx = std::sync::Arc::new(commands::AppContext::new(
@@ -133,6 +134,7 @@ pub fn run() {
                 sink,
                 git_runner,
                 metrics_emit,
+                ai_session_discover,
             ));
             app.manage(ctx);
             Ok(())

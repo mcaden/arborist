@@ -44,6 +44,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::NamedTempFile;
@@ -67,9 +68,19 @@ pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 /// Handle to the on-disk store directory. Cheap to construct and clone.
+///
+/// All write paths (`save_config`, `save_session`, `remove_session`,
+/// `update_session_status`, `update_session_ai_session_id`) are
+/// serialized through a process-wide mutex shared by clones of the same
+/// handle. Without this, load-modify-write paths called from different
+/// threads (e.g. the PTY wait thread updating `status` while a metrics
+/// watcher updates `ai_session_id`) would race and silently lose
+/// updates. Atomic file writes alone protect against torn files but
+/// not against lost updates.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     dir: PathBuf,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl ConfigStore {
@@ -78,7 +89,10 @@ impl ConfigStore {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, Error> {
         let dir = dir.into();
         fs::create_dir_all(&dir).map_err(Error::Io)?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            write_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     /// Filesystem directory backing this store. Mostly useful for tests and
@@ -209,6 +223,7 @@ impl ConfigStore {
     /// are canonicalized; keys that fail canonicalization are dropped with a
     /// warning rather than poisoning the whole call.
     pub fn save_config(&self, patch: PartialAppConfig) -> Result<AppConfig, Error> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = self.load_config();
         merge_partial(&mut cfg, patch)?;
         cfg.config_version = CONFIG_VERSION_CURRENT;
@@ -257,6 +272,7 @@ impl ConfigStore {
 
     /// Persist a single session record (insert-or-replace).
     pub fn save_session(&self, session: &Session) -> Result<(), Error> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
         all.insert(session.id, session.clone());
         write_atomic(&self.sessions_path(), &all)
@@ -264,6 +280,7 @@ impl ConfigStore {
 
     /// Remove a session record by ID. Missing IDs are a no-op success.
     pub fn remove_session(&self, id: &SessionId) -> Result<(), Error> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
         if all.remove(id).is_none() {
             return Ok(());
@@ -280,6 +297,7 @@ impl ConfigStore {
         status: SessionStatus,
         pid: Option<u32>,
     ) -> Result<(), Error> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
         let Some(session) = all.get_mut(id) else {
             return Err(Error::NotFound(format!("session {id} not found")));
@@ -287,6 +305,30 @@ impl ConfigStore {
         session.status = status;
         session.pid = pid;
         write_atomic(&self.sessions_path(), &all)
+    }
+
+    /// Mutate the persisted `ai_session_id` of a session record. Used by
+    /// the metrics watchers' discovery callback so app-restart restore
+    /// can resume the AI conversation. Returns `Ok(true)` when the value
+    /// changed (and was therefore persisted), `Ok(false)` when the value
+    /// was already current — the latter avoids a redundant disk write
+    /// every poll once the watcher has converged.
+    pub fn update_session_ai_session_id(
+        &self,
+        id: &SessionId,
+        ai_session_id: Option<String>,
+    ) -> Result<bool, Error> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = self.load_sessions();
+        let Some(session) = all.get_mut(id) else {
+            return Err(Error::NotFound(format!("session {id} not found")));
+        };
+        if session.ai_session_id == ai_session_id {
+            return Ok(false);
+        }
+        session.ai_session_id = ai_session_id;
+        write_atomic(&self.sessions_path(), &all)?;
+        Ok(true)
     }
 }
 
@@ -804,6 +846,7 @@ mod tests {
                 path: dir.join("sp.md"),
                 contents: "ctx".to_owned(),
             }],
+            ai_session_id: None,
         }
     }
 
@@ -1198,6 +1241,77 @@ mod tests {
             .update_session_status(&SessionId::new(), SessionStatus::Exited, None)
             .expect_err("must fail");
         assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    // ----- update_session_ai_session_id --------------------------------
+
+    #[test]
+    fn update_ai_session_id_persists_value() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let s = make_session(Uuid::new_v4(), "x", td.path());
+        store.save_session(&s).expect("save");
+
+        let changed = store
+            .update_session_ai_session_id(&s.id, Some("ai-123".to_owned()))
+            .expect("update");
+        assert!(changed, "first set must report a change");
+
+        let after = store.load_sessions();
+        assert_eq!(
+            after.get(&s.id).expect("present").ai_session_id.as_deref(),
+            Some("ai-123"),
+        );
+    }
+
+    #[test]
+    fn update_ai_session_id_is_idempotent() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let s = make_session(Uuid::new_v4(), "x", td.path());
+        store.save_session(&s).expect("save");
+
+        store
+            .update_session_ai_session_id(&s.id, Some("same".to_owned()))
+            .expect("first update");
+        let changed = store
+            .update_session_ai_session_id(&s.id, Some("same".to_owned()))
+            .expect("second update");
+        assert!(!changed, "no-op write must report no change");
+    }
+
+    #[test]
+    fn update_ai_session_id_returns_not_found_for_unknown_id() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let err = store
+            .update_session_ai_session_id(&SessionId::new(), Some("x".to_owned()))
+            .expect_err("must fail");
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn update_ai_session_id_can_clear_value() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let s = make_session(Uuid::new_v4(), "x", td.path());
+        store.save_session(&s).expect("save");
+
+        store
+            .update_session_ai_session_id(&s.id, Some("ai-1".to_owned()))
+            .expect("set");
+        let changed = store
+            .update_session_ai_session_id(&s.id, None)
+            .expect("clear");
+        assert!(changed);
+        assert_eq!(
+            store
+                .load_sessions()
+                .get(&s.id)
+                .expect("present")
+                .ai_session_id,
+            None,
+        );
     }
 
     // ----- Copilot composed_command migration --------------------------

@@ -268,6 +268,33 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_me
     })
 }
 
+/// Production AI-session discovery callback. Persists the discovered AI
+/// session id on the matching `Session` record so the next app-restart
+/// restore can `--resume <id>` and continue the conversation.
+///
+/// Errors are intentionally swallowed (with a debug log) — discovery is
+/// a best-effort signal that fires every metrics-watcher poll, and a
+/// transient store error must not crash the watcher thread or surface
+/// to the UI.
+#[must_use]
+pub fn build_production_ai_session_discover(
+    store: crate::config_store::ConfigStore,
+) -> crate::session_metrics::AiSessionDiscoveryCb {
+    Arc::new(
+        move |session_id: crate::types::SessionId, ai_session_id: String| match store
+            .update_session_ai_session_id(&session_id, Some(ai_session_id.clone()))
+        {
+            Ok(true) => {
+                tracing::debug!(%session_id, %ai_session_id, "ai session id discovered");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::debug!(%session_id, error = ?e, "failed to persist ai session id");
+            }
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
