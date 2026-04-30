@@ -12,6 +12,8 @@ jobs:
   verify:
     name: Verify tag is on main
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.normalize.outputs.tag }}
     steps:
       # Fail loudly (not silently skip) if the user picked a non-main branch
       # as the workflow source in the Run workflow dialog. Combined with the
@@ -26,13 +28,30 @@ jobs:
             echo "::error::This workflow must be run from the 'main' branch (got: ${REF}). Re-run from the Actions tab and select 'main' as the workflow source."
             exit 1
           fi
+      # Normalize the input: trim whitespace and strip an optional
+      # 'refs/tags/' prefix (common when copy-pasting from `git show-ref` or
+      # the Actions UI). Reject empty input.
+      - name: Normalize tag input
+        id: normalize
+        env:
+          RAW: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$(printf '%s' "${RAW}" | tr -d '[:space:]')"
+          tag="${tag#refs/tags/}"
+          if [ -z "${tag}" ]; then
+            echo "::error::tag input is empty after normalization (raw: '${RAW}'). Provide just the tag name, e.g. 'v0.1.0'."
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Normalized tag: '${tag}' (raw: '${RAW}')"
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
       - name: Assert tag exists and is reachable from main
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ steps.normalize.outputs.tag }}
         run: |
           set -euo pipefail
           git fetch --tags --quiet
@@ -71,11 +90,12 @@ jobs:
             args: ''
     runs-on: ${{ matrix.platform.os }}
     steps:
-      # Check out the exact tag the user requested so the built binaries
-      # correspond to the release tag rather than the default branch HEAD.
+      # Check out the exact tag the user requested (normalized by the verify
+      # job) so the built binaries correspond to the release tag rather than
+      # the default branch HEAD.
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: refs/tags/${{ needs.verify.outputs.tag }}
 
       - uses: actions/setup-node@v4
         with:
@@ -110,8 +130,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: 'Arborist ${{ inputs.tag }}'
+          tagName: ${{ needs.verify.outputs.tag }}
+          releaseName: 'Arborist ${{ needs.verify.outputs.tag }}'
           releaseBody: |
             See the assets below to download installers for your platform.
 
