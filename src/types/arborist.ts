@@ -159,7 +159,8 @@ export type ActivityEvent =
   | { kind: 'idle' }
   | { kind: 'promptStart' }
   | { kind: 'commandStart' }
-  | { kind: 'commandEnd'; exit: number | null };
+  | { kind: 'commandEnd'; exit: number | null }
+  | { kind: 'turnEnd'; durationMs: number | null };
 
 // MIRROR: src-tauri/src/types.rs::SessionActivityEvent
 // Payload of the `session://activity` Tauri event (DESIGN §6). The

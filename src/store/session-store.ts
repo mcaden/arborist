@@ -20,7 +20,7 @@
 // * `useSessionActions()` returns a stable action bag so callers can pull it
 //   once and not re-render when state changes.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -80,9 +80,49 @@ export interface SessionStoreState {
    * don't linger in the sidebar.
    */
   metrics: Record<SessionId, SessionMetrics>;
+  /**
+   * Per-session unix-seconds timestamp of the most recent agent-turn
+   * completion. Set when a `session://activity` event with
+   * `kind: "turnEnd"` arrives. Drives the `awaiting` display state via
+   * [`selectDisplayStatus`]. Frontend-only — not persisted; cleared on
+   * close and on `starting` (restart) so the indicator goes back to
+   * `idle` until the new run finishes its first turn.
+   */
+  lastTurnEndAt: Record<SessionId, number>;
+  /**
+   * Most recently observed agent-turn duration in milliseconds, as
+   * reported by the `kind: "turnEnd"` event when the source includes it
+   * (Copilot OTel `invoke_agent` span — Claude omits). Surfaced only in
+   * tooltips; not part of any layout-affecting state.
+   */
+  lastTurnDurationMs: Record<SessionId, number>;
 }
 
 export type SessionActivity = 'working' | 'idle' | 'attention';
+
+/**
+ * Single derived state the sidebar renders as one icon. Combines
+ * lifecycle (`session.status`), PTY-derived activity, the most recent
+ * agent-turn-end timestamp, and how long the session has been alive. See
+ * [`selectDisplayStatus`] for the priority order.
+ */
+export type DisplayStatus =
+  | 'starting'
+  | 'error'
+  | 'exited'
+  | 'attention'
+  | 'working'
+  | 'awaiting'
+  | 'idle';
+
+/**
+ * Time (in seconds) a freshly-spawned, never-active session must live
+ * before the sidebar promotes it from `idle` to `awaiting` ("the agent
+ * has booted and is waiting for input"). Without this grace period the
+ * tab would flicker to `awaiting` during the first frame of a normal
+ * spawn.
+ */
+export const AWAITING_GRACE_SECONDS = 5;
 
 export interface SessionStoreActions {
   hydrate: () => Promise<void>;
@@ -124,6 +164,8 @@ const INITIAL_STATE: SessionStoreState = {
   hasUnread: {},
   activity: {},
   metrics: {},
+  lastTurnEndAt: {},
+  lastTurnDurationMs: {},
 };
 
 /**
@@ -158,6 +200,8 @@ export const useSessionStore = create<Store>((set, get) => {
         hasUnread: {},
         activity: {},
         metrics: {},
+        lastTurnEndAt: {},
+        lastTurnDurationMs: {},
       });
     },
 
@@ -185,7 +229,8 @@ export const useSessionStore = create<Store>((set, get) => {
       // is gone.
       if (get().pendingClose === id) patch.pendingClose = undefined;
       // Drop any orphan status-message keyed under this session id.
-      const { statusMessages, hasUnread, activity, metrics } = get();
+      const { statusMessages, hasUnread, activity, metrics, lastTurnEndAt, lastTurnDurationMs } =
+        get();
       if (id in statusMessages) {
         const next = { ...statusMessages };
         delete next[id];
@@ -205,6 +250,16 @@ export const useSessionStore = create<Store>((set, get) => {
         const nextMetrics = { ...metrics };
         delete nextMetrics[id];
         patch.metrics = nextMetrics;
+      }
+      if (id in lastTurnEndAt) {
+        const next = { ...lastTurnEndAt };
+        delete next[id];
+        patch.lastTurnEndAt = next;
+      }
+      if (id in lastTurnDurationMs) {
+        const next = { ...lastTurnDurationMs };
+        delete next[id];
+        patch.lastTurnDurationMs = next;
       }
       set(patch);
     },
@@ -291,11 +346,26 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: nextMessages,
       };
       // On restart (back to `starting`), drop any stale metrics so the
-      // sidebar doesn't show numbers from the previous run.
-      if (evt.status === 'starting' && evt.sessionId in metrics) {
-        const nextMetrics = { ...metrics };
-        delete nextMetrics[evt.sessionId];
-        patch.metrics = nextMetrics;
+      // sidebar doesn't show numbers from the previous run. Same logic
+      // applies to the turn-end markers — a new run hasn't completed any
+      // turns yet, so the sidebar should fall back to `idle`.
+      if (evt.status === 'starting') {
+        if (evt.sessionId in metrics) {
+          const nextMetrics = { ...metrics };
+          delete nextMetrics[evt.sessionId];
+          patch.metrics = nextMetrics;
+        }
+        const { lastTurnEndAt, lastTurnDurationMs } = get();
+        if (evt.sessionId in lastTurnEndAt) {
+          const next = { ...lastTurnEndAt };
+          delete next[evt.sessionId];
+          patch.lastTurnEndAt = next;
+        }
+        if (evt.sessionId in lastTurnDurationMs) {
+          const next = { ...lastTurnDurationMs };
+          delete next[evt.sessionId];
+          patch.lastTurnDurationMs = next;
+        }
       }
       set(patch);
     },
@@ -310,9 +380,38 @@ export const useSessionStore = create<Store>((set, get) => {
     },
 
     applyActivity: (evt) => {
-      const { sessions, activity, activeId } = get();
+      const { sessions, activity, activeId, lastTurnEndAt, lastTurnDurationMs } = get();
       // Defensive: drop events for unknown sessions (race with close).
       if (!sessions.some((s) => s.id === evt.sessionId)) return;
+
+      // Turn-end is a fire-and-forget marker — it doesn't compete with the
+      // PTY-driven working/idle/attention state machine, so handle it
+      // first and return. We record both the wall-clock arrival time
+      // (drives the `awaiting` display state) and the source-reported
+      // duration (tooltip only).
+      if (evt.kind === 'turnEnd') {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const patch: Partial<SessionStoreState> = {
+          lastTurnEndAt: { ...lastTurnEndAt, [evt.sessionId]: nowSec },
+        };
+        if (typeof evt.durationMs === 'number') {
+          patch.lastTurnDurationMs = {
+            ...lastTurnDurationMs,
+            [evt.sessionId]: evt.durationMs,
+          };
+        }
+        // A completed turn implies the agent is no longer producing
+        // output — drop a stale `working` flag so the icon flips to
+        // `awaiting` immediately rather than waiting for the PTY-stream
+        // idle tick. Don't clobber `attention` (still user-relevant).
+        if (activity[evt.sessionId] === 'working') {
+          const nextActivity = { ...activity };
+          delete nextActivity[evt.sessionId];
+          patch.activity = nextActivity;
+        }
+        set(patch);
+        return;
+      }
 
       const current = activity[evt.sessionId];
       let next: SessionActivity | undefined;
@@ -382,6 +481,55 @@ export const selectMetrics =
   (id: SessionId | undefined) =>
   (s: Store): SessionMetrics | undefined =>
     id === undefined ? undefined : s.metrics[id];
+export const selectLastTurnEndAt =
+  (id: SessionId | undefined) =>
+  (s: Store): number | undefined =>
+    id === undefined ? undefined : s.lastTurnEndAt[id];
+export const selectLastTurnDurationMs =
+  (id: SessionId | undefined) =>
+  (s: Store): number | undefined =>
+    id === undefined ? undefined : s.lastTurnDurationMs[id];
+
+/**
+ * Derive the single icon-state the sidebar should render for `id`. The
+ * priority order is intentional and reflects what a user most needs to
+ * notice first:
+ *
+ *  1. Lifecycle terminals (`error`, `exited`) — the session can't do
+ *     anything until the user reacts.
+ *  2. `starting` — the spinner; nothing else is meaningful yet.
+ *  3. `attention` — the agent (or the OS) explicitly asked the user to
+ *     look here.
+ *  4. `working` — the PTY is streaming output, i.e. the agent is
+ *     producing tokens.
+ *  5. `awaiting` — the agent finished a turn and is parked at its
+ *     prompt, OR the session has booted but never produced a turn and
+ *     the [`AWAITING_GRACE_SECONDS`] window has elapsed (a CLI typically
+ *     drops to its REPL prompt by then).
+ *  6. `idle` — fallback for the brief boot window before
+ *     [`AWAITING_GRACE_SECONDS`] expires.
+ *
+ * `nowSec` is injected so tests can pin time deterministically.
+ */
+export function selectDisplayStatus(
+  id: SessionId | undefined,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): (s: Store) => DisplayStatus {
+  return (s: Store): DisplayStatus => {
+    if (id === undefined) return 'idle';
+    const session = s.sessions.find((x) => x.id === id);
+    if (!session) return 'idle';
+    if (session.status === 'error') return 'error';
+    if (session.status === 'starting') return 'starting';
+    if (session.status === 'exited') return 'exited';
+    const activity = s.activity[id];
+    if (activity === 'attention') return 'attention';
+    if (activity === 'working') return 'working';
+    if (s.lastTurnEndAt[id] !== undefined) return 'awaiting';
+    if (nowSec - session.createdAt >= AWAITING_GRACE_SECONDS) return 'awaiting';
+    return 'idle';
+  };
+}
 
 export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
@@ -395,6 +543,67 @@ export const useActivity = (id: SessionId | undefined): SessionActivity | undefi
   useSessionStore(selectActivity(id));
 export const useMetrics = (id: SessionId | undefined): SessionMetrics | undefined =>
   useSessionStore(selectMetrics(id));
+export const useLastTurnEndAt = (id: SessionId | undefined): number | undefined =>
+  useSessionStore(selectLastTurnEndAt(id));
+export const useLastTurnDurationMs = (id: SessionId | undefined): number | undefined =>
+  useSessionStore(selectLastTurnDurationMs(id));
+
+/**
+ * Subscribe to the derived `DisplayStatus` for `id`. Recomputes (and
+ * re-renders the caller) every minute via a tick so the time-based
+ * `idle → awaiting` promotion eventually fires even if no other event
+ * touches the session. The 60s cadence is fine because the only
+ * threshold we care about is [`AWAITING_GRACE_SECONDS`] and the
+ * derivation is pure / cheap.
+ */
+export function useDisplayStatus(id: SessionId | undefined): DisplayStatus {
+  const tickedNow = useNowTickSeconds();
+  return useSessionStore(selectDisplayStatus(id, tickedNow));
+}
+
+/**
+ * Returns `Math.floor(Date.now() / 1000)` and re-renders the caller
+ * roughly once a minute. Used by [`useDisplayStatus`] to drive the
+ * boot-grace transition.
+ *
+ * Implemented as a single shared interval with reference-counted
+ * subscribers — N tabs ⇒ N components ⇒ one timer, not N. The interval
+ * is created lazily on first subscribe and torn down when the last
+ * subscriber unmounts. Internal — not exported as part of the public
+ * store API.
+ */
+let nowTickSubscribers = 0;
+let nowTickHandle: number | undefined;
+const nowTickListeners = new Set<(value: number) => void>();
+
+function ensureNowTickRunning(): void {
+  if (nowTickHandle !== undefined) return;
+  nowTickHandle = window.setInterval(() => {
+    const value = Math.floor(Date.now() / 1000);
+    for (const listener of nowTickListeners) listener(value);
+  }, 60_000);
+}
+
+function teardownNowTickIfUnused(): void {
+  if (nowTickSubscribers > 0 || nowTickHandle === undefined) return;
+  window.clearInterval(nowTickHandle);
+  nowTickHandle = undefined;
+}
+
+function useNowTickSeconds(): number {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    nowTickSubscribers += 1;
+    nowTickListeners.add(setNow);
+    ensureNowTickRunning();
+    return () => {
+      nowTickListeners.delete(setNow);
+      nowTickSubscribers -= 1;
+      teardownNowTickIfUnused();
+    };
+  }, []);
+  return now;
+}
 
 export function useActiveSession(): SessionView | undefined {
   const sessions = useSessions();

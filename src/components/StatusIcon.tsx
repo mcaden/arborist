@@ -1,0 +1,109 @@
+// Inline SVG status glyphs for the sidebar. Replaces the colored-dot
+// indicators that lived in `SidebarTab` with one icon per
+// [`DisplayStatus`]. Kept as inline SVGs (no icon-library dependency)
+// to match the convention established by `ToolIcon.tsx`.
+//
+// Each icon paints from `currentColor` so Tailwind text-color classes
+// recolour them; the per-state color is owned by the caller and is set
+// via the `className` prop. Sizes are uniform (h-3.5 w-3.5 by default
+// at the call site) so swapping states does not nudge layout.
+
+import type { DisplayStatus } from '@/store/session-store';
+
+interface StatusIconProps {
+  status: DisplayStatus;
+  className?: string;
+  /** Set as `<title>` for hover-tooltip + assistive-tech label. */
+  title?: string;
+}
+
+export function StatusIcon({ status, className, title }: StatusIconProps): JSX.Element | null {
+  // `idle` intentionally renders nothing — a quiescent session shouldn't
+  // shout at the user. Returning null keeps the icon column blank rather
+  // than reserving space for an absent glyph.
+  if (status === 'idle') return null;
+
+  const common = {
+    xmlns: 'http://www.w3.org/2000/svg',
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-label': title ?? status,
+    'aria-hidden': title ? undefined : true,
+    role: 'img',
+    className,
+  };
+
+  switch (status) {
+    case 'starting':
+      // Three-quarter ring with the gap pointing up-right; pairs with
+      // an `animate-spin` class supplied by the caller for the spinner
+      // effect.
+      return (
+        <svg {...common} data-testid="status-icon-starting">
+          {title ? <title>{title}</title> : null}
+          <path d="M12 3 a9 9 0 1 1 -9 9" />
+        </svg>
+      );
+
+    case 'working':
+      // Sparkles — evokes "the model is generating".
+      return (
+        <svg {...common} data-testid="status-icon-working">
+          {title ? <title>{title}</title> : null}
+          <path d="M12 3 l1.6 4.4 L18 9 l-4.4 1.6 L12 15 l-1.6-4.4 L6 9 l4.4-1.6 z" />
+          <path d="M18 14 l0.8 2.2 L21 17 l-2.2 0.8 L18 20 l-0.8-2.2 L15 17 l2.2-0.8 z" />
+        </svg>
+      );
+
+    case 'awaiting':
+      // Speech bubble — "the agent has finished and is waiting for you
+      // to say something".
+      return (
+        <svg {...common} data-testid="status-icon-awaiting">
+          {title ? <title>{title}</title> : null}
+          <path d="M4 5 h16 a1 1 0 0 1 1 1 v10 a1 1 0 0 1 -1 1 h-9 l-4 3 v-3 H4 a1 1 0 0 1 -1 -1 V6 a1 1 0 0 1 1 -1 z" />
+        </svg>
+      );
+
+    case 'attention':
+      // Bell — matches OSC 9 / OSC 777 / standalone BEL semantics.
+      return (
+        <svg {...common} data-testid="status-icon-attention">
+          {title ? <title>{title}</title> : null}
+          <path d="M6 16 V11 a6 6 0 0 1 12 0 v5 l1.5 2 H4.5 z" />
+          <path d="M10 20 a2 2 0 0 0 4 0" />
+        </svg>
+      );
+
+    case 'exited':
+      // Filled stop square — terminal-state indicator.
+      return (
+        <svg {...common} fill="currentColor" data-testid="status-icon-exited">
+          {title ? <title>{title}</title> : null}
+          <rect x="6" y="6" width="12" height="12" rx="1.5" />
+        </svg>
+      );
+
+    case 'error':
+      // Triangle with a bang — universal "something went wrong".
+      return (
+        <svg {...common} data-testid="status-icon-error">
+          {title ? <title>{title}</title> : null}
+          <path d="M12 3 L22 20 H2 z" />
+          <line x1="12" y1="10" x2="12" y2="14" />
+          <line x1="12" y1="17" x2="12" y2="17.01" />
+        </svg>
+      );
+
+    default: {
+      // Exhaustive: TS will flag a new DisplayStatus variant here.
+      const _exhaustive: never = status;
+      void _exhaustive;
+      return null;
+    }
+  }
+}

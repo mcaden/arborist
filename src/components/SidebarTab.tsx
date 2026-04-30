@@ -9,13 +9,17 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
+import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
 import {
-  useActivity,
+  useDisplayStatus,
   useHasUnread,
+  useLastTurnDurationMs,
+  useLastTurnEndAt,
   useMetrics,
   useSessionActions,
   useSessionById,
+  type DisplayStatus,
 } from '@/store/session-store';
 import type { SessionId, SessionMetrics, Tool } from '@/types/arborist';
 
@@ -34,7 +38,9 @@ export function SidebarTab({
 }: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
   const hasUnread = useHasUnread(id);
-  const activity = useActivity(id);
+  const displayStatus = useDisplayStatus(id);
+  const lastTurnEndAt = useLastTurnEndAt(id);
+  const lastTurnDurationMs = useLastTurnDurationMs(id);
   const metrics = useMetrics(id);
   const actions = useSessionActions();
 
@@ -83,53 +89,12 @@ export function SidebarTab({
             }
           />
           <span className="min-w-0 flex-1 truncate">{session.label}</span>
-          {activity === 'attention' && session.status !== 'error' && (
-            <span
-              role="img"
-              aria-label="Attention required"
-              data-testid="status-attention"
-              className="h-2 w-2 shrink-0 rounded-full bg-amber-500"
-            />
-          )}
-          {activity === 'working' && session.status === 'running' && (
-            <span
-              role="img"
-              aria-label="Working"
-              data-testid="status-working"
-              className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500"
-            />
-          )}
-          {hasUnread && !isActive && session.status !== 'error' && activity !== 'attention' && (
-            <span
-              role="img"
-              aria-label="Unread output"
-              data-testid="status-unread"
-              className="h-2 w-2 shrink-0 rounded-full bg-sky-500"
-            />
-          )}
-          {session.status === 'starting' && (
-            <span
-              role="img"
-              aria-label="Starting"
-              data-testid="status-starting"
-              className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full border-2 border-sky-500 border-t-transparent"
-            />
-          )}
-          {session.status === 'exited' && (
-            <span
-              role="img"
-              aria-label="Exited"
-              data-testid="status-exited"
-              className="h-2 w-2 shrink-0 rounded-full bg-slate-400 dark:bg-slate-500"
-            />
-          )}
-          {session.status === 'error' && (
-            <span
-              role="img"
-              aria-label="Error"
-              className="h-2 w-2 shrink-0 rounded-full bg-red-500"
-            />
-          )}
+          <SessionStatusIndicator
+            status={displayStatus}
+            hasUnread={hasUnread && !isActive}
+            lastTurnEndAt={lastTurnEndAt}
+            lastTurnDurationMs={lastTurnDurationMs}
+          />
         </span>
         <MetricsLine
           metrics={session.status === 'running' ? metrics : undefined}
@@ -239,4 +204,125 @@ function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   const k = n / 1000;
   return k >= 100 ? `${Math.round(k)}k` : `${k.toFixed(1).replace(/\.0$/, '')}k`;
+}
+
+// ---------------------------------------------------------------------------
+// SessionStatusIndicator — single icon glyph for the derived display state,
+// plus a small unread-overlay dot when the tab has unseen output. The icon
+// owns the per-state colour and animation; the unread dot is a separate
+// element so the two stack naturally.
+// ---------------------------------------------------------------------------
+
+interface SessionStatusIndicatorProps {
+  status: DisplayStatus;
+  hasUnread: boolean;
+  lastTurnEndAt: number | undefined;
+  lastTurnDurationMs: number | undefined;
+}
+
+function SessionStatusIndicator({
+  status,
+  hasUnread,
+  lastTurnEndAt,
+  lastTurnDurationMs,
+}: SessionStatusIndicatorProps): JSX.Element | null {
+  const iconClasses = statusIconClasses(status);
+  const tooltip = statusTooltip(status, lastTurnEndAt, lastTurnDurationMs);
+
+  // When the icon collapses to nothing (idle), still show the unread dot
+  // on its own so the user has *some* signal that output arrived.
+  if (status === 'idle') {
+    return hasUnread ? (
+      <span
+        role="img"
+        aria-label="Unread output"
+        data-testid="status-unread"
+        className="h-2 w-2 shrink-0 rounded-full bg-sky-500"
+      />
+    ) : null;
+  }
+
+  return (
+    <span className="relative inline-flex shrink-0">
+      <StatusIcon status={status} title={tooltip} className={iconClasses} />
+      {hasUnread && status !== 'attention' && status !== 'error' && (
+        <span
+          aria-hidden="true"
+          data-testid="status-unread"
+          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 ring-1 ring-white dark:ring-slate-900"
+        />
+      )}
+    </span>
+  );
+}
+
+function statusIconClasses(status: DisplayStatus): string {
+  // Uniform geometry; only color and animation vary by state.
+  const base = 'h-3.5 w-3.5 shrink-0';
+  switch (status) {
+    case 'starting':
+      return `${base} animate-spin text-sky-500`;
+    case 'working':
+      return `${base} animate-pulse text-emerald-500`;
+    case 'awaiting':
+      return `${base} text-sky-500 dark:text-sky-400`;
+    case 'attention':
+      return `${base} text-amber-500`;
+    case 'exited':
+      return `${base} text-slate-400 dark:text-slate-500`;
+    case 'error':
+      return `${base} text-red-500`;
+    case 'idle':
+      return base;
+  }
+}
+
+function statusTooltip(
+  status: DisplayStatus,
+  lastTurnEndAt: number | undefined,
+  lastTurnDurationMs: number | undefined,
+): string {
+  const headline = (() => {
+    switch (status) {
+      case 'starting':
+        return 'Starting';
+      case 'working':
+        return 'Working';
+      case 'awaiting':
+        return 'Awaiting input';
+      case 'attention':
+        return 'Attention required';
+      case 'exited':
+        return 'Exited';
+      case 'error':
+        return 'Error';
+      case 'idle':
+        return 'Idle';
+    }
+  })();
+
+  const parts: string[] = [headline];
+  if (status === 'awaiting' && lastTurnEndAt !== undefined) {
+    const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - lastTurnEndAt);
+    parts.push(`Last turn ${formatDuration(ageSec)} ago`);
+  }
+  if (typeof lastTurnDurationMs === 'number' && status !== 'starting' && status !== 'error') {
+    parts.push(`Took ${formatDurationMs(lastTurnDurationMs)}`);
+  }
+  return parts.join(' · ');
+}
+
+function formatDuration(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h`;
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`;
+  return formatDuration(Math.round(s));
 }

@@ -268,6 +268,24 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_me
     })
 }
 
+/// Build the production turn-end emitter — fires a
+/// [`crate::activity::ActivityEvent::TurnEnd`] over the existing
+/// `session://activity` channel so the frontend's activity reducer
+/// handles it the same way as PTY-derived activity events. Tests
+/// substitute a capturing closure.
+#[must_use]
+pub fn build_production_turn_emit(app: tauri::AppHandle) -> crate::session_metrics::TurnCb {
+    Arc::new(move |session_id: SessionId, duration_ms: Option<u64>| {
+        let payload = crate::types::SessionActivityEvent {
+            session_id,
+            event: crate::activity::ActivityEvent::TurnEnd { duration_ms },
+        };
+        if let Err(e) = app.emit("session://activity", payload) {
+            tracing::debug!(session_id = %session_id, error = %e, "emit session://activity (turnEnd) failed");
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
