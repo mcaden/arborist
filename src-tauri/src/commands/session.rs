@@ -389,13 +389,15 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
     // between restart and the new watcher's first discovery would let
     // the next restore `--resume` the *pre-restart* conversation.
     //
-    // Order matters: stop the OLD watcher first, *then* clear. If we
-    // cleared while the old watcher was still polling, it could discover
-    // the (still-on-disk) old transcript one more time and persist the
-    // stale id back, undoing the clear. After this stop the new watcher
-    // is started below by `metrics.start`, which will repopulate the
-    // field with the new conversation's id once the CLI starts writing.
-    ctx.metrics.stop(&id);
+    // Order matters: stop the OLD watcher first, *then* clear. We need
+    // `stop_and_join` (not just `stop`) because the worker only re-checks
+    // its `running` flag at the top of each poll iteration — a fire-and-
+    // forget stop would let the in-flight iteration call `discover()` one
+    // more time and persist the stale id back, undoing the clear. After
+    // join returns, the worker thread has fully exited; the new watcher
+    // started below by `metrics.start` will repopulate the field with
+    // the new conversation's id once the CLI starts writing.
+    ctx.metrics.stop_and_join(&id);
     if let Err(e) = ctx.store.update_session_ai_session_id(&id, None) {
         warn!(session_id = %id, error = ?e, "restart: failed to clear ai_session_id");
     }

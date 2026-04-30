@@ -97,11 +97,14 @@ pub type MetricsCb = Arc<dyn Fn(SessionMetricsEvent) + Send + Sync>;
 pub type AiSessionDiscoveryCb = Arc<dyn Fn(SessionId, String) + Send + Sync>;
 
 /// Per-session running watcher handle. Drop semantics: clearing the
-/// `running` flag stops the watcher thread on its next poll iteration; the
-/// thread's `JoinHandle` is detached so dropping the registry entry never
-/// blocks the caller.
+/// `running` flag stops the watcher thread on its next poll iteration. We
+/// also retain the `JoinHandle` so callers that need a quiescence
+/// guarantee (e.g. `session_restart_impl`, which clears
+/// `Session.ai_session_id` and must ensure no late discovery callback
+/// can persist the stale id back) can use [`MetricsRegistry::stop_and_join`].
 struct WatcherHandle {
     running: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
 }
 
 /// Registry of active per-session watchers. Stored on `AppContext`. Calls
@@ -178,11 +181,14 @@ impl MetricsRegistry {
             }
         };
         match join {
-            Ok(_handle) => {
-                self.inner
-                    .lock()
-                    .expect("metrics registry lock")
-                    .insert(session_id, WatcherHandle { running });
+            Ok(handle) => {
+                self.inner.lock().expect("metrics registry lock").insert(
+                    session_id,
+                    WatcherHandle {
+                        running,
+                        join: Some(handle),
+                    },
+                );
                 true
             }
             Err(e) => {
@@ -193,6 +199,10 @@ impl MetricsRegistry {
     }
 
     /// Stop the watcher for `session_id` if any. Idempotent.
+    ///
+    /// Returns immediately after flipping the `running` flag — the worker
+    /// thread observes it on its next poll. Use [`Self::stop_and_join`]
+    /// when you need a guarantee that no further callbacks will fire.
     pub fn stop(&self, session_id: &SessionId) {
         let removed = self
             .inner
@@ -201,6 +211,31 @@ impl MetricsRegistry {
             .remove(session_id);
         if let Some(h) = removed {
             h.running.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Stop the watcher and block until its worker thread has fully
+    /// exited. Idempotent. Use this when you need a quiescence guarantee
+    /// — i.e., when subsequent code mutates state (like
+    /// `Session.ai_session_id`) that the worker's discovery callback
+    /// could otherwise overwrite from a final in-flight poll iteration.
+    ///
+    /// Worst-case wait is one `POLL_INTERVAL` (~200ms) since the worker
+    /// only re-checks `running` at the top of its loop. Errors from the
+    /// underlying thread `join()` are swallowed — there is nothing
+    /// meaningful the caller can do, and the registry entry has already
+    /// been removed.
+    pub fn stop_and_join(&self, session_id: &SessionId) {
+        let removed = self
+            .inner
+            .lock()
+            .expect("metrics registry lock")
+            .remove(session_id);
+        if let Some(mut h) = removed {
+            h.running.store(false, Ordering::SeqCst);
+            if let Some(handle) = h.join.take() {
+                let _ = handle.join();
+            }
         }
     }
 
