@@ -15,7 +15,8 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PORT_MIN = 1420;
 const PORT_RANGE = 100;
@@ -68,10 +69,18 @@ process.on('exit', cleanup);
 console.log(`[arborist] tauri dev on port ${port}`);
 
 const isWindows = process.platform === 'win32';
-const tauriDevArgs = ['tauri', 'dev', '--config', overridePath, ...process.argv.slice(2)];
+const tauriDevArgs = ['dev', '--config', overridePath, ...process.argv.slice(2)];
 
-// On POSIX we can spawn `npx` directly without a shell and put the child in
-// its own process group (`detached: true`); this lets us deliver signals to
+// Resolve the local `tauri` binary from node_modules/.bin so we don't depend
+// on `npx` (which can misresolve under some Node versions / setups).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, '..');
+const tauriBin = isWindows
+  ? join(projectRoot, 'node_modules', '.bin', 'tauri.cmd')
+  : join(projectRoot, 'node_modules', '.bin', 'tauri');
+
+// On POSIX we can spawn the binary directly without a shell and put the child
+// in its own process group (`detached: true`); this lets us deliver signals to
 // the whole tree (`tauri dev`, `vite`, …) via `process.kill(-pid, sig)`.
 //
 // On Windows Node's `spawn` won't execute `.cmd`/`.bat` files directly since
@@ -80,7 +89,11 @@ const tauriDevArgs = ['tauri', 'dev', '--config', overridePath, ...process.argv.
 // <overridePath>` intact even when the temp path contains spaces (e.g. user
 // profiles like `C:\Users\Jane Doe\AppData\Local\Temp\...`).  Shutdown still
 // goes through `taskkill /pid <pid> /T /F` to terminate the full tree because
-// killing `cmd.exe` alone doesn't reliably reach `npx`/`tauri`/`vite`.
+// killing `cmd.exe` alone doesn't reliably reach `cmd`/`tauri`/`vite`.
+//
+// With `/s /c`, cmd.exe strips the first and last `"` from the command string.
+// We wrap the whole command in an extra pair of quotes so the inner per-arg
+// quotes survive the strip and keep arguments properly separated.
 function quoteCmdArg(value) {
   return `"${String(value).replace(/"/g, '""')}"`;
 }
@@ -88,10 +101,15 @@ function quoteCmdArg(value) {
 const child = isWindows
   ? spawn(
       process.env.ComSpec ?? 'cmd.exe',
-      ['/d', '/s', '/c', [quoteCmdArg('npx.cmd'), ...tauriDevArgs.map(quoteCmdArg)].join(' ')],
+      [
+        '/d',
+        '/s',
+        '/c',
+        `"${[quoteCmdArg(tauriBin), ...tauriDevArgs.map(quoteCmdArg)].join(' ')}"`,
+      ],
       { stdio: 'inherit', env: process.env, windowsVerbatimArguments: true },
     )
-  : spawn('npx', tauriDevArgs, {
+  : spawn(tauriBin, tauriDevArgs, {
       stdio: 'inherit',
       env: process.env,
       detached: true,
