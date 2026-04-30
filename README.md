@@ -20,6 +20,27 @@ single integrated terminal area for the active session.
   pick when creating a session. They are not required to build or test the app
   itself.
 
+## Install
+
+Pre-built installers for Windows, macOS, and Linux are published on the
+[Releases page](https://github.com/mcaden/arborist/releases). Download the
+asset for your platform and follow the first-run notes below — the binaries
+are **unsigned**, so each OS will show a one-time warning.
+
+- **Windows** (`Arborist_<version>_x64-setup.exe` or `Arborist_<version>_x64_en-US.msi`)
+  — double-click to install. Windows SmartScreen will say "Windows protected
+  your PC"; click **More info → Run anyway**.
+- **macOS** (`Arborist_<version>_universal.dmg`) — open the DMG and drag
+  Arborist to Applications. The first launch must be **right-click → Open**
+  (not double-click), then confirm in the Gatekeeper dialog. The build is a
+  universal binary and runs natively on both Apple Silicon and Intel.
+- **Linux — AppImage** (`arborist_<version>_amd64.AppImage`) — `chmod +x` the
+  file and run it. Works on most modern x86_64 distros.
+- **Linux — Debian/Ubuntu** (`arborist_<version>_amd64.deb`) —
+  `sudo apt install ./arborist_<version>_amd64.deb`.
+
+Updates are manual: re-download the latest release when a new version ships.
+
 ## Quickstart
 
 ```sh
