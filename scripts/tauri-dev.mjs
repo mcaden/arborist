@@ -100,7 +100,7 @@ const child = isWindows
 function killChildTree(sig) {
   if (isWindows) {
     try {
-      // /T = tree, /F = force. Spawn synchronously and ignore output —
+      // /T = tree, /F = force. Spawn and ignore output (fire-and-forget) —
       // failure usually just means the child already exited.
       spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
         stdio: 'ignore',
