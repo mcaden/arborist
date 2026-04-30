@@ -12,6 +12,7 @@ pub mod config_store;
 pub mod git;
 pub mod pty_pool;
 pub mod session_metrics;
+pub mod sub_sessions;
 pub mod types;
 
 pub use types::{
@@ -137,6 +138,20 @@ pub fn run() {
                 turn_emit,
             ));
             app.manage(ctx);
+
+            // Phase 2: parallel sub-session pool + store + sink. Lives
+            // alongside the existing AppContext so existing tests don't
+            // need to know about it.
+            let sub_pool = std::sync::Arc::new(sub_sessions::SubPtyPool::new(std::sync::Arc::new(
+                pty_pool::PortablePtySpawner,
+            )));
+            let sub_store = std::sync::Arc::new(sub_sessions::SubSessionStore::new());
+            let sub_sink =
+                commands::build_production_sub_sink(app.handle().clone(), sub_store.clone());
+            let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
+                sub_pool, sub_store, sub_sink,
+            ));
+            app.manage(sub_ctx);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -155,6 +170,12 @@ pub fn run() {
             commands::worktrees_list,
             commands::workspace_validate,
             commands::worktree_create,
+            commands::subsession_create,
+            commands::subsession_close,
+            commands::subsession_focus,
+            commands::subsession_list,
+            commands::subsession_input,
+            commands::subsession_resize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arborist");

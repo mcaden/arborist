@@ -44,6 +44,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::NamedTempFile;
@@ -68,9 +69,20 @@ pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 /// Handle to the on-disk store directory. Cheap to construct and clone.
+///
+/// Clones share a single `Arc<Mutex<()>>` `write_lock` so every
+/// read-modify-write path (`save_config`, `save_session`,
+/// `remove_session`, `update_session_status`,
+/// `append_last_open_sub_session`, `remove_last_open_sub_session`)
+/// serializes against every other writer. Concurrent reads
+/// (`load_config`, `load_sessions`) intentionally do **not** take the
+/// lock; if they race a writer they may observe either the pre- or
+/// post-write state, which is the same guarantee `write_atomic` already
+/// provides.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     dir: PathBuf,
+    write_lock: Arc<std::sync::Mutex<()>>,
 }
 
 impl ConfigStore {
@@ -79,7 +91,10 @@ impl ConfigStore {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, Error> {
         let dir = dir.into();
         fs::create_dir_all(&dir).map_err(Error::Io)?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            write_lock: Arc::new(std::sync::Mutex::new(())),
+        })
     }
 
     /// Filesystem directory backing this store. Mostly useful for tests and
@@ -237,6 +252,10 @@ impl ConfigStore {
     /// are canonicalized; keys that fail canonicalization are dropped with a
     /// warning rather than poisoning the whole call.
     pub fn save_config(&self, patch: PartialAppConfig) -> Result<AppConfig, Error> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Internal("config store write lock poisoned".into()))?;
         let mut cfg = self.load_config();
         merge_partial(&mut cfg, patch)?;
         cfg.config_version = CONFIG_VERSION_CURRENT;
@@ -307,6 +326,10 @@ impl ConfigStore {
 
     /// Persist a single session record (insert-or-replace).
     pub fn save_session(&self, session: &Session) -> Result<(), Error> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Internal("config store write lock poisoned".into()))?;
         let mut all = self.load_sessions();
         all.insert(session.id, session.clone());
         write_atomic(&self.sessions_path(), &all)
@@ -314,6 +337,10 @@ impl ConfigStore {
 
     /// Remove a session record by ID. Missing IDs are a no-op success.
     pub fn remove_session(&self, id: &SessionId) -> Result<(), Error> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Internal("config store write lock poisoned".into()))?;
         let mut all = self.load_sessions();
         if all.remove(id).is_none() {
             return Ok(());
@@ -330,6 +357,10 @@ impl ConfigStore {
         status: SessionStatus,
         pid: Option<u32>,
     ) -> Result<(), Error> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Internal("config store write lock poisoned".into()))?;
         let mut all = self.load_sessions();
         let Some(session) = all.get_mut(id) else {
             return Err(Error::NotFound(format!("session {id} not found")));
@@ -337,6 +368,43 @@ impl ConfigStore {
         session.status = status;
         session.pid = pid;
         write_atomic(&self.sessions_path(), &all)
+    }
+
+    // ----- Sub-sessions (last_open_sub_sessions list) --------------------
+
+    /// Append a sub-session record to `AppConfig.lastOpenSubSessions`,
+    /// replacing any existing entry with the same id. Serialized via the
+    /// shared `write_lock`.
+    pub fn append_last_open_sub_session(
+        &self,
+        record: crate::types::SubSessionRecord,
+    ) -> Result<(), Error> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Internal("config store write lock poisoned".into()))?;
+        let mut cfg = self.load_config();
+        cfg.last_open_sub_sessions.retain(|r| r.id != record.id);
+        cfg.last_open_sub_sessions.push(record);
+        write_atomic(&self.config_path(), &cfg)
+    }
+
+    /// Remove a sub-session record by id. Missing ids are a no-op success.
+    pub fn remove_last_open_sub_session(
+        &self,
+        id: &crate::types::SubSessionId,
+    ) -> Result<(), Error> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Internal("config store write lock poisoned".into()))?;
+        let mut cfg = self.load_config();
+        let before = cfg.last_open_sub_sessions.len();
+        cfg.last_open_sub_sessions.retain(|r| &r.id != id);
+        if cfg.last_open_sub_sessions.len() == before {
+            return Ok(());
+        }
+        write_atomic(&self.config_path(), &cfg)
     }
 }
 

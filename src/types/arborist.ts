@@ -227,6 +227,53 @@ export interface SessionStatusEvent {
   message?: string;
 }
 
+// MIRROR: src-tauri/src/types.rs::SubSessionCreateArgs
+export interface SubSessionCreateArgs {
+  parentSessionId: SessionId;
+  defId: CustomProcessDefId;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionIdArg
+export interface SubSessionIdArg {
+  id: SubSessionId;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionListArgs
+export interface SubSessionListArgs {
+  parentSessionId?: SessionId;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionInputArgs
+export interface SubSessionInputArgs {
+  id: SubSessionId;
+  data: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionResizeArgs
+export interface SubSessionResizeArgs {
+  id: SubSessionId;
+  cols: number;
+  rows: number;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionStatusEvent
+// Payload of the `subsession://status` Tauri event (Phase 2).
+export interface SubSessionStatusEvent {
+  id: SubSessionId;
+  status: SubSessionStatus;
+  pid?: number;
+  message?: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionExitedEvent
+// Payload of the `subsession://exited` Tauri event (Phase 3 application
+// sub-tabs). Phase 2's terminal sub-tabs use `subsession://status` with
+// `SubSessionStatus = 'exited'` instead.
+export interface SubSessionExitedEvent {
+  id: SubSessionId;
+  exitCode?: number;
+}
+
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent
 // Tagged union; matches `#[serde(tag = "kind", rename_all = "camelCase")]`.
 export type ActivityEvent =

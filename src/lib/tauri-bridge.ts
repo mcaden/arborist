@@ -31,6 +31,14 @@ import type {
   SessionActivityEvent,
   SessionMetricsEvent,
   SessionView,
+  SubSession,
+  SubSessionCreateArgs,
+  SubSessionExitedEvent,
+  SubSessionId,
+  SubSessionInputArgs,
+  SubSessionListArgs,
+  SubSessionResizeArgs,
+  SubSessionStatusEvent,
   Tool,
   WorktreeInfo,
   WorkspaceValidateResult,
@@ -274,4 +282,52 @@ export function onSessionActivity(
 
 export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Promise<UnlistenFn> {
   return listen<SessionMetricsEvent>('session://metrics', (event) => cb(event.payload));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: sub-session commands & events.
+//
+// Sub-sessions are children of a session and represent the "+ button"
+// items chosen from the tab context menu. Phase 2 ships *terminal* kind
+// (a second PTY in the same worktree); Phase 3 adds *application* kind
+// (detached external windows). Output for terminal sub-sessions reuses
+// the existing `session://output` channel because the UUID id space is
+// global; status changes get their own `subsession://status` channel.
+// ---------------------------------------------------------------------------
+
+export function subSessionCreate(args: SubSessionCreateArgs): Promise<SubSession> {
+  return invoke<SubSession>('subsession_create', { args });
+}
+
+export function subSessionClose(id: SubSessionId): Promise<void> {
+  return invoke<void>('subsession_close', { args: { id } });
+}
+
+export function subSessionFocus(id: SubSessionId): Promise<void> {
+  return invoke<void>('subsession_focus', { args: { id } });
+}
+
+export function subSessionList(parentSessionId?: SessionId): Promise<SubSession[]> {
+  const args: SubSessionListArgs = parentSessionId === undefined ? {} : { parentSessionId };
+  return invoke<SubSession[]>('subsession_list', { args });
+}
+
+export function subSessionInput(args: SubSessionInputArgs): Promise<void> {
+  return invoke<void>('subsession_input', { args });
+}
+
+export function subSessionResize(args: SubSessionResizeArgs): Promise<void> {
+  return invoke<void>('subsession_resize', { args });
+}
+
+export function onSubSessionStatus(
+  cb: (payload: SubSessionStatusEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SubSessionStatusEvent>('subsession://status', (event) => cb(event.payload));
+}
+
+export function onSubSessionExited(
+  cb: (payload: SubSessionExitedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SubSessionExitedEvent>('subsession://exited', (event) => cb(event.payload));
 }

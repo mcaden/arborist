@@ -18,6 +18,7 @@
 //! at runtime with no compile-time warning.
 
 pub mod session;
+pub mod subsession;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,11 +26,14 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::config_store::{list_instructions_for, ConfigStore};
+use crate::sub_sessions::SubAppContext;
 use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult,
     SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionOutputEvent,
-    SessionResizeArgs, SessionStatus, SessionStatusEvent, SessionView, WorkspaceValidateArgs,
-    WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    SessionResizeArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
+    SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
+    SubSessionResizeArgs, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs,
+    WorktreeCreateResult,
 };
 
 pub use session::AppContext;
@@ -287,6 +291,139 @@ pub fn build_production_turn_emit(app: tauri::AppHandle) -> crate::session_metri
             tracing::debug!(session_id = %session_id, error = %e, "emit session://activity (turnEnd) failed");
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: sub-session commands. Wrappers resolve the managed
+// `Arc<SubAppContext>` (created in `lib.rs::run`) and forward to the
+// matching `subsession::*_impl`.
+// ---------------------------------------------------------------------------
+
+fn sub_ctx_of(app: &tauri::AppHandle) -> Result<Arc<SubAppContext>, AppError> {
+    app.try_state::<Arc<SubAppContext>>()
+        .map(|s| Arc::clone(&*s))
+        .ok_or_else(|| AppError::new("Internal", "SubAppContext not initialised"))
+}
+
+#[tauri::command]
+pub async fn subsession_create(
+    app: tauri::AppHandle,
+    args: SubSessionCreateArgs,
+) -> Result<SubSession, AppError> {
+    let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
+    subsession::subsession_create_impl(&ctx, &sub_ctx, args)
+}
+
+#[tauri::command]
+pub async fn subsession_close(
+    app: tauri::AppHandle,
+    args: SubSessionIdArg,
+) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
+    subsession::subsession_close_impl(&ctx, sub_ctx, args.id).await
+}
+
+#[tauri::command]
+pub async fn subsession_focus(
+    app: tauri::AppHandle,
+    args: SubSessionIdArg,
+) -> Result<(), AppError> {
+    let sub_ctx = sub_ctx_of(&app)?;
+    subsession::subsession_focus_impl(&sub_ctx, args.id)
+}
+
+#[tauri::command]
+pub async fn subsession_list(
+    app: tauri::AppHandle,
+    args: SubSessionListArgs,
+) -> Result<Vec<SubSession>, AppError> {
+    let sub_ctx = sub_ctx_of(&app)?;
+    subsession::subsession_list_impl(&sub_ctx, args.parent_session_id)
+}
+
+#[tauri::command]
+pub async fn subsession_input(
+    app: tauri::AppHandle,
+    args: SubSessionInputArgs,
+) -> Result<(), AppError> {
+    let sub_ctx = sub_ctx_of(&app)?;
+    subsession::subsession_input_impl(&sub_ctx, args)
+}
+
+#[tauri::command]
+pub async fn subsession_resize(
+    app: tauri::AppHandle,
+    args: SubSessionResizeArgs,
+) -> Result<(), AppError> {
+    let sub_ctx = sub_ctx_of(&app)?;
+    subsession::subsession_resize_impl(&sub_ctx, args)
+}
+
+/// Build the production [`crate::sub_sessions::SubPtySink`] whose callbacks
+/// emit Tauri events over `session://output` (shared UUID id space) and the
+/// new `subsession://status` / `subsession://exited` channels. The status
+/// callback also mutates the in-memory
+/// [`crate::sub_sessions::SubSessionStore`] so `subsession_list` returns
+/// the current lifecycle state without requiring the frontend to maintain
+/// its own shadow copy.
+#[must_use]
+pub fn build_production_sub_sink(
+    app: tauri::AppHandle,
+    store: Arc<crate::sub_sessions::SubSessionStore>,
+) -> crate::sub_sessions::SubPtySink {
+    let app_for_output = app.clone();
+    let output = Arc::new(move |id: &crate::types::SubSessionId, data: String| {
+        let payload = SessionOutputEvent {
+            session_id: SessionId(id.0),
+            data,
+        };
+        if let Err(e) = app_for_output.emit("session://output", payload) {
+            tracing::debug!(sub_session_id = %id, error = %e, "emit session://output (sub) failed");
+        }
+    });
+
+    let app_for_status = app.clone();
+    let store_for_status = store;
+    let status = Arc::new(
+        move |id: &crate::types::SubSessionId,
+              status: crate::types::SubSessionStatus,
+              pid: Option<u32>,
+              message: Option<String>| {
+            // Persist status into the in-memory store before emitting so
+            // any `subsession_list` racing the event sees the new value.
+            // NotFound is expected when the sub-session is closed before
+            // its wait thread reports completion.
+            if let Err(e) = store_for_status.set_status(id, status, pid) {
+                use crate::types::Error as E;
+                if !matches!(e, E::NotFound(_)) {
+                    tracing::warn!(sub_session_id = %id, error = ?e, "persist sub status failed");
+                }
+            }
+            let payload = crate::types::SubSessionStatusEvent {
+                id: *id,
+                status,
+                pid,
+                message,
+            };
+            if let Err(e) = app_for_status.emit("subsession://status", payload) {
+                tracing::debug!(sub_session_id = %id, error = %e, "emit subsession://status failed");
+            }
+        },
+    );
+
+    let app_for_exit = app;
+    let exited = Arc::new(
+        move |id: &crate::types::SubSessionId, exit_code: Option<i32>| {
+            let payload = crate::types::SubSessionExitedEvent { id: *id, exit_code };
+            if let Err(e) = app_for_exit.emit("subsession://exited", payload) {
+                tracing::debug!(sub_session_id = %id, error = %e, "emit subsession://exited failed");
+            }
+        },
+    );
+
+    crate::sub_sessions::SubPtySink::new(output, status, exited)
 }
 
 #[cfg(test)]

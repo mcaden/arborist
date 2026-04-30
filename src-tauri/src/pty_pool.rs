@@ -354,12 +354,12 @@ impl PtySink {
 /// decoded scalar; retain any trailing partial sequence for the next call**.
 /// Invalid bytes are replaced with U+FFFD (REPLACEMENT CHARACTER).
 #[derive(Debug, Default)]
-struct Utf8Stream {
+pub struct Utf8Stream {
     pending: Vec<u8>,
 }
 
 impl Utf8Stream {
-    fn feed(&mut self, bytes: &[u8]) -> String {
+    pub fn feed(&mut self, bytes: &[u8]) -> String {
         if self.pending.is_empty() && bytes.is_empty() {
             return String::new();
         }
@@ -398,7 +398,7 @@ impl Utf8Stream {
     }
 
     /// Flush any held-back bytes as REPLACEMENT CHARACTERs (called on EOF).
-    fn flush(&mut self) -> String {
+    pub fn flush(&mut self) -> String {
         if self.pending.is_empty() {
             String::new()
         } else {

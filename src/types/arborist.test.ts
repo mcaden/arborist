@@ -16,6 +16,8 @@ import type {
   Session,
   SessionOutputEvent,
   SessionStatusEvent,
+  SubSessionStatusEvent,
+  SubSessionExitedEvent,
   SessionView,
   SubSession,
   SubSessionRecord,
@@ -32,6 +34,8 @@ import sessionStatusEventFixture from './fixtures/sessionStatusEvent.json';
 import customProcessDefFixture from './fixtures/customProcessDef.json';
 import subSessionFixture from './fixtures/subSession.json';
 import subSessionRecordFixture from './fixtures/subSessionRecord.json';
+import subSessionStatusEventFixture from './fixtures/subSessionStatusEvent.json';
+import subSessionExitedEventFixture from './fixtures/subSessionExitedEvent.json';
 
 // --- Compile-time assertions ------------------------------------------------
 //
@@ -54,6 +58,8 @@ const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEve
 const _customProcessDef = customProcessDefFixture satisfies CustomProcessDef;
 const _subSession = subSessionFixture satisfies SubSession;
 const _subSessionRecord = subSessionRecordFixture satisfies SubSessionRecord;
+const _subSessionStatusEvent = subSessionStatusEventFixture satisfies SubSessionStatusEvent;
+const _subSessionExitedEvent = subSessionExitedEventFixture satisfies SubSessionExitedEvent;
 
 // Silence "unused" lint without losing the satisfies assertion.
 void _session;
@@ -67,6 +73,8 @@ void _sessionStatusEvent;
 void _customProcessDef;
 void _subSession;
 void _subSessionRecord;
+void _subSessionStatusEvent;
+void _subSessionExitedEvent;
 
 // --- Runtime key-set assertions --------------------------------------------
 
@@ -233,6 +241,24 @@ describe('arborist type mirrors', () => {
       ['id', 'parentSessionId', 'defId', 'kind', 'label'],
       [],
       'SubSessionRecord',
+    );
+  });
+
+  it('SubSessionStatusEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionStatusEventFixture as unknown as Record<string, unknown>,
+      ['id', 'status'],
+      ['pid', 'message'],
+      'SubSessionStatusEvent',
+    );
+  });
+
+  it('SubSessionExitedEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionExitedEventFixture as unknown as Record<string, unknown>,
+      ['id'],
+      ['exitCode'],
+      'SubSessionExitedEvent',
     );
   });
 

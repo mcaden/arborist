@@ -699,6 +699,86 @@ pub struct SessionInputArgs {
     pub data: String,
 }
 
+// ---------------------------------------------------------------------------
+// Sub-session command/event payloads (Phase 2 backend; frontend wraps in
+// Phase 4). Mirrored on the frontend in `src/lib/tauri-bridge.ts`.
+// ---------------------------------------------------------------------------
+
+/// Arguments for `subsession_create`. The chosen [`CustomProcessDef`] is
+/// looked up in `AppConfig.customProcesses`; rejected if disabled or
+/// missing.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionCreateArgs {
+    pub parent_session_id: SessionId,
+    pub def_id: CustomProcessDefId,
+}
+
+/// Arguments for `subsession_close` / `subsession_focus`. A bare-id
+/// envelope keeps the wire shape uniform with [`SessionIdArg`].
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionIdArg {
+    pub id: SubSessionId,
+}
+
+/// Arguments for `subsession_list`. When `parent_session_id` is `None`
+/// the result is the full set across every parent; when `Some(id)` the
+/// result is filtered to that parent and ordered as the sub-sessions
+/// were created.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionListArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
+}
+
+/// Arguments for `subsession_input` (terminal sub-tabs only).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionInputArgs {
+    pub id: SubSessionId,
+    pub data: String,
+}
+
+/// Arguments for `subsession_resize` (terminal sub-tabs only).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionResizeArgs {
+    pub id: SubSessionId,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Payload of `subsession://status`. Parallels [`SessionStatusEvent`].
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SubSessionStatusEvent`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionStatusEvent {
+    pub id: SubSessionId,
+    pub status: SubSessionStatus,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub message: Option<String>,
+}
+
+/// Payload of `subsession://exited`. Emitted when an Application sub-tab's
+/// detached process is observed to have exited. Phase 3 wires this from
+/// the application-launcher polling thread; Phase 2's terminal sub-tabs
+/// rely on `subsession://status` + `SubSessionStatus::Exited` instead.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SubSessionExitedEvent`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionExitedEvent {
+    pub id: SubSessionId,
+    /// Exit code if available; absent on signal/error termination.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exit_code: Option<i32>,
+}
+
 /// Arguments for `workspace_validate` (Roadmap §1.1).
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::WorkspaceValidateArgs`.

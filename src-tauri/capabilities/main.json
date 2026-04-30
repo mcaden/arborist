@@ -13,6 +13,7 @@
     "allow-worktrees-list",
     "allow-workspace-validate",
     "allow-worktree-create",
+    "allow-subsession",
     "dialog:allow-open"
   ]
 }

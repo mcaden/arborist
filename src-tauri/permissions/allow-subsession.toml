@@ -1,0 +1,13 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-subsession"
+description = "Allows the frontend to manage sub-sessions (terminal sub-tabs in Phase 2; application sub-tabs in Phase 3): create, close, focus, list, send input to, and resize."
+commands.allow = [
+    "subsession_create",
+    "subsession_close",
+    "subsession_focus",
+    "subsession_list",
+    "subsession_input",
+    "subsession_resize",
+]

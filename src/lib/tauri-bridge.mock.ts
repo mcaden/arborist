@@ -86,7 +86,7 @@ export const frontendReady: Mock<
 // of Phase 4; their default mock behaviour returns benign empty values so
 // tests don't need to wire each call individually unless they care.
 const defaultAppConfig = (): AppConfig => ({
-  configVersion: 3,
+  configVersion: 4,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   // Tests assume the main UI is reachable by default. The first-boot
@@ -98,6 +98,8 @@ const defaultAppConfig = (): AppConfig => ({
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
+  customProcesses: [],
+  lastOpenSubSessions: [],
 });
 
 export const configGet: Mock<
@@ -149,6 +151,47 @@ export const onSessionMetrics: Mock<
   ReturnType<typeof realBridge.onSessionMetrics>
 > = vi.fn(() => Promise.resolve(noopUnlisten));
 
+// Phase 2: sub-session command/event mocks.
+export const subSessionCreate: Mock<
+  Parameters<typeof realBridge.subSessionCreate>,
+  ReturnType<typeof realBridge.subSessionCreate>
+> = vi.fn(rejectNotImplemented);
+
+export const subSessionClose: Mock<
+  Parameters<typeof realBridge.subSessionClose>,
+  ReturnType<typeof realBridge.subSessionClose>
+> = vi.fn(() => Promise.resolve());
+
+export const subSessionFocus: Mock<
+  Parameters<typeof realBridge.subSessionFocus>,
+  ReturnType<typeof realBridge.subSessionFocus>
+> = vi.fn(() => Promise.resolve());
+
+export const subSessionList: Mock<
+  Parameters<typeof realBridge.subSessionList>,
+  ReturnType<typeof realBridge.subSessionList>
+> = vi.fn(() => Promise.resolve([]));
+
+export const subSessionInput: Mock<
+  Parameters<typeof realBridge.subSessionInput>,
+  ReturnType<typeof realBridge.subSessionInput>
+> = vi.fn(() => Promise.resolve());
+
+export const subSessionResize: Mock<
+  Parameters<typeof realBridge.subSessionResize>,
+  ReturnType<typeof realBridge.subSessionResize>
+> = vi.fn(() => Promise.resolve());
+
+export const onSubSessionStatus: Mock<
+  Parameters<typeof realBridge.onSubSessionStatus>,
+  ReturnType<typeof realBridge.onSubSessionStatus>
+> = vi.fn(() => Promise.resolve(noopUnlisten));
+
+export const onSubSessionExited: Mock<
+  Parameters<typeof realBridge.onSubSessionExited>,
+  ReturnType<typeof realBridge.onSubSessionExited>
+> = vi.fn(() => Promise.resolve(noopUnlisten));
+
 // Re-export the bridge's argument-shape interfaces so consumers importing
 // from the mock get identical types.
 export type {
@@ -185,6 +228,14 @@ export function resetBridgeMocks(): void {
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionMetrics.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  subSessionCreate.mockReset().mockImplementation(rejectNotImplemented);
+  subSessionClose.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionFocus.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionList.mockReset().mockImplementation(() => Promise.resolve([]));
+  subSessionInput.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionResize.mockReset().mockImplementation(() => Promise.resolve());
+  onSubSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  onSubSessionExited.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }
 
 // Compile-time guard: this module must export every member of the real
@@ -213,5 +264,13 @@ const _shapeCheck = {
   onSessionStatus,
   onSessionActivity,
   onSessionMetrics,
+  subSessionCreate,
+  subSessionClose,
+  subSessionFocus,
+  subSessionList,
+  subSessionInput,
+  subSessionResize,
+  onSubSessionStatus,
+  onSubSessionExited,
 } satisfies typeof realBridge;
 void _shapeCheck;
