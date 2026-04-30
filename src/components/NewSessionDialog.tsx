@@ -137,12 +137,12 @@ export function NewSessionDialog(): JSX.Element | null {
   // Worktrees outside that directory (the main checkout, ad-hoc paths)
   // are still reachable via "Browse…".
   useEffect(() => {
-    if (!isOpen || step !== 2) return;
     // Invalidate any in-flight worktreesList from a prior render of this
-    // effect before doing anything else — including the early-return paths
-    // below — so a stale earlier request can never win the latest-id check
-    // after workspaceRoot flips to null/empty (or any dependency changes).
+    // effect first thing — including when the new render bails on the
+    // isOpen/step/workspaceRoot guards below — so a stale earlier request
+    // can never win the latest-id check after any dependency changes.
     const requestId = ++worktreesRequestIdRef.current;
+    if (!isOpen || step !== 2) return;
     setWorktreesLoading(true);
     if (workspaceRoot === null || workspaceRoot.length === 0) {
       setWorktrees([]);
