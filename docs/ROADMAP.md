@@ -8,14 +8,6 @@ For the authoritative product spec see `dev/docs/SPEC.md`. For architecture cont
 
 ## Upcoming features
 
-### P0 — Blocking for v1 quality bar
-
-#### Worktree list sourced from `.worktrees/`
-The intended convention is that all Arborist-created worktrees live at `<workspaceRoot>/.worktrees/<name>/`. The current session-creation dialog lists worktrees via `git worktree list --porcelain` against `worktreeRoots` entries, without awareness of this subdirectory convention. Step 2 of the new-session dialog should enumerate `<workspaceRoot>/.worktrees/` directly for the quick-pick list.
-
-#### Create-new-worktree option in the session dialog
-There is no way to create a worktree from within the app — users must drop to a terminal first. Step 2 of the new-session dialog should offer an **Existing / New** toggle. In New mode: a text field for the worktree name (which doubles as the branch name), client-side branch-name validation on every keystroke, and a new `worktree_create` Tauri command that runs `git worktree add <workspaceRoot>/.worktrees/<name> -b <name>`. The command entry in `DESIGN.md §6`, its `permissions/allow-worktree-create.toml`, and the capability entry in `capabilities/main.json` must all land before or in the same PR.
-
 ### P1 — High value, no hard blockers
 
 #### Per-worktree pre-launch command overrides in settings
