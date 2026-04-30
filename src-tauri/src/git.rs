@@ -508,8 +508,8 @@ locked migrating to slow disk
             //    tempdir. This is the safety net for the historical
             //    outer-repo-pollution bug.
             if let Ok(cwd) = std::env::current_dir() {
-                let canon_temp = dunce::canonicalize(&self.repo_root)
-                    .unwrap_or_else(|_| self.repo_root.clone());
+                let canon_temp =
+                    dunce::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
                 scrub(&cwd, &|p| {
                     let cp = dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
                     cp.starts_with(&canon_temp)
