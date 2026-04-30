@@ -36,8 +36,9 @@ are **unsigned**, so each OS will show a one-time warning.
   `sudo apt install ./arborist_<version>_amd64.deb`.
 
 Arborist requires `git` on `PATH`, plus at least one of `claude` or `gh
-copilot` for actual session work. WebView2 (Windows) is bundled by the
-installer; preinstalled on Windows 10/11.
+copilot` for actual session work. On Windows, the installer uses Tauri's
+default WebView2 bootstrapper, which downloads the WebView2 runtime at
+install time if it isn't already present (preinstalled on Windows 10/11).
 
 Updates are manual: re-download the latest release when a new version ships.
 

@@ -40,7 +40,7 @@ None. The workflow uses the default `GITHUB_TOKEN`; no secrets to configure.
 5. **Smoke-test the artifacts.** Download each installer and confirm the app
    launches on a clean machine (or VM). Pay attention to:
    - macOS Gatekeeper right-click → Open works on Apple Silicon and Intel.
-   - Windows SmartScreen warning is dismissable and the installer completes.
+   - Windows SmartScreen warning is dismissible and the installer completes.
    - The Linux AppImage runs after `chmod +x`; the `.deb` installs cleanly.
 6. **Publish the draft** from the GitHub Releases UI.
 
