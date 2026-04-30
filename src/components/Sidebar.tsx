@@ -38,6 +38,9 @@ export function Sidebar(): JSX.Element {
   const activeId = useActiveSessionId();
   const actions = useSessionActions();
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'customProcesses'>(
+    'general',
+  );
 
   // Single-menu invariant: at most one TabContextMenu open across all
   // tabs. The triggering button is captured so we can restore focus on
@@ -269,7 +272,10 @@ export function Sidebar(): JSX.Element {
         <button
           type="button"
           data-testid="settings-button"
-          onClick={() => setSettingsOpen(true)}
+          onClick={() => {
+            setSettingsInitialTab('general');
+            setSettingsOpen(true);
+          }}
           className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
         >
           <span aria-hidden="true">⚙</span>
@@ -283,10 +289,15 @@ export function Sidebar(): JSX.Element {
           anchor={contextMenu.anchor}
           onClose={closeContextMenu}
           restoreFocusTo={contextMenu.trigger}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => {
+            setSettingsInitialTab('customProcesses');
+            setSettingsOpen(true);
+          }}
         />
       )}
-      {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
+      {settingsOpen ? (
+        <SettingsDialog onClose={() => setSettingsOpen(false)} initialTab={settingsInitialTab} />
+      ) : null}
     </aside>
   );
 }

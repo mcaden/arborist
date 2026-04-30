@@ -1,17 +1,20 @@
 // In-app settings panel — Roadmap §3.1.
 //
-// Reachable from the sidebar footer. Exposes the three workspace-level
-// configuration knobs that users would otherwise have to edit by hand:
-//   * workspace root (delegates to the existing WorkspacePicker so the
-//     close-all-sessions invariant lives in one place — see
-//     `lib/workspace-switch.ts`),
-//   * instruction sets directory (path picker),
-//   * pre-launch commands (one shell command per line).
+// Reachable from the sidebar footer (and from the tab context menu's
+// empty Launch submenu, which jumps straight to the Custom Processes
+// tab). Two tabs:
+//
+//   General           — workspace root, instructions dir, pre-launch
+//                       commands (the three knobs from v1).
+//   Custom Processes  — CRUD over `AppConfig.customProcesses` (lives in
+//                       a dedicated `CustomProcessesTab` component).
 //
 // Per-worktree pre-launch overrides remain config-file–only in v1.
 
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
+import { CustomProcessesTab } from './CustomProcessesTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { pickDirectory } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
@@ -22,8 +25,12 @@ import {
   useConfigStore,
 } from '@/store/config-store';
 
+export type SettingsTab = 'general' | 'customProcesses';
+
 export interface SettingsDialogProps {
   onClose: () => void;
+  /** Which tab to show first. Defaults to `'general'`. */
+  initialTab?: SettingsTab;
 }
 
 /**
@@ -50,12 +57,16 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
-export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
+export function SettingsDialog({
+  onClose,
+  initialTab = 'general',
+}: SettingsDialogProps): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
   const setConfig = useConfigStore((s) => s.set);
 
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(prelaunchCommands));
   const [saving, setSaving] = useState(false);
@@ -63,11 +74,53 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
   const [picking, setPicking] = useState(false);
 
   const headingId = useId();
+  const generalTabId = useId();
+  const customProcessesTabId = useId();
+  const generalPanelId = useId();
+  const customProcessesPanelId = useId();
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
+  const generalTabRef = useRef<HTMLButtonElement | null>(null);
+  const customProcessesTabRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     closeBtnRef.current?.focus();
   }, []);
+
+  // WAI-ARIA tab keyboard model: ←/→/Home/End move between tabs (with
+  // wrap), and the move both selects and focuses (manual activation
+  // would mean two keypresses to reach a tab the user clearly wants).
+  const handleTablistKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+      const order: SettingsTab[] = ['general', 'customProcesses'];
+      const refs: Record<SettingsTab, RefObject<HTMLButtonElement>> = {
+        general: generalTabRef,
+        customProcesses: customProcessesTabRef,
+      };
+      const idx = order.indexOf(activeTab);
+      let next: SettingsTab | null = null;
+      switch (e.key) {
+        case 'ArrowLeft':
+          next = order[(idx - 1 + order.length) % order.length]!;
+          break;
+        case 'ArrowRight':
+          next = order[(idx + 1) % order.length]!;
+          break;
+        case 'Home':
+          next = order[0]!;
+          break;
+        case 'End':
+          next = order[order.length - 1]!;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      setActiveTab(next);
+      // Move DOM focus too so the roving-tabindex contract holds.
+      requestAnimationFrame(() => refs[next!].current?.focus());
+    },
+    [activeTab],
+  );
 
   // Re-sync local edit buffers if the persisted config changes underfoot
   // (e.g. via the workspace-change flow we delegate to WorkspacePicker).
@@ -139,111 +192,173 @@ export function SettingsDialog({ onClose }: SettingsDialogProps): JSX.Element {
             </button>
           </div>
 
-          <section className="mb-4">
-            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-              Workspace
-            </h3>
-            <div className="flex items-center gap-2">
-              <p
-                className="min-w-0 flex-1 truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-                title={workspaceRoot ?? ''}
-                data-testid="settings-workspace-path"
-              >
-                {workspaceRoot ?? '(none)'}
-              </p>
-              <button
-                type="button"
-                onClick={() => setPicking(true)}
-                className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
-              >
-                Change…
-              </button>
-            </div>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Changing the workspace closes every open session.
-            </p>
-          </section>
-
-          <section className="mb-4">
-            <label
-              htmlFor="settings-instr-dir"
-              className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
-            >
-              Instruction sets directory
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                id="settings-instr-dir"
-                type="text"
-                value={instrInput}
-                onChange={(e) => {
-                  setSubmitError(null);
-                  setInstrInput(e.target.value);
-                }}
-                placeholder="(absolute path)"
-                className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-              />
-              <button
-                type="button"
-                onClick={() => void handleBrowseInstructions()}
-                className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
-              >
-                Browse…
-              </button>
-            </div>
-          </section>
-
-          <section className="mb-4">
-            <label
-              htmlFor="settings-prelaunch"
-              className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
-            >
-              Pre-launch commands
-            </label>
-            <textarea
-              id="settings-prelaunch"
-              value={cmdsInput}
-              onChange={(e) => {
-                setSubmitError(null);
-                setCmdsInput(e.target.value);
-              }}
-              rows={5}
-              placeholder="One shell command per line, e.g.&#10;source ~/.zshenv&#10;nvm use 20"
-              className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-            />
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Run before every CLI session, in order. Blank lines are ignored.
-            </p>
-          </section>
-
-          {submitError && (
-            <p
-              role="alert"
-              data-testid="settings-error"
-              className="mb-3 rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
-            >
-              {submitError}
-            </p>
-          )}
-
-          <div className="flex justify-end gap-2">
+          <div
+            role="tablist"
+            aria-label="Settings sections"
+            onKeyDown={handleTablistKeyDown}
+            className="mb-4 flex gap-1 border-b border-slate-200 dark:border-slate-700"
+          >
             <button
+              ref={generalTabRef}
               type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="rounded border border-slate-300 bg-white px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+              role="tab"
+              id={generalTabId}
+              aria-selected={activeTab === 'general'}
+              aria-controls={generalPanelId}
+              tabIndex={activeTab === 'general' ? 0 : -1}
+              onClick={() => setActiveTab('general')}
+              data-testid="settings-tab-general"
+              className={`-mb-px rounded-t border-b-2 px-3 py-1 text-xs ${
+                activeTab === 'general'
+                  ? 'border-blue-600 font-medium text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
             >
-              Cancel
+              General
             </button>
             <button
+              ref={customProcessesTabRef}
               type="button"
-              onClick={() => void handleSave()}
-              disabled={!dirty || saving}
-              className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              role="tab"
+              id={customProcessesTabId}
+              aria-selected={activeTab === 'customProcesses'}
+              aria-controls={customProcessesPanelId}
+              tabIndex={activeTab === 'customProcesses' ? 0 : -1}
+              onClick={() => setActiveTab('customProcesses')}
+              data-testid="settings-tab-custom-processes"
+              className={`-mb-px rounded-t border-b-2 px-3 py-1 text-xs ${
+                activeTab === 'customProcesses'
+                  ? 'border-blue-600 font-medium text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
             >
-              {saving ? 'Saving…' : 'Save'}
+              Custom Processes
             </button>
           </div>
+
+          {activeTab === 'general' ? (
+            <div
+              role="tabpanel"
+              id={generalPanelId}
+              aria-labelledby={generalTabId}
+              data-testid="settings-panel-general"
+            >
+              <section className="mb-4">
+                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Workspace
+                </h3>
+                <div className="flex items-center gap-2">
+                  <p
+                    className="min-w-0 flex-1 truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                    title={workspaceRoot ?? ''}
+                    data-testid="settings-workspace-path"
+                  >
+                    {workspaceRoot ?? '(none)'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setPicking(true)}
+                    className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+                  >
+                    Change…
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Changing the workspace closes every open session.
+                </p>
+              </section>
+
+              <section className="mb-4">
+                <label
+                  htmlFor="settings-instr-dir"
+                  className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
+                >
+                  Instruction sets directory
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="settings-instr-dir"
+                    type="text"
+                    value={instrInput}
+                    onChange={(e) => {
+                      setSubmitError(null);
+                      setInstrInput(e.target.value);
+                    }}
+                    placeholder="(absolute path)"
+                    className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleBrowseInstructions()}
+                    className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+                  >
+                    Browse…
+                  </button>
+                </div>
+              </section>
+
+              <section className="mb-4">
+                <label
+                  htmlFor="settings-prelaunch"
+                  className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
+                >
+                  Pre-launch commands
+                </label>
+                <textarea
+                  id="settings-prelaunch"
+                  value={cmdsInput}
+                  onChange={(e) => {
+                    setSubmitError(null);
+                    setCmdsInput(e.target.value);
+                  }}
+                  rows={5}
+                  placeholder="One shell command per line, e.g.&#10;source ~/.zshenv&#10;nvm use 20"
+                  className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Run before every CLI session, in order. Blank lines are ignored.
+                </p>
+              </section>
+
+              {submitError && (
+                <p
+                  role="alert"
+                  data-testid="settings-error"
+                  className="mb-3 rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+                >
+                  {submitError}
+                </p>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={saving}
+                  className="rounded border border-slate-300 bg-white px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSave()}
+                  disabled={!dirty || saving}
+                  className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              role="tabpanel"
+              id={customProcessesPanelId}
+              aria-labelledby={customProcessesTabId}
+              data-testid="settings-panel-custom-processes"
+            >
+              <CustomProcessesTab onClose={onClose} />
+            </div>
+          )}
         </div>
       </div>
 

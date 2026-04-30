@@ -367,6 +367,31 @@ describe('Sidebar', () => {
     // handler.
     expect(screen.queryByText(/terminate session/i)).toBeNull();
   });
+
+  it('opens Settings on the Custom Processes tab when invoked from the empty-launch handoff', async () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    const tab = tabByLabel('claude session a');
+    fireEvent.contextMenu(tab, { clientX: 10, clientY: 10 });
+    fireEvent.click(screen.getByRole('menuitem', { name: /launch/i }));
+    fireEvent.click(screen.getByTestId('tab-context-menu-empty'));
+    // The handoff is deferred via requestAnimationFrame so the menu can
+    // unmount before Settings opens.
+    await act(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        }),
+    );
+    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+  });
+
+  it('opens Settings on the General tab when launched from the footer button', () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId('settings-button'));
+    expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
+  });
 });
 
 describe('Sidebar unread accessibility', () => {
