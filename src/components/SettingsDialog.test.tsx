@@ -13,6 +13,7 @@ function seedConfig(
     workspaceRoot: string | null;
     instructionSetsDir: string;
     prelaunchCommands: string[];
+    aiLaunchCommands: { claude: string; copilot: string };
   }> = {},
 ): void {
   useConfigStore.setState({
@@ -24,6 +25,7 @@ function seedConfig(
       worktreeRoots: [],
       prelaunchCommands: overrides.prelaunchCommands ?? [],
       worktreePrelaunchCommands: {},
+      aiLaunchCommands: overrides.aiLaunchCommands ?? { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -55,6 +57,7 @@ afterEach(() => {
       worktreeRoots: [],
       prelaunchCommands: [],
       worktreePrelaunchCommands: {},
+      aiLaunchCommands: { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -167,5 +170,42 @@ describe('SettingsDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     expect(bridgeMock.configSet).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the configured AI agent launch commands and persists edits', async () => {
+    seedConfig({ aiLaunchCommands: { claude: 'npx claude', copilot: '' } });
+    const onClose = vi.fn();
+    render(<SettingsDialog onClose={onClose} />);
+
+    const claudeInput = screen.getByTestId('settings-launch-claude') as HTMLInputElement;
+    const copilotInput = screen.getByTestId('settings-launch-copilot') as HTMLInputElement;
+    expect(claudeInput.value).toBe('npx claude');
+    expect(copilotInput.value).toBe('');
+    expect(copilotInput.placeholder).toBe('copilot');
+
+    fireEvent.change(claudeInput, { target: { value: 'claude --model sonnet' } });
+    fireEvent.change(copilotInput, { target: { value: 'gh copilot' } });
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+
+    expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
+    expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
+      aiLaunchCommands: { claude: 'claude --model sonnet', copilot: 'gh copilot' },
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearing an AI launch command persists empty string (revert to default)', async () => {
+    seedConfig({ aiLaunchCommands: { claude: 'npx claude', copilot: '' } });
+    render(<SettingsDialog onClose={() => {}} />);
+    const claudeInput = screen.getByTestId('settings-launch-claude') as HTMLInputElement;
+    fireEvent.change(claudeInput, { target: { value: '   ' } });
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+    expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
+      aiLaunchCommands: { claude: '' },
+    });
   });
 });

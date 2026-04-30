@@ -18,6 +18,7 @@ function seedStores(workspaceRoot: string | null): void {
       worktreeRoots: [],
       prelaunchCommands: [],
       worktreePrelaunchCommands: {},
+      aiLaunchCommands: { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,

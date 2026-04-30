@@ -72,6 +72,13 @@ pub struct ComposeInputs<'a> {
     /// stays pure. Must be `Some` when [`Self::instruction_set`] is `Some`,
     /// `None` otherwise. Ignored for Copilot.
     pub instruction_set_contents: Option<&'a str>,
+    /// Optional user override for the CLI launch command. When `Some` and
+    /// non-empty, replaces the bare program token (`claude` / `copilot`)
+    /// in the composed command. The string is treated as a verbatim shell
+    /// snippet — *not* a single quoted token — so users can put extra
+    /// arguments in it (e.g. `"npx claude --model sonnet"`). Empty strings
+    /// behave the same as `None` (use the default).
+    pub cli_launch_command: Option<&'a str>,
 }
 
 /// Compose the shell command for a session.
@@ -476,7 +483,7 @@ fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
 }
 
 fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
-    let program = cli_program_for_tool(Tool::Claude, quoter);
+    let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command, quoter);
 
     // No user instruction set: launch plain `claude`. The agent still
     // auto-discovers `CLAUDE.md` from its `cwd` (the worktree). Skipping
@@ -512,7 +519,7 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
     )
 }
 
-fn build_copilot(_inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+fn build_copilot(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     // Modern `copilot` (the standalone GitHub Copilot CLI) starts in
     // interactive mode by default. The legacy `--interactive <string>`
     // flag was removed and now triggers a "too many arguments" usage
@@ -522,7 +529,7 @@ fn build_copilot(_inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Te
     // PTY pool already passes the worktree as `cwd`. The worktree
     // context block (label + path) is intentionally dropped here; the
     // agent can derive its location from `pwd`/`git` if it needs to.
-    let cli_cmd = cli_program_for_tool(Tool::Copilot, quoter);
+    let cli_cmd = cli_program_for_tool(Tool::Copilot, inputs.cli_launch_command, quoter);
     (cli_cmd, Vec::new())
 }
 
@@ -536,14 +543,29 @@ pub const CLAUDE_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_CLAUDE";
 /// Sibling of [`CLAUDE_OVERRIDE_ENV`] for the `copilot` executable.
 pub const COPILOT_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_COPILOT";
 
-/// Resolve the program token for `tool`. Returns the bare CLI name in
-/// production (`claude` / `copilot`); when the matching `ARBORIST_CLI_OVERRIDE_*`
-/// env var is set, returns the override **already shell-quoted** so it can
-/// be interpolated into the composed command without re-quoting at the call
-/// site. The override path is invisible to the persisted `composed_command`
-/// once the env var is unset, so do not rely on it across restarts — it's
-/// purely a test-time seam.
-fn cli_program_for_tool(tool: Tool, quoter: Quoter) -> String {
+/// Resolve the program token for `tool`. Precedence (highest first):
+///
+/// 1. **User config override** (`config_override`, when `Some` and non-empty):
+///    inserted **verbatim** into the composed command. This is a shell
+///    snippet authored by the user — not a single argument — so callers can
+///    add flags like `--model sonnet` directly. Persisted by the Settings
+///    dialog into `AppConfig.ai_launch_commands`.
+/// 2. **Test-seam env var** (`ARBORIST_CLI_OVERRIDE_*`): set by integration
+///    tests to point at `arborist-test-child`. Returned **shell-quoted** so
+///    paths with spaces still work.
+/// 3. **Default**: the bare CLI name (`claude` / `copilot`).
+///
+/// The override path is invisible to the persisted `composed_command` once
+/// the env var is unset, so do not rely on the env-var path across restarts.
+fn cli_program_for_tool(tool: Tool, config_override: Option<&str>, quoter: Quoter) -> String {
+    // 1. Config override (verbatim).
+    if let Some(s) = config_override {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_owned();
+        }
+    }
+    // 2. Test-seam env override (quoted).
     let var = match tool {
         Tool::Claude => CLAUDE_OVERRIDE_ENV,
         Tool::Copilot => COPILOT_OVERRIDE_ENV,
@@ -553,6 +575,7 @@ fn cli_program_for_tool(tool: Tool, quoter: Quoter) -> String {
             return quoter(&path);
         }
     }
+    // 3. Default.
     match tool {
         Tool::Claude => "claude".to_owned(),
         Tool::Copilot => "copilot".to_owned(),
@@ -604,6 +627,7 @@ mod tests {
             instruction_set: is,
             prelaunch_commands: prelaunch,
             instruction_set_contents: body,
+            cli_launch_command: None,
         }
     }
 
@@ -789,6 +813,52 @@ mod tests {
         // pre-removal behaviour where we used to interpolate the path into
         // a quoted `--interactive` argument.
         assert_eq!(r.composed_command, "copilot");
+    }
+
+    // -- composition: cli_launch_command override ----------------------
+
+    #[test]
+    fn claude_compose_uses_cli_launch_command_override() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let is = instr_set(Tool::Claude);
+        let mut i = inputs(Tool::Claude, &wt, "wt", Some(&is), &[], Some("body"));
+        i.cli_launch_command = Some("npx claude --model sonnet");
+        let r = compose_command(&i).expect("compose");
+        // Override is inserted verbatim in place of the bare `claude`
+        // token; the `--system-prompt` flag is still appended.
+        assert!(r
+            .composed_command
+            .starts_with("npx claude --model sonnet --system-prompt "));
+    }
+
+    #[test]
+    fn copilot_compose_uses_cli_launch_command_override() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let mut i = inputs(Tool::Copilot, &wt, "wt", None, &[], None);
+        i.cli_launch_command = Some("gh copilot");
+        let r = compose_command(&i).expect("compose");
+        assert_eq!(r.composed_command, "gh copilot");
+    }
+
+    #[test]
+    fn empty_or_whitespace_override_falls_back_to_default() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        for s in [Some(""), Some("   "), None] {
+            let mut i = inputs(Tool::Copilot, &wt, "wt", None, &[], None);
+            i.cli_launch_command = s;
+            let r = compose_command(&i).expect("compose");
+            assert_eq!(r.composed_command, "copilot", "override={:?}", s);
+        }
+    }
+
+    #[test]
+    fn override_composes_with_prelaunch_commands() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let pre = vec!["nvm use 20".to_owned()];
+        let mut i = inputs(Tool::Copilot, &wt, "wt", None, &pre, None);
+        i.cli_launch_command = Some("copilot --foo bar");
+        let r = compose_command(&i).expect("compose");
+        assert_eq!(r.composed_command, "nvm use 20 && copilot --foo bar");
     }
 
     // -- with_resume ----------------------------------------------------

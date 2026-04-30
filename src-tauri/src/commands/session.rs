@@ -168,6 +168,10 @@ pub fn session_create_impl(
 
     // 5. Compose command + temp files.
     let session_id = SessionId::new();
+    let cli_override = match args.tool {
+        crate::types::Tool::Claude => cfg.ai_launch_commands.claude.as_str(),
+        crate::types::Tool::Copilot => cfg.ai_launch_commands.copilot.as_str(),
+    };
     let composed = compose::compose_command(&ComposeInputs {
         session_id,
         tool: args.tool,
@@ -176,6 +180,7 @@ pub fn session_create_impl(
         instruction_set: set_opt.as_ref(),
         prelaunch_commands: prelaunch_for(&cfg, &worktree),
         instruction_set_contents: contents_opt.as_deref(),
+        cli_launch_command: Some(cli_override),
     })
     .map_err(AppError::from)?;
 

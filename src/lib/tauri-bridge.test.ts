@@ -150,6 +150,7 @@ describe('configGet', () => {
       worktreeRoots: [],
       prelaunchCommands: [],
       worktreePrelaunchCommands: {},
+      aiLaunchCommands: { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,

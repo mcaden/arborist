@@ -589,6 +589,15 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(cmds) = patch.prelaunch_commands {
         cfg.prelaunch_commands = cmds;
     }
+    if let Some(launch) = patch.ai_launch_commands {
+        let crate::types::PartialAiLaunchCommands { claude, copilot } = launch;
+        if let Some(c) = claude {
+            cfg.ai_launch_commands.claude = c;
+        }
+        if let Some(c) = copilot {
+            cfg.ai_launch_commands.copilot = c;
+        }
+    }
     if let Some(overrides) = patch.worktree_prelaunch_commands {
         let mut out = BTreeMap::new();
         for (key, cmds) in overrides {
