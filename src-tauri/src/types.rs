@@ -50,6 +50,61 @@ impl std::fmt::Display for SessionId {
     }
 }
 
+/// Stable identifier for a [`SubSession`]. Backed by a UUID v4. Distinct
+/// from [`SessionId`] at the type level so the compiler enforces the
+/// boundary, even though the wire shape is identical (a UUID string).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct SubSessionId(pub Uuid);
+
+impl SubSessionId {
+    /// Generate a fresh random sub-session ID.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for SubSessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for SubSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Stable identifier for a [`CustomProcessDef`]. A short user-facing slug
+/// (e.g. `"shell"`, `"vscode"`, `"my-dev-server"`). Used both as the
+/// AppConfig dictionary key and to bind sub-session restore records back
+/// to their definition. Built-in defs use reserved IDs (`shell`,
+/// `open-folder`, `vscode`) but are otherwise indistinguishable from
+/// user-defined ones.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct CustomProcessDefId(pub String);
+
+impl CustomProcessDefId {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CustomProcessDefId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Stable identifier for an [`InstructionSet`]. Currently a string slug
 /// derived from the instruction file name (e.g. `"claude-default"`).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -90,6 +145,34 @@ pub enum Tool {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionStatus {
+    Starting,
+    Running,
+    Exited,
+    Error,
+}
+
+/// Which flavour of [`CustomProcessDef`] is being launched.
+///
+/// * `Terminal` — runs the command inside an in-app PTY (xterm.js viewport,
+///   bytes flow over `session://output`-style events). Backed by the same
+///   `PtyPool` as full sessions.
+/// * `Application` — spawns an external GUI program detached. The sub-tab
+///   tracks only the OS PID; clicking the sub-tab focuses the program's
+///   window via the platform-specific [`crate::app_launcher`] focuser.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum CustomProcessKind {
+    Terminal,
+    Application,
+}
+
+/// Lifecycle state of a [`SubSession`]. Mirrors [`SessionStatus`] for the
+/// terminal kind; for the application kind only `Running`, `Exited`, and
+/// `Error` are observable (no separate "starting" — the spawn is
+/// synchronous, and an unfocusable / dead PID is reported as `Exited`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum SubSessionStatus {
     Starting,
     Running,
     Exited,
@@ -240,7 +323,12 @@ pub struct DefaultInstructionSets {
 /// * `1` — initial release.
 /// * `2` — added `active_session_id` (Phase 7).
 /// * `3` — added `workspace_root` (single-workspace model, Roadmap §1).
-pub const CONFIG_VERSION_CURRENT: u32 = 3;
+/// * `4` — added `custom_processes` and `last_open_sub_sessions`
+///   (context-menu / sub-tab feature). Migration seeds the built-in
+///   custom-process defs (`shell`, `open-folder`, `vscode`) additively —
+///   only IDs not already present are inserted, never overwriting a
+///   user-edited def.
+pub const CONFIG_VERSION_CURRENT: u32 = 4;
 
 /// Persisted application configuration. Lives in `config.json` (Phase 4).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -270,6 +358,21 @@ pub struct AppConfig {
     /// `configVersion = 2`.
     #[serde(default)]
     pub active_session_id: Option<SessionId>,
+    /// User-defined custom-process launchers exposed in the tab context
+    /// menu. Built-in defs (`shell`, `open-folder`, `vscode`) are seeded on
+    /// migration to `configVersion = 4` if absent; the user is free to
+    /// edit, disable, or delete them. Order is preserved as the on-the-
+    /// wire (Vec) order so the Settings tab stays stable across restarts.
+    #[serde(default)]
+    pub custom_processes: Vec<CustomProcessDef>,
+    /// Lightweight restore records for sub-tabs (`SubSession`s) that were
+    /// open at last shutdown. On launch the restore pass re-creates each
+    /// terminal sub-session by re-spawning the matching `CustomProcessDef`;
+    /// application sub-sessions come back in `Exited` (greyed) state and
+    /// re-launch on user click. Records whose `defId` no longer exists in
+    /// `custom_processes` are silently dropped at restore time.
+    #[serde(default)]
+    pub last_open_sub_sessions: Vec<SubSessionRecord>,
 }
 
 impl Default for AppConfig {
@@ -285,6 +388,8 @@ impl Default for AppConfig {
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
             active_session_id: None,
+            custom_processes: Vec::new(),
+            last_open_sub_sessions: Vec::new(),
         }
     }
 }
@@ -338,6 +443,15 @@ pub struct PartialAppConfig {
         with = "double_option"
     )]
     pub active_session_id: Option<Option<SessionId>>,
+    /// Replace the entire `customProcesses` list. Absence leaves it
+    /// untouched. The Settings dialog (Phase 6) sends the full edited list
+    /// rather than per-row patches so ordering is unambiguous.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub custom_processes: Option<Vec<CustomProcessDef>>,
+    /// Replace the entire `lastOpenSubSessions` list. Absence leaves it
+    /// untouched.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_open_sub_sessions: Option<Vec<SubSessionRecord>>,
 }
 
 /// serde adapter for `Option<Option<T>>`: distinguishes "absent" from
@@ -626,6 +740,92 @@ pub struct WorktreeCreateResult {
     pub path: PathBuf,
 }
 
+// ---------------------------------------------------------------------------
+// Custom processes / sub-sessions (Phase 1: types only; backend lands in
+// Phases 2–3, frontend in 4–6, restore in 7).
+// ---------------------------------------------------------------------------
+
+/// A user- or built-in-defined "custom process" launcher. Persisted in
+/// [`AppConfig::custom_processes`]. Disabled defs are visible in the
+/// Settings tab (with a toggle) but hidden from the tab context menu.
+///
+/// `command` is a single shell command string composed exactly like a
+/// session's `composedCommand`: passed to `$SHELL -c` (or `%COMSPEC% /c`
+/// on Windows) with `cwd` set to the parent session's worktree path. **The
+/// worktree path is never interpolated** into the command (DESIGN §8 —
+/// injection prevention).
+///
+/// MIRROR: `src/types/arborist.ts::CustomProcessDef`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProcessDef {
+    pub id: CustomProcessDefId,
+    pub name: String,
+    pub kind: CustomProcessKind,
+    pub command: String,
+    /// When `false`, hidden from the context menu's "Launch…" submenu.
+    /// Existing sub-sessions backed by a disabled def keep running until
+    /// the user closes them (Phase 5).
+    pub enabled: bool,
+    /// Optional UI hint (icon name / emoji / preset key). Reserved for
+    /// future use; the v1 sidebar renders a generic icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+/// In-memory + on-the-wire representation of a sub-tab. Sub-sessions live
+/// in a parallel `SubSessionStore` (Phase 2); only the lightweight
+/// [`SubSessionRecord`] is persisted across restarts. Identifies its
+/// parent via `parent_session_id` and the def that launched it via
+/// `def_id` (so the Sidebar can re-resolve the user-facing name/icon if
+/// the def is renamed).
+///
+/// MIRROR: `src/types/arborist.ts::SubSession`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSession {
+    pub id: SubSessionId,
+    pub parent_session_id: SessionId,
+    pub def_id: CustomProcessDefId,
+    pub kind: CustomProcessKind,
+    pub label: String,
+    pub status: SubSessionStatus,
+    /// OS PID of the underlying child (PTY child or detached GUI process).
+    /// Cleared on exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// Composed launch command captured once at sub-session creation and
+    /// reused verbatim if the sub-session is re-spawned (Phase 2 will use
+    /// it for terminal sub-tab restart). Mirrors [`Session::composed_command`]:
+    /// later edits to the source [`CustomProcessDef`] do not retroactively
+    /// rewrite already-running sub-sessions.
+    pub composed_command: String,
+    pub created_at: i64,
+}
+
+/// Lightweight restore record persisted in
+/// [`AppConfig::last_open_sub_sessions`]. Carries only what the restore
+/// pass needs to attempt re-creation: the def the sub-tab was launched
+/// from, the parent session it lived under, the user-facing label (so the
+/// sidebar can render the tab even before restore resolves), and the
+/// kind (so an Application sub-tab can come back greyed without
+/// re-launching the GUI).
+///
+/// MIRROR: `src/types/arborist.ts::SubSessionRecord`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionRecord {
+    pub id: SubSessionId,
+    pub parent_session_id: SessionId,
+    pub def_id: CustomProcessDefId,
+    pub kind: CustomProcessKind,
+    pub label: String,
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
 /// Crate-wide error type. Internal Rust code consumes this via `?`; at the
 /// Tauri command boundary it is converted to [`AppError`] so the frontend
 /// gets a stable, serde-friendly shape it can branch on.
@@ -672,6 +872,11 @@ pub enum Error {
     #[error("tool/instruction-set mismatch: {0}")]
     ToolMismatch(String),
 
+    /// A custom-process def submitted to `config_set` failed validation
+    /// (empty `id`/`name`/`command`, malformed `id`, or duplicate `id`).
+    #[error("invalid custom process def: {0}")]
+    InvalidCustomProcessDef(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -700,6 +905,7 @@ impl Error {
             Self::InstructionFileTooLarge(_) => "InstructionFileTooLarge",
             Self::InstructionFileMissing(_) => "InstructionFileMissing",
             Self::ToolMismatch(_) => "ToolMismatch",
+            Self::InvalidCustomProcessDef(_) => "InvalidCustomProcessDef",
             Self::Io(_) => "Io",
             Self::Serde(_) => "Serde",
             Self::Internal(_) => "Internal",
@@ -846,7 +1052,7 @@ mod tests {
             vec!["nvm use".to_owned(), "asdf reshim".to_owned()],
         );
         let value = AppConfig {
-            config_version: 3,
+            config_version: 4,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
@@ -865,9 +1071,28 @@ mod tests {
             active_session_id: Some(SessionId(
                 Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
             )),
+            custom_processes: vec![CustomProcessDef {
+                id: CustomProcessDefId::new("shell"),
+                name: "Shell".to_owned(),
+                kind: CustomProcessKind::Terminal,
+                command: "sh -i".to_owned(),
+                enabled: true,
+                icon: None,
+            }],
+            last_open_sub_sessions: vec![SubSessionRecord {
+                id: SubSessionId(
+                    Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
+                ),
+                parent_session_id: SessionId(
+                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
+                ),
+                def_id: CustomProcessDefId::new("shell"),
+                kind: CustomProcessKind::Terminal,
+                label: "Shell".to_owned(),
+            }],
         };
         let fixture = json!({
-            "configVersion": 3,
+            "configVersion": 4,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
@@ -881,7 +1106,97 @@ mod tests {
             },
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
             "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
-            "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+            "activeSessionId": "550e8400-e29b-41d4-a716-446655440000",
+            "customProcesses": [
+                {
+                    "id": "shell",
+                    "name": "Shell",
+                    "kind": "terminal",
+                    "command": "sh -i",
+                    "enabled": true
+                }
+            ],
+            "lastOpenSubSessions": [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
+                    "defId": "shell",
+                    "kind": "terminal",
+                    "label": "Shell"
+                }
+            ]
+        });
+        (value, fixture)
+    }
+
+    fn custom_process_def_fixture() -> (CustomProcessDef, Value) {
+        let value = CustomProcessDef {
+            id: CustomProcessDefId::new("vscode"),
+            name: "VS Code".to_owned(),
+            kind: CustomProcessKind::Application,
+            command: "code .".to_owned(),
+            enabled: true,
+            icon: Some("vscode".to_owned()),
+        };
+        let fixture = json!({
+            "id": "vscode",
+            "name": "VS Code",
+            "kind": "application",
+            "command": "code .",
+            "enabled": true,
+            "icon": "vscode"
+        });
+        (value, fixture)
+    }
+
+    fn sub_session_fixture() -> (SubSession, Value) {
+        let value = SubSession {
+            id: SubSessionId(
+                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
+            ),
+            parent_session_id: SessionId(
+                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
+            ),
+            def_id: CustomProcessDefId::new("shell"),
+            kind: CustomProcessKind::Terminal,
+            label: "Shell".to_owned(),
+            status: SubSessionStatus::Running,
+            pid: Some(42),
+            composed_command: "cmd && cmd".to_owned(),
+            created_at: 1_700_000_000,
+        };
+        let fixture = json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
+            "defId": "shell",
+            "kind": "terminal",
+            "label": "Shell",
+            "status": "running",
+            "pid": 42,
+            "composedCommand": "cmd && cmd",
+            "createdAt": 1_700_000_000
+        });
+        (value, fixture)
+    }
+
+    fn sub_session_record_fixture() -> (SubSessionRecord, Value) {
+        let value = SubSessionRecord {
+            id: SubSessionId(
+                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
+            ),
+            parent_session_id: SessionId(
+                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
+            ),
+            def_id: CustomProcessDefId::new("shell"),
+            kind: CustomProcessKind::Terminal,
+            label: "Shell".to_owned(),
+        };
+        let fixture = json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
+            "defId": "shell",
+            "kind": "terminal",
+            "label": "Shell"
         });
         (value, fixture)
     }
@@ -901,6 +1216,8 @@ mod tests {
             last_open_sessions: None,
             tab_order: None,
             active_session_id: None,
+            custom_processes: None,
+            last_open_sub_sessions: None,
         };
         let fixture = json!({
             "defaultInstructionSets": { "claude": "claude-default" },
@@ -948,6 +1265,79 @@ mod tests {
     }
 
     #[test]
+    fn custom_process_def_roundtrip() {
+        let (value, fixture) = custom_process_def_fixture();
+        assert_roundtrip(&value, fixture);
+    }
+
+    #[test]
+    fn custom_process_def_omits_icon_when_none() {
+        let value = CustomProcessDef {
+            id: CustomProcessDefId::new("shell"),
+            name: "Shell".to_owned(),
+            kind: CustomProcessKind::Terminal,
+            command: "sh -i".to_owned(),
+            enabled: true,
+            icon: None,
+        };
+        let serialized: Value = serde_json::to_value(&value).expect("serialize");
+        let obj = serialized.as_object().expect("object");
+        assert!(!obj.contains_key("icon"), "icon must be elided when None");
+    }
+
+    #[test]
+    fn sub_session_roundtrip() {
+        let (value, fixture) = sub_session_fixture();
+        assert_roundtrip(&value, fixture);
+    }
+
+    #[test]
+    fn sub_session_record_roundtrip() {
+        let (value, fixture) = sub_session_record_fixture();
+        assert_roundtrip(&value, fixture);
+    }
+
+    #[test]
+    fn custom_process_kind_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_value(CustomProcessKind::Terminal).expect("v"),
+            json!("terminal")
+        );
+        assert_eq!(
+            serde_json::to_value(CustomProcessKind::Application).expect("v"),
+            json!("application")
+        );
+    }
+
+    #[test]
+    fn sub_session_status_serializes_lowercase() {
+        for (variant, wire) in [
+            (SubSessionStatus::Starting, "starting"),
+            (SubSessionStatus::Running, "running"),
+            (SubSessionStatus::Exited, "exited"),
+            (SubSessionStatus::Error, "error"),
+        ] {
+            assert_eq!(serde_json::to_value(variant).expect("v"), json!(wire));
+        }
+    }
+
+    #[test]
+    fn sub_session_id_is_transparent_string() {
+        let id =
+            SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"));
+        assert_eq!(
+            serde_json::to_value(id).expect("v"),
+            json!("11111111-1111-1111-1111-111111111111")
+        );
+    }
+
+    #[test]
+    fn custom_process_def_id_is_transparent_string() {
+        let id = CustomProcessDefId::new("vscode");
+        assert_eq!(serde_json::to_value(&id).expect("v"), json!("vscode"));
+    }
+
+    #[test]
     fn partial_app_config_roundtrip() {
         let (value, fixture) = partial_app_config_fixture();
         assert_roundtrip(&value, fixture);
@@ -967,6 +1357,8 @@ mod tests {
         assert!(!obj.contains_key("lastOpenSessions"));
         assert!(!obj.contains_key("tabOrder"));
         assert!(!obj.contains_key("activeSessionId"));
+        assert!(!obj.contains_key("customProcesses"));
+        assert!(!obj.contains_key("lastOpenSubSessions"));
     }
 
     #[test]
@@ -1092,6 +1484,10 @@ mod tests {
             "InstructionFileMissing"
         );
         assert_eq!(Error::ToolMismatch("x".into()).code(), "ToolMismatch");
+        assert_eq!(
+            Error::InvalidCustomProcessDef("x".into()).code(),
+            "InvalidCustomProcessDef"
+        );
     }
 
     #[test]

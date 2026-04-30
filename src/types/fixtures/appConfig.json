@@ -1,5 +1,5 @@
 {
-  "configVersion": 3,
+  "configVersion": 4,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -13,5 +13,23 @@
   },
   "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
   "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
-  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "customProcesses": [
+    {
+      "id": "shell",
+      "name": "Shell",
+      "kind": "terminal",
+      "command": "sh -i",
+      "enabled": true
+    }
+  ],
+  "lastOpenSubSessions": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
+      "defId": "shell",
+      "kind": "terminal",
+      "label": "Shell"
+    }
+  ]
 }

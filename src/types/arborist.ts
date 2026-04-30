@@ -11,6 +11,17 @@
 // MIRROR: src-tauri/src/types.rs::SessionId
 export type SessionId = string;
 
+// MIRROR: src-tauri/src/types.rs::SubSessionId
+// Wire shape is identical to SessionId (a UUID string) but the Rust side
+// uses a distinct newtype so the compiler enforces the boundary.
+export type SubSessionId = string;
+
+// MIRROR: src-tauri/src/types.rs::CustomProcessDefId
+// User-facing slug for a `CustomProcessDef`. Matches `[a-zA-Z0-9_-]+` and
+// is unique within `AppConfig.customProcesses`. Built-in IDs: `shell`,
+// `open-folder`, `vscode`.
+export type CustomProcessDefId = string;
+
 // MIRROR: src-tauri/src/types.rs::InstructionSetId
 export type InstructionSetId = string;
 
@@ -19,6 +30,14 @@ export type Tool = 'claude' | 'copilot';
 
 // MIRROR: src-tauri/src/types.rs::SessionStatus
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'error';
+
+// MIRROR: src-tauri/src/types.rs::CustomProcessKind
+// Sub-session flavour. `terminal` runs inside an in-app PTY; `application`
+// spawns an external GUI program detached.
+export type CustomProcessKind = 'terminal' | 'application';
+
+// MIRROR: src-tauri/src/types.rs::SubSessionStatus
+export type SubSessionStatus = 'starting' | 'running' | 'exited' | 'error';
 
 // MIRROR: src-tauri/src/types.rs::TempFileSpec
 export interface TempFileSpec {
@@ -92,6 +111,18 @@ export interface AppConfig {
   tabOrder: SessionId[];
   /** Persisted active-session selection. `null` when no session is active. */
   activeSessionId: SessionId | null;
+  /**
+   * User-defined custom-process launchers exposed in the tab context menu.
+   * Built-ins (`shell`, `open-folder`, `vscode`) are seeded on
+   * `configVersion = 4` migration and may be edited or deleted by the user.
+   */
+  customProcesses: CustomProcessDef[];
+  /**
+   * Lightweight restore records for sub-tabs that were open at last
+   * shutdown. Restore re-creates terminal sub-sessions and brings
+   * application sub-sessions back greyed (re-launch on click).
+   */
+  lastOpenSubSessions: SubSessionRecord[];
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
@@ -120,6 +151,52 @@ export interface PartialAppConfig {
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
   activeSessionId?: SessionId | null;
+  /** Replaces the entire `customProcesses` list when present. */
+  customProcesses?: CustomProcessDef[];
+  /** Replaces the entire `lastOpenSubSessions` list when present. */
+  lastOpenSubSessions?: SubSessionRecord[];
+}
+
+// MIRROR: src-tauri/src/types.rs::CustomProcessDef
+// Persisted in `AppConfig.customProcesses`. `command` is passed verbatim to
+// `$SHELL -c` (or `%COMSPEC% /c` on Windows); the parent session's worktree
+// path is set as `cwd` and **never** interpolated into the command.
+export interface CustomProcessDef {
+  id: CustomProcessDefId;
+  name: string;
+  kind: CustomProcessKind;
+  command: string;
+  enabled: boolean;
+  /** Optional UI hint (icon name / emoji / preset key); reserved for future use. */
+  icon?: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSession
+// In-memory + on-the-wire representation of a sub-tab. Lives in a
+// parallel `SubSessionStore` on the Rust side; the frontend mirrors them
+// in a Zustand slice (Phase 4).
+export interface SubSession {
+  id: SubSessionId;
+  parentSessionId: SessionId;
+  defId: CustomProcessDefId;
+  kind: CustomProcessKind;
+  label: string;
+  status: SubSessionStatus;
+  pid?: number;
+  composedCommand: string;
+  createdAt: number;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionRecord
+// Lightweight restore record persisted in
+// `AppConfig.lastOpenSubSessions`. Carries only what the restore pass
+// needs to attempt re-creation.
+export interface SubSessionRecord {
+  id: SubSessionId;
+  parentSessionId: SessionId;
+  defId: CustomProcessDefId;
+  kind: CustomProcessKind;
+  label: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::AppError

@@ -10,12 +10,15 @@ import { expectTypeOf } from 'vitest';
 import type {
   AppConfig,
   AppError,
+  CustomProcessDef,
   InstructionSet,
   PartialAppConfig,
   Session,
   SessionOutputEvent,
   SessionStatusEvent,
   SessionView,
+  SubSession,
+  SubSessionRecord,
 } from './arborist';
 
 import sessionFixture from './fixtures/session.json';
@@ -26,6 +29,9 @@ import partialAppConfigFixture from './fixtures/partialAppConfig.json';
 import appErrorFixture from './fixtures/appError.json';
 import sessionOutputEventFixture from './fixtures/sessionOutputEvent.json';
 import sessionStatusEventFixture from './fixtures/sessionStatusEvent.json';
+import customProcessDefFixture from './fixtures/customProcessDef.json';
+import subSessionFixture from './fixtures/subSession.json';
+import subSessionRecordFixture from './fixtures/subSessionRecord.json';
 
 // --- Compile-time assertions ------------------------------------------------
 //
@@ -45,6 +51,9 @@ const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
 const _appError = appErrorFixture satisfies AppError;
 const _sessionOutputEvent = sessionOutputEventFixture satisfies SessionOutputEvent;
 const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEvent;
+const _customProcessDef = customProcessDefFixture satisfies CustomProcessDef;
+const _subSession = subSessionFixture satisfies SubSession;
+const _subSessionRecord = subSessionRecordFixture satisfies SubSessionRecord;
 
 // Silence "unused" lint without losing the satisfies assertion.
 void _session;
@@ -55,6 +64,9 @@ void _partialAppConfig;
 void _appError;
 void _sessionOutputEvent;
 void _sessionStatusEvent;
+void _customProcessDef;
+void _subSession;
+void _subSessionRecord;
 
 // --- Runtime key-set assertions --------------------------------------------
 
@@ -134,6 +146,8 @@ describe('arborist type mirrors', () => {
         'lastOpenSessions',
         'tabOrder',
         'activeSessionId',
+        'customProcesses',
+        'lastOpenSubSessions',
       ],
       [],
       'AppConfig',
@@ -153,6 +167,8 @@ describe('arborist type mirrors', () => {
       'lastOpenSessions',
       'tabOrder',
       'activeSessionId',
+      'customProcesses',
+      'lastOpenSubSessions',
     ]);
     const unexpected = Object.keys(partialAppConfigFixture).filter((k) => !allowed.has(k));
     expect(unexpected, 'PartialAppConfig: fixture has keys not declared in TS mirror').toEqual([]);
@@ -191,5 +207,42 @@ describe('arborist type mirrors', () => {
 
   it('SessionStatus wire values are lowercase string literals', () => {
     expectTypeOf<Session['status']>().toEqualTypeOf<'starting' | 'running' | 'exited' | 'error'>();
+  });
+
+  it('CustomProcessDef fixture matches TS interface key set', () => {
+    assertExactKeys(
+      customProcessDefFixture as unknown as Record<string, unknown>,
+      ['id', 'name', 'kind', 'command', 'enabled'],
+      ['icon'],
+      'CustomProcessDef',
+    );
+  });
+
+  it('SubSession fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionFixture as unknown as Record<string, unknown>,
+      ['id', 'parentSessionId', 'defId', 'kind', 'label', 'status', 'composedCommand', 'createdAt'],
+      ['pid'],
+      'SubSession',
+    );
+  });
+
+  it('SubSessionRecord fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionRecordFixture as unknown as Record<string, unknown>,
+      ['id', 'parentSessionId', 'defId', 'kind', 'label'],
+      [],
+      'SubSessionRecord',
+    );
+  });
+
+  it('CustomProcessKind wire values are lowercase string literals', () => {
+    expectTypeOf<CustomProcessDef['kind']>().toEqualTypeOf<'terminal' | 'application'>();
+  });
+
+  it('SubSessionStatus wire values are lowercase string literals', () => {
+    expectTypeOf<SubSession['status']>().toEqualTypeOf<
+      'starting' | 'running' | 'exited' | 'error'
+    >();
   });
 });

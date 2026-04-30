@@ -47,11 +47,12 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::NamedTempFile;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::types::{
-    AppConfig, AppError, Error, InstructionSet, InstructionSetId, PartialAppConfig,
-    PartialDefaultInstructionSets, Session, SessionId, SessionStatus, Tool, CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error,
+    InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
+    SessionId, SessionStatus, Tool, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -114,7 +115,7 @@ impl ConfigStore {
         let path = self.config_path();
         let raw = match fs::read_to_string(&path) {
             Ok(v) => v,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AppConfig::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return default_seeded_config(),
             Err(e) => {
                 warn!(
                     code = "Io",
@@ -122,7 +123,7 @@ impl ConfigStore {
                     error = %e,
                     "config.json could not be read; returning defaults",
                 );
-                return AppConfig::default();
+                return default_seeded_config();
             }
         };
 
@@ -137,9 +138,26 @@ impl ConfigStore {
                     error = %e,
                     "config.json failed to parse; quarantined and returning defaults",
                 );
-                return AppConfig::default();
+                return default_seeded_config();
             }
         };
+
+        // Future-version downgrade guard: if a newer build wrote this file
+        // (e.g. user downgraded to this branch), don't risk silently
+        // rewriting it without the future fields. Quarantine and return
+        // defaults so the user notices.
+        if parsed.config_version > CONFIG_VERSION_CURRENT {
+            let quarantined = quarantine(&path);
+            warn!(
+                code = "ConfigQuarantined",
+                path = %path.display(),
+                quarantined = ?quarantined,
+                found_version = parsed.config_version,
+                supported_version = CONFIG_VERSION_CURRENT,
+                "config.json was written by a newer build; quarantined and returning defaults",
+            );
+            return default_seeded_config();
+        }
 
         let mut cfg = parsed;
         // v1/v2 → v3: `workspace_root` did not exist. If the user already
@@ -152,11 +170,21 @@ impl ConfigStore {
         }
         // Bump the on-disk version stamp so the next save records the
         // current schema explicitly. (`active_session_id` was the v1→v2
-        // addition; `workspace_root` is the v2→v3 addition. Both default
-        // via serde, so missing fields hydrate cleanly already.)
+        // addition; `workspace_root` is the v2→v3 addition; `custom_processes`
+        // and `last_open_sub_sessions` are the v3→v4 additions. All
+        // default via serde, so missing fields hydrate cleanly already.)
+        //
+        // v3→v4: additively seed the built-in custom-process defs
+        // (`shell`, `open-folder`, `vscode`). Only IDs not already present
+        // are inserted, so a user who edited / deleted a built-in does not
+        // get it silently re-injected on every launch.
+        if cfg.config_version < 4 {
+            seed_default_custom_processes(&mut cfg.custom_processes);
+        }
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
         }
+        sanitize_loaded_custom_processes(&mut cfg.custom_processes);
         validate_loaded_config(&mut cfg);
 
         // Validate default instruction set IDs against the *discovered* set.
@@ -566,6 +594,65 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(active) = patch.active_session_id {
         cfg.active_session_id = active;
     }
+    if let Some(defs) = patch.custom_processes {
+        validate_custom_processes(&defs)?;
+        cfg.custom_processes = defs;
+    }
+    if let Some(records) = patch.last_open_sub_sessions {
+        cfg.last_open_sub_sessions = records;
+    }
+    Ok(())
+}
+
+/// Reject obviously-invalid [`CustomProcessDef`] lists at the
+/// `config_set` boundary so corrupt state can't reach the runtime.
+///
+/// Rules (also enforced by the Settings UI in Phase 6, but the backend is
+/// the source of truth):
+///
+/// * Non-empty `id` and `name`.
+/// * `id` matches `[a-zA-Z0-9_-]+` (so it can be safely used as a wire
+///   key and React `key` without escaping).
+/// * Non-empty `command`.
+/// * IDs are unique within the list.
+fn validate_custom_processes(defs: &[CustomProcessDef]) -> Result<(), Error> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for def in defs {
+        if def.id.as_str().is_empty() {
+            return Err(Error::InvalidCustomProcessDef(
+                "customProcesses[]: id must be non-empty".into(),
+            ));
+        }
+        if !def
+            .id
+            .as_str()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(Error::InvalidCustomProcessDef(format!(
+                "customProcesses[]: id {:?} must match [a-zA-Z0-9_-]+",
+                def.id.as_str()
+            )));
+        }
+        if def.name.trim().is_empty() {
+            return Err(Error::InvalidCustomProcessDef(format!(
+                "customProcesses[{}]: name must be non-empty",
+                def.id
+            )));
+        }
+        if def.command.trim().is_empty() {
+            return Err(Error::InvalidCustomProcessDef(format!(
+                "customProcesses[{}]: command must be non-empty",
+                def.id
+            )));
+        }
+        if !seen.insert(def.id.as_str()) {
+            return Err(Error::InvalidCustomProcessDef(format!(
+                "customProcesses[]: duplicate id {:?}",
+                def.id.as_str()
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -783,13 +870,218 @@ pub fn list_instructions_for(cfg: &AppConfig) -> Result<Vec<InstructionSet>, App
 }
 
 // ---------------------------------------------------------------------------
+// Built-in custom-process defs (configVersion 3→4 seeding)
+// ---------------------------------------------------------------------------
+
+/// Reserved ID for the built-in "Shell" terminal launcher.
+pub const BUILTIN_DEF_ID_SHELL: &str = "shell";
+/// Reserved ID for the built-in "Open Folder" application launcher.
+pub const BUILTIN_DEF_ID_OPEN_FOLDER: &str = "open-folder";
+/// Reserved ID for the built-in "VS Code" application launcher.
+pub const BUILTIN_DEF_ID_VSCODE: &str = "vscode";
+
+/// Construct the on-first-launch [`AppConfig`] with the built-in
+/// custom-process defs already seeded. Used both for the missing-file
+/// path and the quarantine-and-default-on-load path so a fresh install
+/// always sees the documented Launch menu entries.
+fn default_seeded_config() -> AppConfig {
+    let mut cfg = AppConfig::default();
+    seed_default_custom_processes(&mut cfg.custom_processes);
+    cfg
+}
+
+/// Drop persisted [`CustomProcessDef`]s that fail validation. Unlike the
+/// strict `config_set` boundary, the load path is *graceful*: an
+/// individually-corrupt def (empty command, bad id) is logged and removed
+/// rather than nuking the whole config. Duplicate IDs keep the first
+/// occurrence and drop later ones.
+fn sanitize_loaded_custom_processes(defs: &mut Vec<CustomProcessDef>) {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let original_len = defs.len();
+    defs.retain(|def| {
+        if let Err(e) = validate_custom_processes(std::slice::from_ref(def)) {
+            warn!(
+                code = "CustomProcessDefDropped",
+                id = %def.id,
+                error = %e,
+                "dropping invalid custom process def from loaded config",
+            );
+            return false;
+        }
+        if !seen.insert(def.id.as_str().to_owned()) {
+            warn!(
+                code = "CustomProcessDefDropped",
+                id = %def.id,
+                "dropping duplicate custom process def id from loaded config",
+            );
+            return false;
+        }
+        true
+    });
+    if defs.len() != original_len {
+        debug!(
+            removed = original_len - defs.len(),
+            kept = defs.len(),
+            "sanitized custom process defs from loaded config",
+        );
+    }
+}
+
+/// Additively insert the built-in [`CustomProcessDef`]s (Phase 1 plan
+/// table) into `defs`. Only IDs not already present are appended;
+/// existing entries (including ones the user has edited or disabled) are
+/// left untouched. Insertion order mirrors the plan table so a fresh
+/// install renders the menu in the documented order.
+///
+/// `vscode` is enabled by default iff the `code` binary is discoverable
+/// on `PATH` at seed time. The probe is best-effort: a transient PATH
+/// hiccup just leaves it disabled (the user can flip the toggle in the
+/// Settings dialog).
+pub fn seed_default_custom_processes(defs: &mut Vec<CustomProcessDef>) {
+    let existing: BTreeSet<CustomProcessDefId> = defs.iter().map(|d| d.id.clone()).collect();
+    for built_in in default_custom_processes() {
+        if !existing.contains(&built_in.id) {
+            defs.push(built_in);
+        }
+    }
+}
+
+/// The full ordered list of built-in defs, regardless of whether they
+/// are already present in any particular config. Test-only callers may
+/// use this for assertions; production code should call
+/// [`seed_default_custom_processes`] which is additive.
+#[must_use]
+pub fn default_custom_processes() -> Vec<CustomProcessDef> {
+    vec![
+        CustomProcessDef {
+            id: CustomProcessDefId::new(BUILTIN_DEF_ID_SHELL),
+            name: "Shell".to_owned(),
+            kind: CustomProcessKind::Terminal,
+            command: default_shell_command(),
+            enabled: true,
+            icon: None,
+        },
+        CustomProcessDef {
+            id: CustomProcessDefId::new(BUILTIN_DEF_ID_OPEN_FOLDER),
+            name: "Open Folder".to_owned(),
+            kind: CustomProcessKind::Application,
+            command: default_open_folder_command().to_owned(),
+            enabled: true,
+            icon: None,
+        },
+        CustomProcessDef {
+            id: CustomProcessDefId::new(BUILTIN_DEF_ID_VSCODE),
+            name: "VS Code".to_owned(),
+            kind: CustomProcessKind::Application,
+            command: "code .".to_owned(),
+            enabled: command_on_path("code"),
+            icon: None,
+        },
+    ]
+}
+
+fn default_shell_command() -> String {
+    // Phase 1 keeps this minimal: launch the platform shell interactively.
+    // The PTY pool will spawn it via `$SHELL -c <cmd>` (Unix) or
+    // `%COMSPEC% /c <cmd>` (Windows), so the inner command is a fresh
+    // login-ish invocation of the same shell. We deliberately don't pass
+    // `--login` so we don't fight the user's profile order.
+    if cfg!(target_os = "windows") {
+        "cmd".to_owned()
+    } else {
+        // Use $SHELL when set, but only if it looks like a sane absolute
+        // path with no shell-metacharacters. A weird $SHELL (containing
+        // spaces, quotes, `;`, `&`, `|`, `$`, backticks, newlines, …) would
+        // be re-interpreted by the launcher's `sh -c`, so we fall back to
+        // `sh -i` rather than persist a footgun into the user's seed.
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|s| {
+                let s = s.trim();
+                !s.is_empty()
+                    && std::path::Path::new(s).is_absolute()
+                    && !s
+                        .chars()
+                        .any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
+            })
+            .unwrap_or_else(|| "sh".to_owned());
+        format!("{shell} -i")
+    }
+}
+
+const fn default_open_folder_command() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "explorer ."
+    } else if cfg!(target_os = "macos") {
+        "open ."
+    } else {
+        "xdg-open ."
+    }
+}
+
+/// Return `true` if `cmd` resolves to an executable on the current
+/// process's `PATH`. Pure-std implementation so we don't have to pull in
+/// the `which` crate just for this best-effort probe. Errors and missing
+/// `PATH` both yield `false`.
+///
+/// On Unix, requires at least one executable bit (`0o111`) so a stray
+/// non-executable file named like the command on `PATH` doesn't enable a
+/// launcher that will fail to spawn.
+#[must_use]
+pub fn command_on_path(cmd: &str) -> bool {
+    let path = match std::env::var_os("PATH") {
+        Some(p) => p,
+        None => return false,
+    };
+    let exe_suffixes: &[&str] = if cfg!(target_os = "windows") {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    for dir in std::env::split_paths(&path) {
+        for suffix in exe_suffixes {
+            let candidate = if suffix.is_empty() {
+                dir.join(cmd)
+            } else {
+                dir.join(format!("{cmd}{suffix}"))
+            };
+            if !candidate.is_file() {
+                continue;
+            }
+            if is_executable(&candidate) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    // On Windows, `is_file()` + a recognized suffix from PATHEXT-ish list
+    // is the practical equivalent. We don't crack `PATHEXT` here yet.
+    true
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{SessionStatus, TempFileSpec};
+    use crate::types::{
+        CustomProcessDef, CustomProcessDefId, CustomProcessKind, SessionStatus, SubSessionId,
+        SubSessionRecord, TempFileSpec,
+    };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
     use std::fs::{self, File};
@@ -922,7 +1214,11 @@ mod tests {
     fn load_config_returns_defaults_when_missing() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
-        assert_eq!(store.load_config(), AppConfig::default());
+        // Fresh-install path seeds the built-in custom-process defs;
+        // every other field must equal AppConfig::default().
+        let mut expected = AppConfig::default();
+        seed_default_custom_processes(&mut expected.custom_processes);
+        assert_eq!(store.load_config(), expected);
     }
 
     #[test]
@@ -932,7 +1228,9 @@ mod tests {
         fs::write(td.path().join(CONFIG_FILENAME), b"{not json").expect("write");
 
         let cfg = store.load_config();
-        assert_eq!(cfg, AppConfig::default());
+        let mut expected = AppConfig::default();
+        seed_default_custom_processes(&mut expected.custom_processes);
+        assert_eq!(cfg, expected);
 
         let badfiles: Vec<_> = fs::read_dir(td.path())
             .expect("rd")
@@ -1575,5 +1873,433 @@ mod tests {
         .expect("write");
         let cfg = store.load_config();
         assert_eq!(cfg.workspace_root, None);
+    }
+
+    // ----- v3 → v4 migration: built-in custom-process seeding ----------
+
+    #[test]
+    fn load_config_migrates_v3_and_seeds_default_custom_processes() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": 3,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null
+        });
+        fs::write(
+            store.config_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        let ids: Vec<_> = cfg
+            .custom_processes
+            .iter()
+            .map(|d| d.id.as_str().to_owned())
+            .collect();
+        assert_eq!(ids, vec!["shell", "open-folder", "vscode"]);
+        assert!(cfg.last_open_sub_sessions.is_empty());
+    }
+
+    #[test]
+    fn seeding_is_additive_and_does_not_overwrite_user_edits() {
+        let user_edited = CustomProcessDef {
+            id: CustomProcessDefId::new(BUILTIN_DEF_ID_SHELL),
+            name: "My Custom Shell".to_owned(),
+            kind: CustomProcessKind::Terminal,
+            command: "fish -i".to_owned(),
+            enabled: false,
+            icon: None,
+        };
+        let mut defs = vec![user_edited.clone()];
+        seed_default_custom_processes(&mut defs);
+        // Shell entry preserved verbatim; the other two built-ins appended.
+        assert_eq!(defs.len(), 3);
+        assert_eq!(defs[0], user_edited);
+        assert_eq!(defs[1].id.as_str(), BUILTIN_DEF_ID_OPEN_FOLDER);
+        assert_eq!(defs[2].id.as_str(), BUILTIN_DEF_ID_VSCODE);
+    }
+
+    #[test]
+    fn seeding_is_idempotent_when_called_repeatedly() {
+        let mut defs = Vec::new();
+        seed_default_custom_processes(&mut defs);
+        let after_first = defs.clone();
+        seed_default_custom_processes(&mut defs);
+        assert_eq!(defs, after_first);
+    }
+
+    #[test]
+    fn load_config_v4_does_not_reseed_after_user_deleted_a_builtin() {
+        // User on v4 already has only `shell` (deleted vscode + open-folder
+        // intentionally); the migration must not run again, so the deletes
+        // stick.
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": 4,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [
+                {
+                    "id": "shell",
+                    "name": "Shell",
+                    "kind": "terminal",
+                    "command": "sh -i",
+                    "enabled": true
+                }
+            ],
+            "lastOpenSubSessions": []
+        });
+        fs::write(
+            store.config_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let cfg = store.load_config();
+        let ids: Vec<_> = cfg
+            .custom_processes
+            .iter()
+            .map(|d| d.id.as_str().to_owned())
+            .collect();
+        assert_eq!(ids, vec!["shell"], "v4+ must not re-run the seed pass");
+    }
+
+    // ----- save_config: customProcesses validation --------------------
+
+    #[test]
+    fn save_config_rejects_custom_process_with_empty_id() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let err = store
+            .save_config(PartialAppConfig {
+                custom_processes: Some(vec![CustomProcessDef {
+                    id: CustomProcessDefId::new(""),
+                    name: "x".to_owned(),
+                    kind: CustomProcessKind::Terminal,
+                    command: "echo".to_owned(),
+                    enabled: true,
+                    icon: None,
+                }]),
+                ..Default::default()
+            })
+            .expect_err("rejected");
+        assert!(
+            matches!(err, Error::InvalidCustomProcessDef(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn save_config_rejects_custom_process_with_invalid_id_chars() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let err = store
+            .save_config(PartialAppConfig {
+                custom_processes: Some(vec![CustomProcessDef {
+                    id: CustomProcessDefId::new("has space"),
+                    name: "x".to_owned(),
+                    kind: CustomProcessKind::Terminal,
+                    command: "echo".to_owned(),
+                    enabled: true,
+                    icon: None,
+                }]),
+                ..Default::default()
+            })
+            .expect_err("rejected");
+        assert!(
+            matches!(err, Error::InvalidCustomProcessDef(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn save_config_rejects_custom_process_with_empty_command() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let err = store
+            .save_config(PartialAppConfig {
+                custom_processes: Some(vec![CustomProcessDef {
+                    id: CustomProcessDefId::new("ok"),
+                    name: "ok".to_owned(),
+                    kind: CustomProcessKind::Terminal,
+                    command: "   ".to_owned(),
+                    enabled: true,
+                    icon: None,
+                }]),
+                ..Default::default()
+            })
+            .expect_err("rejected");
+        assert!(
+            matches!(err, Error::InvalidCustomProcessDef(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn save_config_rejects_duplicate_custom_process_ids() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let dup = CustomProcessDef {
+            id: CustomProcessDefId::new("dup"),
+            name: "x".to_owned(),
+            kind: CustomProcessKind::Terminal,
+            command: "echo".to_owned(),
+            enabled: true,
+            icon: None,
+        };
+        let err = store
+            .save_config(PartialAppConfig {
+                custom_processes: Some(vec![dup.clone(), dup]),
+                ..Default::default()
+            })
+            .expect_err("rejected");
+        assert!(
+            matches!(err, Error::InvalidCustomProcessDef(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn save_config_round_trips_valid_custom_processes_and_records() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let parent =
+            SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"));
+        let sub = SubSessionRecord {
+            id: SubSessionId(
+                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
+            ),
+            parent_session_id: parent,
+            def_id: CustomProcessDefId::new("shell"),
+            kind: CustomProcessKind::Terminal,
+            label: "Shell".to_owned(),
+        };
+        let def = CustomProcessDef {
+            id: CustomProcessDefId::new("shell"),
+            name: "Shell".to_owned(),
+            kind: CustomProcessKind::Terminal,
+            command: "sh -i".to_owned(),
+            enabled: true,
+            icon: None,
+        };
+        let after = store
+            .save_config(PartialAppConfig {
+                custom_processes: Some(vec![def.clone()]),
+                last_open_sub_sessions: Some(vec![sub.clone()]),
+                ..Default::default()
+            })
+            .expect("ok");
+        assert_eq!(after.custom_processes, vec![def]);
+        assert_eq!(after.last_open_sub_sessions, vec![sub]);
+    }
+
+    // ----- command_on_path probe ---------------------------------------
+
+    #[test]
+    #[serial_test::serial(env_path)]
+    fn command_on_path_finds_seeded_executable() {
+        let td = TempDir::new().expect("td");
+        let dir = td.path();
+        let stem = "arborist-probe-bin";
+        let exe_name = if cfg!(target_os = "windows") {
+            format!("{stem}.exe")
+        } else {
+            stem.to_owned()
+        };
+        let path = dir.join(&exe_name);
+        fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).expect("meta").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).expect("chmod");
+        }
+
+        let original_path = std::env::var_os("PATH");
+        let mut new_path = std::ffi::OsString::from(dir);
+        if let Some(p) = original_path.clone() {
+            #[cfg(unix)]
+            new_path.push(":");
+            #[cfg(windows)]
+            new_path.push(";");
+            new_path.push(p);
+        }
+        // Mutating env in tests is racy; this test is `#[serial]` to compensate.
+        std::env::set_var("PATH", &new_path);
+        let result = command_on_path(stem);
+        match original_path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        assert!(result, "{stem} should be discovered on the temporary PATH");
+    }
+
+    #[test]
+    fn command_on_path_returns_false_for_unknown_binary() {
+        assert!(!command_on_path(
+            "arborist-definitely-not-on-path-zzz-12345"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(env_path)]
+    fn command_on_path_rejects_non_executable_file_on_unix() {
+        let td = TempDir::new().expect("td");
+        let dir = td.path();
+        let stem = "arborist-non-exec";
+        let path = dir.join(stem);
+        fs::write(&path, b"not really an executable\n").expect("write");
+        // Deliberately leave default 0o644-ish perms (no exec bit).
+
+        let original_path = std::env::var_os("PATH");
+        let mut new_path = std::ffi::OsString::from(dir);
+        if let Some(p) = original_path.clone() {
+            new_path.push(":");
+            new_path.push(p);
+        }
+        std::env::set_var("PATH", &new_path);
+        let result = command_on_path(stem);
+        match original_path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        assert!(
+            !result,
+            "non-executable file with name {stem} must not be reported as on PATH"
+        );
+    }
+
+    // ----- Fresh-install + load-time hardening -------------------------
+
+    #[test]
+    fn load_config_seeds_defaults_when_file_missing() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store.load_config();
+        let ids: Vec<&str> = cfg.custom_processes.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&BUILTIN_DEF_ID_SHELL),
+            "fresh install must include {BUILTIN_DEF_ID_SHELL}, got {ids:?}"
+        );
+        assert!(
+            ids.contains(&BUILTIN_DEF_ID_OPEN_FOLDER),
+            "fresh install must include {BUILTIN_DEF_ID_OPEN_FOLDER}, got {ids:?}"
+        );
+        assert!(
+            ids.contains(&BUILTIN_DEF_ID_VSCODE),
+            "fresh install must include {BUILTIN_DEF_ID_VSCODE}, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn load_config_seeds_defaults_when_file_unparseable() {
+        let td = TempDir::new().expect("td");
+        // Write garbage as config.json so parse fails and triggers
+        // quarantine-and-default. Defaults must still include built-ins.
+        fs::write(td.path().join("config.json"), b"not json {{ ").expect("write");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store.load_config();
+        assert!(!cfg.custom_processes.is_empty(), "defaults must seed");
+    }
+
+    #[test]
+    fn load_config_quarantines_future_version() {
+        let td = TempDir::new().expect("td");
+        let path = td.path().join("config.json");
+        let future = serde_json::json!({
+            "configVersion": CONFIG_VERSION_CURRENT + 1,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "futureUnknownField": "danger"
+        });
+        fs::write(&path, serde_json::to_string(&future).expect("ser")).expect("write");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store.load_config();
+        assert_eq!(
+            cfg.config_version, CONFIG_VERSION_CURRENT,
+            "future-version config must be quarantined and replaced with defaults"
+        );
+        assert!(
+            std::fs::read_dir(td.path())
+                .expect("readdir")
+                .filter_map(|e| e.ok())
+                .any(|e| e
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("config.json.bad-")),
+            "quarantine file must exist alongside",
+        );
+    }
+
+    #[test]
+    fn load_config_drops_invalid_persisted_custom_processes() {
+        let td = TempDir::new().expect("td");
+        let path = td.path().join("config.json");
+        // Hand-craft a v4 config with one valid, one empty-command, one
+        // duplicate-id def. Sanitize on load should keep only the first
+        // valid one.
+        let crafted = serde_json::json!({
+            "configVersion": CONFIG_VERSION_CURRENT,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "customProcesses": [
+                { "id": "good", "name": "Good", "kind": "terminal", "command": "sh", "enabled": true },
+                { "id": "bad", "name": "Bad", "kind": "terminal", "command": "   ", "enabled": true },
+                { "id": "good", "name": "Dup", "kind": "terminal", "command": "sh", "enabled": true },
+                { "id": "has space", "name": "Space", "kind": "terminal", "command": "sh", "enabled": true }
+            ],
+            "lastOpenSubSessions": []
+        });
+        fs::write(&path, serde_json::to_string(&crafted).expect("ser")).expect("write");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store.load_config();
+        let ids: Vec<&str> = cfg.custom_processes.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["good"], "only the first valid def must survive");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_command_falls_back_when_shell_env_is_suspicious() {
+        let original = std::env::var_os("SHELL");
+        // Suspicious: contains a metacharacter.
+        std::env::set_var("SHELL", "/bin/sh; rm -rf /");
+        let cmd = default_shell_command();
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+        assert_eq!(
+            cmd, "sh -i",
+            "metacharacter in $SHELL must trigger fallback"
+        );
     }
 }
