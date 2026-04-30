@@ -30,6 +30,37 @@ use tracing::{debug, warn};
 
 use crate::types::{Error, WorktreeInfo};
 
+/// Build a `git` [`Command`] with the repo-selection environment variables
+/// stripped.
+///
+/// When arborist (or its test suite) runs as a child of another `git`
+/// invocation — most importantly the husky `pre-push` hook — git exports
+/// `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, etc. into the child
+/// environment. These take precedence over `-C <path>` / `current_dir(...)`,
+/// so a naively-spawned `git` ends up operating on the *outer* repo
+/// regardless of how the caller pinned the working directory. In the worst
+/// case that means writing commits onto the developer's checked-out branch
+/// or unregistering real worktrees from the bare repo (issue #13).
+///
+/// Strip the repo-selection variables here so every `git` we spawn really
+/// does target the repo the caller asked for.
+pub(crate) fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 /// Minimal seam over `git worktree list --porcelain`. Implementors must be
 /// `Send + Sync` so we can stash one in `Arc<dyn GitRunner>` on the
 /// `AppContext` and share it across worker threads.
@@ -79,7 +110,7 @@ impl GitRunner for RealGitRunner {
             return Ok(Vec::new());
         }
 
-        let output = match Command::new("git")
+        let output = match git_command()
             .current_dir(repo_root)
             .arg("-C")
             .arg(repo_root)
@@ -119,7 +150,7 @@ impl GitRunner for RealGitRunner {
         if !path.is_dir() {
             return Ok(None);
         }
-        let output = match Command::new("git")
+        let output = match git_command()
             .current_dir(path)
             .arg("-C")
             .arg(path)
@@ -159,7 +190,7 @@ impl GitRunner for RealGitRunner {
         if !repo_root.is_dir() {
             return Err(Error::WorktreeMissing(repo_root.to_path_buf()));
         }
-        let output = Command::new("git")
+        let output = git_command()
             .current_dir(repo_root)
             .arg("-C")
             .arg(repo_root)
@@ -380,12 +411,46 @@ locked migrating to slow disk
         assert!(out.is_empty());
     }
 
+    /// Build a `Command` with both repo-selection *and* identity/config
+    /// `GIT_*` variables stripped. Tests get a stricter scrub than production
+    /// because hostile env (set by an outer `git push` invoking the husky
+    /// pre-push hook) can otherwise reroute commits, override the repo, or
+    /// spoof committer identity in ways that pollute the developer's real
+    /// checkout (issue #13).
+    fn clean_test_git_command() -> Command {
+        let mut cmd = git_command();
+        // Identity vars: keep test commits authored by the local
+        // `git config user.{name,email}` we set, regardless of any
+        // GIT_AUTHOR_* / GIT_COMMITTER_* the parent process exported.
+        for var in [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_AUTHOR_DATE",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_COMMITTER_DATE",
+        ] {
+            cmd.env_remove(var);
+        }
+        // `git -c k=v` style env-driven config (`GIT_CONFIG_COUNT` +
+        // `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`) can change behavior
+        // in subtle ways. Iterate the inherited env to drop the dynamic
+        // numbered keys too.
+        for (k, _) in std::env::vars_os() {
+            if let Some(s) = k.to_str() {
+                if s.starts_with("GIT_CONFIG_") {
+                    cmd.env_remove(&k);
+                }
+            }
+        }
+        cmd
+    }
+
     /// Initialise a fresh git repo in `dir`, with a single committed file so
     /// `worktree add -b` succeeds (it requires HEAD to point at a commit).
     fn init_git_repo(dir: &Path) {
-        use std::process::Command;
         let run = |args: &[&str]| {
-            let s = Command::new("git")
+            let s = clean_test_git_command()
                 // Pin process CWD to the tempdir as well as `-C`. On Windows,
                 // `git worktree add` resolves the new worktree's relative
                 // path *and* picks the repo to register against using the
@@ -443,11 +508,21 @@ locked migrating to slow disk
 
     impl Drop for WorktreeCleanup {
         fn drop(&mut self) {
-            use std::process::Command;
+            // Restrict every removal to paths under the tempdir. With the
+            // `GIT_*` env strip in `clean_test_git_command` this is now
+            // belt-and-braces, but the predicate is the load-bearing
+            // invariant: even if env-strip is ever bypassed, we MUST NOT
+            // delete a worktree that doesn't belong to our tempdir.
+            let canon_temp =
+                dunce::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
+            let inside_temp = |p: &Path| -> bool {
+                let cp = dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                cp.starts_with(&canon_temp)
+            };
 
-            // Helper: in-repo cleanup of any linked worktrees.
+            // Helper: in-repo cleanup of any linked worktrees matching `predicate`.
             let scrub = |repo: &Path, predicate: &dyn Fn(&Path) -> bool| {
-                let Ok(out) = Command::new("git")
+                let Ok(out) = clean_test_git_command()
                     .current_dir(repo)
                     .arg("-C")
                     .arg(repo)
@@ -471,7 +546,7 @@ locked migrating to slow disk
                     // failure — Drop must not panic.
                     let mut ok = false;
                     for _ in 0..2 {
-                        let st = Command::new("git")
+                        let st = clean_test_git_command()
                             .current_dir(repo)
                             .arg("-C")
                             .arg(repo)
@@ -492,7 +567,7 @@ locked migrating to slow disk
                         );
                     }
                 }
-                let _ = Command::new("git")
+                let _ = clean_test_git_command()
                     .current_dir(repo)
                     .arg("-C")
                     .arg(repo)
@@ -501,19 +576,16 @@ locked migrating to slow disk
             };
 
             // 1. Clean every linked worktree registered in the tempdir repo.
-            scrub(&self.repo_root, &|_| true);
+            //    Constrain to paths inside the tempdir as well — see comment
+            //    above on `inside_temp`.
+            scrub(&self.repo_root, &inside_temp);
 
             // 2. Belt-and-braces: if the test process's CWD is inside another
             //    git repo, scrub any worktree there whose path lies under our
             //    tempdir. This is the safety net for the historical
-            //    outer-repo-pollution bug.
+            //    outer-repo-pollution bug (issue #13).
             if let Ok(cwd) = std::env::current_dir() {
-                let canon_temp =
-                    dunce::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
-                scrub(&cwd, &|p| {
-                    let cp = dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-                    cp.starts_with(&canon_temp)
-                });
+                scrub(&cwd, &inside_temp);
             }
         }
     }
@@ -597,5 +669,72 @@ locked migrating to slow disk
             )
             .expect_err("must error");
         assert!(matches!(err, Error::WorktreeMissing(_)), "got {err:?}");
+    }
+
+    /// Regression for issue #13: every `git` we spawn must drop the
+    /// repo-selection env vars so a hostile parent (e.g. husky pre-push)
+    /// cannot reroute commits or worktree-add calls onto the developer's
+    /// real checkout.
+    #[test]
+    fn git_command_strips_repo_selection_env_vars() {
+        let cmd = git_command();
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| {
+                if v.is_none() {
+                    Some(k.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_NAMESPACE",
+            "GIT_PREFIX",
+        ] {
+            assert!(
+                removed.iter().any(|r| r == var),
+                "git_command() must remove {var}; got {removed:?}"
+            );
+        }
+    }
+
+    /// The test-only helper additionally strips identity and config-injection
+    /// vars so commits land with the deterministic `git config user.*` we set
+    /// in `init_git_repo`, regardless of any `GIT_AUTHOR_*` / `GIT_CONFIG_*`
+    /// the parent process exported.
+    #[test]
+    fn clean_test_git_command_strips_identity_and_config_env() {
+        let cmd = clean_test_git_command();
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| {
+                if v.is_none() {
+                    Some(k.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for var in [
+            "GIT_DIR",
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_AUTHOR_DATE",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_COMMITTER_DATE",
+        ] {
+            assert!(
+                removed.iter().any(|r| r == var),
+                "clean_test_git_command() must remove {var}; got {removed:?}"
+            );
+        }
     }
 }
