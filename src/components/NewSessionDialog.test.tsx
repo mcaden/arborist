@@ -206,6 +206,37 @@ describe('NewSessionDialog', () => {
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
 
+  it('ignores stale Step-2 worktreesList when workspaceRoot flips to null mid-flight', async () => {
+    let resolveList: (value: WorktreeInfo[]) => void = () => {};
+    bridgeMock.worktreesList.mockImplementation(
+      () =>
+        new Promise<WorktreeInfo[]>((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+    await waitFor(() => expect(bridgeMock.worktreesList).toHaveBeenCalledTimes(1));
+
+    // Flip workspaceRoot to null. The effect re-runs, increments the
+    // request id (invalidating the in-flight request), and clears the list.
+    act(() => {
+      useConfigStore.setState({ config: defaultConfig({ workspaceRoot: null }) });
+    });
+
+    // Now the original (stale) request resolves with data — it must be
+    // ignored so the cleared list stays cleared and loading stays false.
+    await act(async () => {
+      resolveList([{ path: `${REPO_ROOT}/.worktrees/stale`, branch: 'stale', isMain: false }]);
+    });
+    expect(screen.queryByRole('button', { name: /\.worktrees\/stale/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Loading\.\.\.$/)).not.toBeInTheDocument();
+  });
+
   it('ignores Step-2 worktreesList responses after the dialog unmounts', async () => {
     let resolveList: (value: WorktreeInfo[]) => void = () => {};
     bridgeMock.worktreesList.mockImplementation(

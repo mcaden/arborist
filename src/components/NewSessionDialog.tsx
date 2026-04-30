@@ -138,6 +138,11 @@ export function NewSessionDialog(): JSX.Element | null {
   // are still reachable via "Browse…".
   useEffect(() => {
     if (!isOpen || step !== 2) return;
+    // Invalidate any in-flight worktreesList from a prior render of this
+    // effect before doing anything else — including the early-return paths
+    // below — so a stale earlier request can never win the latest-id check
+    // after workspaceRoot flips to null/empty (or any dependency changes).
+    const requestId = ++worktreesRequestIdRef.current;
     setWorktreesLoading(true);
     if (workspaceRoot === null || workspaceRoot.length === 0) {
       setWorktrees([]);
@@ -145,7 +150,6 @@ export function NewSessionDialog(): JSX.Element | null {
       return;
     }
     const root = workspaceRoot;
-    const requestId = ++worktreesRequestIdRef.current;
     worktreesList(root)
       .catch(() => [] as WorktreeInfo[])
       .then((list) => {
