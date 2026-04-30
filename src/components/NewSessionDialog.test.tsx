@@ -381,6 +381,59 @@ describe('NewSessionDialog', () => {
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
 
+  it('disables the Worktree tabs while the chained worktree+session create is in flight', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+    });
+    let resolveSession: (value: SessionView) => void = () => {};
+    bridgeMock.sessionCreate.mockImplementation(
+      () =>
+        new Promise<SessionView>((resolve) => {
+          resolveSession = resolve;
+        }),
+    );
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+    fireEvent.change(input, { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
+
+    // Tabs are disabled and clicks/keystrokes don't switch worktreeMode away
+    // from 'new', so the in-flight "Creating…" affordance can't be hidden by
+    // user interaction.
+    const newTab = screen.getByRole('tab', { name: /^new$/i });
+    const existingTab = screen.getByRole('tab', { name: /^existing$/i });
+    expect(newTab).toBeDisabled();
+    expect(existingTab).toBeDisabled();
+
+    fireEvent.click(existingTab);
+    expect(screen.getByRole('button', { name: /creating/i })).toBeInTheDocument();
+    fireEvent.keyDown(newTab.parentElement!, { key: 'ArrowRight' });
+    expect(screen.getByRole('button', { name: /creating/i })).toBeInTheDocument();
+
+    act(() => {
+      resolveSession({
+        id: 'new-id',
+        tool: 'claude',
+        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+        worktreeName: 'my-feature',
+        label: 'my-feature',
+        status: 'running',
+        createdAt: 1,
+        tabIndex: 0,
+      } satisfies SessionView);
+    });
+    await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
+  });
+
   it('Confirm submits without an instructionSetId so the backend launches the CLI from the worktree cwd', async () => {
     bridgeMock.worktreesList.mockResolvedValue([
       makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),

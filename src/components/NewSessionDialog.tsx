@@ -59,6 +59,13 @@ export function NewSessionDialog(): JSX.Element | null {
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
   const stepBodyRef = useRef<HTMLDivElement | null>(null);
   const existingConfirmRef = useRef<HTMLButtonElement | null>(null);
+  const isMountedRef = useRef<boolean>(false);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   // Track the previous step so the focus-management effect only fires on
   // an actual transition, not on every step-body re-render (which would
   // steal focus away from the user as they typed).
@@ -245,6 +252,9 @@ export function NewSessionDialog(): JSX.Element | null {
           const root = workspaceRoot;
           void worktreesList(root)
             .then((list) => {
+              // Dialog may have been closed and the component unmounted
+              // (e.g. by a fresh open + close) by the time this resolves.
+              if (!isMountedRef.current) return;
               setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
             })
             .catch(() => {
@@ -355,6 +365,7 @@ export function NewSessionDialog(): JSX.Element | null {
                   e.key !== 'End'
                 )
                   return;
+                if (creating || submitting) return;
                 e.preventDefault();
                 const nextMode: WorktreeMode =
                   e.key === 'Home'
@@ -376,7 +387,11 @@ export function NewSessionDialog(): JSX.Element | null {
                 aria-selected={worktreeMode === 'new'}
                 aria-controls="worktree-panel-new"
                 tabIndex={worktreeMode === 'new' ? 0 : -1}
-                onClick={() => setWorktreeMode('new')}
+                onClick={() => {
+                  if (creating || submitting) return;
+                  setWorktreeMode('new');
+                }}
+                disabled={creating || submitting}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
                   worktreeMode === 'new'
                     ? 'border-sky-600 text-sky-700 dark:text-sky-300'
@@ -392,7 +407,11 @@ export function NewSessionDialog(): JSX.Element | null {
                 aria-selected={worktreeMode === 'existing'}
                 aria-controls="worktree-panel-existing"
                 tabIndex={worktreeMode === 'existing' ? 0 : -1}
-                onClick={() => setWorktreeMode('existing')}
+                onClick={() => {
+                  if (creating || submitting) return;
+                  setWorktreeMode('existing');
+                }}
+                disabled={creating || submitting}
                 className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
                   worktreeMode === 'existing'
                     ? 'border-sky-600 text-sky-700 dark:text-sky-300'
