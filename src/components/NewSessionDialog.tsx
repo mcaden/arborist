@@ -217,10 +217,13 @@ export function NewSessionDialog(): JSX.Element | null {
     setSubmitError(null);
     try {
       const result = await worktreeCreate(newName.trim());
-      // Reflect the new selection in local state in case session creation
-      // fails and the user falls back to the Existing tab.
+      // Pre-select the new worktree so it's ready to use if session creation
+      // fails and we fall back to the Existing tab. We deliberately do NOT
+      // switch `worktreeMode` to 'existing' yet — doing so would swap the
+      // footer to the Existing-mode "Create session" button while the chained
+      // session-create is still in flight, allowing the user to trigger a
+      // second concurrent session for the same worktree.
       setWorktree({ path: result.path, branch: newName.trim(), isMain: false });
-      setWorktreeMode('existing');
       if (workspaceRoot !== null && workspaceRoot.length > 0) {
         const root = workspaceRoot;
         try {
@@ -233,13 +236,14 @@ export function NewSessionDialog(): JSX.Element | null {
       setNewName('');
       // The "New worktree" flow is one-shot: creating the worktree
       // immediately starts the session and closes the dialog. If session
-      // creation fails, the worktree is preserved and the user can retry
-      // from the Existing tab via the Create session button.
+      // creation fails, surface the error and switch to the Existing tab so
+      // the user can retry via "Create session" without losing the worktree.
       try {
         await actions.create({ tool, worktreePath: result.path });
         close();
       } catch (sessionErr) {
         setSubmitError(formatError(sessionErr));
+        setWorktreeMode('existing');
       }
     } catch (err) {
       setCreateError(formatError(err));
@@ -583,7 +587,7 @@ export function NewSessionDialog(): JSX.Element | null {
               onClick={() => {
                 void onConfirm();
               }}
-              disabled={submitting || !worktree}
+              disabled={submitting || creating || !worktree}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
               {submitting ? 'Creating...' : 'Create session'}

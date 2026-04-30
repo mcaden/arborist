@@ -249,6 +249,54 @@ describe('NewSessionDialog', () => {
     expect(screen.getByRole('button', { name: /create session/i })).toBeEnabled();
   });
 
+  it('does not expose the Existing-mode "Create session" button while the chained session-create is in flight', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+    });
+    // Hold session creation pending so we can observe the in-flight UI.
+    let resolveSession: (value: SessionView) => void = () => {};
+    bridgeMock.sessionCreate.mockImplementation(
+      () =>
+        new Promise<SessionView>((resolve) => {
+          resolveSession = resolve;
+        }),
+    );
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+    fireEvent.change(input, { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    // While the chained session-create is pending, the New-mode footer button
+    // is the only primary action visible (showing its loading label) — the
+    // Existing-mode "Create session" button must NOT be exposed yet, since
+    // clicking it would spawn a second concurrent session for the same worktree.
+    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: /^create session$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /creating/i })).toBeDisabled();
+
+    // Resolve the pending session so React can flush the close.
+    act(() => {
+      resolveSession({
+        id: 'new-id',
+        tool: 'claude',
+        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+        worktreeName: 'my-feature',
+        label: 'my-feature',
+        status: 'running',
+        createdAt: 1,
+        tabIndex: 0,
+      } satisfies SessionView);
+    });
+    await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
+  });
+
   it('Confirm submits without an instructionSetId so the backend launches the CLI from the worktree cwd', async () => {
     bridgeMock.worktreesList.mockResolvedValue([
       makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
