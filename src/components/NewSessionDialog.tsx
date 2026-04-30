@@ -571,9 +571,7 @@ export function NewSessionDialog(): JSX.Element | null {
             <button
               type="button"
               onClick={() => void onCreateWorktree()}
-              disabled={
-                creating || submitting || newName.length === 0 || newNameError !== null
-              }
+              disabled={creating || submitting || newName.length === 0 || newNameError !== null}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
               {creating ? 'Creating…' : 'Create worktree & session'}

@@ -187,9 +187,7 @@ describe('NewSessionDialog', () => {
     // Invalid name: contains a space.
     fireEvent.change(input, { target: { value: 'bad name' } });
     expect(await screen.findByRole('alert')).toHaveTextContent(/space/i);
-    expect(
-      screen.getByRole('button', { name: /^create worktree & session$/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^create worktree & session$/i })).toBeDisabled();
 
     // Valid name enables the Create button.
     fireEvent.change(input, { target: { value: 'my-feature' } });
