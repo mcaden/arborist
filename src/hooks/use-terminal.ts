@@ -47,6 +47,10 @@ interface RegistryEntry {
   host: HTMLDivElement | null;
   observer: ResizeObserver | null;
   resizeTimer: ReturnType<typeof setTimeout> | null;
+  /** Capture-phase listener installed on `host` to forward `paste` events. */
+  pasteListener: ((event: ClipboardEvent) => void) | null;
+  /** Capture-phase listener installed on `host` to intercept Shift+Enter. */
+  keydownListener: ((event: KeyboardEvent) => void) | null;
   /** Last cols/rows reported to the backend; suppresses duplicate calls. */
   lastCols: number;
   lastRows: number;
@@ -154,6 +158,8 @@ function createEntry(sessionId: SessionId): RegistryEntry {
     host: null,
     observer: null,
     resizeTimer: null,
+    pasteListener: null,
+    keydownListener: null,
     lastCols: 0,
     lastRows: 0,
   };
@@ -177,6 +183,75 @@ function teardownObserver(entry: RegistryEntry): void {
     clearTimeout(entry.resizeTimer);
     entry.resizeTimer = null;
   }
+}
+
+function teardownPasteListener(entry: RegistryEntry): void {
+  if (entry.pasteListener && entry.host) {
+    entry.host.removeEventListener('paste', entry.pasteListener as EventListener, true);
+  }
+  entry.pasteListener = null;
+}
+
+function teardownKeydownListener(entry: RegistryEntry): void {
+  if (entry.keydownListener && entry.host) {
+    entry.host.removeEventListener('keydown', entry.keydownListener as EventListener, true);
+  }
+  entry.keydownListener = null;
+}
+
+/**
+ * Whether the async clipboard read API is available in this runtime.
+ *
+ * Used by both Ctrl/Cmd+V interception and the `paste` event listener
+ * fallback to decide *up front* whether they have any chance of
+ * actually pasting. If this returns `false`, the listeners must NOT
+ * cancel the event — letting the event propagate gives xterm (or any
+ * other interested handler) a chance to act on it instead of leaving
+ * the user with a silent no-op.
+ */
+function canReadClipboard(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.clipboard?.readText === 'function';
+}
+
+/**
+ * Read text from the system clipboard via `navigator.clipboard.readText()`
+ * and forward it to the terminal via `term.paste()`. Used by both the
+ * Ctrl/Cmd+V keydown branch (where xterm's keydown handler would
+ * otherwise eat the keystroke before any `paste` event fires) and the
+ * `paste` event listener fallback (when `clipboardData` is empty, as
+ * happens in some WebView2 right-click → Paste flows).
+ *
+ * Callers must gate cancellation of the original event on
+ * [`canReadClipboard`] — this function silently no-ops if the API is
+ * missing, and unconditionally cancelling the event in that case
+ * would block xterm from handling the keystroke / paste itself.
+ *
+ * The async resolution of `readText()` is racy with session disposal:
+ * the user could dispatch Ctrl+V and then close the tab before the
+ * clipboard read resolves. We re-check the registry by `sessionId`
+ * before calling `term.paste(text)` so we don't write into a disposed
+ * (or replaced) terminal.
+ *
+ * Failures are logged but otherwise silent — there's no useful UI
+ * recovery and we don't want to spam the user with toasts every time
+ * they paste an empty clipboard.
+ */
+function pasteFromClipboard(sessionId: SessionId, entry: RegistryEntry): void {
+  if (!canReadClipboard()) return;
+  void navigator.clipboard
+    .readText()
+    .then((text) => {
+      if (!text) return;
+      // Guard against a concurrent disposeTerminal(): if the registry
+      // entry for this session is gone or has been replaced, drop the
+      // paste rather than writing to a stale Terminal instance.
+      if (registry.get(sessionId) !== entry) return;
+      entry.term.paste(text);
+    })
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[use-terminal] clipboard.readText() failed: ${message}`);
+    });
 }
 
 /**
@@ -242,6 +317,8 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
     entry.wrapper.parentElement.removeChild(entry.wrapper);
   }
   teardownObserver(entry);
+  teardownPasteListener(entry);
+  teardownKeydownListener(entry);
 
   const wrapper = entry.wrapper ?? document.createElement('div');
   wrapper.style.width = '100%';
@@ -261,6 +338,115 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
   // state if it fires too early).
   refitEntry(sessionId, entry);
 
+  // Capture-phase keydown listener on the host. Two responsibilities:
+  //
+  // 1. Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a
+  //    plain `\r` for both Enter and Shift+Enter, which CLIs like Claude
+  //    Code and GitHub Copilot CLI interpret as "submit". The de-facto
+  //    convention (matching what `claude /terminal-setup` configures in
+  //    iTerm2) is to send ESC-prefixed CR for "newline without submit".
+  //
+  // 2. Ctrl+V / Cmd+V → trigger paste via `navigator.clipboard.readText()`
+  //    and write the result through `term.paste()`. If we don't intercept,
+  //    xterm's own keydown handler eats the keypress (sending the literal
+  //    `\x16` SYN byte to the PTY) and the browser never fires a `paste`
+  //    event, so our capture-phase paste listener has nothing to handle.
+  //    Right-click → Paste still goes through the paste listener below.
+  //
+  // We listen at the **host** in the **capture** phase so we run before
+  // xterm's own keydown listener (registered on its hidden textarea, also
+  // capture-phase). xterm's `attachCustomKeyEventHandler` is unreliable
+  // here because by the time it runs the textarea may already have
+  // committed default behaviour, and we cannot from inside it
+  // `preventDefault()` the textarea's own newline insertion. Capturing on
+  // the host fully owns the event before any descendant listener.
+  const keydownListener = (event: KeyboardEvent): void => {
+    // Skip IME composition: Enter/Shift+Enter during candidate selection
+    // belongs to the IME, not to the terminal. `keyCode === 229` is the
+    // legacy Chromium/WebView signal for "still composing".
+    if (event.isComposing || event.keyCode === 229) return;
+    if (
+      event.key === 'Enter' &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void sessionInput({ sessionId, data: '\x1b\r' }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[use-terminal] session_input(${sessionId}) failed: ${message}`);
+      });
+      return;
+    }
+    // Paste shortcuts. The accepted matrix is asymmetric on purpose:
+    //   - Ctrl+V         (Windows/Linux convention)
+    //   - Ctrl+Shift+V   (Linux terminal convention — many emulators)
+    //   - Cmd+V          (macOS convention; **without** Shift)
+    // Cmd+Shift+V on macOS is "paste and match style" in apps that
+    // implement formatted clipboard semantics; it has no useful meaning
+    // in a terminal and we leave it to pass through unchanged. Alt is
+    // never accepted (Ctrl+Alt+V / Cmd+Alt+V / Alt+V are not paste).
+    //
+    // We match on `event.code === 'KeyV'` rather than `event.key`. `key`
+    // is the produced character — on a Russian keyboard layout the
+    // physical V position prints `м`, so a `key === 'v'` test would miss
+    // the user's normal paste shortcut. `code` reflects the **physical**
+    // key location and is layout-independent, which is what every other
+    // major terminal app keys off for shortcut matching.
+    const v = event.code === 'KeyV';
+    const isCtrlPaste = v && event.ctrlKey && !event.metaKey && !event.altKey;
+    const isMetaPaste = v && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+    if (isCtrlPaste || isMetaPaste) {
+      // Only suppress xterm's default handling when we have a paste path
+      // that might actually succeed. If `navigator.clipboard.readText`
+      // is unavailable, swallowing the event would just turn Ctrl+V
+      // into a silent no-op; instead, let it propagate so xterm can do
+      // whatever it would have done.
+      if (canReadClipboard()) {
+        event.preventDefault();
+        event.stopPropagation();
+        pasteFromClipboard(sessionId, entry);
+      }
+    }
+  };
+  host.addEventListener('keydown', keydownListener as EventListener, true);
+  entry.keydownListener = keydownListener;
+
+  // Paste support. xterm.js installs its own paste listeners on the
+  // textarea AND on its element (`xterm/src/browser/Clipboard.ts`), and
+  // its handler calls `event.stopPropagation()` — so a bubble-phase
+  // listener at the host **never fires**. Worse, in the Tauri/WebView2
+  // environment the `clipboardData` xterm receives via that path is
+  // sometimes empty (Ctrl+V / right-click → Paste / X11 middle-click all
+  // silently no-op). We capture at the host, which runs before any
+  // descendant listener; we own the event end-to-end. If `clipboardData`
+  // is populated we use it directly (works without permission, since the
+  // user gesture supplies the data). Otherwise we fall back to the async
+  // `navigator.clipboard.readText()` — slower, may prompt in some
+  // environments, but recovers when the WebView won't fill clipboardData.
+  //
+  // Cancellation policy: only call `preventDefault`/`stopPropagation`
+  // when we have something to paste (inline payload) or a viable async
+  // fallback. If both are unavailable we let the event continue so
+  // xterm or any other listener still has a shot at handling it.
+  const pasteListener = (event: ClipboardEvent): void => {
+    const inline = event.clipboardData?.getData('text/plain') ?? '';
+    if (inline) {
+      event.preventDefault();
+      event.stopPropagation();
+      entry.term.paste(inline);
+      return;
+    }
+    if (!canReadClipboard()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    pasteFromClipboard(sessionId, entry);
+  };
+  host.addEventListener('paste', pasteListener as EventListener, true);
+  entry.pasteListener = pasteListener;
+
   if (typeof ResizeObserver !== 'undefined') {
     const observer = new ResizeObserver(() => {
       if (entry.resizeTimer !== null) clearTimeout(entry.resizeTimer);
@@ -273,6 +459,8 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
 
 function detachFromHost(entry: RegistryEntry): void {
   teardownObserver(entry);
+  teardownPasteListener(entry);
+  teardownKeydownListener(entry);
   if (entry.wrapper && entry.wrapper.parentElement) {
     entry.wrapper.parentElement.removeChild(entry.wrapper);
   }
