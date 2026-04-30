@@ -165,19 +165,23 @@ const ARBORIST_ENV_PREFIX: &str = "ARBORIST_";
 /// stripped too. On Unix the names are technically distinct but the prefix
 /// is by convention reserved regardless of case, so this is also defensible
 /// (and safer than surprising callers with platform-divergent behaviour).
+///
+/// We compare on raw `OsStr` bytes (`as_encoded_bytes()`) rather than
+/// `to_str()` so non-UTF-8 keys (legal on Unix) whose leading bytes match
+/// `ARBORIST_` are still stripped — `to_str()` would return `None` and
+/// silently leak them.
 fn strip_arborist_env_keys<I, K>(builder: &mut CommandBuilder, keys: I)
 where
     I: IntoIterator<Item = K>,
     K: AsRef<std::ffi::OsStr>,
 {
+    let prefix_bytes = ARBORIST_ENV_PREFIX.as_bytes();
     for k in keys {
-        if let Some(s) = k.as_ref().to_str() {
-            if s.len() >= ARBORIST_ENV_PREFIX.len()
-                && s.as_bytes()[..ARBORIST_ENV_PREFIX.len()]
-                    .eq_ignore_ascii_case(ARBORIST_ENV_PREFIX.as_bytes())
-            {
-                builder.env_remove(k.as_ref());
-            }
+        let key_bytes = k.as_ref().as_encoded_bytes();
+        if key_bytes.len() >= prefix_bytes.len()
+            && key_bytes[..prefix_bytes.len()].eq_ignore_ascii_case(prefix_bytes)
+        {
+            builder.env_remove(k.as_ref());
         }
     }
 }
@@ -1198,13 +1202,25 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn strip_arborist_env_production_path_strips_real_env_var() {
         // Exercise the production wrapper that reads `std::env::vars_os()`,
         // ensuring the OsString-based iteration path actually removes a
         // matching key from the resulting CommandBuilder. Use a
         // unique-per-test key so concurrent tests can't false-positive
-        // (std::env mutations are process-global).
+        // (std::env mutations are process-global). Marked `#[serial(env)]`
+        // so the test suite serializes any other env-mutating tests against
+        // this one — `std::env::set_var`/`remove_var` are process-global
+        // and inherently racy with concurrent reads.
+        struct EnvProbe(&'static str);
+        impl Drop for EnvProbe {
+            fn drop(&mut self) {
+                std::env::remove_var(self.0);
+            }
+        }
+
         let key = "ARBORIST_TEST_PROBE_PRODUCTION_PATH_8C4A";
+        let _guard = EnvProbe(key);
         std::env::set_var(key, "1");
         let mut b = CommandBuilder::new("/bin/true");
         // Don't env_clear here — we need the inherited env to include our key.
@@ -1213,8 +1229,6 @@ mod tests {
             .iter_full_env_as_str()
             .map(|(k, _)| k.to_string())
             .collect();
-        // Cleanup before assertion so a failure doesn't leak into other tests.
-        std::env::remove_var(key);
         assert!(
             !remaining.iter().any(|k| k == key),
             "production strip_arborist_env failed to remove {key} via vars_os(); remaining keys with ARBORIST prefix: {:?}",
@@ -1222,6 +1236,35 @@ mod tests {
                 .iter()
                 .filter(|k| k.to_ascii_uppercase().starts_with("ARBORIST_"))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn strip_arborist_env_strips_non_utf8_keys() {
+        // Env-var names on Unix are arbitrary `OsStr` byte sequences, not
+        // guaranteed UTF-8. A key whose leading bytes are `ARBORIST_` but
+        // whose trailing bytes are non-UTF-8 must still be stripped — the
+        // earlier `to_str()`-gated impl would silently leak such keys.
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        // "ARBORIST_" + invalid UTF-8 byte (0xFF is never valid UTF-8).
+        let mut bytes = b"ARBORIST_".to_vec();
+        bytes.push(0xFF);
+        bytes.extend_from_slice(b"_TAIL");
+        let bad: OsString = OsString::from_vec(bytes);
+
+        let mut b = CommandBuilder::new("/bin/true");
+        b.env_clear();
+        b.env(&bad, "leak-me");
+        // Sanity: the bad key starts in the env before the strip.
+        assert!(b.get_env(&bad).is_some(), "test setup: env not seeded");
+
+        strip_arborist_env_keys(&mut b, vec![bad.clone()]);
+        assert!(
+            b.get_env(&bad).is_none(),
+            "non-UTF-8 ARBORIST_* key was not stripped"
         );
     }
 }
