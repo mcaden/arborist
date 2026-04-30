@@ -60,6 +60,11 @@ export function NewSessionDialog(): JSX.Element | null {
   const stepBodyRef = useRef<HTMLDivElement | null>(null);
   const existingConfirmRef = useRef<HTMLButtonElement | null>(null);
   const isMountedRef = useRef<boolean>(false);
+  // Monotonic request counter for worktree-list loads. Both the Step-2
+  // useEffect and the post-create failure refresh kick off `worktreesList`
+  // calls; the latest call wins so a slow earlier response can never
+  // overwrite a fresher one with stale data.
+  const worktreesRequestIdRef = useRef<number>(0);
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -133,7 +138,6 @@ export function NewSessionDialog(): JSX.Element | null {
   // are still reachable via "Browse…".
   useEffect(() => {
     if (!isOpen || step !== 2) return;
-    let cancelled = false;
     setWorktreesLoading(true);
     if (workspaceRoot === null || workspaceRoot.length === 0) {
       setWorktrees([]);
@@ -141,19 +145,17 @@ export function NewSessionDialog(): JSX.Element | null {
       return;
     }
     const root = workspaceRoot;
+    const requestId = ++worktreesRequestIdRef.current;
     worktreesList(root)
       .catch(() => [] as WorktreeInfo[])
       .then((list) => {
-        if (cancelled) return;
+        if (requestId !== worktreesRequestIdRef.current) return;
         const filtered = list.filter((w) => isInsideWorktreesDir(root, w.path));
         setWorktrees(filtered);
       })
       .finally(() => {
-        if (!cancelled) setWorktreesLoading(false);
+        if (requestId === worktreesRequestIdRef.current) setWorktreesLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [isOpen, step, workspaceRoot]);
 
   // Resolve the prelaunchCommands the backend would actually run for the
@@ -252,15 +254,22 @@ export function NewSessionDialog(): JSX.Element | null {
         setWorktreeMode('existing');
         if (workspaceRoot !== null && workspaceRoot.length > 0) {
           const root = workspaceRoot;
-          void worktreesList(root)
+          const requestId = ++worktreesRequestIdRef.current;
+          setWorktreesLoading(true);
+          worktreesList(root)
+            .catch(() => [] as WorktreeInfo[])
             .then((list) => {
               // Dialog may have been closed and the component unmounted
               // (e.g. by a fresh open + close) by the time this resolves.
               if (!isMountedRef.current) return;
+              // A newer list request has been issued in the meantime; let
+              // the latest one win to avoid stale data overwriting fresh.
+              if (requestId !== worktreesRequestIdRef.current) return;
               setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
             })
-            .catch(() => {
-              // Listing failure is non-fatal; the selection above is enough.
+            .finally(() => {
+              if (!isMountedRef.current) return;
+              if (requestId === worktreesRequestIdRef.current) setWorktreesLoading(false);
             });
         }
         // Move focus to the now-visible "Create session" button so keyboard

@@ -206,6 +206,71 @@ describe('NewSessionDialog', () => {
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
 
+  it('does not let a stale Step-2 worktreesList overwrite the post-failure refresh result', async () => {
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+    });
+    bridgeMock.sessionCreate.mockRejectedValue(new Error('spawn failed'));
+
+    // Two sequential worktreesList calls:
+    //   #1 — kicked off by the Step-2 useEffect when the user lands on Step 2
+    //         (returns a stale list missing the newly-created worktree)
+    //   #2 — kicked off after session-create failure (returns the fresh list)
+    // We resolve #2 first and #1 last, simulating a slow first request that
+    // races the post-failure refresh. The displayed list must reflect #2.
+    const stale: WorktreeInfo[] = [
+      { path: `${REPO_ROOT}/.worktrees/old-feature`, branch: 'old-feature', isMain: false },
+    ];
+    const fresh: WorktreeInfo[] = [
+      { path: `${REPO_ROOT}/.worktrees/old-feature`, branch: 'old-feature', isMain: false },
+      { path: `${REPO_ROOT}/.worktrees/my-feature`, branch: 'my-feature', isMain: false },
+    ];
+    let resolveStaleList: (value: WorktreeInfo[]) => void = () => {};
+    let resolveFreshList: (value: WorktreeInfo[]) => void = () => {};
+    let listCallCount = 0;
+    bridgeMock.worktreesList.mockImplementation(
+      () =>
+        new Promise<WorktreeInfo[]>((resolve) => {
+          listCallCount += 1;
+          if (listCallCount === 1) resolveStaleList = resolve;
+          else resolveFreshList = resolve;
+        }),
+    );
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+    await waitFor(() => expect(listCallCount).toBe(1));
+
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+    fireEvent.change(input, { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    // Wait for the failure path to issue the second worktreesList call.
+    await waitFor(() => expect(listCallCount).toBe(2));
+
+    // Fresh refresh resolves first.
+    await act(async () => {
+      resolveFreshList(fresh);
+    });
+    expect(
+      await screen.findByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /\.worktrees\/old-feature.*old-feature/i }),
+    ).toBeInTheDocument();
+
+    // Now the slow stale Step-2 request resolves — it must be ignored.
+    await act(async () => {
+      resolveStaleList(stale);
+    });
+    expect(
+      screen.getByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i }),
+    ).toBeInTheDocument();
+  });
+
   it('Step 2 New tab validates the trimmed name and submits the trimmed value', async () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
