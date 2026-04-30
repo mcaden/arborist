@@ -357,6 +357,13 @@ export interface UseTerminalApi {
    * attached or has zero dimensions.
    */
   refit: () => void;
+  /**
+   * Current xterm `cols`/`rows` for this session, or `null` if the
+   * terminal has no entry yet (created lazily on first `attach`/render).
+   * Used by callers that need to drive a backend respawn at the right
+   * size (e.g. `session_restart` after a crash).
+   */
+  getDimensions: () => InitialPtyDims | null;
 }
 
 export function useTerminal(sessionId: SessionId): UseTerminalApi {
@@ -389,13 +396,146 @@ export function useTerminal(sessionId: SessionId): UseTerminalApi {
     refitEntry(id, entry);
   }, []);
 
+  const getDimensions = useCallback(() => getTerminalDimensions(sessionIdRef.current), []);
+
   // Eagerly create the terminal so `session://output` events are buffered
   // by xterm even before `attach` runs.
   useEffect(() => {
     getOrCreate(sessionId);
   }, [sessionId]);
 
-  return useMemo(() => ({ attach, detach, focus, refit }), [attach, detach, focus, refit]);
+  return useMemo(
+    () => ({ attach, detach, focus, refit, getDimensions }),
+    [attach, detach, focus, refit, getDimensions],
+  );
+}
+
+/**
+ * Initial PTY dimensions handed to `session_create` / `session_restart`
+ * before the frontend has a chance to mount + fit the xterm Terminal.
+ *
+ * The pre-fix bug: the backend always opened the PTY at
+ * `DEFAULT_PTY_SIZE` (80×24), so the CLI's first paint (the splash, the
+ * first prompt) was rendered at 80 cols regardless of how wide the
+ * actual host turned out to be. The eventual `session_resize` from
+ * `fitAddon.fit()` came after the splash had already been drawn into
+ * scrollback at 80-col layout. Frontend code now passes the real
+ * intended dims at create/restart time so the child's first byte sees
+ * the right width.
+ *
+ * This file is the right home because the per-session xterm registry
+ * (where existing terminals can be sampled for accurate dims) is
+ * module-private here.
+ */
+export interface InitialPtyDims {
+  cols: number;
+  rows: number;
+}
+
+/**
+ * Conservative starting point used when no live terminal exists to
+ * sample (very-first-session boot) and the DOM probe also fails. Wider
+ * than the historical 80-col default so the splash isn't artificially
+ * narrow on the rare bad-measure path; the post-mount `fitAddon.fit()`
+ * will issue a `session_resize` to the true host width within a frame
+ * either way.
+ */
+export const FALLBACK_PTY_DIMS: Readonly<InitialPtyDims> = Object.freeze({
+  cols: 132,
+  rows: 40,
+});
+
+const PROBE_SAMPLE_TEXT = 'M'.repeat(80);
+
+/** Inner padding (px on each side) of `TerminalView`'s host wrapper. */
+const TERMINAL_HOST_INNER_PADDING_PX = 8;
+
+/**
+ * Read the current cols/rows of an existing terminal entry. Returns
+ * `null` if the session has no entry yet, or if its terminal hasn't been
+ * sized (cols/rows non-positive). Used by `session_restart` callers so
+ * the respawn lands at the size xterm currently shows, not at
+ * `DEFAULT_PTY_SIZE`.
+ */
+export function getTerminalDimensions(sessionId: SessionId): InitialPtyDims | null {
+  const entry = registry.get(sessionId);
+  if (!entry) return null;
+  const cols = entry.term.cols;
+  const rows = entry.term.rows;
+  if (cols <= 0 || rows <= 0) return null;
+  return { cols, rows };
+}
+
+/**
+ * Estimate the cols/rows a brand-new session's PTY should be opened at
+ * so the CLI's first paint matches the eventual `fitAddon.fit()` size.
+ *
+ * Strategy, in order:
+ *   1. Reuse any already-attached terminal's `cols`/`rows`. All sessions
+ *      share the same `<main>` host, so cell metrics (and therefore
+ *      cols/rows) are identical.
+ *   2. Fall back to a one-off DOM probe: measure a hidden monospace
+ *      `<span>` for cell-width × cell-height and divide the `<main>`
+ *      element's rect (minus `TerminalView`'s 8-px padding) by it.
+ *   3. If the DOM isn't available (jsdom without a `<main>`, or any
+ *      probe failure), return [`FALLBACK_PTY_DIMS`].
+ */
+export function measureInitialPtyDimensions(): InitialPtyDims {
+  for (const entry of registry.values()) {
+    // Require an *attached and connected* host: a stale registry entry
+    // whose host has been detached (e.g. a session whose
+    // `TerminalView` has unmounted but the dispose subscription
+    // hasn't fired yet) would happily pass the truthy-`host` check
+    // and could hand back stale cols/rows from the previous parent's
+    // size. The cell metrics still match — every host shares the
+    // same `<main>` font — but cols/rows reflect the OLD host, which
+    // can be wrong if the layout has changed since.
+    const host = entry.host;
+    if (host !== null && host.isConnected && entry.term.cols > 0 && entry.term.rows > 0) {
+      return { cols: entry.term.cols, rows: entry.term.rows };
+    }
+  }
+
+  if (typeof document === 'undefined') {
+    return { ...FALLBACK_PTY_DIMS };
+  }
+
+  const main = document.querySelector('main');
+  if (!main) return { ...FALLBACK_PTY_DIMS };
+
+  const rect = main.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    // `<main>` is in the tree but laid out at 0×0 (e.g. an ancestor is
+    // `display: none` mid-transition). Clamping `0/cellW` to a 20-col
+    // floor would silently produce a tiny PTY — the very thing the
+    // splash-too-narrow regression test guards against. Bail to the
+    // fallback so the post-mount `fitAddon.fit()` corrects it.
+    return { ...FALLBACK_PTY_DIMS };
+  }
+
+  let cellWidth = 0;
+  let cellHeight = 0;
+  try {
+    const probe = document.createElement('span');
+    probe.textContent = PROBE_SAMPLE_TEXT;
+    probe.style.cssText =
+      'position:absolute;left:-9999px;top:-9999px;visibility:hidden;' +
+      'white-space:pre;font-family:monospace;font-size:15px;line-height:normal;';
+    document.body.appendChild(probe);
+    cellWidth = probe.offsetWidth / PROBE_SAMPLE_TEXT.length;
+    cellHeight = probe.offsetHeight;
+    document.body.removeChild(probe);
+  } catch {
+    // jsdom or hostile environment — fall through to defaults.
+  }
+
+  if (cellWidth <= 0 || cellHeight <= 0) return { ...FALLBACK_PTY_DIMS };
+
+  const usableW = Math.max(rect.width - TERMINAL_HOST_INNER_PADDING_PX * 2, 0);
+  const usableH = Math.max(rect.height - TERMINAL_HOST_INNER_PADDING_PX * 2, 0);
+  const cols = Math.max(20, Math.floor(usableW / cellWidth));
+  const rows = Math.max(5, Math.floor(usableH / cellHeight));
+  return { cols, rows };
 }
 
 export function disposeTerminal(sessionId: SessionId): void {

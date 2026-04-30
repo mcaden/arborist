@@ -50,10 +50,33 @@ export interface SessionCreateArgs {
   tool: Tool;
   worktreePath: string;
   instructionSetId?: InstructionSetId;
+  /**
+   * Initial PTY dimensions in character cells. Required so the CLI's first
+   * paint (e.g. a Claude/Copilot splash) is rendered at the actual host
+   * width — see DESIGN §5.1 step 4 and the regression in
+   * `tests/session_lifecycle_fake.rs::create_passes_initial_size_to_spawner`.
+   *
+   * MIRROR: `src-tauri/src/types.rs::SessionCreateArgs`.
+   */
+  cols: number;
+  rows: number;
 }
 
 export interface SessionIdArg {
   sessionId: SessionId;
+}
+
+/**
+ * Arguments for `session_restart`. Mirrors `session_create` in passing the
+ * caller-measured initial PTY dimensions so the respawned child paints at
+ * the real host size from the first byte (DESIGN §5.4).
+ *
+ * MIRROR: `src-tauri/src/types.rs::SessionRestartArgs`.
+ */
+export interface SessionRestartArgs {
+  sessionId: SessionId;
+  cols: number;
+  rows: number;
 }
 
 /**
@@ -160,9 +183,10 @@ export function sessionInput(args: SessionInputArgs): Promise<void> {
 
 /**
  * Re-spawn `sessionId` from its persisted `composedCommand`. The command
- * is reused verbatim — never recomposed (DESIGN §5.4).
+ * is reused verbatim — never recomposed (DESIGN §5.4). The caller passes
+ * the current xterm dims so the new PTY is opened at the right size.
  */
-export function sessionRestart(args: SessionIdArg): Promise<void> {
+export function sessionRestart(args: SessionRestartArgs): Promise<void> {
   return invoke<void>('session_restart', { args });
 }
 

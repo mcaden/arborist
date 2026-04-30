@@ -519,9 +519,14 @@ impl PtyPool {
     /// invocation `[shell, flag, session.composed_command]` and passes the
     /// session's worktree as the discrete `cwd`.
     ///
+    /// The `size` is the initial PTY dimensions the child sees at startup.
+    /// Callers must measure the host terminal first — passing the wrong size
+    /// here is the exact race that caused the long-standing "splash screen
+    /// rendered at 80 cols then never re-laid-out" bug.
+    ///
     /// Returns the assigned PID.
-    pub fn spawn(&self, session: &Session, sink: PtySink) -> Result<u32, Error> {
-        self.spawn_internal(session, sink)
+    pub fn spawn(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
+        self.spawn_internal(session, sink, size)
     }
 
     /// Re-spawn a session from its **already-stored** `composed_command`.
@@ -530,17 +535,27 @@ impl PtyPool {
     /// "do not recompose at restart time" rule from DESIGN §5.4.
     ///
     /// [`spawn`]: Self::spawn
-    pub fn respawn_existing(&self, session: &Session, sink: PtySink) -> Result<u32, Error> {
+    pub fn respawn_existing(
+        &self,
+        session: &Session,
+        sink: PtySink,
+        size: PtySize,
+    ) -> Result<u32, Error> {
         // If a previous runtime entry exists (e.g. from a prior spawn that
         // hasn't exited yet), tear it down first.
         if self.contains(&session.id) {
             // Best-effort kill; if the child is already dead this is a no-op.
             let _ = self.kill_blocking(&session.id);
         }
-        self.spawn_internal(session, sink)
+        self.spawn_internal(session, sink, size)
     }
 
-    fn spawn_internal(&self, session: &Session, sink: PtySink) -> Result<u32, Error> {
+    fn spawn_internal(
+        &self,
+        session: &Session,
+        sink: PtySink,
+        size: PtySize,
+    ) -> Result<u32, Error> {
         // ------- 1. Per-session spawn prep (telemetry env, temp dir).
         //
         // We do this here — not in `commands/session.rs` — so every spawn
@@ -590,9 +605,7 @@ impl PtyPool {
         };
 
         // ------- 3. Spawn via injected spawner; cwd is discrete (DESIGN §5.6)
-        let spawned = self
-            .spawner
-            .spawn(cmd, &session.worktree_path, DEFAULT_PTY_SIZE)?;
+        let spawned = self.spawner.spawn(cmd, &session.worktree_path, size)?;
         let SpawnedChild {
             pid,
             reader,

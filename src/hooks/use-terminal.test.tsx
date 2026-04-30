@@ -68,7 +68,10 @@ import {
   __resetTerminalRegistryForTests,
   __getTerminalRegistryForTests,
   disposeTerminal,
+  FALLBACK_PTY_DIMS,
+  getTerminalDimensions,
   initTerminalRouter,
+  measureInitialPtyDimensions,
   useTerminal,
 } from './use-terminal';
 import {
@@ -347,5 +350,65 @@ describe('useTerminal', () => {
     // Advance past the debounce window — the original pending fit fires.
     act(() => vi.advanceTimersByTime(60));
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('initial PTY dimension helpers', () => {
+  it('getTerminalDimensions returns null for unknown sessions and {cols,rows} once an entry exists', () => {
+    expect(getTerminalDimensions('nope')).toBeNull();
+
+    renderHook(() => useTerminal('s1'));
+    // The xterm mock seeds cols=80 / rows=24.
+    expect(getTerminalDimensions('s1')).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it('measureInitialPtyDimensions reuses an attached terminal when present', () => {
+    renderHook(() => useTerminal('s1'));
+    // Without an attach() the entry exists but `host` is null, so the
+    // helper falls through. Force-mark the terminal's measured cols/rows
+    // and attach a host so the registry-reuse branch is exercised.
+    const entry = __getTerminalRegistryForTests().get('s1')!;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    (entry as unknown as { host: HTMLElement | null }).host = host;
+    mockTerminals[0]!.cols = 173;
+    mockTerminals[0]!.rows = 47;
+    expect(measureInitialPtyDimensions()).toEqual({ cols: 173, rows: 47 });
+  });
+
+  it('measureInitialPtyDimensions ignores stale registry entries whose host is not connected', () => {
+    // Reproduces the "session is mid-dispose" race: the registry entry
+    // still exists, its `host` ref is non-null, but the host has been
+    // removed from the DOM. We must NOT reuse those cols/rows — they
+    // reflect a previous layout and could mislead the new session's
+    // PTY size.
+    renderHook(() => useTerminal('s1'));
+    const entry = __getTerminalRegistryForTests().get('s1')!;
+    const detachedHost = document.createElement('div'); // never appended
+    (entry as unknown as { host: HTMLElement | null }).host = detachedHost;
+    mockTerminals[0]!.cols = 999;
+    mockTerminals[0]!.rows = 999;
+    // No <main>, so we expect the fallback rather than the stale dims.
+    expect(document.querySelector('main')).toBeNull();
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
+  });
+
+  it('measureInitialPtyDimensions falls back to defaults when no <main> exists in the DOM', () => {
+    // No active terminals (registry empty) and no <main> element.
+    expect(document.querySelector('main')).toBeNull();
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
+  });
+
+  it('measureInitialPtyDimensions falls back to defaults when <main> is laid out at 0×0', () => {
+    // jsdom doesn't compute layout, so getBoundingClientRect returns
+    // {width: 0, height: 0}. Without the explicit zero-rect bail, the
+    // helper would clamp 0/cellW up to the 20-col floor and silently
+    // hand back a tiny PTY — exactly the splash-too-narrow regression.
+    const main = document.createElement('main');
+    document.body.appendChild(main);
+    const rect = main.getBoundingClientRect();
+    expect(rect.width).toBe(0);
+    expect(rect.height).toBe(0);
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
   });
 });

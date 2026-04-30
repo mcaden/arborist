@@ -82,15 +82,21 @@ describe('create', () => {
       activeId: 'old',
     });
 
-    const view = await useSessionStore
-      .getState()
-      .actions.create({ tool: 'claude', worktreePath: '/repo/new', instructionSetId: 'd' });
+    const view = await useSessionStore.getState().actions.create({
+      tool: 'claude',
+      worktreePath: '/repo/new',
+      instructionSetId: 'd',
+      cols: 80,
+      rows: 24,
+    });
 
     expect(view).toEqual(created);
     expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
       tool: 'claude',
       worktreePath: '/repo/new',
       instructionSetId: 'd',
+      cols: 80,
+      rows: 24,
     });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['old', 'new']);
     expect(useSessionStore.getState().activeId).toBe('new');

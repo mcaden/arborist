@@ -104,7 +104,11 @@ describe('TerminalView', () => {
     render(<TerminalView sessionId="s1" isActive={true} />);
     const restart = screen.getByRole('button', { name: /restart/i });
     act(() => restart.click());
-    expect(sessionRestart).toHaveBeenCalledWith({ sessionId: 's1' });
+    expect(sessionRestart).toHaveBeenCalledWith({
+      sessionId: 's1',
+      cols: 80,
+      rows: 24,
+    });
   });
 
   it('shows overlay when status === exited', () => {
