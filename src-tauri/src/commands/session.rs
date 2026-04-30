@@ -440,24 +440,25 @@ fn ai_session_transcript_exists(
     let Some(home) = crate::session_metrics::home_dir() else {
         return true;
     };
-    match tool {
-        Tool::Claude => {
-            // ~/.claude/projects/<encoded-cwd>/<id>.jsonl
-            let path = home
-                .join(".claude")
-                .join("projects")
-                .join(crate::session_metrics::encode_cwd(worktree_path))
-                .join(format!("{ai_session_id}.jsonl"));
-            path.is_file()
-        }
-        Tool::Copilot => {
-            // ~/.copilot/session-state/<id>/
-            let path = home
-                .join(".copilot")
-                .join("session-state")
-                .join(ai_session_id);
-            path.is_dir()
-        }
+    let path = match tool {
+        Tool::Claude => home
+            .join(".claude")
+            .join("projects")
+            .join(crate::session_metrics::encode_cwd(worktree_path))
+            .join(format!("{ai_session_id}.jsonl")),
+        Tool::Copilot => home
+            .join(".copilot")
+            .join("session-state")
+            .join(ai_session_id),
+    };
+    // `try_exists` distinguishes "definitely missing" from "couldn't tell"
+    // (e.g. permission denied on a parent dir). `Path::is_file`/`is_dir`
+    // would conflate both as `false`, which would silently strip a valid
+    // `--resume` whenever the home dir is briefly unreadable.
+    match path.try_exists() {
+        Ok(true) => true,
+        Ok(false) => false,
+        Err(_) => true,
     }
 }
 
