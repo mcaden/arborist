@@ -600,6 +600,42 @@ async fn close_with_delete_worktree_refuses_when_no_workspace_root() {
 }
 
 #[tokio::test]
+async fn close_with_delete_worktree_refuses_when_sessions_snapshot_unreadable() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
+    h.ctx
+        .store
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(ws_root)),
+            ..Default::default()
+        })
+        .unwrap();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    // Corrupt sessions.json so the strict snapshot read at the start of
+    // close fails. The destructive worktree-delete path must refuse
+    // rather than treat the unreadable snapshot as "session not found,
+    // skip silently".
+    std::fs::write(h.ctx.store.dir().join("sessions.json"), b"###bad###").unwrap();
+
+    let result = session_close_impl(&h.ctx, view.id, true)
+        .await
+        .expect("close itself should succeed even when sessions.json is corrupt");
+    let msg = result
+        .worktree_delete_error
+        .expect("expected snapshot-read refusal in result");
+    assert!(
+        msg.contains("sessions snapshot"),
+        "expected snapshot-read refusal, got: {msg}",
+    );
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "remove_worktree must not be invoked when sessions snapshot is unreadable"
+    );
+}
+
+#[tokio::test]
 async fn close_with_delete_worktree_refuses_when_outside_workspace_root() {
     let git = RecordingGitRunner::new();
     let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);

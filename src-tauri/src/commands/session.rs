@@ -250,13 +250,25 @@ pub async fn session_close_impl(
 
     // Capture the worktree path *before* we drop the persisted record —
     // we need it for the optional `git worktree remove` step at the end.
-    let worktree_path: Option<PathBuf> = if delete_worktree {
-        ctx.store
-            .load_sessions()
-            .get(&id)
-            .map(|s| s.worktree_path.clone())
+    // Use a *strict* read here so that a corrupt or unreadable
+    // sessions.json doesn't silently translate "delete the worktree"
+    // into "skip silently and report success". On read failure or
+    // missing-record we surface a `worktree_delete_error` later instead
+    // of attempting deletion.
+    let worktree_intent: WorktreeDeleteIntent = if delete_worktree {
+        match ctx.store.try_load_sessions() {
+            Ok(map) => match map.get(&id) {
+                Some(s) => WorktreeDeleteIntent::Path(s.worktree_path.clone()),
+                None => WorktreeDeleteIntent::Refused(format!(
+                    "session {id} not found in store; cannot determine worktree to delete"
+                )),
+            },
+            Err(e) => WorktreeDeleteIntent::Refused(format!(
+                "could not read sessions snapshot reliably; refusing to attempt worktree deletion: {e}"
+            )),
+        }
     } else {
-        None
+        WorktreeDeleteIntent::None
     };
 
     // 1. Best-effort kill (NotFound from the pool is fine — the session
@@ -305,18 +317,44 @@ pub async fn session_close_impl(
     //    unable to converge on a "tab gone" state). Surface the error in
     //    the result instead.
     let mut result = SessionCloseResult::default();
-    if let Some(wt) = worktree_path {
-        if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root) {
+    match worktree_intent {
+        WorktreeDeleteIntent::Path(wt) => {
+            if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root) {
+                warn!(
+                    session_id = %id,
+                    worktree_path = %wt.display(),
+                    error = %error.message,
+                    "worktree deletion failed after session close",
+                );
+                result.worktree_delete_error = Some(error.message);
+            }
+        }
+        WorktreeDeleteIntent::Refused(msg) => {
             warn!(
                 session_id = %id,
-                worktree_path = %wt.display(),
-                error = %error.message,
-                "worktree deletion failed after session close",
+                error = %msg,
+                "worktree deletion was requested but refused before reaching git",
             );
-            result.worktree_delete_error = Some(error.message);
+            result.worktree_delete_error = Some(msg);
         }
+        WorktreeDeleteIntent::None => {}
     }
     Ok(result)
+}
+
+/// What `session_close_impl` decided to do about the optional `delete_worktree`
+/// flag, captured *before* the persisted session record is dropped so the
+/// decision is based on the pre-close state.
+enum WorktreeDeleteIntent {
+    /// Caller did not request a worktree deletion.
+    None,
+    /// Deletion was requested and the worktree path was resolved successfully.
+    Path(PathBuf),
+    /// Deletion was requested but cannot be attempted (e.g. the sessions
+    /// snapshot couldn't be read strictly, or the session record is missing).
+    /// The contained string is reported back to the frontend verbatim as
+    /// `worktree_delete_error` so the user knows why nothing was deleted.
+    Refused(String),
 }
 
 /// Helper: validate and execute `git worktree remove --force`. Refuses to
@@ -379,12 +417,15 @@ fn delete_worktree_after_close(
     // Safety 3: refuse if any *other* live session still references the
     // same worktree. The session being closed has already been removed
     // from the store at this point, so it cannot match itself. If a
-    // foreign session's path fails to canonicalize, we conservatively
-    // treat it as a match (better to refuse than to delete a worktree
-    // that another session may still depend on). The session snapshot
-    // itself must be loaded *strictly* — for a destructive operation, an
-    // unreadable or quarantined sessions.json cannot be silently treated
-    // as "no other sessions exist".
+    // foreign session's path fails to canonicalize we conservatively
+    // treat it as a match — for a destructive operation, an
+    // un-canonicalizable path could refer to the same directory we're
+    // about to delete (a different textual form, dangling junction, or
+    // path made temporarily inaccessible) and we'd rather refuse than
+    // delete a worktree another session may still depend on. The session
+    // snapshot itself must be loaded *strictly* — for a destructive
+    // operation, an unreadable or quarantined sessions.json cannot be
+    // silently treated as "no other sessions exist".
     let sessions = ctx.store.try_load_sessions().map_err(|e| {
         AppError::from(Error::Internal(format!(
             "refusing to delete worktree because the sessions snapshot could not be read reliably: {e}"
@@ -394,7 +435,7 @@ fn delete_worktree_after_close(
         .values()
         .any(|s| match dunce::canonicalize(&s.worktree_path) {
             Ok(other) => other == canon_wt,
-            Err(_) => s.worktree_path == worktree_path,
+            Err(_) => true,
         });
     if still_in_use {
         return Err(AppError::from(Error::Internal(format!(
