@@ -18,7 +18,7 @@ This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or 
 Hard rules:
 
 - **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `npm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
-- **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host. The runtime already forbids these; do not work around the rule.
+- **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host. Do not use or work around these commands.
 - **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
 - If your `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
 - Do not run `npm run tauri:dev` or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `npm run build`, or `npm test -- --run` for verification instead.
