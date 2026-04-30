@@ -9,6 +9,7 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import type { SessionStatusEvent, SessionView } from '@/types/arborist';
 
 import { useSessionStore, selectDisplayStatus, type DisplayStatus } from './session-store';
+import { useSubSessionStore } from './sub-session-store';
 
 function makeView(overrides: Partial<SessionView> & Pick<SessionView, 'id'>): SessionView {
   return {
@@ -149,6 +150,47 @@ describe('close', () => {
     await useSessionStore.getState().actions.close('b');
 
     expect(useSessionStore.getState().activeId).toBe('a');
+  });
+
+  it('drops sub-sessions for the closed parent (frontend convergence, Phase 5)', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'p1' }), makeView({ id: 'p2' })],
+      activeId: 'p1',
+    });
+    useSubSessionStore.setState({
+      subSessions: [
+        {
+          id: 'sub-1' as never,
+          parentSessionId: 'p1' as never,
+          defId: 'shell',
+          kind: 'terminal',
+          label: 'Shell',
+          status: 'running',
+          composedCommand: 'sh -i',
+          createdAt: 0,
+        },
+        {
+          id: 'sub-2' as never,
+          parentSessionId: 'p2' as never,
+          defId: 'shell',
+          kind: 'terminal',
+          label: 'Shell',
+          status: 'running',
+          composedCommand: 'sh -i',
+          createdAt: 0,
+        },
+      ],
+      activeByParent: { p1: 'sub-1' as never, p2: 'sub-2' as never },
+      statusMessages: {},
+      isHydrated: true,
+    });
+
+    await useSessionStore.getState().actions.close('p1');
+
+    const { subSessions, activeByParent } = useSubSessionStore.getState();
+    expect(subSessions.map((s) => s.id)).toEqual(['sub-2']);
+    expect('p1' in activeByParent).toBe(false);
+    expect(activeByParent.p2).toBe('sub-2');
   });
 
   it('clears pendingClose when the targeted session is closed', async () => {

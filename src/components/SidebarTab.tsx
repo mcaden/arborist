@@ -28,6 +28,12 @@ interface SidebarTabProps {
   isActive: boolean;
   isFocused: boolean;
   onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
+  /**
+   * Open the context menu anchored at viewport coordinates. The Sidebar
+   * owns the menu state so only one menu is open at a time across all
+   * tabs.
+   */
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
 }
 
 export function SidebarTab({
@@ -35,6 +41,7 @@ export function SidebarTab({
   isActive,
   isFocused,
   onFocusableMounted,
+  onOpenContextMenu,
 }: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
   const hasUnread = useHasUnread(id);
@@ -78,6 +85,23 @@ export function SidebarTab({
         tabIndex={isFocused ? 0 : -1}
         onClick={() => {
           void actions.focus(id);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onOpenContextMenu(id, { x: e.clientX, y: e.clientY });
+        }}
+        onKeyDown={(e) => {
+          // Shift+F10 and the Apps / ContextMenu key are the standard
+          // keyboard shortcuts for the context menu (matches OS menus
+          // and browsers). Anchor the menu to the tab's bounding rect
+          // so it appears near the focused element. Don't preventDefault
+          // for other keys — Sidebar's tablist handler still owns Arrow
+          // / Home / End / Delete / Enter / Space.
+          if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+            e.preventDefault();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            onOpenContextMenu(id, { x: rect.left + 8, y: rect.bottom });
+          }
         }}
         className={`${baseClasses} ${stateClasses}`}
       >

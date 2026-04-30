@@ -31,12 +31,26 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 
-import { onSessionOutput, sessionInput, sessionResize } from '@/lib/tauri-bridge';
+import {
+  onSessionOutput,
+  sessionInput,
+  sessionResize,
+  subSessionInput,
+  subSessionResize,
+} from '@/lib/tauri-bridge';
 import { useSessionStore } from '@/store/session-store';
-import type { SessionId } from '@/types/arborist';
+import { useSubSessionStore } from '@/store/sub-session-store';
+import type { SessionId, SubSessionId } from '@/types/arborist';
 
-/** Time the ResizeObserver waits before firing `fit()` + `sessionResize`. */
+/** Time the ResizeObserver waits before firing `fit()` + resize. */
 const RESIZE_DEBOUNCE_MS = 50;
+
+/**
+ * Which underlying Tauri commands a registry entry's input/resize map to.
+ * Sessions and sub-sessions share the registry (UUID id-space is global)
+ * but route their I/O through different commands.
+ */
+type IoKind = 'session' | 'subsession';
 
 interface RegistryEntry {
   term: Terminal;
@@ -50,12 +64,15 @@ interface RegistryEntry {
   /** Last cols/rows reported to the backend; suppresses duplicate calls. */
   lastCols: number;
   lastRows: number;
+  /** Discriminator that picks the input/resize command pair. */
+  ioKind: IoKind;
 }
 
-const registry = new Map<SessionId, RegistryEntry>();
+const registry = new Map<string, RegistryEntry>();
 
 let outputUnlisten: Promise<() => void> | null = null;
 let storeUnsubscribe: (() => void) | null = null;
+let subStoreUnsubscribe: (() => void) | null = null;
 let fontsReadyAttached = false;
 
 function ensureGlobalSubscriptions(): void {
@@ -73,9 +90,14 @@ function ensureGlobalSubscriptions(): void {
         return;
       }
       entry.term.write(payload.data);
-      // Tier-4 unread indicator. `noteUnread` is a no-op when the session
-      // is active or already flagged, so this stays cheap on the hot path.
-      useSessionStore.getState().actions.noteUnread(payload.sessionId);
+      // Tier-4 unread indicator. `noteUnread` is a no-op for unknown ids
+      // (e.g. sub-session output, which shares the `session://output`
+      // channel) and for already-flagged sessions, so this stays cheap on
+      // the hot path. Skip outright for non-session entries to make the
+      // intent obvious and keep the store untouched on sub-session traffic.
+      if (entry.ioKind === 'session') {
+        useSessionStore.getState().actions.noteUnread(payload.sessionId);
+      }
     });
   }
 
@@ -84,7 +106,22 @@ function ensureGlobalSubscriptions(): void {
     storeUnsubscribe = useSessionStore.subscribe((state) => {
       const currentIds = new Set<SessionId>(state.sessions.map((s) => s.id));
       for (const id of previousIds) {
-        if (!currentIds.has(id) && registry.has(id)) {
+        if (!currentIds.has(id) && registry.get(id)?.ioKind === 'session') {
+          disposeTerminal(id);
+        }
+      }
+      previousIds = currentIds;
+    });
+  }
+
+  if (subStoreUnsubscribe === null) {
+    let previousIds = new Set<SubSessionId>(
+      useSubSessionStore.getState().subSessions.map((s) => s.id),
+    );
+    subStoreUnsubscribe = useSubSessionStore.subscribe((state) => {
+      const currentIds = new Set<SubSessionId>(state.subSessions.map((s) => s.id));
+      for (const id of previousIds) {
+        if (!currentIds.has(id) && registry.get(id)?.ioKind === 'subsession') {
           disposeTerminal(id);
         }
       }
@@ -130,7 +167,7 @@ export function initTerminalRouter(): void {
   ensureGlobalSubscriptions();
 }
 
-function createEntry(sessionId: SessionId): RegistryEntry {
+function createEntry(id: string, ioKind: IoKind): RegistryEntry {
   const term = new Terminal({
     scrollback: 5000,
     fontFamily: 'monospace',
@@ -141,9 +178,13 @@ function createEntry(sessionId: SessionId): RegistryEntry {
   term.loadAddon(fitAddon);
 
   term.onData((data) => {
-    void sessionInput({ sessionId, data }).catch((err: unknown) => {
+    const sendInput =
+      ioKind === 'session'
+        ? sessionInput({ sessionId: id, data })
+        : subSessionInput({ id: id as SubSessionId, data });
+    void sendInput.catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[use-terminal] session_input(${sessionId}) failed: ${message}`);
+      console.warn(`[use-terminal] ${ioKind} input(${id}) failed: ${message}`);
     });
   });
 
@@ -156,14 +197,23 @@ function createEntry(sessionId: SessionId): RegistryEntry {
     resizeTimer: null,
     lastCols: 0,
     lastRows: 0,
+    ioKind,
   };
 }
 
-function getOrCreate(sessionId: SessionId): RegistryEntry {
-  let entry = registry.get(sessionId);
+function getOrCreate(id: string, ioKind: IoKind): RegistryEntry {
+  let entry = registry.get(id);
   if (!entry) {
-    entry = createEntry(sessionId);
-    registry.set(sessionId, entry);
+    entry = createEntry(id, ioKind);
+    registry.set(id, entry);
+  } else if (entry.ioKind !== ioKind) {
+    // Defensive: a UUID collision across the session and sub-session id
+    // spaces would be a load-bearing bug — both routes share the registry,
+    // and the input/resize callbacks are baked into the entry on creation.
+    // Surface it loudly rather than silently mis-routing input.
+    throw new Error(
+      `[use-terminal] id ${id} already registered as ${entry.ioKind}, requested ${ioKind}`,
+    );
   }
   return entry;
 }
@@ -187,7 +237,7 @@ function teardownObserver(entry: RegistryEntry): void {
  * recovery path for stale canvas state after a visibility transition or a
  * pre-font-load initial measurement.
  */
-function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
+function refitEntry(id: string, entry: RegistryEntry): void {
   if (!entry.wrapper || !entry.wrapper.isConnected) return;
   try {
     entry.fitAddon.fit();
@@ -226,13 +276,17 @@ function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
   if (cols === entry.lastCols && rows === entry.lastRows) return;
   entry.lastCols = cols;
   entry.lastRows = rows;
-  void sessionResize({ sessionId, cols, rows }).catch((err: unknown) => {
+  const sendResize =
+    entry.ioKind === 'session'
+      ? sessionResize({ sessionId: id, cols, rows })
+      : subSessionResize({ id: id as SubSessionId, cols, rows });
+  void sendResize.catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[use-terminal] session_resize(${sessionId}) failed: ${message}`);
+    console.warn(`[use-terminal] ${entry.ioKind} resize(${id}) failed: ${message}`);
   });
 }
 
-function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivElement): void {
+function attachToHost(id: string, entry: RegistryEntry, host: HTMLDivElement): void {
   if (entry.host === host && entry.wrapper && entry.wrapper.isConnected) {
     return;
   }
@@ -259,12 +313,12 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
   // Synchronous initial fit — don't rely on ResizeObserver's first tick
   // (which races with font loading and can leave the renderer in a stale
   // state if it fires too early).
-  refitEntry(sessionId, entry);
+  refitEntry(id, entry);
 
   if (typeof ResizeObserver !== 'undefined') {
     const observer = new ResizeObserver(() => {
       if (entry.resizeTimer !== null) clearTimeout(entry.resizeTimer);
-      entry.resizeTimer = setTimeout(() => refitEntry(sessionId, entry), RESIZE_DEBOUNCE_MS);
+      entry.resizeTimer = setTimeout(() => refitEntry(id, entry), RESIZE_DEBOUNCE_MS);
     });
     observer.observe(host);
     entry.observer = observer;
@@ -296,51 +350,61 @@ export interface UseTerminalApi {
 }
 
 export function useTerminal(sessionId: SessionId): UseTerminalApi {
+  return useTerminalInternal(sessionId, 'session');
+}
+
+export function useSubTerminal(subSessionId: SubSessionId): UseTerminalApi {
+  return useTerminalInternal(subSessionId, 'subsession');
+}
+
+function useTerminalInternal(id: string, ioKind: IoKind): UseTerminalApi {
   ensureGlobalSubscriptions();
 
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
+  const idRef = useRef(id);
+  idRef.current = id;
+  const kindRef = useRef(ioKind);
+  kindRef.current = ioKind;
 
   const attach = useCallback((el: HTMLDivElement) => {
-    const id = sessionIdRef.current;
-    const entry = getOrCreate(id);
-    attachToHost(id, entry, el);
+    const currentId = idRef.current;
+    const entry = getOrCreate(currentId, kindRef.current);
+    attachToHost(currentId, entry, el);
   }, []);
 
   const detach = useCallback(() => {
-    const entry = registry.get(sessionIdRef.current);
+    const entry = registry.get(idRef.current);
     if (!entry) return;
     detachFromHost(entry);
   }, []);
 
   const focus = useCallback(() => {
-    const entry = registry.get(sessionIdRef.current);
+    const entry = registry.get(idRef.current);
     entry?.term.focus();
   }, []);
 
   const refit = useCallback(() => {
-    const id = sessionIdRef.current;
-    const entry = registry.get(id);
+    const currentId = idRef.current;
+    const entry = registry.get(currentId);
     if (!entry) return;
-    refitEntry(id, entry);
+    refitEntry(currentId, entry);
   }, []);
 
   // Eagerly create the terminal so `session://output` events are buffered
   // by xterm even before `attach` runs.
   useEffect(() => {
-    getOrCreate(sessionId);
-  }, [sessionId]);
+    getOrCreate(id, ioKind);
+  }, [id, ioKind]);
 
   return useMemo(() => ({ attach, detach, focus, refit }), [attach, detach, focus, refit]);
 }
 
-export function disposeTerminal(sessionId: SessionId): void {
-  const entry = registry.get(sessionId);
+export function disposeTerminal(id: string): void {
+  const entry = registry.get(id);
   if (!entry) return;
   detachFromHost(entry);
   entry.fitAddon.dispose();
   entry.term.dispose();
-  registry.delete(sessionId);
+  registry.delete(id);
 }
 
 /**
@@ -384,10 +448,18 @@ export function __resetTerminalRegistryForTests(): void {
     }
     storeUnsubscribe = null;
   }
+  if (subStoreUnsubscribe) {
+    try {
+      subStoreUnsubscribe();
+    } catch {
+      // ignore
+    }
+    subStoreUnsubscribe = null;
+  }
   fontsReadyAttached = false;
 }
 
 /** Test-only: peek at the registry. */
-export function __getTerminalRegistryForTests(): ReadonlyMap<SessionId, RegistryEntry> {
+export function __getTerminalRegistryForTests(): ReadonlyMap<string, RegistryEntry> {
   return registry;
 }

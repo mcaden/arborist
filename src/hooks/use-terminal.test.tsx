@@ -57,6 +57,7 @@ import {
   __getTerminalRegistryForTests,
   disposeTerminal,
   initTerminalRouter,
+  useSubTerminal,
   useTerminal,
 } from './use-terminal';
 import {
@@ -64,6 +65,8 @@ import {
   resetBridgeMocks,
   sessionInput,
   sessionResize,
+  subSessionInput,
+  subSessionResize,
 } from '@/lib/tauri-bridge.mock';
 
 function makeHost(width = 600, height = 400): HTMLDivElement {
@@ -298,5 +301,33 @@ describe('useTerminal', () => {
     // Advance past the debounce window — the original pending fit fires.
     act(() => vi.advanceTimersByTime(60));
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('useSubTerminal', () => {
+  it('forwards input to subSessionInput, not sessionInput', () => {
+    const { result } = renderHook(() => useSubTerminal('sub-1' as never));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    // First Terminal in the registry is the sub-session's.
+    const term = mockTerminals[0]!;
+    expect(term._dataCb).toBeDefined();
+    act(() => {
+      term._dataCb!('hello');
+    });
+    expect(subSessionInput).toHaveBeenCalledWith({ id: 'sub-1', data: 'hello' });
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('forwards resize to subSessionResize, not sessionResize', () => {
+    const { result } = renderHook(() => useSubTerminal('sub-2' as never));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    expect(subSessionResize).toHaveBeenCalledWith({
+      id: 'sub-2',
+      cols: 80,
+      rows: 24,
+    });
+    expect(sessionResize).not.toHaveBeenCalled();
   });
 });

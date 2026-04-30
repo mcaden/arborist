@@ -14,12 +14,18 @@
 //   the frontend should observe).
 
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 
 import { configGet, configSet } from '@/lib/tauri-bridge';
-import type { AppConfig, PartialAppConfig } from '@/types/arborist';
+import type {
+  AppConfig,
+  CustomProcessDef,
+  PartialAppConfig,
+  SubSessionRecord,
+} from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 3,
+  configVersion: 4,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   workspaceRoot: null,
@@ -29,6 +35,8 @@ const EMPTY_CONFIG: AppConfig = {
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
+  customProcesses: [],
+  lastOpenSubSessions: [],
 };
 
 export type HydrationStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -84,6 +92,10 @@ function applyPatch(config: AppConfig, patch: PartialAppConfig): AppConfig {
   if (patch.lastOpenSessions !== undefined) next.lastOpenSessions = patch.lastOpenSessions;
   if (patch.tabOrder !== undefined) next.tabOrder = patch.tabOrder;
   if (patch.activeSessionId !== undefined) next.activeSessionId = patch.activeSessionId;
+  if (patch.customProcesses !== undefined) next.customProcesses = patch.customProcesses;
+  if (patch.lastOpenSubSessions !== undefined) {
+    next.lastOpenSubSessions = patch.lastOpenSubSessions;
+  }
   return next;
 }
 
@@ -130,5 +142,17 @@ export const selectDefaultInstructionSets = (
 export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.config.tabOrder;
 export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] =>
   s.config.lastOpenSessions;
+export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] =>
+  s.config.customProcesses;
+export const selectLastOpenSubSessions = (s: ConfigStoreState): readonly SubSessionRecord[] =>
+  s.config.lastOpenSubSessions;
 export const selectStatus = (s: ConfigStoreState): HydrationStatus => s.status;
 export const selectError = (s: ConfigStoreState): string | null => s.error;
+
+/**
+ * Convenience hook for the enabled subset of `customProcesses`, used by the
+ * tab context menu's "Launch…" submenu. Returns a stable reference per
+ * underlying-array identity (Zustand handles equality on the slice itself).
+ */
+export const useEnabledCustomProcesses = (): readonly CustomProcessDef[] =>
+  useConfigStore(useShallow((s) => s.config.customProcesses.filter((d) => d.enabled)));

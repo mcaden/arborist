@@ -33,6 +33,7 @@ import {
   type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
+import { useSubSessionStore } from '@/store/sub-session-store';
 import type {
   SessionActivityEvent,
   SessionId,
@@ -297,6 +298,12 @@ export const useSessionStore = create<Store>((set, get) => {
           patch.lastTurnDurationMs = next;
         }
         set(patch);
+        // Frontend convergence on parent close: drop any sub-sessions
+        // that hung off this parent so the sidebar / xterm registry
+        // don't leak orphan rows. The backend cascade is Phase 7's
+        // responsibility (CONTEXT_MENU_PLAN.md), but converging
+        // locally avoids a confusing in-between UI state.
+        useSubSessionStore.getState().actions.dropForParent(id);
       };
 
       let succeeded = false;

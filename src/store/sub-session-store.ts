@@ -170,13 +170,18 @@ export const useSubSessionStore = create<Store>((set, get) => {
     focus: async (id) => {
       const sub = get().subSessions.find((s) => s.id === id);
       if (!sub) return;
-      // Optimistic UI: mark active immediately so the swap feels instant.
-      set((s) => ({
-        activeByParent: { ...s.activeByParent, [sub.parentSessionId]: id },
-      }));
+      if (sub.kind === 'terminal') {
+        // Optimistic UI: mark active immediately so the swap feels instant.
+        set((s) => ({
+          activeByParent: { ...s.activeByParent, [sub.parentSessionId]: id },
+        }));
+      }
       // Backend focus is only meaningful for application kind. Terminal
       // sub-sessions are a pure tab swap; the backend impl is a no-op.
       // Either way the call is cheap and centralises the dispatch.
+      // For application kind we deliberately do NOT touch activeByParent
+      // — clicking an app sub-tab is a focus gesture, not a viewport
+      // swap (CONTEXT_MENU_PLAN.md, Frontend §9).
       await subSessionFocus(id);
     },
 

@@ -11,7 +11,7 @@ import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 import { useConfigStore } from './config-store';
 
 const SAMPLE: AppConfig = {
-  configVersion: 3,
+  configVersion: 4,
   defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
   instructionSetsDir: '/cfg/instr',
   workspaceRoot: null,
@@ -21,12 +21,14 @@ const SAMPLE: AppConfig = {
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
+  customProcesses: [],
+  lastOpenSubSessions: [],
 };
 
 function resetStore(): void {
   useConfigStore.setState({
     config: {
-      configVersion: 3,
+      configVersion: 4,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
@@ -36,6 +38,8 @@ function resetStore(): void {
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
     },
     status: 'idle',
     error: null,
@@ -122,5 +126,30 @@ describe('useConfigStore.set', () => {
 
     // Cache untouched.
     expect(useConfigStore.getState().config.instructionSetsDir).toBe('/cfg/instr');
+  });
+
+  it('mirrors customProcesses + lastOpenSubSessions through applyPatch', async () => {
+    useConfigStore.setState({ config: { ...SAMPLE } });
+    const def = {
+      id: 'shell',
+      name: 'Shell',
+      kind: 'terminal' as const,
+      command: 'bash -i',
+      enabled: true,
+    };
+    const rec = {
+      id: 'sub-1',
+      parentSessionId: 'sess-1',
+      defId: 'shell',
+      kind: 'terminal' as const,
+      label: 'Shell',
+      composedCommand: 'bash -i',
+    };
+    await useConfigStore.getState().set({
+      customProcesses: [def],
+      lastOpenSubSessions: [rec],
+    });
+    expect(useConfigStore.getState().config.customProcesses).toEqual([def]);
+    expect(useConfigStore.getState().config.lastOpenSubSessions).toEqual([rec]);
   });
 });

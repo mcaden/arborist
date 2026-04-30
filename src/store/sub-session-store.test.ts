@@ -147,7 +147,7 @@ describe('useSubSessionStore', () => {
   });
 
   describe('focus', () => {
-    it('marks active and forwards to backend', async () => {
+    it('marks active and forwards to backend for terminal kind', async () => {
       const a = makeSub({ id: id('09'), parentSessionId: PARENT_A });
       const b = makeSub({ id: id('10'), parentSessionId: PARENT_A });
       useSubSessionStore.setState({
@@ -157,6 +157,25 @@ describe('useSubSessionStore', () => {
       await useSubSessionStore.getState().actions.focus(b.id);
       expect(useSubSessionStore.getState().activeByParent[PARENT_A]).toBe(b.id);
       expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(b.id);
+    });
+
+    it('does NOT touch activeByParent for application kind', async () => {
+      const term = makeSub({ id: id('0a'), parentSessionId: PARENT_A, kind: 'terminal' });
+      const app = makeSub({
+        id: id('0b'),
+        parentSessionId: PARENT_A,
+        kind: 'application',
+        defId: 'vscode',
+      });
+      useSubSessionStore.setState({
+        subSessions: [term, app],
+        activeByParent: { [PARENT_A]: term.id },
+      });
+      await useSubSessionStore.getState().actions.focus(app.id);
+      // Viewport sticks with the previously-visible terminal sub-session.
+      expect(useSubSessionStore.getState().activeByParent[PARENT_A]).toBe(term.id);
+      // Backend focuser still invoked so the OS window is raised.
+      expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(app.id);
     });
 
     it('is a no-op for unknown id', async () => {

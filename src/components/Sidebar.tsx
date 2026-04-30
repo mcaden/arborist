@@ -25,9 +25,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { CloseConfirmDialog } from './CloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
+import { SidebarSubTab } from './SidebarSubTab';
 import { SidebarTab } from './SidebarTab';
+import { TabContextMenu } from './TabContextMenu';
 import { WorkspaceIndicator } from './WorkspaceIndicator';
 import { useActiveSessionId, useSessionActions, useSessions } from '@/store/session-store';
+import { useSubSessionsForParent } from '@/store/sub-session-store';
 import type { SessionId } from '@/types/arborist';
 
 export function Sidebar(): JSX.Element {
@@ -35,6 +38,15 @@ export function Sidebar(): JSX.Element {
   const activeId = useActiveSessionId();
   const actions = useSessionActions();
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+
+  // Single-menu invariant: at most one TabContextMenu open across all
+  // tabs. The triggering button is captured so we can restore focus on
+  // close (Esc / outside-click / activation).
+  const [contextMenu, setContextMenu] = useState<{
+    sessionId: SessionId;
+    anchor: { x: number; y: number };
+    trigger: HTMLElement | null;
+  } | null>(null);
 
   const ids = useMemo(() => sessions.map((s) => s.id), [sessions]);
 
@@ -54,6 +66,15 @@ export function Sidebar(): JSX.Element {
   const onFocusableMounted = useCallback((id: SessionId, el: HTMLButtonElement | null) => {
     if (el) tabButtonRefs.current.set(id, el);
     else tabButtonRefs.current.delete(id);
+  }, []);
+
+  const openContextMenu = useCallback((sessionId: SessionId, anchor: { x: number; y: number }) => {
+    const trigger = tabButtonRefs.current.get(sessionId) ?? null;
+    setContextMenu({ sessionId, anchor, trigger });
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
   }, []);
 
   // After a session is removed, move focus to the neighbour (right, then
@@ -232,12 +253,13 @@ export function Sidebar(): JSX.Element {
         <SortableContext items={ids} strategy={verticalListSortingStrategy}>
           <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1">
             {sessions.map((session, idx) => (
-              <SidebarTab
+              <ParentTabGroup
                 key={session.id}
                 id={session.id}
                 isActive={session.id === activeId}
                 isFocused={idx === clampedFocusedIndex}
                 onFocusableMounted={onFocusableMounted}
+                onOpenContextMenu={openContextMenu}
               />
             ))}
           </ul>
@@ -255,7 +277,61 @@ export function Sidebar(): JSX.Element {
         </button>
       </div>
       <CloseConfirmDialog />
+      {contextMenu && (
+        <TabContextMenu
+          parentSessionId={contextMenu.sessionId}
+          anchor={contextMenu.anchor}
+          onClose={closeContextMenu}
+          restoreFocusTo={contextMenu.trigger}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      )}
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
     </aside>
+  );
+}
+
+// ParentTabGroup — renders a parent SidebarTab plus all its sub-tab rows
+// indented underneath. Sub-tabs are intentionally outside the @dnd-kit
+// SortableContext (no drag-reorder for sub-tabs in v1) but live inside
+// the sidebar's tablist for keyboard / focus purposes.
+interface ParentTabGroupProps {
+  id: SessionId;
+  isActive: boolean;
+  isFocused: boolean;
+  onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
+}
+
+function ParentTabGroup({
+  id,
+  isActive,
+  isFocused,
+  onFocusableMounted,
+  onOpenContextMenu,
+}: ParentTabGroupProps): JSX.Element {
+  const subSessions = useSubSessionsForParent(id);
+  return (
+    <>
+      <SidebarTab
+        id={id}
+        isActive={isActive}
+        isFocused={isFocused}
+        onFocusableMounted={onFocusableMounted}
+        onOpenContextMenu={onOpenContextMenu}
+      />
+      {subSessions.length > 0 && (
+        <ul role="group" aria-label="Sub-sessions" className="flex flex-col gap-0.5">
+          {subSessions.map((sub) => (
+            <SidebarSubTab
+              key={sub.id}
+              parentId={id}
+              subSessionId={sub.id}
+              parentIsActive={isActive}
+            />
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
