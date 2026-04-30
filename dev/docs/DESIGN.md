@@ -405,7 +405,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 |---------|---------|--------|-------------|
 | `session_create` | `{ tool, worktreePath, instructionSetId? }` | `SessionView` | Compose and spawn a new session. `instructionSetId` is optional; when omitted, Claude is launched without `--system-prompt` and the CLI relies on `cwd`-based discovery for repo instructions. |
 | `session_list` | — | `SessionView[]` | Return all current sessions (without composedCommand/tempFiles) |
-| `session_close` | `{ sessionId, deleteWorktree? }` | — | Terminate a session (after UI confirmation). When `deleteWorktree` is `true`, the backend additionally runs `git worktree remove --force <worktreePath>` after killing the PTY. Refuses to remove the configured `workspaceRoot` (main worktree). |
+| `session_close` | `{ sessionId, deleteWorktree? }` | `SessionCloseResult` | Terminate a session (after UI confirmation). When `deleteWorktree` is `true`, the backend additionally runs `git worktree remove --force <worktreePath>` after killing the PTY. Refuses to remove the configured `workspaceRoot` (main worktree), any path outside the workspace root, or a path still referenced by another live session. The session record + PTY are always torn down on success; if the worktree-remove step fails, the message is reported via `worktreeDeleteError` rather than as a hard error. |
 | `session_focus` | `{ sessionId }` | — | Mark session as active |
 | `session_resize` | `{ sessionId, cols, rows }` | — | Resize PTY |
 | `session_input` | `{ sessionId, data }` | — | Send keystrokes to PTY |

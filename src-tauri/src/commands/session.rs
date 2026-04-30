@@ -343,10 +343,23 @@ fn delete_worktree_after_close(
     }
 
     // Compare canonical forms so case differences, trailing slashes, and
-    // 8.3 short names don't fool us.
-    let canon_wt =
-        dunce::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
-    let canon_root = dunce::canonicalize(root).unwrap_or_else(|_| root.clone());
+    // 8.3 short names don't fool us. For a destructive operation we
+    // refuse on canonicalization failure rather than fall back to the raw
+    // path: a non-normalized form (`..`, dangling symlink, junction with
+    // a missing target) could otherwise slip past the equality and
+    // containment checks below.
+    let canon_wt = dunce::canonicalize(worktree_path).map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "cannot canonicalize worktree path {}: {e}",
+            worktree_path.display()
+        )))
+    })?;
+    let canon_root = dunce::canonicalize(root).map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "cannot canonicalize workspace root {}: {e}",
+            root.display()
+        )))
+    })?;
 
     // Safety 1: never remove the main worktree.
     if canon_wt == canon_root {
@@ -365,12 +378,18 @@ fn delete_worktree_after_close(
     }
     // Safety 3: refuse if any *other* live session still references the
     // same worktree. The session being closed has already been removed
-    // from the store at this point, so it cannot match itself.
-    let still_in_use = ctx.store.load_sessions().values().any(|s| {
-        let other =
-            dunce::canonicalize(&s.worktree_path).unwrap_or_else(|_| s.worktree_path.clone());
-        other == canon_wt
-    });
+    // from the store at this point, so it cannot match itself. If a
+    // foreign session's path fails to canonicalize, we conservatively
+    // treat it as a match (better to refuse than to delete a worktree
+    // that another session may still depend on).
+    let still_in_use =
+        ctx.store
+            .load_sessions()
+            .values()
+            .any(|s| match dunce::canonicalize(&s.worktree_path) {
+                Ok(other) => other == canon_wt,
+                Err(_) => s.worktree_path == worktree_path,
+            });
     if still_in_use {
         return Err(AppError::from(Error::Internal(format!(
             "refusing to delete worktree still in use by another session: {}",
@@ -380,15 +399,9 @@ fn delete_worktree_after_close(
 
     let repo_root: PathBuf = root.clone();
 
-    if let Err(e) = ctx.git_runner.remove_worktree(&repo_root, worktree_path) {
-        warn!(
-            session_id = %id,
-            worktree = %worktree_path.display(),
-            error = ?e,
-            "git worktree remove failed",
-        );
-        return Err(AppError::from(e));
-    }
+    ctx.git_runner
+        .remove_worktree(&repo_root, worktree_path)
+        .map_err(AppError::from)?;
     info!(
         session_id = %id,
         worktree = %worktree_path.display(),

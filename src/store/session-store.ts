@@ -180,21 +180,28 @@ export const useSessionStore = create<Store>((set, get) => {
       // failures arrive as a non-throwing `worktreeDeleteError` field;
       // hard backend failures still propagate to the caller AFTER local
       // pruning.
-      const previous = get().sessions;
-      const wasActive = get().activeId === id;
       const pruneLocal = (): void => {
-        const nextSessions = previous.filter((s) => s.id !== id);
+        // Read state *inside* the prune so we don't clobber any
+        // concurrent updates (e.g. a session created while sessionClose
+        // was in flight).
+        const { sessions, activeId, pendingClose, statusMessages, hasUnread, activity, metrics } =
+          get();
+        if (!sessions.some((s) => s.id === id)) {
+          // Already pruned by some other path — nothing to do.
+          return;
+        }
+        const wasActive = activeId === id;
+        const nextSessions = sessions.filter((s) => s.id !== id);
         const patch: Partial<SessionStoreState> = { sessions: nextSessions };
         if (wasActive) {
           // Always assign explicitly so `activeId` is cleared when the last
           // session closes.
-          patch.activeId = pickNeighbour(previous, id);
+          patch.activeId = pickNeighbour(sessions, id);
         }
         // `pendingClose` is closed automatically when the session it
         // referenced is gone.
-        if (get().pendingClose === id) patch.pendingClose = undefined;
+        if (pendingClose === id) patch.pendingClose = undefined;
         // Drop any orphan status-message keyed under this session id.
-        const { statusMessages, hasUnread, activity, metrics } = get();
         if (id in statusMessages) {
           const next = { ...statusMessages };
           delete next[id];
