@@ -297,6 +297,52 @@ describe('NewSessionDialog', () => {
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
 
+  it('disables Cancel and Back while the chained worktree+session create is in flight', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+    });
+    let resolveSession: (value: SessionView) => void = () => {};
+    bridgeMock.sessionCreate.mockImplementation(
+      () =>
+        new Promise<SessionView>((resolve) => {
+          resolveSession = resolve;
+        }),
+    );
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+
+    const input = await screen.findByLabelText(/branch \/ worktree name/i);
+    fireEvent.change(input, { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    // While the chained call is in flight, neither Cancel nor Back may be
+    // clickable: closing the dialog now would orphan the in-flight session
+    // spawn (no AbortSignal plumbed to the backend).
+    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: /^cancel$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^back$/i })).toBeDisabled();
+
+    // Resolve the pending session so the dialog closes cleanly.
+    act(() => {
+      resolveSession({
+        id: 'new-id',
+        tool: 'claude',
+        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+        worktreeName: 'my-feature',
+        label: 'my-feature',
+        status: 'running',
+        createdAt: 1,
+        tabIndex: 0,
+      } satisfies SessionView);
+    });
+    await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
+  });
+
   it('Confirm submits without an instructionSetId so the backend launches the CLI from the worktree cwd', async () => {
     bridgeMock.worktreesList.mockResolvedValue([
       makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
