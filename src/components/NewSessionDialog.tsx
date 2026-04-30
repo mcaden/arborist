@@ -58,6 +58,7 @@ export function NewSessionDialog(): JSX.Element | null {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
   const stepBodyRef = useRef<HTMLDivElement | null>(null);
+  const existingConfirmRef = useRef<HTMLButtonElement | null>(null);
   // Track the previous step so the focus-management effect only fires on
   // an actual transition, not on every step-body re-render (which would
   // steal focus away from the user as they typed).
@@ -224,26 +225,34 @@ export function NewSessionDialog(): JSX.Element | null {
       // session-create is still in flight, allowing the user to trigger a
       // second concurrent session for the same worktree.
       setWorktree({ path: result.path, branch: newName.trim(), isMain: false });
-      if (workspaceRoot !== null && workspaceRoot.length > 0) {
-        const root = workspaceRoot;
-        try {
-          const list = await worktreesList(root);
-          setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
-        } catch {
-          // Listing failure is non-fatal; the selection above is enough.
-        }
-      }
       setNewName('');
       // The "New worktree" flow is one-shot: creating the worktree
       // immediately starts the session and closes the dialog. If session
       // creation fails, surface the error and switch to the Existing tab so
       // the user can retry via "Create session" without losing the worktree.
+      // We refresh the worktree list lazily only on the failure path — on
+      // success the dialog closes and the listing is never shown.
       try {
         await actions.create({ tool, worktreePath: result.path });
         close();
       } catch (sessionErr) {
         setSubmitError(formatError(sessionErr));
+        if (workspaceRoot !== null && workspaceRoot.length > 0) {
+          const root = workspaceRoot;
+          try {
+            const list = await worktreesList(root);
+            setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
+          } catch {
+            // Listing failure is non-fatal; the selection above is enough.
+          }
+        }
         setWorktreeMode('existing');
+        // Move focus to the now-visible "Create session" button so keyboard
+        // and screen-reader users land on the retry action rather than on
+        // the body/document after the New-mode button unmounts.
+        requestAnimationFrame(() => {
+          existingConfirmRef.current?.focus();
+        });
       }
     } catch (err) {
       setCreateError(formatError(err));
@@ -583,6 +592,7 @@ export function NewSessionDialog(): JSX.Element | null {
           )}
           {step === 2 && worktreeMode === 'existing' && (
             <button
+              ref={existingConfirmRef}
               type="button"
               onClick={() => {
                 void onConfirm();
@@ -590,7 +600,7 @@ export function NewSessionDialog(): JSX.Element | null {
               disabled={submitting || creating || !worktree}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
-              {submitting ? 'Creating...' : 'Create session'}
+              {submitting ? 'Creating…' : 'Create session'}
             </button>
           )}
         </div>
