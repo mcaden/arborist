@@ -49,6 +49,9 @@ impl GitRunner for FakeGitRunner {
     ) -> Result<PathBuf, Error> {
         Ok(repo_root.join(relative_path))
     }
+    fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// Minimal sink that swallows everything — we don't exercise the PTY here.

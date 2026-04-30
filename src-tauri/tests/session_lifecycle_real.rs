@@ -159,7 +159,7 @@ async fn real_spawner_drives_create_input_close_round_trip() {
 
     // Close. The pool kills the child and removes the persisted record;
     // tearDown should be clean within a couple of seconds even on Windows.
-    session_close_impl(&ctx, view.id).await.unwrap();
+    session_close_impl(&ctx, view.id, false).await.unwrap();
     assert!(!ctx.pool.contains(&view.id));
 
     // Restore parity for any later tests sharing this process. The test

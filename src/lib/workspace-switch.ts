@@ -16,7 +16,7 @@ export async function changeWorkspace(path: string): Promise<void> {
   const failures: string[] = [];
   for (const session of sessions) {
     try {
-      await actions.close(session.id);
+      await actions.close(session.id, false, { pruneOnError: false });
     } catch (err) {
       failures.push(session.label);
       console.error('Failed to close session before workspace switch', session.id, err);

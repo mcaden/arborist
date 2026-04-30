@@ -30,6 +30,7 @@ import {
   sessionCreate,
   sessionFocus,
   sessionList,
+  type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
 import type {
@@ -127,7 +128,11 @@ export const AWAITING_GRACE_SECONDS = 5;
 export interface SessionStoreActions {
   hydrate: () => Promise<void>;
   create: (args: SessionCreateArgs) => Promise<SessionView>;
-  close: (id: SessionId) => Promise<void>;
+  close: (
+    id: SessionId,
+    deleteWorktree?: boolean,
+    opts?: { pruneOnError?: boolean },
+  ) => Promise<SessionCloseResult>;
   focus: (id: SessionId) => Promise<void>;
   reorder: (ids: SessionId[]) => Promise<void>;
   requestClose: (id: SessionId) => void;
@@ -214,54 +219,99 @@ export const useSessionStore = create<Store>((set, get) => {
       return view;
     },
 
-    close: async (id) => {
-      await sessionClose({ sessionId: id });
-      const previous = get().sessions;
-      const wasActive = get().activeId === id;
-      const nextSessions = previous.filter((s) => s.id !== id);
-      const patch: Partial<SessionStoreState> = { sessions: nextSessions };
-      if (wasActive) {
-        // Always assign explicitly so `activeId` is cleared when the last
-        // session closes.
-        patch.activeId = pickNeighbour(previous, id);
+    close: async (id, deleteWorktree, opts) => {
+      // By default, converge local state to "session gone" even if the
+      // backend call rejects. The PTY may have been killed and the
+      // persisted record removed before the failure (e.g. a transient
+      // disk error in a later step), and leaving a stale row in the
+      // sidebar is a worse UX than briefly out-of-sync with the backend.
+      // Worktree-deletion failures arrive as a non-throwing
+      // `worktreeDeleteError` field; hard backend failures still
+      // propagate to the caller AFTER local pruning.
+      //
+      // Callers that need failed sessions to remain visible/retryable
+      // (e.g. the workspace-switch flow, which wants the user to resolve
+      // problems on the original workspace before changing it) can pass
+      // `{ pruneOnError: false }` to suppress the pruning side-effect on
+      // backend failure. Successful closes always prune.
+      const pruneOnError = opts?.pruneOnError ?? true;
+      const pruneLocal = (): void => {
+        // Read state *inside* the prune so we don't clobber any
+        // concurrent updates (e.g. a session created while sessionClose
+        // was in flight).
+        const {
+          sessions,
+          activeId,
+          pendingClose,
+          statusMessages,
+          hasUnread,
+          activity,
+          metrics,
+          lastTurnEndAt,
+          lastTurnDurationMs,
+        } = get();
+        if (!sessions.some((s) => s.id === id)) {
+          // Already pruned by some other path — nothing to do.
+          return;
+        }
+        const wasActive = activeId === id;
+        const nextSessions = sessions.filter((s) => s.id !== id);
+        const patch: Partial<SessionStoreState> = { sessions: nextSessions };
+        if (wasActive) {
+          // Always assign explicitly so `activeId` is cleared when the last
+          // session closes.
+          patch.activeId = pickNeighbour(sessions, id);
+        }
+        // `pendingClose` is closed automatically when the session it
+        // referenced is gone.
+        if (pendingClose === id) patch.pendingClose = undefined;
+        // Drop any orphan status-message keyed under this session id.
+        if (id in statusMessages) {
+          const next = { ...statusMessages };
+          delete next[id];
+          patch.statusMessages = next;
+        }
+        if (id in hasUnread) {
+          const nextUnread = { ...hasUnread };
+          delete nextUnread[id];
+          patch.hasUnread = nextUnread;
+        }
+        if (id in activity) {
+          const nextActivity = { ...activity };
+          delete nextActivity[id];
+          patch.activity = nextActivity;
+        }
+        if (id in metrics) {
+          const nextMetrics = { ...metrics };
+          delete nextMetrics[id];
+          patch.metrics = nextMetrics;
+        }
+        if (id in lastTurnEndAt) {
+          const next = { ...lastTurnEndAt };
+          delete next[id];
+          patch.lastTurnEndAt = next;
+        }
+        if (id in lastTurnDurationMs) {
+          const next = { ...lastTurnDurationMs };
+          delete next[id];
+          patch.lastTurnDurationMs = next;
+        }
+        set(patch);
+      };
+
+      let succeeded = false;
+      try {
+        const result = await sessionClose({
+          sessionId: id,
+          deleteWorktree: deleteWorktree ?? false,
+        });
+        succeeded = true;
+        return result;
+      } finally {
+        if (succeeded || pruneOnError) {
+          pruneLocal();
+        }
       }
-      // `pendingClose` is closed automatically when the session it referenced
-      // is gone.
-      if (get().pendingClose === id) patch.pendingClose = undefined;
-      // Drop any orphan status-message keyed under this session id.
-      const { statusMessages, hasUnread, activity, metrics, lastTurnEndAt, lastTurnDurationMs } =
-        get();
-      if (id in statusMessages) {
-        const next = { ...statusMessages };
-        delete next[id];
-        patch.statusMessages = next;
-      }
-      if (id in hasUnread) {
-        const nextUnread = { ...hasUnread };
-        delete nextUnread[id];
-        patch.hasUnread = nextUnread;
-      }
-      if (id in activity) {
-        const nextActivity = { ...activity };
-        delete nextActivity[id];
-        patch.activity = nextActivity;
-      }
-      if (id in metrics) {
-        const nextMetrics = { ...metrics };
-        delete nextMetrics[id];
-        patch.metrics = nextMetrics;
-      }
-      if (id in lastTurnEndAt) {
-        const next = { ...lastTurnEndAt };
-        delete next[id];
-        patch.lastTurnEndAt = next;
-      }
-      if (id in lastTurnDurationMs) {
-        const next = { ...lastTurnDurationMs };
-        delete next[id];
-        patch.lastTurnDurationMs = next;
-      }
-      set(patch);
     },
 
     focus: async (id) => {

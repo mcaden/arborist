@@ -105,7 +105,7 @@ describe('close', () => {
 
     await useSessionStore.getState().actions.close('a');
 
-    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a' });
+    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a', deleteWorktree: false });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
   });
 
@@ -160,6 +160,46 @@ describe('close', () => {
     await useSessionStore.getState().actions.close('a');
 
     expect(useSessionStore.getState().pendingClose).toBeUndefined();
+  });
+
+  it('prunes the session locally even when the backend close rejects', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+    bridgeMock.sessionClose.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(useSessionStore.getState().actions.close('a')).rejects.toThrow('boom');
+
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
+  });
+
+  it('keeps the session visible when the backend close rejects and pruneOnError is false', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+    bridgeMock.sessionClose.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      useSessionStore.getState().actions.close('a', false, { pruneOnError: false }),
+    ).rejects.toThrow('boom');
+
+    // Session row remains so the caller (e.g. workspace switch) can ask
+    // the user to resolve and retry.
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['a', 'b']);
+    expect(useSessionStore.getState().activeId).toBe('a');
+  });
+
+  it('still prunes on success even with pruneOnError: false', async () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      activeId: 'a',
+    });
+
+    await useSessionStore.getState().actions.close('a', false, { pruneOnError: false });
+
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
   });
 });
 
@@ -518,7 +558,9 @@ describe('close + metrics', () => {
         a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
       },
     });
-    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve());
+    bridgeMock.sessionClose.mockImplementation(() =>
+      Promise.resolve({ worktreeDeleteError: null }),
+    );
     await useSessionStore.getState().actions.close('a');
     expect(useSessionStore.getState().metrics['a']).toBeUndefined();
   });
