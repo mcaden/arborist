@@ -29,10 +29,18 @@ vi.mock('@/lib/session-events', () => ({
   subscribeToMetrics: () => subscribeToMetricsMock(),
 }));
 
+const subscribeToSubStatusMock = vi.fn(() => () => {});
+const subscribeToSubExitedMock = vi.fn(() => () => {});
+vi.mock('@/lib/sub-session-events', () => ({
+  subscribeToSubStatus: () => subscribeToSubStatusMock(),
+  subscribeToSubExited: () => subscribeToSubExitedMock(),
+}));
+
 import { App } from './App';
 import { configGet, frontendReady, resetBridgeMocks, sessionList } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { useSubSessionStore } from '@/store/sub-session-store';
 
 interface MediaQueryListLike {
   matches: boolean;
@@ -139,7 +147,7 @@ describe('App boot sequence', () => {
     });
   });
 
-  it('calls boot steps in order: configStore.hydrate -> sessionStore.hydrate -> initTerminalRouter -> subscribeToStatus -> frontendReady', async () => {
+  it('calls boot steps in order: configStore.hydrate -> subscribeToStatus -> sessionStore.hydrate -> subSessionStore.hydrate -> initTerminalRouter -> frontendReady', async () => {
     const order: string[] = [];
     const cfgSpy = vi.spyOn(useConfigStore.getState(), 'hydrate').mockImplementation(async () => {
       order.push('config');
@@ -148,6 +156,11 @@ describe('App boot sequence', () => {
       .spyOn(useSessionStore.getState().actions, 'hydrate')
       .mockImplementation(async () => {
         order.push('session');
+      });
+    const subSpy = vi
+      .spyOn(useSubSessionStore.getState().actions, 'hydrate')
+      .mockImplementation(async () => {
+        order.push('subsession');
       });
     initTerminalRouterMock.mockImplementation(() => order.push('router'));
     subscribeToStatusMock.mockImplementation(() => {
@@ -161,9 +174,10 @@ describe('App boot sequence', () => {
     render(<App />);
     await waitFor(() => expect(frontendReady).toHaveBeenCalled());
 
-    expect(order).toEqual(['config', 'session', 'router', 'status', 'ready']);
+    expect(order).toEqual(['config', 'status', 'session', 'subsession', 'router', 'ready']);
     cfgSpy.mockRestore();
     sessSpy.mockRestore();
+    subSpy.mockRestore();
   });
 
   it('renders the error overlay when hydrate throws and Reload calls window.location.reload', async () => {

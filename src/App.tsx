@@ -23,9 +23,11 @@ import { Sidebar } from '@/components/Sidebar';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
+import { subscribeToSubExited, subscribeToSubStatus } from '@/lib/sub-session-events';
 import { frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { useSubSessionStore } from '@/store/sub-session-store';
 
 type BootStatus = 'booting' | 'ready' | 'error';
 
@@ -102,17 +104,26 @@ export function App(): JSX.Element {
     let unlistenStatus: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
     let unlistenMetrics: (() => void) | null = null;
+    let unlistenSubStatus: (() => void) | null = null;
+    let unlistenSubExited: (() => void) | null = null;
 
     const boot = async (): Promise<void> => {
       try {
         await useConfigStore.getState().hydrate();
         if (cancelled) return;
-        await useSessionStore.getState().actions.hydrate();
-        if (cancelled) return;
-        initTerminalRouter();
+        // Attach the event listeners BEFORE hydrating sessions/sub-sessions
+        // so any status events emitted while the snapshot is in flight are
+        // applied to the cache instead of being dropped on the floor.
         unlistenStatus = subscribeToStatus();
         unlistenActivity = subscribeToActivity();
         unlistenMetrics = subscribeToMetrics();
+        unlistenSubStatus = subscribeToSubStatus();
+        unlistenSubExited = subscribeToSubExited();
+        await useSessionStore.getState().actions.hydrate();
+        if (cancelled) return;
+        await useSubSessionStore.getState().actions.hydrate();
+        if (cancelled) return;
+        initTerminalRouter();
         await frontendReady();
         if (cancelled) return;
         setStatus('ready');
@@ -145,6 +156,20 @@ export function App(): JSX.Element {
       if (unlistenMetrics) {
         try {
           unlistenMetrics();
+        } catch {
+          // ignore
+        }
+      }
+      if (unlistenSubStatus) {
+        try {
+          unlistenSubStatus();
+        } catch {
+          // ignore
+        }
+      }
+      if (unlistenSubExited) {
+        try {
+          unlistenSubExited();
         } catch {
           // ignore
         }
