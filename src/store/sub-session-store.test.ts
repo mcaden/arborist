@@ -389,5 +389,31 @@ describe('useSubSessionStore', () => {
       await useSubSessionStore.getState().actions.relaunch(sub.id);
       expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledTimes(2);
     });
+
+    it('rolls back the optimistic status flip and surfaces the error message when the bridge rejects', async () => {
+      const sub = makeSub({
+        id: id('44'),
+        kind: 'application',
+        status: 'exited',
+        pid: undefined,
+      });
+      useSubSessionStore.setState({
+        subSessions: [sub],
+        statusMessages: { [sub.id]: 'previous hint' },
+      });
+      bridgeMock.subSessionRelaunch.mockRejectedValueOnce(new Error('capability denied'));
+
+      await expect(useSubSessionStore.getState().actions.relaunch(sub.id)).rejects.toThrow(
+        'capability denied',
+      );
+
+      // Status rolled back to the prior terminal state — not stuck in `starting`.
+      const after = useSubSessionStore.getState();
+      const restored = after.subSessions.find((s) => s.id === sub.id);
+      expect(restored?.status).toBe('exited');
+      expect(restored?.pid).toBeUndefined();
+      // Failure message replaced the previous hint so the user can see what went wrong.
+      expect(after.statusMessages[sub.id]).toBe('capability denied');
+    });
   });
 });

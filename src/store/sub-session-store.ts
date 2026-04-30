@@ -248,10 +248,26 @@ export const useSubSessionStore = create<Store>((set, get) => {
       // arrives. We deliberately don't touch `activeByParent` — for
       // application kind that's a focus gesture and clicking a greyed
       // tab to relaunch shouldn't steal viewport focus.
+      //
+      // Snapshot the prior `{status, pid, message}` so we can roll back
+      // if the bridge call rejects (capability denial, NotFound,
+      // backend error). Without rollback the row would otherwise stay
+      // stuck in `starting` indefinitely because no status event
+      // arrives for a call that never reached the backend lifecycle.
+      let priorSnapshot: {
+        status: SubSession['status'];
+        pid: number | undefined;
+        message: string | undefined;
+      } | null = null;
       set((s) => {
         const idx = s.subSessions.findIndex((sub) => sub.id === id);
         if (idx === -1) return {};
         const current = s.subSessions[idx]!;
+        priorSnapshot = {
+          status: current.status,
+          pid: current.pid,
+          message: s.statusMessages[id],
+        };
         const nextSubs = [...s.subSessions];
         nextSubs[idx] = { ...current, status: 'starting', pid: undefined };
         const nextMsgs: Record<SubSessionId, string> = { ...s.statusMessages };
@@ -263,6 +279,30 @@ export const useSubSessionStore = create<Store>((set, get) => {
         await subSessionRelaunch(id);
         // Status flows back via subsession://status — no further local
         // mutation needed.
+      } catch (err) {
+        // Rollback: restore the row to whatever status it had before
+        // the optimistic flip and surface the failure as a status
+        // message so the user can see what happened. We re-throw so
+        // call sites still see the rejection.
+        if (priorSnapshot) {
+          const snapshot = priorSnapshot;
+          set((s) => {
+            const idx = s.subSessions.findIndex((sub) => sub.id === id);
+            if (idx === -1) return {};
+            const current = s.subSessions[idx]!;
+            const nextSubs = [...s.subSessions];
+            nextSubs[idx] = { ...current, status: snapshot.status, pid: snapshot.pid };
+            const nextMsgs: Record<SubSessionId, string> = { ...s.statusMessages };
+            const failMsg = err instanceof Error ? err.message : String(err);
+            if (failMsg) {
+              nextMsgs[id] = failMsg;
+            } else if (snapshot.message !== undefined) {
+              nextMsgs[id] = snapshot.message;
+            }
+            return { subSessions: nextSubs, statusMessages: nextMsgs };
+          });
+        }
+        throw err;
       } finally {
         relaunchPending.delete(id);
       }
