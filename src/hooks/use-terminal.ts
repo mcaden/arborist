@@ -200,12 +200,31 @@ function teardownKeydownListener(entry: RegistryEntry): void {
 }
 
 /**
+ * Whether the async clipboard read API is available in this runtime.
+ *
+ * Used by both Ctrl/Cmd+V interception and the `paste` event listener
+ * fallback to decide *up front* whether they have any chance of
+ * actually pasting. If this returns `false`, the listeners must NOT
+ * cancel the event — letting the event propagate gives xterm (or any
+ * other interested handler) a chance to act on it instead of leaving
+ * the user with a silent no-op.
+ */
+function canReadClipboard(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.clipboard?.readText === 'function';
+}
+
+/**
  * Read text from the system clipboard via `navigator.clipboard.readText()`
  * and forward it to the terminal via `term.paste()`. Used by both the
  * Ctrl/Cmd+V keydown branch (where xterm's keydown handler would
  * otherwise eat the keystroke before any `paste` event fires) and the
  * `paste` event listener fallback (when `clipboardData` is empty, as
  * happens in some WebView2 right-click → Paste flows).
+ *
+ * Callers must gate cancellation of the original event on
+ * [`canReadClipboard`] — this function silently no-ops if the API is
+ * missing, and unconditionally cancelling the event in that case
+ * would block xterm from handling the keystroke / paste itself.
  *
  * The async resolution of `readText()` is racy with session disposal:
  * the user could dispatch Ctrl+V and then close the tab before the
@@ -218,7 +237,7 @@ function teardownKeydownListener(entry: RegistryEntry): void {
  * they paste an empty clipboard.
  */
 function pasteFromClipboard(sessionId: SessionId, entry: RegistryEntry): void {
-  if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) return;
+  if (!canReadClipboard()) return;
   void navigator.clipboard
     .readText()
     .then((text) => {
@@ -380,9 +399,16 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
     const isCtrlPaste = v && event.ctrlKey && !event.metaKey && !event.altKey;
     const isMetaPaste = v && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
     if (isCtrlPaste || isMetaPaste) {
-      event.preventDefault();
-      event.stopPropagation();
-      pasteFromClipboard(sessionId, entry);
+      // Only suppress xterm's default handling when we have a paste path
+      // that might actually succeed. If `navigator.clipboard.readText`
+      // is unavailable, swallowing the event would just turn Ctrl+V
+      // into a silent no-op; instead, let it propagate so xterm can do
+      // whatever it would have done.
+      if (canReadClipboard()) {
+        event.preventDefault();
+        event.stopPropagation();
+        pasteFromClipboard(sessionId, entry);
+      }
     }
   };
   host.addEventListener('keydown', keydownListener as EventListener, true);
@@ -400,14 +426,22 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
   // user gesture supplies the data). Otherwise we fall back to the async
   // `navigator.clipboard.readText()` — slower, may prompt in some
   // environments, but recovers when the WebView won't fill clipboardData.
+  //
+  // Cancellation policy: only call `preventDefault`/`stopPropagation`
+  // when we have something to paste (inline payload) or a viable async
+  // fallback. If both are unavailable we let the event continue so
+  // xterm or any other listener still has a shot at handling it.
   const pasteListener = (event: ClipboardEvent): void => {
-    event.preventDefault();
-    event.stopPropagation();
     const inline = event.clipboardData?.getData('text/plain') ?? '';
     if (inline) {
+      event.preventDefault();
+      event.stopPropagation();
       entry.term.paste(inline);
       return;
     }
+    if (!canReadClipboard()) return;
+    event.preventDefault();
+    event.stopPropagation();
     pasteFromClipboard(sessionId, entry);
   };
   host.addEventListener('paste', pasteListener as EventListener, true);

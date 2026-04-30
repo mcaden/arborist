@@ -720,7 +720,7 @@ describe('useTerminal', () => {
     }
   });
 
-  it('paste with empty clipboard and no async fallback does not call term.paste()', () => {
+  it('paste with empty clipboard and no async fallback does not call term.paste() and does not preventDefault', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
@@ -734,9 +734,99 @@ describe('useTerminal', () => {
     try {
       const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
       Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
-      host.dispatchEvent(evt);
+      const dispatched = host.dispatchEvent(evt);
 
       expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+      // When we have no paste path, we MUST let the event propagate so
+      // xterm or any other listener still has a chance to handle it —
+      // otherwise we just turn paste into a silent no-op (regression).
+      expect(dispatched).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+V keydown does not preventDefault when navigator.clipboard.readText is unavailable', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      // Without a clipboard API, we can't paste — so we must not
+      // suppress xterm's own keydown handling. A silent no-op is a
+      // regression vs. the previous behavior (xterm sending \x16).
+      expect(dispatched).toBe(true);
+      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+V keydown does not preventDefault when navigator.clipboard.readText is unavailable', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('paste with inline clipboardData still preventDefaults even if async clipboard is missing', () => {
+    // Inline payload is the happy path and must always be consumed —
+    // we own the paste end-to-end here.
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(evt, 'clipboardData', {
+        value: { getData: () => 'inline-text' },
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('inline-text');
     } finally {
       Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
     }
