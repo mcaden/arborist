@@ -6,6 +6,7 @@
 //! handlers.
 
 pub mod activity;
+pub mod app_launcher;
 pub mod commands;
 pub mod compose;
 pub mod config_store;
@@ -14,6 +15,7 @@ pub mod pty_pool;
 pub mod session_metrics;
 pub mod sub_sessions;
 pub mod types;
+pub mod window_focus;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
@@ -148,8 +150,16 @@ pub fn run() {
             let sub_store = std::sync::Arc::new(sub_sessions::SubSessionStore::new());
             let sub_sink =
                 commands::build_production_sub_sink(app.handle().clone(), sub_store.clone());
+            // Phase 3: application sub-tabs. Their pool reuses the same
+            // sink (output is no-op for apps, status / exited flow into
+            // the same Tauri events as terminal sub-tabs).
+            let app_pool = std::sync::Arc::new(app_launcher::AppPool::new(std::sync::Arc::new(
+                app_launcher::RealAppSpawner,
+            )));
+            let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> =
+                std::sync::Arc::new(window_focus::RealFocuser);
             let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
-                sub_pool, sub_store, sub_sink,
+                sub_pool, sub_store, sub_sink, app_pool, focuser,
             ));
             app.manage(sub_ctx);
             Ok(())

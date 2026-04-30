@@ -620,12 +620,29 @@ pub struct SubAppContext {
     pub pool: Arc<SubPtyPool>,
     pub store: Arc<SubSessionStore>,
     pub sink: SubPtySink,
+    /// Phase 3: pool for application-kind sub-sessions (no PTY).
+    pub app_pool: Arc<crate::app_launcher::AppPool>,
+    /// Phase 3: window focuser used by `subsession_focus` for
+    /// application-kind sub-sessions.
+    pub focuser: Arc<dyn crate::window_focus::WindowFocuser>,
 }
 
 impl SubAppContext {
     #[must_use]
-    pub fn new(pool: Arc<SubPtyPool>, store: Arc<SubSessionStore>, sink: SubPtySink) -> Self {
-        Self { pool, store, sink }
+    pub fn new(
+        pool: Arc<SubPtyPool>,
+        store: Arc<SubSessionStore>,
+        sink: SubPtySink,
+        app_pool: Arc<crate::app_launcher::AppPool>,
+        focuser: Arc<dyn crate::window_focus::WindowFocuser>,
+    ) -> Self {
+        Self {
+            pool,
+            store,
+            sink,
+            app_pool,
+            focuser,
+        }
     }
 }
 

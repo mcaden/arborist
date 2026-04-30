@@ -239,7 +239,7 @@ describe('arborist type mirrors', () => {
     assertExactKeys(
       subSessionRecordFixture as unknown as Record<string, unknown>,
       ['id', 'parentSessionId', 'defId', 'kind', 'label'],
-      [],
+      ['composedCommand'],
       'SubSessionRecord',
     );
   });

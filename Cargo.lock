@@ -52,6 +52,7 @@ name = "arborist"
 version = "0.0.0"
 dependencies = [
  "dunce",
+ "libc",
  "portable-pty",
  "pretty_assertions",
  "rstest",

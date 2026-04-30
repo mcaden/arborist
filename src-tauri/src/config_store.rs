@@ -53,7 +53,7 @@ use tracing::{debug, warn};
 use crate::types::{
     AppConfig, AppError, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error,
     InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
-    SessionId, SessionStatus, Tool, CONFIG_VERSION_CURRENT,
+    SessionId, SessionStatus, SubSessionRecord, Tool, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -200,6 +200,7 @@ impl ConfigStore {
             cfg.config_version = CONFIG_VERSION_CURRENT;
         }
         sanitize_loaded_custom_processes(&mut cfg.custom_processes);
+        sanitize_loaded_sub_session_records(&mut cfg.last_open_sub_sessions, &cfg.custom_processes);
         validate_loaded_config(&mut cfg);
 
         // Validate default instruction set IDs against the *discovered* set.
@@ -995,7 +996,42 @@ fn sanitize_loaded_custom_processes(defs: &mut Vec<CustomProcessDef>) {
     }
 }
 
-/// Additively insert the built-in [`CustomProcessDef`]s (Phase 1 plan
+/// Sanitize persisted [`SubSessionRecord`]s on load: drop any whose
+/// `def_id` no longer exists in the user's `custom_processes` (the def
+/// was deleted between sessions), and backfill `composed_command` from
+/// the def for legacy v3→v4 records that didn't persist it. Both are
+/// silent — restore-on-launch is best-effort.
+fn sanitize_loaded_sub_session_records(
+    records: &mut Vec<SubSessionRecord>,
+    defs: &[CustomProcessDef],
+) {
+    let by_id: std::collections::BTreeMap<&CustomProcessDefId, &CustomProcessDef> =
+        defs.iter().map(|d| (&d.id, d)).collect();
+    let original_len = records.len();
+    records.retain_mut(|rec| {
+        let Some(def) = by_id.get(&rec.def_id) else {
+            warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                def_id = %rec.def_id,
+                "dropping sub-session record whose def is no longer present",
+            );
+            return false;
+        };
+        if rec.composed_command.trim().is_empty() {
+            rec.composed_command = def.command.clone();
+        }
+        true
+    });
+    if records.len() != original_len {
+        debug!(
+            removed = original_len - records.len(),
+            kept = records.len(),
+            "sanitized sub-session records from loaded config",
+        );
+    }
+}
+
 /// table) into `defs`. Only IDs not already present are appended;
 /// existing entries (including ones the user has edited or disabled) are
 /// left untouched. Insertion order mirrors the plan table so a fresh
@@ -2157,6 +2193,7 @@ mod tests {
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
+            composed_command: "sh -i".to_owned(),
         };
         let def = CustomProcessDef {
             id: CustomProcessDefId::new("shell"),

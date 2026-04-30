@@ -900,6 +900,13 @@ pub struct SubSessionRecord {
     pub def_id: CustomProcessDefId,
     pub kind: CustomProcessKind,
     pub label: String,
+    /// Resolved command at sub-session creation time. Persisted so a
+    /// later edit to the underlying [`CustomProcessDef`] doesn't change
+    /// what the restored sub-session would relaunch — matches the
+    /// "compose once, store-and-reuse" invariant for top-level sessions
+    /// (DESIGN §5.4 mirror).
+    #[serde(default)]
+    pub composed_command: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -957,6 +964,35 @@ pub enum Error {
     #[error("invalid custom process def: {0}")]
     InvalidCustomProcessDef(String),
 
+    /// A required external tool (e.g. `wmctrl` for Linux window focus,
+    /// `code` for the VS Code launcher) is not on `PATH`. The payload is
+    /// the missing tool's name so the frontend can surface a hint.
+    #[error("tool missing: {0}")]
+    ToolMissing(String),
+
+    /// The requested operation does not apply to this resource (e.g.
+    /// sending PTY input to an application-kind sub-session). Distinct
+    /// from `NotImplemented` — the operation is by design unavailable.
+    #[error("not applicable: {0}")]
+    NotApplicable(String),
+
+    /// An OS-level permission was denied (e.g. macOS Accessibility for
+    /// `osascript` window activation). Surfaced as a distinct code so
+    /// the frontend can prompt the user to grant the permission.
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+
+    /// The platform does not support the requested feature (e.g. window
+    /// focus on Wayland without a compositor extension). Distinct from
+    /// `ToolMissing` — installing a tool will not help.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
+
+    /// Spawning an application-kind process failed. Carries the
+    /// underlying error message for diagnostics.
+    #[error("app spawn failed: {0}")]
+    AppSpawnFailed(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -986,6 +1022,11 @@ impl Error {
             Self::InstructionFileMissing(_) => "InstructionFileMissing",
             Self::ToolMismatch(_) => "ToolMismatch",
             Self::InvalidCustomProcessDef(_) => "InvalidCustomProcessDef",
+            Self::ToolMissing(_) => "ToolMissing",
+            Self::NotApplicable(_) => "NotApplicable",
+            Self::PermissionDenied(_) => "PermissionDenied",
+            Self::Unsupported(_) => "Unsupported",
+            Self::AppSpawnFailed(_) => "AppSpawnFailed",
             Self::Io(_) => "Io",
             Self::Serde(_) => "Serde",
             Self::Internal(_) => "Internal",
@@ -1169,6 +1210,7 @@ mod tests {
                 def_id: CustomProcessDefId::new("shell"),
                 kind: CustomProcessKind::Terminal,
                 label: "Shell".to_owned(),
+                composed_command: "sh -i".to_owned(),
             }],
         };
         let fixture = json!({
@@ -1202,7 +1244,8 @@ mod tests {
                     "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
                     "defId": "shell",
                     "kind": "terminal",
-                    "label": "Shell"
+                    "label": "Shell",
+                    "composedCommand": "sh -i"
                 }
             ]
         });
@@ -1270,13 +1313,15 @@ mod tests {
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
+            composed_command: "cmd /c shell".to_owned(),
         };
         let fixture = json!({
             "id": "11111111-1111-1111-1111-111111111111",
             "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
             "defId": "shell",
             "kind": "terminal",
-            "label": "Shell"
+            "label": "Shell",
+            "composedCommand": "cmd /c shell"
         });
         (value, fixture)
     }
@@ -1568,6 +1613,17 @@ mod tests {
             Error::InvalidCustomProcessDef("x".into()).code(),
             "InvalidCustomProcessDef"
         );
+        assert_eq!(Error::ToolMissing("wmctrl".into()).code(), "ToolMissing");
+        assert_eq!(
+            Error::NotApplicable("no PTY".into()).code(),
+            "NotApplicable"
+        );
+        assert_eq!(
+            Error::PermissionDenied("Accessibility".into()).code(),
+            "PermissionDenied"
+        );
+        assert_eq!(Error::Unsupported("Wayland".into()).code(), "Unsupported");
+        assert_eq!(Error::AppSpawnFailed("e".into()).code(), "AppSpawnFailed");
     }
 
     #[test]

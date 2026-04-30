@@ -197,6 +197,15 @@ export interface SubSessionRecord {
   defId: CustomProcessDefId;
   kind: CustomProcessKind;
   label: string;
+  /**
+   * Resolved command at the time the sub-session was created. Persisted
+   * so a later edit to the underlying `CustomProcessDef.command` doesn't
+   * change what restore would relaunch (mirror of `SubSession.composedCommand`).
+   *
+   * Optional in TypeScript because legacy v3 records (and tests) may
+   * omit it; sanitize-on-load fills it from the def's command if missing.
+   */
+  composedCommand?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::AppError
