@@ -16,6 +16,12 @@ const mockTerminals: Array<{
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
+  _core: {
+    _renderService: {
+      clear: ReturnType<typeof vi.fn>;
+      handleCharSizeChanged: ReturnType<typeof vi.fn>;
+    };
+  };
 }> = [];
 
 vi.mock('@xterm/xterm', () => {
@@ -30,6 +36,12 @@ vi.mock('@xterm/xterm', () => {
       refresh: vi.fn(),
       cols: 80,
       rows: 24,
+      _core: {
+        _renderService: {
+          clear: vi.fn(),
+          handleCharSizeChanged: vi.fn(),
+        },
+      },
     };
     inst.onData.mockImplementation((cb: (data: string) => void) => {
       inst._dataCb = cb;
@@ -258,6 +270,43 @@ describe('useTerminal', () => {
     expect(mockFitAddons[0]!.fit).not.toHaveBeenCalled();
     expect(mockTerminals[0]!.refresh).not.toHaveBeenCalled();
     expect(sessionResize).not.toHaveBeenCalled();
+  });
+
+  it('refit() forces a render-service repaint each call (recovers from fit() short-circuit when dims are unchanged)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const handleCharSizeChanged = mockTerminals[0]!._core._renderService.handleCharSizeChanged;
+    const clear = mockTerminals[0]!._core._renderService.clear;
+
+    // Attach already ran one synchronous fit cycle, so each spy fired
+    // exactly once during attachment.
+    expect(handleCharSizeChanged).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledTimes(1);
+
+    // A subsequent imperative refit fires both again — even though the
+    // mocked dims haven't changed (FitAddon.fit() would short-circuit
+    // its internal renderService.clear + term.resize). This is the exact
+    // case where a manual window resize "fixes it" but the old refit
+    // path did nothing visible: the renderer's inline sizes on
+    // .xterm-screen / row elements were never re-applied.
+    act(() => result.current.refit());
+    expect(handleCharSizeChanged).toHaveBeenCalledTimes(2);
+    expect(clear).toHaveBeenCalledTimes(2);
+  });
+
+  it('refit() tolerates xterm builds without _core / _renderService', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    // Simulate a future xterm major that drops or renames the private
+    // fields we poke at — refit should degrade to the old fit+refresh
+    // behaviour rather than throwing.
+    (mockTerminals[0] as unknown as { _core?: unknown })._core = undefined;
+    expect(() => act(() => result.current.attach(host))).not.toThrow();
+    expect(() => act(() => result.current.refit())).not.toThrow();
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalled();
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalled();
   });
 
   it('refit() does not cancel a pending debounced fit when fit() throws', () => {

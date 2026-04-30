@@ -180,15 +180,61 @@ function teardownObserver(entry: RegistryEntry): void {
 }
 
 /**
+ * Shape of the bits of xterm's `_core` we poke at via private API to fix
+ * fit-time DOM-sizing quirks (see `refitEntry`). Any missing piece is
+ * silently skipped — every call site uses optional chaining.
+ */
+interface XtermCorePeek {
+  _core?: {
+    _renderService?: {
+      clear?: () => void;
+      handleCharSizeChanged?: () => void;
+    };
+  };
+}
+
+/**
  * Re-measure + repaint a single terminal. Safe to call on an unattached or
  * zero-size terminal (no-ops). Only emits `sessionResize` when cols/rows
- * have actually changed since the last successful fit. Always calls
- * `term.refresh()` when the renderer has a non-zero viewport — this is the
- * recovery path for stale canvas state after a visibility transition or a
- * pre-font-load initial measurement.
+ * have actually changed since the last successful fit.
+ *
+ * Why this is more than just `fitAddon.fit()` plus `refresh()`:
+ *
+ * The renderer writes the `.xterm-screen` and row elements' size as
+ * **inline styles** in pixels (DomRenderer._updateDimensions: width =
+ * `cols × cell.width`, height = `rows × cell.height`). Those inline sizes
+ * are only refreshed by four code paths inside xterm: `term.resize()`,
+ * the `onCharSizeChange` event, the `onDevicePixelRatioChange` handler,
+ * and an option change. When the renderer's inline sizes drift out of
+ * sync with the host's actual CSS box (the easy way: any sequence where
+ * the host's box is sized AFTER the renderer first wrote inline pixels —
+ * visibility transition, late layout pass, parent flex resolving after
+ * mount) the terminal looks "squished" or "doesn't fit" until something
+ * triggers one of those four paths.
+ *
+ * `FitAddon.fit()` only triggers `term.resize()` when proposed cols/rows
+ * differ from current. Window resizes naturally take that branch (the
+ * host's CSS width genuinely changes); tab activation, fonts.ready, and
+ * the manual force-refit hit the no-op branch and leave stale inline
+ * sizes intact. We mirror what fit() *would* have done by:
+ *
+ *   1. Calling `_renderService.handleCharSizeChanged()` after fit() —
+ *      forces `_updateDimensions` to re-apply `cols × cell.width` and
+ *      `rows × cell.height` to every row + `.xterm-screen` element.
+ *      Cheap when nothing actually changed; effective when the inline
+ *      sizes were stale.
+ *   2. Calling `_renderService.clear()` so the renderer drops any cached
+ *      paint state from the previous (stale) layout — same call FitAddon
+ *      itself uses internally on the resize branch.
+ *
+ * Both pokes use private xterm APIs that `FitAddon` itself uses
+ * internally. They are guarded with optional chaining so a future xterm
+ * major that renames or removes them simply degrades to today's
+ * stale-state behavior rather than crashing.
  */
 function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
   if (!entry.wrapper || !entry.wrapper.isConnected) return;
+
   try {
     entry.fitAddon.fit();
   } catch {
@@ -212,11 +258,29 @@ function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
   const rows = entry.term.rows;
   if (cols <= 0 || rows <= 0) return;
 
-  // Force the renderer to repaint the visible viewport. xterm's canvas
-  // renderer can hold stale state when the element transitioned from
-  // visibility:hidden → visible, or when fit() computed the same dims as
-  // last time and skipped the implicit refresh. `refresh()` is bounded
-  // (viewport only, not scrollback) so this is cheap.
+  const renderService = (entry.term as unknown as XtermCorePeek)._core?._renderService;
+
+  // (1) Force re-application of the renderer's inline sizes
+  // (.xterm-screen + row elements) from current cols × cell.width. See
+  // the doc comment above for why this is the missing piece that makes a
+  // programmatic refit behave like a window resize.
+  try {
+    renderService?.handleCharSizeChanged?.();
+  } catch {
+    // Ignore — best-effort.
+  }
+
+  // (2) Drop any cached paint state so the next render frame starts
+  // fresh. Same call FitAddon uses on its resize branch.
+  try {
+    renderService?.clear?.();
+  } catch {
+    // Ignore — best-effort.
+  }
+
+  // Belt-and-suspenders: refresh the visible viewport so any renderer
+  // that ignored clear() (or that batches dirty rows) still repaints.
+  // Bounded to viewport (not scrollback) so this is cheap.
   try {
     entry.term.refresh(0, rows - 1);
   } catch {

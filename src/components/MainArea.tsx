@@ -1,7 +1,8 @@
 // MainArea — right-hand pane of the app shell.
 //
 // Renders **every** session's TerminalView simultaneously, hiding all but
-// the active one via inline `display: none`. The motivation is twofold:
+// the active one via inline `visibility: hidden`. The motivation is
+// twofold:
 //
 //   1. xterm Terminal instances live in the `use-terminal` module-level
 //      registry, so even if MainArea swapped TerminalViews on tab change
