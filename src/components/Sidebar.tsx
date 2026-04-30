@@ -23,6 +23,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { CloseConfirmDialog } from './CloseConfirmDialog';
+import { FitDebugButton } from './FitDebugButton';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
 import { SidebarTab } from './SidebarTab';
@@ -243,16 +244,17 @@ export function Sidebar(): JSX.Element {
           </ul>
         </SortableContext>
       </DndContext>
-      <div className="mt-auto border-t border-slate-200 px-2 py-2 dark:border-slate-800">
+      <div className="mt-auto flex items-center gap-1 border-t border-slate-200 px-2 py-2 dark:border-slate-800">
         <button
           type="button"
           data-testid="settings-button"
           onClick={() => setSettingsOpen(true)}
-          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
+          className="flex flex-1 items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
         >
           <span aria-hidden="true">⚙</span>
           <span>Settings</span>
         </button>
+        <FitDebugButton />
       </div>
       <CloseConfirmDialog />
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}

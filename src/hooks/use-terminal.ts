@@ -391,3 +391,182 @@ export function __resetTerminalRegistryForTests(): void {
 export function __getTerminalRegistryForTests(): ReadonlyMap<SessionId, RegistryEntry> {
   return registry;
 }
+
+// --------------------------------------------------------------------------
+// Debug helpers (Sidebar "Fit" button)
+// --------------------------------------------------------------------------
+//
+// `forceRefitAllTerminals` is the imperative escape hatch users can hit when
+// the renderer looks wrong. It runs the same `refitEntry` path that the
+// debounced ResizeObserver and the activation rAF would, on every entry —
+// not just the active one — so a hidden tab also gets corrected before the
+// user switches to it.
+//
+// `captureTerminalDebugSnapshot` produces a JSON-serializable snapshot of
+// each registry entry plus environment context (DPR, fonts state,
+// visibility, window size). The Sidebar button captures one snapshot
+// BEFORE forcing a refit and another AFTER, so a paste-back into a fresh
+// debug session shows both the suspected-bad state and what the manual
+// refit changed.
+
+export function forceRefitAllTerminals(): void {
+  for (const [id, entry] of registry) {
+    refitEntry(id, entry);
+  }
+}
+
+export interface TerminalDebugRect {
+  width: number;
+  height: number;
+  top: number;
+  left: number;
+}
+
+export interface TerminalDebugAncestor {
+  tag: string;
+  classes: string;
+  display: string;
+  visibility: string;
+  position: string;
+  width: number;
+  height: number;
+}
+
+export interface TerminalDebugEntry {
+  sessionId: SessionId;
+  isAttached: boolean;
+  hostConnected: boolean;
+  wrapperConnected: boolean;
+  termCols: number;
+  termRows: number;
+  lastReportedCols: number;
+  lastReportedRows: number;
+  fontFamily: string | undefined;
+  fontSize: number | undefined;
+  hostRect: TerminalDebugRect | null;
+  wrapperRect: TerminalDebugRect | null;
+  screenRect: TerminalDebugRect | null;
+  /** Approximate cell dims derived from `.xterm-screen` rect / cols/rows. */
+  approxCellWidth: number | null;
+  approxCellHeight: number | null;
+  /** Computed style of the host element. */
+  hostDisplay: string | null;
+  hostVisibility: string | null;
+  /** A few ancestors, oldest-first (root → host's parent). */
+  ancestors: TerminalDebugAncestor[];
+}
+
+export interface TerminalDebugSnapshot {
+  capturedAt: string;
+  windowInnerWidth: number | null;
+  windowInnerHeight: number | null;
+  devicePixelRatio: number | null;
+  documentVisibility: string | null;
+  documentHasFocus: boolean | null;
+  fontsStatus: string | null;
+  darkMode: boolean | null;
+  registrySize: number;
+  entries: TerminalDebugEntry[];
+}
+
+function safeRect(el: Element | null): TerminalDebugRect | null {
+  if (!el) return null;
+  try {
+    const r = el.getBoundingClientRect();
+    return { width: r.width, height: r.height, top: r.top, left: r.left };
+  } catch {
+    return null;
+  }
+}
+
+function safeComputed(el: Element | null): CSSStyleDeclaration | null {
+  if (!el || typeof window === 'undefined') return null;
+  try {
+    return window.getComputedStyle(el);
+  } catch {
+    return null;
+  }
+}
+
+function describeAncestors(host: HTMLElement | null, max = 6): TerminalDebugAncestor[] {
+  const out: TerminalDebugAncestor[] = [];
+  let cur: HTMLElement | null = host?.parentElement ?? null;
+  let depth = 0;
+  while (cur && depth < max) {
+    const cs = safeComputed(cur);
+    const r = safeRect(cur);
+    out.push({
+      tag: cur.tagName.toLowerCase(),
+      classes: cur.className || '',
+      display: cs?.display ?? '',
+      visibility: cs?.visibility ?? '',
+      position: cs?.position ?? '',
+      width: r?.width ?? 0,
+      height: r?.height ?? 0,
+    });
+    cur = cur.parentElement;
+    depth += 1;
+  }
+  return out;
+}
+
+function describeEntry(sessionId: SessionId, entry: RegistryEntry): TerminalDebugEntry {
+  const host = entry.host;
+  const wrapper = entry.wrapper;
+  const screen = wrapper?.querySelector<HTMLElement>('.xterm-screen') ?? null;
+  const screenRect = safeRect(screen);
+  const cols = entry.term.cols;
+  const rows = entry.term.rows;
+  const hostCs = safeComputed(host);
+
+  // Best-effort font info — xterm's options are typed loosely; coerce.
+  let fontFamily: string | undefined;
+  let fontSize: number | undefined;
+  try {
+    const opts = entry.term.options as { fontFamily?: string; fontSize?: number } | undefined;
+    fontFamily = opts?.fontFamily;
+    fontSize = opts?.fontSize;
+  } catch {
+    // ignore
+  }
+
+  return {
+    sessionId,
+    isAttached: !!host,
+    hostConnected: host?.isConnected ?? false,
+    wrapperConnected: wrapper?.isConnected ?? false,
+    termCols: cols,
+    termRows: rows,
+    lastReportedCols: entry.lastCols,
+    lastReportedRows: entry.lastRows,
+    fontFamily,
+    fontSize,
+    hostRect: safeRect(host),
+    wrapperRect: safeRect(wrapper),
+    screenRect,
+    approxCellWidth: screenRect && cols > 0 ? screenRect.width / cols : null,
+    approxCellHeight: screenRect && rows > 0 ? screenRect.height / rows : null,
+    hostDisplay: hostCs?.display ?? null,
+    hostVisibility: hostCs?.visibility ?? null,
+    ancestors: describeAncestors(host),
+  };
+}
+
+export function captureTerminalDebugSnapshot(): TerminalDebugSnapshot {
+  const hasWindow = typeof window !== 'undefined';
+  const hasDoc = typeof document !== 'undefined';
+  const fonts = hasDoc ? (document as Document & { fonts?: { status?: string } }).fonts : undefined;
+  return {
+    capturedAt: new Date().toISOString(),
+    windowInnerWidth: hasWindow ? window.innerWidth : null,
+    windowInnerHeight: hasWindow ? window.innerHeight : null,
+    devicePixelRatio: hasWindow ? window.devicePixelRatio : null,
+    documentVisibility: hasDoc ? document.visibilityState : null,
+    documentHasFocus:
+      hasDoc && typeof document.hasFocus === 'function' ? document.hasFocus() : null,
+    fontsStatus: fonts?.status ?? null,
+    darkMode: hasDoc ? document.documentElement.classList.contains('dark') : null,
+    registrySize: registry.size,
+    entries: Array.from(registry, ([id, entry]) => describeEntry(id, entry)),
+  };
+}
