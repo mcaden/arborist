@@ -47,6 +47,8 @@ interface RegistryEntry {
   host: HTMLDivElement | null;
   observer: ResizeObserver | null;
   resizeTimer: ReturnType<typeof setTimeout> | null;
+  /** Listener installed on `host` to forward `paste` events to xterm. */
+  pasteListener: ((event: ClipboardEvent) => void) | null;
   /** Last cols/rows reported to the backend; suppresses duplicate calls. */
   lastCols: number;
   lastRows: number;
@@ -183,6 +185,7 @@ function createEntry(sessionId: SessionId): RegistryEntry {
     host: null,
     observer: null,
     resizeTimer: null,
+    pasteListener: null,
     lastCols: 0,
     lastRows: 0,
   };
@@ -206,6 +209,13 @@ function teardownObserver(entry: RegistryEntry): void {
     clearTimeout(entry.resizeTimer);
     entry.resizeTimer = null;
   }
+}
+
+function teardownPasteListener(entry: RegistryEntry): void {
+  if (entry.pasteListener && entry.host) {
+    entry.host.removeEventListener('paste', entry.pasteListener as EventListener);
+  }
+  entry.pasteListener = null;
 }
 
 /**
@@ -271,6 +281,7 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
     entry.wrapper.parentElement.removeChild(entry.wrapper);
   }
   teardownObserver(entry);
+  teardownPasteListener(entry);
 
   const wrapper = entry.wrapper ?? document.createElement('div');
   wrapper.style.width = '100%';
@@ -290,6 +301,26 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
   // state if it fires too early).
   refitEntry(sessionId, entry);
 
+  // Paste support. xterm.js installs its own paste listener on a hidden
+  // textarea, but in the Tauri WebView that handler isn't reliably the
+  // event target (focus inside the WebView often lands on the wrapper
+  // div, not xterm's helper textarea), so Ctrl+V / Cmd+V / right-click →
+  // Paste / X11 middle-click silently no-op. Adding our own listener at
+  // the host level captures every paste affordance the OS offers and
+  // forwards via `term.paste()` so xterm wraps the content with bracketed
+  // paste markers (\x1b[200~ … \x1b[201~) when mode 2004 is active.
+  // `clipboardData` carries the data inline as part of the user gesture,
+  // so this works without any clipboard-read permission.
+  const pasteListener = (event: ClipboardEvent): void => {
+    const text = event.clipboardData?.getData('text/plain');
+    if (text) {
+      event.preventDefault();
+      entry.term.paste(text);
+    }
+  };
+  host.addEventListener('paste', pasteListener as EventListener);
+  entry.pasteListener = pasteListener;
+
   if (typeof ResizeObserver !== 'undefined') {
     const observer = new ResizeObserver(() => {
       if (entry.resizeTimer !== null) clearTimeout(entry.resizeTimer);
@@ -302,6 +333,7 @@ function attachToHost(sessionId: SessionId, entry: RegistryEntry, host: HTMLDivE
 
 function detachFromHost(entry: RegistryEntry): void {
   teardownObserver(entry);
+  teardownPasteListener(entry);
   if (entry.wrapper && entry.wrapper.parentElement) {
     entry.wrapper.parentElement.removeChild(entry.wrapper);
   }

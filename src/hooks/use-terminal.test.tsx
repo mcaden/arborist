@@ -14,6 +14,7 @@ const mockTerminals: Array<{
   loadAddon: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
   attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+  paste: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
@@ -31,6 +32,7 @@ vi.mock('@xterm/xterm', () => {
       loadAddon: vi.fn(),
       refresh: vi.fn(),
       attachCustomKeyEventHandler: vi.fn(),
+      paste: vi.fn(),
       cols: 80,
       rows: 24,
     };
@@ -263,6 +265,68 @@ describe('useTerminal', () => {
     act(() => result.current.detach());
     expect(host.children.length).toBe(0);
     expect(mockTerminals[0]!.dispose).not.toHaveBeenCalled();
+  });
+
+  it('paste DOM event on host forwards clipboard text via term.paste()', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { getData: (type: string) => (type === 'text/plain' ? 'hello world' : '') },
+    });
+    const prevented = !host.dispatchEvent(evt);
+
+    expect(prevented).toBe(true);
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('hello world');
+  });
+
+  it('paste with empty clipboard text does not call term.paste()', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { getData: () => '' },
+    });
+    host.dispatchEvent(evt);
+
+    expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+  });
+
+  it('detach removes the paste listener from the host', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    act(() => result.current.detach());
+
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { getData: () => 'after detach' },
+    });
+    host.dispatchEvent(evt);
+
+    expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+  });
+
+  it('re-attach to a new host moves the paste listener (no leak on old host)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host1 = makeHost();
+    const host2 = makeHost();
+    act(() => result.current.attach(host1));
+    act(() => result.current.attach(host2));
+
+    const evt1 = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt1, 'clipboardData', { value: { getData: () => 'old' } });
+    host1.dispatchEvent(evt1);
+    expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+
+    const evt2 = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt2, 'clipboardData', { value: { getData: () => 'new' } });
+    host2.dispatchEvent(evt2);
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('new');
   });
 
   it('disposeTerminal removes from registry and disposes term + addon', () => {
