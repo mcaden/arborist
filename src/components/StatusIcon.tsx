@@ -31,9 +31,13 @@ export function StatusIcon({ status, className, title }: StatusIconProps): JSX.E
     strokeWidth: 2,
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
-    'aria-label': title ?? status,
+    // Provide an a11y label only when the caller supplied a meaningful
+    // tooltip; otherwise hide from assistive tech entirely (the parent
+    // tab already announces the session). Mixing aria-label with
+    // aria-hidden=true is a contradiction screen readers will warn on.
+    'aria-label': title ?? undefined,
     'aria-hidden': title ? undefined : true,
-    role: 'img',
+    role: title ? ('img' as const) : undefined,
     className,
   };
 

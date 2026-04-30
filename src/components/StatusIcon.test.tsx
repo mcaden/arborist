@@ -35,4 +35,23 @@ describe('StatusIcon', () => {
     const svg = screen.getByTestId('status-icon-awaiting');
     expect(svg.querySelector('title')?.textContent).toBe('Awaiting input');
   });
+
+  it('hides the icon from assistive tech when no title is supplied', () => {
+    // Mixing aria-label with aria-hidden=true is a contradiction; the
+    // sidebar tab itself is the labelled element, so an unlabelled icon
+    // should be silently decorative.
+    render(<StatusIcon status="working" />);
+    const svg = screen.getByTestId('status-icon-working');
+    expect(svg).toHaveAttribute('aria-hidden', 'true');
+    expect(svg).not.toHaveAttribute('aria-label');
+    expect(svg).not.toHaveAttribute('role');
+  });
+
+  it('promotes to role=img and exposes aria-label when titled', () => {
+    render(<StatusIcon status="working" title="Working" />);
+    const svg = screen.getByTestId('status-icon-working');
+    expect(svg).toHaveAttribute('aria-label', 'Working');
+    expect(svg).toHaveAttribute('role', 'img');
+    expect(svg).not.toHaveAttribute('aria-hidden');
+  });
 });

@@ -546,6 +546,20 @@ describe('applyActivity (turnEnd)', () => {
     expect(useSessionStore.getState().lastTurnDurationMs['a']).toBeUndefined();
   });
 
+  it('clears a previously-recorded duration when a no-duration turn arrives', () => {
+    // Guards against tooltip showing a stale "ended in 3.4s" after an
+    // agent swap (Copilot → Claude) or a transcript-only second turn.
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+      lastTurnDurationMs: { a: 3400 },
+    });
+    useSessionStore
+      .getState()
+      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
+    expect(useSessionStore.getState().lastTurnDurationMs['a']).toBeUndefined();
+  });
+
   it('clears a stale `working` activity flag so the icon flips to awaiting', () => {
     useSessionStore.setState({
       sessions: [makeView({ id: 'a' })],

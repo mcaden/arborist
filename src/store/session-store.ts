@@ -399,6 +399,13 @@ export const useSessionStore = create<Store>((set, get) => {
             ...lastTurnDurationMs,
             [evt.sessionId]: evt.durationMs,
           };
+        } else if (lastTurnDurationMs[evt.sessionId] !== undefined) {
+          // Source did not report a duration this time. Drop any prior
+          // value so the tooltip doesn't show a stale number from an
+          // earlier turn (or from the other tool, after an agent swap).
+          const next = { ...lastTurnDurationMs };
+          delete next[evt.sessionId];
+          patch.lastTurnDurationMs = next;
         }
         // A completed turn implies the agent is no longer producing
         // output — drop a stale `working` flag so the icon flips to
@@ -495,18 +502,19 @@ export const selectLastTurnDurationMs =
  * priority order is intentional and reflects what a user most needs to
  * notice first:
  *
- *  1. Lifecycle terminals (`error`, `exited`) — the session can't do
- *     anything until the user reacts.
+ *  1. `error` — the session can't do anything until the user reacts.
  *  2. `starting` — the spinner; nothing else is meaningful yet.
- *  3. `attention` — the agent (or the OS) explicitly asked the user to
+ *  3. `exited` — the session has terminated and won't make progress
+ *     until the user restarts or recreates it.
+ *  4. `attention` — the agent (or the OS) explicitly asked the user to
  *     look here.
- *  4. `working` — the PTY is streaming output, i.e. the agent is
+ *  5. `working` — the PTY is streaming output, i.e. the agent is
  *     producing tokens.
- *  5. `awaiting` — the agent finished a turn and is parked at its
+ *  6. `awaiting` — the agent finished a turn and is parked at its
  *     prompt, OR the session has booted but never produced a turn and
  *     the [`AWAITING_GRACE_SECONDS`] window has elapsed (a CLI typically
  *     drops to its REPL prompt by then).
- *  6. `idle` — fallback for the brief boot window before
+ *  7. `idle` — fallback for the brief boot window before
  *     [`AWAITING_GRACE_SECONDS`] expires.
  *
  * `nowSec` is injected so tests can pin time deterministically.

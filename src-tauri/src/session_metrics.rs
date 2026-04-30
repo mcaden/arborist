@@ -331,8 +331,15 @@ fn run_copilot_watcher(
             if len > cursor {
                 cursor = tail_lines(&otel_path, cursor, len, |line| {
                     ingest_otel_line(line, &mut state);
-                    if let Some(d) = parse_invoke_agent_duration_ms(line) {
-                        emit_turn(session_id, Some(d));
+                    // Cheap byte-level pre-filter — we don't want to
+                    // re-parse every JSONL line as JSON just to discover
+                    // it isn't an `invoke_agent` span. Real Copilot OTel
+                    // logs are dominated by metric/log lines, so this
+                    // saves a full serde_json::from_slice on the hot path.
+                    if maybe_invoke_agent_span(line) {
+                        if let Some(d) = parse_invoke_agent_duration_ms(line) {
+                            emit_turn(session_id, Some(d));
+                        }
                     }
                 });
             }
@@ -856,6 +863,20 @@ pub(crate) fn parse_invoke_agent_duration_ms(line: &[u8]) -> Option<u64> {
     Some(end_ns.saturating_sub(start_ns) / 1_000_000)
 }
 
+/// Cheap byte-level prefilter used to skip a full JSON parse on the
+/// majority of OTel lines (metrics, logs, chat spans). Tolerates either
+/// `"name":"invoke_agent"` or `"name": "invoke_agent"` spacing — real
+/// emitters use the compact form, but the OTel SDK is allowed to insert
+/// a space and we'd rather over-accept here and let
+/// [`parse_invoke_agent_duration_ms`] reject than miss a legitimate
+/// turn-end.
+fn maybe_invoke_agent_span(line: &[u8]) -> bool {
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        hay.len() >= needle.len() && hay.windows(needle.len()).any(|w| w == needle)
+    }
+    contains(line, b"\"invoke_agent\"")
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1327,6 +1348,24 @@ mod tests {
         // Defensive: out-of-order timestamps must yield 0, not panic.
         let line = br#"{"type":"span","name":"invoke_agent","startTime":[10,0],"endTime":[5,0]}"#;
         assert_eq!(parse_invoke_agent_duration_ms(line), Some(0));
+    }
+
+    #[test]
+    fn maybe_invoke_agent_span_skips_unrelated_lines() {
+        // The cheap prefilter must reject anything that doesn't even
+        // mention "invoke_agent" — that's the whole point of avoiding a
+        // serde_json::from_slice on the hot path.
+        assert!(!maybe_invoke_agent_span(b""));
+        assert!(!maybe_invoke_agent_span(b"{\"type\":\"metric\"}"));
+        assert!(!maybe_invoke_agent_span(
+            br#"{"type":"span","name":"chat claude-opus"}"#
+        ));
+    }
+
+    #[test]
+    fn maybe_invoke_agent_span_admits_real_invoke_agent_lines() {
+        let line = br#"{"type":"span","name":"invoke_agent","startTime":[1,0],"endTime":[2,0]}"#;
+        assert!(maybe_invoke_agent_span(line));
     }
 
     // -- Copilot watcher integration -------------------------------------
