@@ -10,12 +10,12 @@ Everything you need to get a working dev environment, understand the inner loop,
 
 ## Prerequisites
 
-| Tool | Version | Notes |
-|---|---|---|
-| **Node.js** | 20 LTS+ | Repo pins Node 24 via `.nvmrc` — `nvm use` picks it up |
-| **Rust** | stable | Install via [rustup.rs](https://rustup.rs/). Toolchain pinned by `rust-toolchain.toml` |
-| **Git** | 2.30+ | Required at runtime for `git worktree list` discovery |
-| **Tauri build deps** | platform | See below |
+| Tool                 | Version  | Notes                                                                                  |
+| -------------------- | -------- | -------------------------------------------------------------------------------------- |
+| **Node.js**          | 20 LTS+  | Repo pins Node 24 via `.nvmrc` — `nvm use` picks it up                                 |
+| **Rust**             | stable   | Install via [rustup.rs](https://rustup.rs/). Toolchain pinned by `rust-toolchain.toml` |
+| **Git**              | 2.30+    | Required at runtime for `git worktree list` discovery                                  |
+| **Tauri build deps** | platform | See below                                                                              |
 
 Platform build tools:
 
@@ -145,23 +145,23 @@ cargo run -p arborist --bin arborist-test-child
 
 Config lives in your OS app-data directory. The exact folder name is derived from the Tauri app identifier in `src-tauri/tauri.conf.json` (currently `dev.arborist.desktop`):
 
-| OS | Path |
-|---|---|
-| Windows | `%APPDATA%\dev.arborist.desktop\` |
-| macOS | `~/Library/Application Support/dev.arborist.desktop/` |
-| Linux | `$XDG_DATA_HOME/dev.arborist.desktop/` (or `~/.local/share/dev.arborist.desktop/`) |
+| OS      | Path                                                                               |
+| ------- | ---------------------------------------------------------------------------------- |
+| Windows | `%APPDATA%\dev.arborist.desktop\`                                                  |
+| macOS   | `~/Library/Application Support/dev.arborist.desktop/`                              |
+| Linux   | `$XDG_DATA_HOME/dev.arborist.desktop/` (or `~/.local/share/dev.arborist.desktop/`) |
 
 To debug persistence issues: stop Arborist, inspect/edit `config.json` or `sessions.json`, restart. If the loader rejects a file it renames it to `*.bad-<unix-timestamp>` and logs `code = "ConfigQuarantined"`.
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `error: linking with cl.exe failed` (Windows) | Install the Visual Studio 2022 "Desktop development with C++" workload |
-| `failed to find tool. Is gtk+-3.0 installed?` (Linux) | Install GTK / WebKit2GTK dev packages (see Prerequisites) |
-| `npm run tauri:dev` opens a blank window | Frontend crashed at boot — open DevTools and check the console |
-| `cargo test --workspace` fails with `claude: command not found` | A test is calling the real CLI; integration tests must use `arborist-test-child` — file a bug |
-| Pre-commit hook does nothing | Re-run `npm install` — Husky hooks are set up by the `prepare` script |
-| `config.json.bad-<timestamp>` keeps appearing | The loader is rejecting the file; diff it against the minimum valid example in [dev/docs/CONFIGURATION.md](../dev/docs/CONFIGURATION.md) |
-| Sessions don't restore on launch | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in `RUST_LOG=debug` output |
-| Garbled xterm output after high-throughput burst | Expected — the PTY pool's drop-newest backpressure prepends `ESC c`; output continues correctly after the reset |
+| Symptom                                                         | Fix                                                                                                                                      |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `error: linking with cl.exe failed` (Windows)                   | Install the Visual Studio 2022 "Desktop development with C++" workload                                                                   |
+| `failed to find tool. Is gtk+-3.0 installed?` (Linux)           | Install GTK / WebKit2GTK dev packages (see Prerequisites)                                                                                |
+| `npm run tauri:dev` opens a blank window                        | Frontend crashed at boot — open DevTools and check the console                                                                           |
+| `cargo test --workspace` fails with `claude: command not found` | A test is calling the real CLI; integration tests must use `arborist-test-child` — file a bug                                            |
+| Pre-commit hook does nothing                                    | Re-run `npm install` — Husky hooks are set up by the `prepare` script                                                                    |
+| `config.json.bad-<timestamp>` keeps appearing                   | The loader is rejecting the file; diff it against the minimum valid example in [dev/docs/CONFIGURATION.md](../dev/docs/CONFIGURATION.md) |
+| Sessions don't restore on launch                                | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in `RUST_LOG=debug` output                                             |
+| Garbled xterm output after high-throughput burst                | Expected — the PTY pool's drop-newest backpressure prepends `ESC c`; output continues correctly after the reset                          |

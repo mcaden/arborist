@@ -30,6 +30,7 @@ cargo test --workspace
 ```
 
 Additionally:
+
 - New or changed behaviour has direct test coverage that fails without the change.
 - The app launches via `npm run tauri:dev` and the touched flow works end-to-end at least once.
 - No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()` (outside tests/infallible invariants), `console.log`, or `dbg!()` added without a justifying code comment.
@@ -40,18 +41,21 @@ Additionally:
 The full conventions are in `.github/copilot-instructions.md`. Key rules:
 
 **Rust**
+
 - No business logic in `#[tauri::command]` handlers — handlers deserialize args, call into the relevant module, map errors.
 - All command handlers are `async fn` and return `Result<T, AppError>` where `AppError: serde::Serialize`.
 - Never hold a `Mutex` guard across an `.await` you don't control.
 - PTY read loops run on `std::thread::spawn` (blocking IO), not tokio tasks.
 
 **TypeScript / React**
+
 - All `invoke()` / `listen()` calls go through `src/lib/tauri-bridge.ts`. No React component imports `@tauri-apps/api` directly.
 - Zustand selectors are granular: `useSessionStore(s => s.tabs)`, never `useStore(s => s)`.
 - `use-terminal.ts` creates one `Terminal` instance per session and keeps it alive across tab switches — never recreate on tab switch.
 - `strict: true` in tsconfig with `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. No `// @ts-ignore` without an issue link.
 
 **Cross-boundary**
+
 - Rust types in `types.rs` use `#[serde(rename_all = "camelCase")]`; TS mirrors carry a `// MIRROR: src-tauri/src/types.rs::TypeName` comment.
 - Event names use `://` namespacing (e.g., `session://output`); payloads are always named-field structs.
 
@@ -80,6 +84,7 @@ Follow this checklist in order (the structural test in `src-tauri/tests/capabili
 **Write the failing test before the fix** for every bug. **Write the test alongside the feature** for new behaviour. See `dev/docs/TESTING.md` for the full test guide including the seam architecture, the `arborist-test-child` binary, and the end-of-feature smoke-test procedure.
 
 Quick rules:
+
 - Rust filesystem touches use `tempfile::TempDir`.
 - Time-sensitive async tests use `#[tokio::test(flavor = "current_thread", start_paused = true)]`.
 - Frontend tests mock the tauri-bridge wholesale: `vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'))`.

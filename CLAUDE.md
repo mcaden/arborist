@@ -17,12 +17,14 @@ Authoritative specs: `dev/docs/SPEC.md` (requirements), `dev/docs/DESIGN.md` (ar
 ## Commands
 
 ### Run / build
+
 ```sh
 npm run tauri:dev       # Vite + Tauri with HMR (frontend) and hot-recompile (backend)
 npm run tauri:build     # production bundle → src-tauri/target/release/bundle/
 ```
 
 ### Lint / format / type-check
+
 ```sh
 npm run lint            # eslint + prettier --check
 npm run lint:fix        # auto-apply
@@ -33,6 +35,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ### Test
+
 ```sh
 npm test                         # vitest watch mode (inner loop)
 npm test -- --run                # vitest once (CI / pre-push)
@@ -41,12 +44,14 @@ cargo test --workspace <name>    # single Rust test by name prefix
 ```
 
 ### Acceptance gate (all must be green before merge)
+
 ```sh
 npm run lint && npm test -- --run && npm run build
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
 ### Debugging helpers
+
 ```sh
 RUST_LOG=arborist_lib=debug npm run tauri:dev   # verbose backend tracing
 cargo run -p arborist --example config_smoke    # config-store end-to-end without Tauri
@@ -56,36 +61,41 @@ cargo run -p arborist --bin arborist-test-child # poke the PTY test child intera
 ## Architecture
 
 ### Two-process model
+
 Rust backend owns all PTYs and persistent state; the React frontend communicates exclusively through Tauri commands (`invoke`) and events (`listen`). **No React component imports `@tauri-apps/api` directly** — everything goes through `src/lib/tauri-bridge.ts`, which has one typed wrapper per command/event.
 
 ### Key backend modules (`src-tauri/src/`)
-| Module | Responsibility |
-|---|---|
-| `lib.rs` | App entry: init tracing, build `AppContext`, register commands, run event loop |
-| `types.rs` | All serde types: `Session`, `AppConfig`, errors, event payloads. **Canonical** — TS mirrors must stay in lockstep |
-| `compose.rs` | Pure functions: `compose_command`, `dedupe_label`, shell quoting, worktree validation |
-| `config_store.rs` | `tauri-plugin-store` wrapper; atomic writes via `NamedTempFile::persist`; config quarantine on parse failure |
-| `pty_pool.rs` | PTY lifecycle, `PtySpawner` trait (injectable for tests), bounded mpsc backpressure (`OUTPUT_CHANNEL_CAPACITY = 512`), `ESC c` reset on overflow, orphan cleanup |
-| `commands/session.rs` | All real handler logic (thin wrappers in `commands/mod.rs` delegate here) |
-| `git.rs` | `GitRunner` trait + `RealGitRunner`; parses `git worktree list --porcelain` |
+
+| Module                | Responsibility                                                                                                                                                   |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib.rs`              | App entry: init tracing, build `AppContext`, register commands, run event loop                                                                                   |
+| `types.rs`            | All serde types: `Session`, `AppConfig`, errors, event payloads. **Canonical** — TS mirrors must stay in lockstep                                                |
+| `compose.rs`          | Pure functions: `compose_command`, `dedupe_label`, shell quoting, worktree validation                                                                            |
+| `config_store.rs`     | `tauri-plugin-store` wrapper; atomic writes via `NamedTempFile::persist`; config quarantine on parse failure                                                     |
+| `pty_pool.rs`         | PTY lifecycle, `PtySpawner` trait (injectable for tests), bounded mpsc backpressure (`OUTPUT_CHANNEL_CAPACITY = 512`), `ESC c` reset on overflow, orphan cleanup |
+| `commands/session.rs` | All real handler logic (thin wrappers in `commands/mod.rs` delegate here)                                                                                        |
+| `git.rs`              | `GitRunner` trait + `RealGitRunner`; parses `git worktree list --porcelain`                                                                                      |
 
 ### Key frontend modules (`src/`)
-| Module | Responsibility |
-|---|---|
-| `lib/tauri-bridge.ts` | Single import surface for all `invoke`/`listen` calls |
-| `lib/tauri-bridge.mock.ts` | Vitest mock; `satisfies typeof realBridge` — adding an export without mirroring is a compile error |
-| `hooks/use-terminal.ts` | One `Terminal` per `sessionId` in a module-level `Map`; attach/detach to DOM on tab switch (never recreate); `ResizeObserver` debounced ~50 ms |
-| `store/session-store.ts` | Zustand session state. **Output bypasses Zustand** — it goes straight from `session://output` events to xterm |
-| `lib/session-events.ts` | App-level `session://status` subscriber → session store |
-| `types/arborist.ts` | TS mirrors of every Rust type in `types.rs` (each carries a `// MIRROR:` comment) |
+
+| Module                     | Responsibility                                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/tauri-bridge.ts`      | Single import surface for all `invoke`/`listen` calls                                                                                          |
+| `lib/tauri-bridge.mock.ts` | Vitest mock; `satisfies typeof realBridge` — adding an export without mirroring is a compile error                                             |
+| `hooks/use-terminal.ts`    | One `Terminal` per `sessionId` in a module-level `Map`; attach/detach to DOM on tab switch (never recreate); `ResizeObserver` debounced ~50 ms |
+| `store/session-store.ts`   | Zustand session state. **Output bypasses Zustand** — it goes straight from `session://output` events to xterm                                  |
+| `lib/session-events.ts`    | App-level `session://status` subscriber → session store                                                                                        |
+| `types/arborist.ts`        | TS mirrors of every Rust type in `types.rs` (each carries a `// MIRROR:` comment)                                                              |
 
 ### Critical invariants
+
 - **Compose once, reuse forever.** `Session.composedCommand` is built at create time and stored. `session_restart` and `restore_all_sessions` re-use it verbatim — never recompose at restart.
 - **`cwd` is a discrete spawn field, never interpolated.** `portable-pty` receives `worktreePath` as `cwd`; `compose.rs` tests assert no `cd "<path>" &&` ever appears.
 - **Capability gating.** Every `#[tauri::command]` requires a matching `permissions/*.toml` + entry in `capabilities/main.json`. Missing capability = silent runtime rejection. `tests/capability_gating.rs` is a structural assertion keeping these in sync.
 - **Type parity is manual.** When a Rust struct in `types.rs` changes, update the matching TS interface in `types/arborist.ts` in the same commit.
 
 ### Adding a new Tauri command (checklist)
+
 1. Handler in `commands/mod.rs` + logic in `commands/session.rs`
 2. Register in `tauri::generate_handler![…]` in `lib.rs`
 3. Create `permissions/allow-<name>.toml`
@@ -95,16 +105,19 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 7. Update DESIGN.md §6 command table
 
 ### Test seams
+
 - **`PtySpawner` trait** — production uses `PortablePtySpawner`; tests inject `FakePtySpawner`
 - **`GitRunner` trait** — production uses `RealGitRunner`; tests inject canned porcelain output
 - **`tauri-bridge.mock.ts`** — frontend tests mock the entire bridge module via `vi.mock('@/lib/tauri-bridge', ...)`
 - **`arborist-test-child` binary** — PTY integration tests use this instead of real `claude`/`copilot`; env vars `ARBORIST_CLI_OVERRIDE_CLAUDE` / `ARBORIST_CLI_OVERRIDE_COPILOT` redirect compose output to it
 
 ### Tool-specific CLI rules (easy to get wrong)
+
 - **Claude**: inject a `--system-prompt <temp-file>` where the temp file = generated context block + selected instruction set. Temp file lives under OS-temp `arborist/<session-uuid>/` and is deleted on session close.
 - **Copilot**: do **not** pass `--instructions` — it disables auto-discovery of `.github/copilot-instructions.md`.
 
 ### Code conventions
+
 - No `any` in TypeScript; no `.unwrap()`/`.expect()` in Rust outside tests.
 - Zustand selectors are granular: `useSessionStore(s => s.tabs)`, never `useStore(s => s)`.
 - Rust command handlers are always `async fn`, return `Result<T, AppError>` (AppError is `serde::Serialize`), and contain no business logic — delegate to `commands/session.rs`.
