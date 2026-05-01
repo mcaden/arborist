@@ -22,6 +22,7 @@ import type {
   PartialAppConfig,
   SessionOutputEvent,
   SessionStatusEvent,
+  WorkspaceChangedEvent,
 } from '@/types/arborist';
 
 beforeEach(() => {
@@ -281,6 +282,60 @@ describe('workspaceValidate', () => {
     invokeMock.mockResolvedValueOnce({ valid: false, error: 'not a git repository' });
     const out = await bridge.workspaceValidate('/no');
     expect(out).toEqual({ valid: false, error: 'not a git repository' });
+  });
+
+  it('passes through the advisory `alreadyOpenInAnotherInstance` field', async () => {
+    invokeMock.mockResolvedValueOnce({ valid: true, alreadyOpenInAnotherInstance: true });
+    const out = await bridge.workspaceValidate('/contended');
+    expect(out).toEqual({ valid: true, alreadyOpenInAnotherInstance: true });
+  });
+});
+
+describe('workspaceSwitch', () => {
+  it("calls invoke('workspace_switch', { args: { path } }) and forwards the result", async () => {
+    invokeMock.mockResolvedValueOnce({ workspaceRoot: '/new/ws', noOp: false });
+    const out = await bridge.workspaceSwitch('/new/ws');
+    expect(invokeMock).toHaveBeenCalledWith('workspace_switch', {
+      args: { path: '/new/ws' },
+    });
+    expect(out).toEqual({ workspaceRoot: '/new/ws', noOp: false });
+  });
+
+  it('forwards the no-op shape when the target equals the current workspace', async () => {
+    invokeMock.mockResolvedValueOnce({ workspaceRoot: '/cur/ws', noOp: true });
+    const out = await bridge.workspaceSwitch('/cur/ws');
+    expect(out).toEqual({ workspaceRoot: '/cur/ws', noOp: true });
+  });
+
+  it('propagates a backend rejection (e.g. WorkspaceLocked)', async () => {
+    invokeMock.mockRejectedValueOnce({ code: 'WorkspaceLocked', message: 'locked' });
+    await expect(bridge.workspaceSwitch('/locked')).rejects.toMatchObject({
+      code: 'WorkspaceLocked',
+    });
+  });
+});
+
+describe('onWorkspaceChanged', () => {
+  it('subscribes to workspace://changed, forwards the payload, and returns the unlisten fn', async () => {
+    const unlisten = vi.fn();
+    let captured: ((event: { payload: WorkspaceChangedEvent }) => void) | null = null;
+    listenMock.mockImplementation(
+      (_event: string, cb: (event: { payload: WorkspaceChangedEvent }) => void) => {
+        captured = cb;
+        return Promise.resolve(unlisten);
+      },
+    );
+
+    const cb = vi.fn();
+    const returned = await bridge.onWorkspaceChanged(cb);
+
+    expect(listenMock).toHaveBeenCalledWith('workspace://changed', expect.any(Function));
+    expect(returned).toBe(unlisten);
+
+    const payload: WorkspaceChangedEvent = { workspaceRoot: '/new/ws' };
+    expect(captured).not.toBeNull();
+    captured!({ payload });
+    expect(cb).toHaveBeenCalledWith(payload);
   });
 });
 
