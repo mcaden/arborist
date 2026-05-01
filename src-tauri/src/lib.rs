@@ -92,6 +92,7 @@ pub(crate) const BUILD_BRANCH: &str = env!("ARBORIST_BUILD_BRANCH");
 
 pub mod store_layout;
 pub mod workspace_lock;
+pub mod seed;
 
 /// Build and run the Tauri application.
 pub fn run() {

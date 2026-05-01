@@ -86,6 +86,23 @@ impl WorkspaceLockGuard {
     /// the returned guard for the lifetime of the bound (branch,
     /// workspace) scope.
     pub fn acquire(lock_path: impl AsRef<Path>) -> Result<Self, LockError> {
+        Self::acquire_inner(lock_path, false)
+    }
+
+    /// Acquire an exclusive lock on `lock_path`, blocking the calling
+    /// thread until the lock is available. Used by the
+    /// seed-on-first-launch step (`crate::seed`), where two concurrent
+    /// same-(branch, workspace) starts must serialise so only one
+    /// wins the seed; the loser waits, then re-checks the seed
+    /// marker and skips.
+    ///
+    /// Always returns `LockError::Io` for failure modes; never
+    /// `LockError::Contention` (since we explicitly wait for it).
+    pub fn acquire_blocking(lock_path: impl AsRef<Path>) -> Result<Self, LockError> {
+        Self::acquire_inner(lock_path, true)
+    }
+
+    fn acquire_inner(lock_path: impl AsRef<Path>, blocking: bool) -> Result<Self, LockError> {
         let lock_path = lock_path.as_ref().to_path_buf();
         if let Some(parent) = lock_path.parent() {
             fs::create_dir_all(parent).map_err(LockError::Io)?;
@@ -102,12 +119,17 @@ impl WorkspaceLockGuard {
             .truncate(false)
             .open(&lock_path)
             .map_err(LockError::Io)?;
-        match file.try_lock_exclusive() {
+        let result = if blocking {
+            file.lock_exclusive()
+        } else {
+            file.try_lock_exclusive()
+        };
+        match result {
             Ok(()) => Ok(Self {
                 _file: file,
                 path: lock_path,
             }),
-            Err(e) if is_contention_error(&e) => Err(LockError::Contention),
+            Err(e) if !blocking && is_contention_error(&e) => Err(LockError::Contention),
             Err(e) => Err(LockError::Io(e)),
         }
     }
