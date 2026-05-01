@@ -576,6 +576,17 @@ fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Crate-internal re-export of [`tail_lines`] so the Copilot
+/// events.jsonl tailer in [`crate::copilot_events`] can reuse the same
+/// chunked-read + oversized-line-skip behavior without duplicating it.
+/// Kept as a thin alias rather than `pub fn tail_lines` to keep the
+/// surface area honest — this is a sibling-module helper, not a
+/// public API.
+#[doc(hidden)]
+pub fn tail_lines_pub<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, consume: F) -> u64 {
+    tail_lines(path, cursor, end, consume)
+}
+
 /// Tail `path` from `cursor` up to `end`, invoking `consume` for each
 /// complete `\n`-terminated line found. Returns the new cursor position
 /// (always `>= cursor`).
@@ -598,17 +609,6 @@ fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
 ///    line. If no `\n` is found anywhere up to `end`, the writer is
 ///    still in flight, so we leave the cursor where it is and let the
 ///    next poll re-check.
-/// Crate-internal re-export of [`tail_lines`] so the Copilot
-/// events.jsonl tailer in [`crate::copilot_events`] can reuse the same
-/// chunked-read + oversized-line-skip behavior without duplicating it.
-/// Kept as a thin alias rather than `pub fn tail_lines` to keep the
-/// surface area honest — this is a sibling-module helper, not a
-/// public API.
-#[doc(hidden)]
-pub fn tail_lines_pub<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, consume: F) -> u64 {
-    tail_lines(path, cursor, end, consume)
-}
-
 fn tail_lines<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, mut consume: F) -> u64 {
     let bytes = match read_range(path, cursor, end) {
         Ok(b) => b,
