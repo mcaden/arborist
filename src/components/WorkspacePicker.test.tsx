@@ -112,6 +112,37 @@ describe('WorkspacePicker — first-boot mode', () => {
 
     expect(screen.queryByText(/stale!/i)).not.toBeInTheDocument();
   });
+  it('shows the "already open in another window" advisory warning when the probe reports contention', async () => {
+    workspaceValidate.mockResolvedValue({
+      valid: true,
+      alreadyOpenInAnotherInstance: true,
+    });
+    render(<WorkspacePicker mode="first-boot" onConfirm={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText(/workspace path/i), { target: { value: '/repo' } });
+    await flushDebounce();
+
+    const warning = await screen.findByTestId('picker-already-open-warning');
+    expect(warning).toHaveTextContent(/already be open in another arborist window/i);
+    // Confirm button must remain enabled — the probe is advisory only.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled(),
+    );
+  });
+
+  it('does not show the advisory warning when the probe reports the lock is free', async () => {
+    workspaceValidate.mockResolvedValue({
+      valid: true,
+      alreadyOpenInAnotherInstance: false,
+    });
+    render(<WorkspacePicker mode="first-boot" onConfirm={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/workspace path/i), { target: { value: '/repo' } });
+    await flushDebounce();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled(),
+    );
+    expect(screen.queryByTestId('picker-already-open-warning')).not.toBeInTheDocument();
+  });
 });
 
 describe('WorkspacePicker — change mode', () => {

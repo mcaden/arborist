@@ -124,6 +124,14 @@ impl WorkspaceLockGuard {
         } else {
             file.try_lock_exclusive()
         };
+        // SAFETY: code between a successful `lock_exclusive()` /
+        // `try_lock_exclusive()` and the `Ok(Self { ... })` return
+        // MUST NOT panic. If it did, the `File` would be dropped
+        // without releasing the OS-level lock through the
+        // `WorkspaceLockGuard::Drop` impl (see Drop below) and the
+        // file would unlock only when the OS reclaims the handle —
+        // fine on most platforms but a footgun. The current branches
+        // only do infallible moves; keep it that way.
         match result {
             Ok(()) => Ok(Self {
                 _file: file,
@@ -140,6 +148,32 @@ impl WorkspaceLockGuard {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Non-destructive contention probe used by the workspace picker
+    /// (Phase 8). Tries to acquire the lock at `lock_path` and
+    /// **immediately drops the guard** on success — i.e. this never
+    /// holds the lock past the call. Intended only as an *advisory*
+    /// signal for "would the next acquire succeed right now?".
+    ///
+    /// Returns `Ok(true)` if the probe acquire succeeded (no current
+    /// contender), `Ok(false)` if the lock was held by someone else,
+    /// or `Err(LockError::Io)` if the probe could not even open the
+    /// lock file (the caller should treat this as "no advisory
+    /// signal available" and not surface it as contention).
+    ///
+    /// **Race window:** because the guard is dropped before the
+    /// caller acts on the result, another process can acquire the
+    /// lock between probe and the caller's real `acquire()`. The
+    /// probe is purely advisory — the authoritative check is the
+    /// transactional acquire performed by `boot::bind_workspace` /
+    /// `workspace_switch_impl_inner`.
+    pub fn probe(lock_path: impl AsRef<Path>) -> Result<bool, LockError> {
+        match Self::acquire(lock_path) {
+            Ok(_guard) => Ok(true), // dropped at end of scope; lock released immediately
+            Err(LockError::Contention) => Ok(false),
+            Err(LockError::Io(e)) => Err(LockError::Io(e)),
+        }
     }
 }
 
@@ -213,5 +247,31 @@ mod tests {
         let b = td.path().join("b/.lock");
         let _ga = WorkspaceLockGuard::acquire(&a).expect("a");
         let _gb = WorkspaceLockGuard::acquire(&b).expect("b");
+    }
+
+    /// Probe on a free lock returns `Ok(true)` and does NOT keep the
+    /// lock — a real acquire after the probe must still succeed.
+    #[test]
+    fn probe_returns_true_for_free_lock_and_does_not_hold() {
+        let td = tempdir().expect("tempdir");
+        let lock = td.path().join(".lock");
+        assert!(WorkspaceLockGuard::probe(&lock).expect("probe"));
+        // The lock file was created by the probe, but the lock itself
+        // is free — a real acquire must succeed.
+        let _g = WorkspaceLockGuard::acquire(&lock).expect("acquire after probe");
+    }
+
+    /// Probe against a lock currently held by another handle in the
+    /// same process should return `Ok(false)` on Windows (where
+    /// LockFileEx is per-handle). On Unix flock is per-process so the
+    /// same-process probe will succeed; cross-process contention is
+    /// covered by the `arborist-test-locker` integration test.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn probe_returns_false_when_held_windows() {
+        let td = tempdir().expect("tempdir");
+        let lock = td.path().join(".lock");
+        let _holder = WorkspaceLockGuard::acquire(&lock).expect("hold");
+        assert!(!WorkspaceLockGuard::probe(&lock).expect("probe"));
     }
 }

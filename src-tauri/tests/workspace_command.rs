@@ -104,7 +104,7 @@ fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {
 fn workspace_validate_rejects_empty_path() {
     let store = TempDir::new().unwrap();
     let ctx = build_ctx(FakeGitRunner::new(), &store);
-    let out = workspace_validate_impl(&ctx, Path::new("")).unwrap();
+    let out = workspace_validate_impl(&ctx, Path::new(""), None, "").unwrap();
     assert!(!out.valid);
     assert!(out.error.unwrap().contains("empty"));
 }
@@ -113,7 +113,7 @@ fn workspace_validate_rejects_empty_path() {
 fn workspace_validate_rejects_relative_path() {
     let store = TempDir::new().unwrap();
     let ctx = build_ctx(FakeGitRunner::new(), &store);
-    let out = workspace_validate_impl(&ctx, Path::new("relative/path")).unwrap();
+    let out = workspace_validate_impl(&ctx, Path::new("relative/path"), None, "").unwrap();
     assert!(!out.valid);
     assert!(out.error.unwrap().contains("absolute"));
 }
@@ -122,8 +122,13 @@ fn workspace_validate_rejects_relative_path() {
 fn workspace_validate_rejects_missing_path() {
     let store = TempDir::new().unwrap();
     let ctx = build_ctx(FakeGitRunner::new(), &store);
-    let out =
-        workspace_validate_impl(&ctx, Path::new("/this/does/not/exist/arborist-test-xyz")).unwrap();
+    let out = workspace_validate_impl(
+        &ctx,
+        Path::new("/this/does/not/exist/arborist-test-xyz"),
+        None,
+        "",
+    )
+    .unwrap();
     assert!(!out.valid);
 }
 
@@ -134,7 +139,7 @@ fn workspace_validate_rejects_non_git_directory() {
     let runner = FakeGitRunner::new();
     // toplevel left as None ⇒ "not a repo"
     let ctx = build_ctx(runner, &store);
-    let out = workspace_validate_impl(&ctx, dir.path()).unwrap();
+    let out = workspace_validate_impl(&ctx, dir.path(), None, "").unwrap();
     assert!(!out.valid);
     assert!(out.error.unwrap().contains("git repository"));
 }
@@ -146,7 +151,7 @@ fn workspace_validate_accepts_real_git_dir() {
     let runner = FakeGitRunner::new();
     runner.set_repo_root(dir.path());
     let ctx = build_ctx(runner, &store);
-    let out = workspace_validate_impl(&ctx, dir.path()).unwrap();
+    let out = workspace_validate_impl(&ctx, dir.path(), None, "").unwrap();
     assert!(out.valid, "got {:?}", out.error);
     assert!(out.error.is_none());
 }
@@ -161,10 +166,65 @@ fn workspace_validate_rejects_subdirectory_of_a_repo() {
     let runner = FakeGitRunner::new();
     runner.set_repo_root(repo.path());
     let ctx = build_ctx(runner, &store);
-    let out = workspace_validate_impl(&ctx, &nested).unwrap();
+    let out = workspace_validate_impl(&ctx, &nested, None, "").unwrap();
     assert!(!out.valid);
     let err = out.error.unwrap();
     assert!(err.contains("repository root"), "got {err}");
+}
+
+// ---------- workspace_validate advisory lock probe (Phase 8) ----------
+
+#[test]
+fn workspace_validate_skips_lock_probe_when_app_data_dir_is_none() {
+    // Sanity: passing None for app_data_dir leaves
+    // already_open_in_another_instance unset (advisory signal absent).
+    let store = TempDir::new().unwrap();
+    let dir = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_repo_root(dir.path());
+    let ctx = build_ctx(runner, &store);
+    let out = workspace_validate_impl(&ctx, dir.path(), None, "").unwrap();
+    assert!(out.valid);
+    assert_eq!(out.already_open_in_another_instance, None);
+}
+
+#[test]
+fn workspace_validate_reports_free_lock_as_not_already_open() {
+    // No prior holder → probe acquires + releases successfully → false.
+    let app_data_dir = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dir = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_repo_root(dir.path());
+    let ctx = build_ctx(runner, &store);
+    let out = workspace_validate_impl(&ctx, dir.path(), Some(app_data_dir.path()), "main").unwrap();
+    assert!(out.valid);
+    assert_eq!(out.already_open_in_another_instance, Some(false));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn workspace_validate_reports_held_lock_as_already_open_windows() {
+    // Hold the (branch, workspace) lock from this test process; on
+    // Windows LockFileEx is per-handle so the probe inside
+    // workspace_validate_impl correctly observes contention.
+    let app_data_dir = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dir = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_repo_root(dir.path());
+    let ctx = build_ctx(runner, &store);
+
+    let canon = dunce::canonicalize(dir.path()).unwrap();
+    let layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
+        .for_workspace(canon);
+    std::fs::create_dir_all(layout.workspace_dir()).unwrap();
+    let _holder = arborist_lib::workspace_lock::WorkspaceLockGuard::acquire(layout.lock_path())
+        .expect("hold the lock from the test process");
+
+    let out = workspace_validate_impl(&ctx, dir.path(), Some(app_data_dir.path()), "main").unwrap();
+    assert!(out.valid);
+    assert_eq!(out.already_open_in_another_instance, Some(true));
 }
 
 // ---------- worktree_create ----------

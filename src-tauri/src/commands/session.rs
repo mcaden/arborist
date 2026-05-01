@@ -1112,15 +1112,26 @@ pub fn worktrees_list_impl(
 /// Validate a candidate workspace root for the first-boot picker. Never
 /// returns an `AppError` for the "invalid" case — the picker shows inline
 /// feedback. Real `AppError`s are reserved for unexpected backend failures.
+///
+/// `app_data_dir` + `branch` enable the optional Phase 8 advisory
+/// lock-contention probe: if both are provided, after the path passes
+/// repo-root validation we try a non-blocking acquire of the
+/// per-(branch, workspace) `.lock` and report the result as
+/// `already_open_in_another_instance`. Pass `None` for `app_data_dir`
+/// in tests (or any caller that doesn't need the advisory signal) and
+/// the field is left as `None` in the result.
 pub fn workspace_validate_impl(
     ctx: &AppContext,
     path: &std::path::Path,
+    app_data_dir: Option<&std::path::Path>,
+    branch: &str,
 ) -> Result<crate::types::WorkspaceValidateResult, AppError> {
     use crate::types::WorkspaceValidateResult;
 
     let invalid = |msg: &str| WorkspaceValidateResult {
         valid: false,
         error: Some(msg.to_owned()),
+        already_open_in_another_instance: None,
     };
 
     if path.as_os_str().is_empty() {
@@ -1149,9 +1160,27 @@ pub fn workspace_validate_impl(
             toplevel.display()
         )));
     }
+
+    // Phase 8 — advisory contention probe. Only meaningful for callers
+    // that supplied `app_data_dir`; tests typically don't.
+    let already_open = app_data_dir.and_then(|root| {
+        let layout = crate::store_layout::StoreRoot::new(root, branch).for_workspace(canon.clone());
+        match crate::workspace_lock::WorkspaceLockGuard::probe(layout.lock_path()) {
+            Ok(free) => Some(!free),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    "workspace_validate: lock probe I/O error; advisory signal unavailable"
+                );
+                None
+            }
+        }
+    });
+
     Ok(WorkspaceValidateResult {
         valid: true,
         error: None,
+        already_open_in_another_instance: already_open,
     })
 }
 
@@ -1260,7 +1289,9 @@ pub async fn workspace_switch_impl_inner(
     // Step 2 — validate + canonicalise. We re-use workspace_validate_impl
     // for parity with what the frontend already showed the user. Empty /
     // relative / non-dir / non-repo all turn into a clean error here.
-    let validate = workspace_validate_impl(ctx, new_path)?;
+    // Pass `None` for `app_data_dir` to skip the advisory contention
+    // probe — the authoritative lock acquire happens in step 5 anyway.
+    let validate = workspace_validate_impl(ctx, new_path, None, branch)?;
     if !validate.valid {
         return Err(AppError::new(
             "InvalidPath",

@@ -205,9 +205,14 @@ pub async fn workspace_validate(
     app: tauri::AppHandle,
     args: WorkspaceValidateArgs,
 ) -> Result<WorkspaceValidateResult, AppError> {
+    use tauri::Manager as _;
     let ctx = ctx_of(&app)?;
     let path = PathBuf::from(args.path);
-    session::workspace_validate_impl(&ctx, &path)
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
+    session::workspace_validate_impl(&ctx, &path, Some(&app_data_dir), crate::BUILD_BRANCH)
 }
 
 /// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>`

@@ -664,6 +664,17 @@ pub struct WorkspaceValidateArgs {
 /// an absolute, existing directory containing a git repository. On failure,
 /// `error` carries a short human-readable reason for inline picker feedback.
 ///
+/// `alreadyOpenInAnotherInstance` is an **advisory** flag set when a
+/// non-blocking probe of the per-(branch, workspace) `.lock` file
+/// could not acquire the OS lock — i.e. another Arborist process
+/// (any branch) currently holds it, *or* a stale lock with no owner
+/// is still pinning the file. The picker UI surfaces a warning but
+/// still allows the user to confirm; the actual lock is acquired
+/// transactionally by `workspace_switch` (or boot), which will fail
+/// with `WorkspaceLocked` if the contention is still present.
+/// Absent for the legacy / canonical layout when no `.lock` file
+/// exists yet — that case reads as "no contention" (false).
+///
 /// MIRROR: `src/types/arborist.ts::WorkspaceValidateResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -671,6 +682,11 @@ pub struct WorkspaceValidateResult {
     pub valid: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error: Option<String>,
+    /// `Some(true)` if a non-blocking lock probe revealed contention;
+    /// `Some(false)` if the probe succeeded; `None` if no probe was
+    /// performed (e.g. the path failed earlier validation).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub already_open_in_another_instance: Option<bool>,
 }
 
 /// Arguments for `worktree_create` (Roadmap §2.2).

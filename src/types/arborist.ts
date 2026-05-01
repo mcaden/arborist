@@ -235,9 +235,21 @@ export interface WorktreeInfo {
 // MIRROR: src-tauri/src/types.rs::WorkspaceValidateResult
 // Returned by the `workspace_validate` command (Roadmap §1.1). `error` is
 // only populated when `valid === false`.
+//
+// `alreadyOpenInAnotherInstance` is an **advisory** Phase 8 signal:
+// `true` when a non-blocking probe of the per-(branch, workspace) `.lock`
+// file revealed that another Arborist process currently holds it,
+// `false` if the probe acquired the lock cleanly (and immediately
+// released it), and `undefined` if the probe was not performed (e.g.
+// the path failed earlier validation, or the call site didn't have an
+// `app_data_dir` to derive the lock path from). Picker UIs should
+// surface a warning when `true` but still allow the user to confirm —
+// the authoritative lock acquire happens at switch/boot time and will
+// fail with `WorkspaceLocked` if the contention is still present then.
 export interface WorkspaceValidateResult {
   valid: boolean;
   error?: string;
+  alreadyOpenInAnotherInstance?: boolean;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorktreeCreateResult

@@ -30,7 +30,7 @@ export interface WorkspacePickerProps {
 type ValidationState =
   | { kind: 'idle' }
   | { kind: 'validating' }
-  | { kind: 'valid' }
+  | { kind: 'valid'; alreadyOpen: boolean }
   | { kind: 'invalid'; error: string };
 
 const DEBOUNCE_MS = 250;
@@ -75,7 +75,10 @@ export function WorkspacePicker({
           const result = await workspaceValidate(trimmed);
           if (seq !== requestSeq.current) return;
           if (result.valid) {
-            setValidation({ kind: 'valid' });
+            setValidation({
+              kind: 'valid',
+              alreadyOpen: result.alreadyOpenInAnotherInstance === true,
+            });
           } else {
             setValidation({ kind: 'invalid', error: result.error ?? 'invalid path' });
           }
@@ -171,6 +174,18 @@ export function WorkspacePicker({
             </span>
           ) : null}
         </p>
+
+        {validation.kind === 'valid' && validation.alreadyOpen ? (
+          <p
+            role="status"
+            aria-live="polite"
+            data-testid="picker-already-open-warning"
+            className="mt-2 text-xs text-amber-700 dark:text-amber-400"
+          >
+            ⚠ This workspace appears to already be open in another Arborist window. Opening it here
+            will fail unless the other window releases it first.
+          </p>
+        ) : null}
 
         {errorText !== null ? (
           <p id={errorId} role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
