@@ -9,7 +9,7 @@
 import { useEffect, useRef } from 'react';
 
 import { sessionRestart } from '@/lib/tauri-bridge';
-import { useTerminal } from '@/hooks/use-terminal';
+import { measureInitialPtyDimensions, useTerminal } from '@/hooks/use-terminal';
 import { useSessionById, useStatusMessage } from '@/store/session-store';
 import type { SessionId } from '@/types/arborist';
 
@@ -28,7 +28,7 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   const containerRef = useRef<HTMLDivElement | null>(null);
   const session = useSessionById(sessionId);
   const statusMessage = useStatusMessage(sessionId);
-  const { attach, detach, focus, refit } = useTerminal(sessionId);
+  const { attach, detach, focus, refit, getDimensions } = useTerminal(sessionId);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -60,7 +60,12 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   const showOverlay = status === 'error' || status === 'exited';
 
   const handleRestart = (): void => {
-    void sessionRestart({ sessionId }).catch((err: unknown) => {
+    // Reuse the existing terminal's measured cols/rows so the new PTY
+    // child paints its splash at the size xterm currently shows. If
+    // somehow the terminal entry is gone (very rare — overlay hides
+    // before the entry is disposed), fall back to a fresh measurement.
+    const dims = getDimensions() ?? measureInitialPtyDimensions();
+    void sessionRestart({ sessionId, cols: dims.cols, rows: dims.rows }).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[TerminalView] session_restart(${sessionId}) failed: ${message}`);
     });

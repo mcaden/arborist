@@ -32,7 +32,8 @@ use arborist_lib::pty_pool::{
 };
 use arborist_lib::types::{
     InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
-    SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, Tool, WorktreeInfo,
+    SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs, SessionStatus, Tool,
+    WorktreeInfo,
 };
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
@@ -46,6 +47,13 @@ struct SpawnerState {
     spawn_count: usize,
     last_cwd: Option<PathBuf>,
     last_cmd: Option<ChildCommand>,
+    /// PtySize handed to the most recent `spawn` call. Used by regression
+    /// tests that pin the deferred-spawn path: `restore_all_sessions` no
+    /// longer spawns directly; the first `session_resize` from the
+    /// frontend triggers the spawn and *that* size — not
+    /// `DEFAULT_PTY_SIZE` — must reach the spawner so the CLI's first
+    /// paint matches the real terminal width.
+    last_size: Option<PtySize>,
     /// One entry per spawn so a test can keep killing/respawning.
     eofs: Vec<Arc<AtomicBool>>,
     next_pid: u32,
@@ -75,7 +83,7 @@ impl PtySpawner for FakeSpawner {
         &self,
         cmd: ChildCommand,
         cwd: &Path,
-        _size: PtySize,
+        size: PtySize,
     ) -> Result<SpawnedChild, arborist_lib::types::Error> {
         let mut s = self.state.lock().unwrap();
         if let Some(err) = s.fail_next_with.take() {
@@ -89,6 +97,7 @@ impl PtySpawner for FakeSpawner {
         s.spawn_count += 1;
         s.last_cwd = Some(cwd.to_path_buf());
         s.last_cmd = Some(cmd);
+        s.last_size = Some(size);
         let pid = s.next_pid;
         s.next_pid += 1;
         let eof = Arc::new(AtomicBool::new(false));
@@ -314,6 +323,8 @@ fn create_args(h: &Harness) -> SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
         instruction_set_id: Some(h.instruction_id.clone()),
+        cols: 80,
+        rows: 24,
     }
 }
 
@@ -382,12 +393,125 @@ async fn create_emits_starting_then_running_and_persists_session() {
 }
 
 #[tokio::test]
+async fn create_passes_initial_size_to_spawner() {
+    // Regression: pre-fix, the PTY was always opened at DEFAULT_PTY_SIZE
+    // (80×24) regardless of what the frontend actually rendered, so the
+    // CLI's first paint (e.g. a Copilot/Claude splash) was always at 80
+    // cols. The frontend now measures its host first and passes the real
+    // dims through SessionCreateArgs; this test pins that they actually
+    // reach `PtySpawner::spawn`.
+    let h = build_harness();
+    let args = SessionCreateArgs {
+        tool: Tool::Claude,
+        worktree_path: h.worktree.path().to_path_buf(),
+        instruction_set_id: Some(h.instruction_id.clone()),
+        cols: 173,
+        rows: 47,
+    };
+    session_create_impl(&h.ctx, args).expect("create ok");
+    let st = h.spawner.state.lock().unwrap();
+    let size = st.last_size.expect("spawner should have recorded a size");
+    assert_eq!(size.cols, 173);
+    assert_eq!(size.rows, 47);
+}
+
+#[tokio::test]
+async fn restart_passes_dims_to_respawn() {
+    // Companion to `create_passes_initial_size_to_spawner` — restart goes
+    // through the same race and is fixed the same way (frontend reads
+    // term.cols/rows and passes them in `SessionRestartArgs`).
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 200,
+            rows: 60,
+        },
+    )
+    .expect("restart ok");
+    let st = h.spawner.state.lock().unwrap();
+    let size = st.last_size.expect("respawn should have recorded a size");
+    assert_eq!(size.cols, 200);
+    assert_eq!(size.rows, 60);
+}
+
+#[tokio::test]
+async fn create_rejects_zero_dimensions() {
+    // PR #28 review: raw u16 lets `0` slip through, which then fails
+    // deep inside `portable_pty::openpty` with an opaque OS error. The
+    // command boundary now rejects it with a stable, branchable code so
+    // the frontend can surface a real diagnostic (or a future refactor
+    // that bypasses `measureInitialPtyDimensions` is caught at the
+    // boundary instead of as a cryptic "PTY spawn failed").
+    let h = build_harness();
+    for (cols, rows) in [(0u16, 24u16), (80, 0), (0, 0)] {
+        let args = SessionCreateArgs {
+            tool: Tool::Claude,
+            worktree_path: h.worktree.path().to_path_buf(),
+            instruction_set_id: Some(h.instruction_id.clone()),
+            cols,
+            rows,
+        };
+        let err = session_create_impl(&h.ctx, args)
+            .expect_err(&format!("create({cols}x{rows}) should have failed"));
+        assert_eq!(err.code, "InvalidArgs", "unexpected code for {cols}x{rows}");
+        assert!(
+            err.message.contains("pty dimensions"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+    // Sanity: the spawner must NOT have been touched.
+    let st = h.spawner.state.lock().unwrap();
+    assert!(
+        st.last_size.is_none(),
+        "spawner.spawn should not run when dims are 0"
+    );
+}
+
+#[tokio::test]
+async fn restart_rejects_zero_dimensions() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    let err = session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 0,
+            rows: 24,
+        },
+    )
+    .expect_err("restart with cols=0 should fail");
+    assert_eq!(err.code, "InvalidArgs");
+}
+
+#[tokio::test]
+async fn resize_rejects_zero_dimensions() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    let err = session_resize_impl(
+        &h.ctx,
+        SessionResizeArgs {
+            session_id: view.id,
+            cols: 0,
+            rows: 0,
+        },
+    )
+    .expect_err("resize with 0×0 should fail");
+    assert_eq!(err.code, "InvalidArgs");
+}
+
+#[tokio::test]
 async fn create_with_unknown_instruction_set_returns_notfound() {
     let h = build_harness();
     let args = SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
         instruction_set_id: Some(InstructionSetId("does-not-exist".into())),
+        cols: 80,
+        rows: 24,
     };
     let err = session_create_impl(&h.ctx, args).expect_err("should fail");
     assert_eq!(err.code, "NotFound");
@@ -403,6 +527,8 @@ async fn create_with_tool_mismatch_returns_toolmismatch() {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
         instruction_set_id: Some(InstructionSetId("copilot-only".into())),
+        cols: 80,
+        rows: 24,
     };
     let err = session_create_impl(&h.ctx, args).expect_err("should fail");
     assert_eq!(err.code, "ToolMismatch");
@@ -693,7 +819,15 @@ async fn restart_reuses_composed_command_and_yields_new_pid() {
     let v1 = session_create_impl(&h.ctx, create_args(&h)).unwrap();
     let original_pid = v1.pid.unwrap();
 
-    session_restart_impl(&h.ctx, v1.id).unwrap();
+    session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: v1.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .unwrap();
 
     // After restart, list reports a Running session with a new PID.
     let listed = session_list_impl(&h.ctx).unwrap();
@@ -717,7 +851,7 @@ async fn frontend_ready_is_one_shot() {
 }
 
 #[tokio::test]
-async fn restore_respawns_persisted_sessions_without_recomposing() {
+async fn restore_defers_spawn_until_first_session_resize() {
     // Bootstrap a harness, persist a session, then drop the pool and rebuild
     // a fresh ctx around the same store — simulating an app restart.
     let h = build_harness();
@@ -736,20 +870,48 @@ async fn restore_respawns_persisted_sessions_without_recomposing() {
     let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
     let events2 = Arc::new(CapturedEvents::default());
     let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store.clone());
-    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store.clone(), sink2);
+    let ctx2 = Arc::new(AppContext::with_real_git(pool2, h.ctx.store.clone(), sink2));
 
     restore_all_sessions(&ctx2);
 
-    // The restored session should still appear and now have a fresh PID
-    // (the new spawner starts at 9000).
-    let listed = session_list_impl(&Arc::new(ctx2)).unwrap();
+    // Restore *registers* the session for deferred spawn but doesn't spawn
+    // yet — so the spawner stays untouched and status is still Starting.
+    assert!(
+        spawner2.state.lock().unwrap().last_cmd.is_none(),
+        "restore_all_sessions must not invoke the spawner directly anymore"
+    );
+    let listed_pre = session_list_impl(&ctx2).unwrap();
+    assert_eq!(listed_pre.len(), 1);
+    assert_eq!(listed_pre[0].status, SessionStatus::Starting);
+    assert_eq!(listed_pre[0].pid, None);
+
+    // The first session_resize from the (now-mounted) frontend triggers
+    // the actual spawn — at the freshly-measured size, so the CLI's
+    // first paint sees the right cols/rows.
+    session_resize_impl(
+        &ctx2,
+        SessionResizeArgs {
+            session_id: original.id,
+            cols: 132,
+            rows: 50,
+        },
+    )
+    .expect("deferred spawn via resize ok");
+
+    let listed = session_list_impl(&ctx2).unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, original.id);
     assert_eq!(listed[0].status, SessionStatus::Running);
     assert_eq!(listed[0].pid, Some(9000));
 
-    // Composed command was reused verbatim — never recomposed.
+    // The PtySize handed to the spawner reflects the frontend-measured
+    // dims, not DEFAULT_PTY_SIZE — this is the whole point of the fix.
     let st = spawner2.state.lock().unwrap();
+    let size = st.last_size.expect("spawner should have recorded a size");
+    assert_eq!(size.cols, 132);
+    assert_eq!(size.rows, 50);
+
+    // Composed command was reused verbatim — never recomposed.
     let cmd = st.last_cmd.as_ref().unwrap();
     let composed_in_args = cmd.args.iter().find(|a| a.contains("claude")).cloned();
     assert!(
@@ -859,6 +1021,8 @@ fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
         tool,
         worktree_path: h.worktree.path().to_path_buf(),
         instruction_set_id,
+        cols: 80,
+        rows: 24,
     }
 }
 
@@ -939,7 +1103,15 @@ async fn session_restart_reallocates_ai_session_id_for_copilot() {
         .and_then(|s| s.ai_session_id.clone())
         .expect("Copilot create must pre-allocate");
 
-    session_restart_impl(&h.ctx, view.id).unwrap();
+    session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .unwrap();
 
     let id_after = h
         .ctx
@@ -975,7 +1147,15 @@ async fn session_restart_clears_ai_session_id_for_claude() {
         .update_session_ai_session_id(&view.id, Some("preexisting-claude-id".to_owned()))
         .unwrap();
 
-    session_restart_impl(&h.ctx, view.id).unwrap();
+    session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .unwrap();
 
     let after = h.ctx.store.load_sessions().get(&view.id).cloned().unwrap();
     assert_eq!(
@@ -1022,6 +1202,19 @@ async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent()
 
     restore_all_sessions(&ctx2);
 
+    // Restore now defers the actual spawn until first session_resize.
+    // Trigger that explicitly so we can assert on the splice the spawner
+    // sees.
+    session_resize_impl(
+        &ctx2,
+        SessionResizeArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect("deferred spawn via resize ok");
+
     let spawned = last_spawn_args_joined(&spawner2);
     assert!(
         spawned.contains(&format!("--resume {preallocated}")),
@@ -1066,7 +1259,14 @@ async fn failed_copilot_restart_preserves_prior_ai_session_id() {
         ));
     }
 
-    let result = session_restart_impl(&h.ctx, view.id);
+    let result = session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    );
     assert!(
         result.is_err(),
         "restart must surface the spawner failure to the caller; got {result:?}",

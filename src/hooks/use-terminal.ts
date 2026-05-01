@@ -255,15 +255,61 @@ function pasteFromClipboard(sessionId: SessionId, entry: RegistryEntry): void {
 }
 
 /**
+ * Shape of the bits of xterm's `_core` we poke at via private API to fix
+ * fit-time DOM-sizing quirks (see `refitEntry`). Any missing piece is
+ * silently skipped — every call site uses optional chaining.
+ */
+interface XtermCorePeek {
+  _core?: {
+    _renderService?: {
+      clear?: () => void;
+      handleCharSizeChanged?: () => void;
+    };
+  };
+}
+
+/**
  * Re-measure + repaint a single terminal. Safe to call on an unattached or
  * zero-size terminal (no-ops). Only emits `sessionResize` when cols/rows
- * have actually changed since the last successful fit. Always calls
- * `term.refresh()` when the renderer has a non-zero viewport — this is the
- * recovery path for stale canvas state after a visibility transition or a
- * pre-font-load initial measurement.
+ * have actually changed since the last successful fit.
+ *
+ * Why this is more than just `fitAddon.fit()` plus `refresh()`:
+ *
+ * The renderer writes the `.xterm-screen` and row elements' size as
+ * **inline styles** in pixels (DomRenderer._updateDimensions: width =
+ * `cols × cell.width`, height = `rows × cell.height`). Those inline sizes
+ * are only refreshed by four code paths inside xterm: `term.resize()`,
+ * the `onCharSizeChange` event, the `onDevicePixelRatioChange` handler,
+ * and an option change. When the renderer's inline sizes drift out of
+ * sync with the host's actual CSS box (the easy way: any sequence where
+ * the host's box is sized AFTER the renderer first wrote inline pixels —
+ * visibility transition, late layout pass, parent flex resolving after
+ * mount) the terminal looks "squished" or "doesn't fit" until something
+ * triggers one of those four paths.
+ *
+ * `FitAddon.fit()` only triggers `term.resize()` when proposed cols/rows
+ * differ from current. Window resizes naturally take that branch (the
+ * host's CSS width genuinely changes); tab activation, fonts.ready, and
+ * the manual force-refit hit the no-op branch and leave stale inline
+ * sizes intact. We mirror what fit() *would* have done by:
+ *
+ *   1. Calling `_renderService.handleCharSizeChanged()` after fit() —
+ *      forces `_updateDimensions` to re-apply `cols × cell.width` and
+ *      `rows × cell.height` to every row + `.xterm-screen` element.
+ *      Cheap when nothing actually changed; effective when the inline
+ *      sizes were stale.
+ *   2. Calling `_renderService.clear()` so the renderer drops any cached
+ *      paint state from the previous (stale) layout — same call FitAddon
+ *      itself uses internally on the resize branch.
+ *
+ * Both pokes use private xterm APIs that `FitAddon` itself uses
+ * internally. They are guarded with optional chaining so a future xterm
+ * major that renames or removes them simply degrades to today's
+ * stale-state behavior rather than crashing.
  */
 function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
   if (!entry.wrapper || !entry.wrapper.isConnected) return;
+
   try {
     entry.fitAddon.fit();
   } catch {
@@ -287,11 +333,29 @@ function refitEntry(sessionId: SessionId, entry: RegistryEntry): void {
   const rows = entry.term.rows;
   if (cols <= 0 || rows <= 0) return;
 
-  // Force the renderer to repaint the visible viewport. xterm's canvas
-  // renderer can hold stale state when the element transitioned from
-  // visibility:hidden → visible, or when fit() computed the same dims as
-  // last time and skipped the implicit refresh. `refresh()` is bounded
-  // (viewport only, not scrollback) so this is cheap.
+  const renderService = (entry.term as unknown as XtermCorePeek)._core?._renderService;
+
+  // (1) Force re-application of the renderer's inline sizes
+  // (.xterm-screen + row elements) from current cols × cell.width. See
+  // the doc comment above for why this is the missing piece that makes a
+  // programmatic refit behave like a window resize.
+  try {
+    renderService?.handleCharSizeChanged?.();
+  } catch {
+    // Ignore — best-effort.
+  }
+
+  // (2) Drop any cached paint state so the next render frame starts
+  // fresh. Same call FitAddon uses on its resize branch.
+  try {
+    renderService?.clear?.();
+  } catch {
+    // Ignore — best-effort.
+  }
+
+  // Belt-and-suspenders: refresh the visible viewport so any renderer
+  // that ignored clear() (or that batches dirty rows) still repaints.
+  // Bounded to viewport (not scrollback) so this is cheap.
   try {
     entry.term.refresh(0, rows - 1);
   } catch {
@@ -481,6 +545,13 @@ export interface UseTerminalApi {
    * attached or has zero dimensions.
    */
   refit: () => void;
+  /**
+   * Current xterm `cols`/`rows` for this session, or `null` if the
+   * terminal has no entry yet (created lazily on first `attach`/render).
+   * Used by callers that need to drive a backend respawn at the right
+   * size (e.g. `session_restart` after a crash).
+   */
+  getDimensions: () => InitialPtyDims | null;
 }
 
 export function useTerminal(sessionId: SessionId): UseTerminalApi {
@@ -513,13 +584,153 @@ export function useTerminal(sessionId: SessionId): UseTerminalApi {
     refitEntry(id, entry);
   }, []);
 
+  const getDimensions = useCallback(() => getTerminalDimensions(sessionIdRef.current), []);
+
   // Eagerly create the terminal so `session://output` events are buffered
   // by xterm even before `attach` runs.
   useEffect(() => {
     getOrCreate(sessionId);
   }, [sessionId]);
 
-  return useMemo(() => ({ attach, detach, focus, refit }), [attach, detach, focus, refit]);
+  return useMemo(
+    () => ({ attach, detach, focus, refit, getDimensions }),
+    [attach, detach, focus, refit, getDimensions],
+  );
+}
+
+/**
+ * Initial PTY dimensions handed to `session_create` / `session_restart`
+ * before the frontend has a chance to mount + fit the xterm Terminal.
+ *
+ * The pre-fix bug: the backend always opened the PTY at
+ * `DEFAULT_PTY_SIZE` (80×24), so the CLI's first paint (the splash, the
+ * first prompt) was rendered at 80 cols regardless of how wide the
+ * actual host turned out to be. The eventual `session_resize` from
+ * `fitAddon.fit()` came after the splash had already been drawn into
+ * scrollback at 80-col layout. Frontend code now passes the real
+ * intended dims at create/restart time so the child's first byte sees
+ * the right width.
+ *
+ * This file is the right home because the per-session xterm registry
+ * (where existing terminals can be sampled for accurate dims) is
+ * module-private here.
+ */
+export interface InitialPtyDims {
+  cols: number;
+  rows: number;
+}
+
+/**
+ * Conservative starting point used when no live terminal exists to
+ * sample (very-first-session boot) and the DOM probe also fails. Wider
+ * than the historical 80-col default so the splash isn't artificially
+ * narrow on the rare bad-measure path; the post-mount `fitAddon.fit()`
+ * will issue a `session_resize` to the true host width within a frame
+ * either way.
+ */
+export const FALLBACK_PTY_DIMS: Readonly<InitialPtyDims> = Object.freeze({
+  cols: 132,
+  rows: 40,
+});
+
+const PROBE_SAMPLE_TEXT = 'M'.repeat(80);
+
+/** Inner padding (px on each side) of `TerminalView`'s host wrapper. */
+const TERMINAL_HOST_INNER_PADDING_PX = 8;
+
+/**
+ * Read the *measured* cols/rows of an existing terminal entry. Returns
+ * `null` unless the entry is attached to a connected host AND has been
+ * successfully fit at least once.
+ *
+ * Why the strict gate: a fresh `Terminal` defaults to 80×24 even before
+ * `open()`/`fit()`, so a naive `term.cols/term.rows` read can leak the
+ * old hardcoded default into `session_restart`. We use `entry.lastCols`
+ * /`lastRows` as the proven-fit signal — those are written only by a
+ * successful `refitEntry()` (which itself requires a connected wrapper
+ * and a non-throwing `fit()`).
+ */
+export function getTerminalDimensions(sessionId: SessionId): InitialPtyDims | null {
+  const entry = registry.get(sessionId);
+  if (!entry) return null;
+  if (!entry.wrapper?.isConnected) return null;
+  const cols = entry.lastCols;
+  const rows = entry.lastRows;
+  if (cols <= 0 || rows <= 0) return null;
+  return { cols, rows };
+}
+
+/**
+ * Estimate the cols/rows a brand-new session's PTY should be opened at
+ * so the CLI's first paint matches the eventual `fitAddon.fit()` size.
+ *
+ * Strategy, in order:
+ *   1. Reuse any *proven-fit* terminal's measured cols/rows (delegates
+ *      to [`getTerminalDimensions`], which gates on a successful fit
+ *      so the xterm 80×24 default never leaks out). All sessions share
+ *      the same `<main>` host, so cell metrics (and therefore cols/rows)
+ *      are identical between proven-fit entries.
+ *   2. Fall back to a one-off DOM probe: measure a hidden monospace
+ *      `<span>` for cell-width × cell-height and divide the `<main>`
+ *      element's rect (minus `TerminalView`'s 8-px padding) by it.
+ *   3. If the DOM isn't available (jsdom without a `<main>`, or any
+ *      probe failure), return [`FALLBACK_PTY_DIMS`].
+ */
+export function measureInitialPtyDimensions(): InitialPtyDims {
+  // Reuse fast-path: any *proven-fit* terminal entry. We delegate to
+  // `getTerminalDimensions`, which gates on `wrapper.isConnected` AND
+  // `entry.lastCols/lastRows > 0`. A plain `entry.term.cols/rows`
+  // check here would silently hand back the xterm 80×24 default for
+  // an entry whose host is connected but currently zero-size (so its
+  // first `fitAddon.fit()` threw and `lastCols/lastRows` stayed 0) —
+  // exactly the splash-too-narrow regression we're guarding against.
+  // Cell metrics are identical across entries (all share the same
+  // `<main>` font), so any proven-fit entry is as good as another.
+  for (const id of registry.keys()) {
+    const dims = getTerminalDimensions(id);
+    if (dims !== null) return dims;
+  }
+
+  if (typeof document === 'undefined') {
+    return { ...FALLBACK_PTY_DIMS };
+  }
+
+  const main = document.querySelector('main');
+  if (!main) return { ...FALLBACK_PTY_DIMS };
+
+  const rect = main.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    // `<main>` is in the tree but laid out at 0×0 (e.g. an ancestor is
+    // `display: none` mid-transition). Clamping `0/cellW` to a 20-col
+    // floor would silently produce a tiny PTY — the very thing the
+    // splash-too-narrow regression test guards against. Bail to the
+    // fallback so the post-mount `fitAddon.fit()` corrects it.
+    return { ...FALLBACK_PTY_DIMS };
+  }
+
+  let cellWidth = 0;
+  let cellHeight = 0;
+  try {
+    const probe = document.createElement('span');
+    probe.textContent = PROBE_SAMPLE_TEXT;
+    probe.style.cssText =
+      'position:absolute;left:-9999px;top:-9999px;visibility:hidden;' +
+      'white-space:pre;font-family:monospace;font-size:15px;line-height:normal;';
+    document.body.appendChild(probe);
+    cellWidth = probe.offsetWidth / PROBE_SAMPLE_TEXT.length;
+    cellHeight = probe.offsetHeight;
+    document.body.removeChild(probe);
+  } catch {
+    // jsdom or hostile environment — fall through to defaults.
+  }
+
+  if (cellWidth <= 0 || cellHeight <= 0) return { ...FALLBACK_PTY_DIMS };
+
+  const usableW = Math.max(rect.width - TERMINAL_HOST_INNER_PADDING_PX * 2, 0);
+  const usableH = Math.max(rect.height - TERMINAL_HOST_INNER_PADDING_PX * 2, 0);
+  const cols = Math.max(20, Math.floor(usableW / cellWidth));
+  const rows = Math.max(5, Math.floor(usableH / cellHeight));
+  return { cols, rows };
 }
 
 export function disposeTerminal(sessionId: SessionId): void {
@@ -578,4 +789,187 @@ export function __resetTerminalRegistryForTests(): void {
 /** Test-only: peek at the registry. */
 export function __getTerminalRegistryForTests(): ReadonlyMap<SessionId, RegistryEntry> {
   return registry;
+}
+
+// --------------------------------------------------------------------------
+// Debug helpers (Sidebar "Fit" button)
+// --------------------------------------------------------------------------
+//
+// `forceRefitAllTerminals` is the imperative escape hatch users can hit when
+// the renderer looks wrong. It runs the same `refitEntry` path that the
+// debounced ResizeObserver and the activation rAF would, on every entry —
+// not just the active one — so a hidden tab also gets corrected before the
+// user switches to it.
+//
+// `captureTerminalDebugSnapshot` produces a JSON-serializable snapshot of
+// each registry entry plus environment context (DPR, fonts state,
+// visibility, window size). The Sidebar button captures one snapshot
+// BEFORE forcing a refit and another AFTER, so a paste-back into a fresh
+// debug session shows both the suspected-bad state and what the manual
+// refit changed.
+
+export function forceRefitAllTerminals(): void {
+  for (const [id, entry] of registry) {
+    refitEntry(id, entry);
+  }
+}
+
+export interface TerminalDebugRect {
+  width: number;
+  height: number;
+  top: number;
+  left: number;
+}
+
+export interface TerminalDebugAncestor {
+  tag: string;
+  classes: string;
+  display: string;
+  visibility: string;
+  position: string;
+  width: number;
+  height: number;
+}
+
+export interface TerminalDebugEntry {
+  sessionId: SessionId;
+  isAttached: boolean;
+  hostConnected: boolean;
+  wrapperConnected: boolean;
+  termCols: number;
+  termRows: number;
+  lastReportedCols: number;
+  lastReportedRows: number;
+  fontFamily: string | undefined;
+  fontSize: number | undefined;
+  hostRect: TerminalDebugRect | null;
+  wrapperRect: TerminalDebugRect | null;
+  screenRect: TerminalDebugRect | null;
+  /** Approximate cell dims derived from `.xterm-screen` rect / cols/rows. */
+  approxCellWidth: number | null;
+  approxCellHeight: number | null;
+  /** Computed style of the host element. */
+  hostDisplay: string | null;
+  hostVisibility: string | null;
+  /** A few ancestors, oldest-first (root → host's parent). */
+  ancestors: TerminalDebugAncestor[];
+}
+
+export interface TerminalDebugSnapshot {
+  capturedAt: string;
+  windowInnerWidth: number | null;
+  windowInnerHeight: number | null;
+  devicePixelRatio: number | null;
+  documentVisibility: string | null;
+  documentHasFocus: boolean | null;
+  fontsStatus: string | null;
+  darkMode: boolean | null;
+  registrySize: number;
+  entries: TerminalDebugEntry[];
+}
+
+function safeRect(el: Element | null): TerminalDebugRect | null {
+  if (!el) return null;
+  try {
+    const r = el.getBoundingClientRect();
+    return { width: r.width, height: r.height, top: r.top, left: r.left };
+  } catch {
+    return null;
+  }
+}
+
+function safeComputed(el: Element | null): CSSStyleDeclaration | null {
+  if (!el || typeof window === 'undefined') return null;
+  try {
+    return window.getComputedStyle(el);
+  } catch {
+    return null;
+  }
+}
+
+function describeAncestors(host: HTMLElement | null, max = 6): TerminalDebugAncestor[] {
+  // Walk parent chain bottom-up (closest-first, capped at `max`), then
+  // reverse so the returned array is oldest-first (root → host's parent)
+  // as documented on `TerminalDebugEntry.ancestors`. Reading the snapshot
+  // top-down matches how DevTools shows the DOM tree.
+  const collected: TerminalDebugAncestor[] = [];
+  let cur: HTMLElement | null = host?.parentElement ?? null;
+  let depth = 0;
+  while (cur && depth < max) {
+    const cs = safeComputed(cur);
+    const r = safeRect(cur);
+    collected.push({
+      tag: cur.tagName.toLowerCase(),
+      classes: cur.className || '',
+      display: cs?.display ?? '',
+      visibility: cs?.visibility ?? '',
+      position: cs?.position ?? '',
+      width: r?.width ?? 0,
+      height: r?.height ?? 0,
+    });
+    cur = cur.parentElement;
+    depth += 1;
+  }
+  return collected.reverse();
+}
+
+function describeEntry(sessionId: SessionId, entry: RegistryEntry): TerminalDebugEntry {
+  const host = entry.host;
+  const wrapper = entry.wrapper;
+  const screen = wrapper?.querySelector<HTMLElement>('.xterm-screen') ?? null;
+  const screenRect = safeRect(screen);
+  const cols = entry.term.cols;
+  const rows = entry.term.rows;
+  const hostCs = safeComputed(host);
+
+  // Best-effort font info — xterm's options are typed loosely; coerce.
+  let fontFamily: string | undefined;
+  let fontSize: number | undefined;
+  try {
+    const opts = entry.term.options as { fontFamily?: string; fontSize?: number } | undefined;
+    fontFamily = opts?.fontFamily;
+    fontSize = opts?.fontSize;
+  } catch {
+    // ignore
+  }
+
+  return {
+    sessionId,
+    isAttached: !!host,
+    hostConnected: host?.isConnected ?? false,
+    wrapperConnected: wrapper?.isConnected ?? false,
+    termCols: cols,
+    termRows: rows,
+    lastReportedCols: entry.lastCols,
+    lastReportedRows: entry.lastRows,
+    fontFamily,
+    fontSize,
+    hostRect: safeRect(host),
+    wrapperRect: safeRect(wrapper),
+    screenRect,
+    approxCellWidth: screenRect && cols > 0 ? screenRect.width / cols : null,
+    approxCellHeight: screenRect && rows > 0 ? screenRect.height / rows : null,
+    hostDisplay: hostCs?.display ?? null,
+    hostVisibility: hostCs?.visibility ?? null,
+    ancestors: describeAncestors(host),
+  };
+}
+
+export function captureTerminalDebugSnapshot(): TerminalDebugSnapshot {
+  const hasWindow = typeof window !== 'undefined';
+  const hasDoc = typeof document !== 'undefined';
+  const fonts = hasDoc ? (document as Document & { fonts?: { status?: string } }).fonts : undefined;
+  return {
+    capturedAt: new Date().toISOString(),
+    windowInnerWidth: hasWindow ? window.innerWidth : null,
+    windowInnerHeight: hasWindow ? window.innerHeight : null,
+    devicePixelRatio: hasWindow ? window.devicePixelRatio : null,
+    documentVisibility: hasDoc ? document.visibilityState : null,
+    documentHasFocus:
+      hasDoc && typeof document.hasFocus === 'function' ? document.hasFocus() : null,
+    fontsStatus: fonts?.status ?? null,
+    darkMode: hasDoc ? document.documentElement.classList.contains('dark') : null,
+    registrySize: registry.size,
+    entries: Array.from(registry, ([id, entry]) => describeEntry(id, entry)),
+  };
 }

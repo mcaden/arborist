@@ -50,10 +50,34 @@ export interface SessionCreateArgs {
   tool: Tool;
   worktreePath: string;
   instructionSetId?: InstructionSetId;
+  /**
+   * Initial PTY dimensions in character cells. Required: the backend
+   * opens the child PTY at exactly this size so the CLI's first paint
+   * (e.g. a Claude/Copilot splash) renders at the host's actual width
+   * instead of the OS-default 80 cols. Frontend callers should derive
+   * these from `measureInitialPtyDimensions()` (see DESIGN §5.5b).
+   *
+   * MIRROR: `src-tauri/src/types.rs::SessionCreateArgs`.
+   */
+  cols: number;
+  rows: number;
 }
 
 export interface SessionIdArg {
   sessionId: SessionId;
+}
+
+/**
+ * Arguments for `session_restart`. Mirrors `session_create` in passing the
+ * caller-measured initial PTY dimensions so the respawned child paints at
+ * the real host size from the first byte (DESIGN §5.4).
+ *
+ * MIRROR: `src-tauri/src/types.rs::SessionRestartArgs`.
+ */
+export interface SessionRestartArgs {
+  sessionId: SessionId;
+  cols: number;
+  rows: number;
 }
 
 /**
@@ -160,9 +184,10 @@ export function sessionInput(args: SessionInputArgs): Promise<void> {
 
 /**
  * Re-spawn `sessionId` from its persisted `composedCommand`. The command
- * is reused verbatim — never recomposed (DESIGN §5.4).
+ * is reused verbatim — never recomposed (DESIGN §5.4). The caller passes
+ * the current xterm dims so the new PTY is opened at the right size.
  */
-export function sessionRestart(args: SessionIdArg): Promise<void> {
+export function sessionRestart(args: SessionRestartArgs): Promise<void> {
   return invoke<void>('session_restart', { args });
 }
 

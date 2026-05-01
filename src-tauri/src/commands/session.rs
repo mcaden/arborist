@@ -20,11 +20,13 @@
 //! the on-disk session record converges automatically when the production
 //! sink is wired (see [`crate::lib::run`]).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use portable_pty::PtySize;
 use tracing::{debug, info, warn};
 
 use crate::compose::{self, ComposeInputs};
@@ -36,8 +38,8 @@ use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
 use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult,
-    SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionStatus, SessionView,
-    Tool,
+    SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs,
+    SessionStatus, SessionView, Tool,
 };
 
 /// Wiring shared by every Phase 7 session command. Built once at startup
@@ -74,6 +76,19 @@ pub struct AppContext {
     /// `session://activity` channel as a `TurnEnd` variant; tests
     /// substitute a capturing closure.
     pub turn_emit: TurnCb,
+    /// Sessions that have been persisted but not yet PTY-spawned. Used by
+    /// `restore_all_sessions` to defer the actual `pool.spawn` until the
+    /// frontend reports the real terminal dimensions via `session_resize`.
+    /// The first `session_resize` for a pending id atomically claims it
+    /// (removing it from the map) and triggers the spawn at the right
+    /// size — so the CLI's first paint never happens at the wrong width.
+    /// The map value is the spawn-ready `Session` (already augmented with
+    /// `--resume <ai-session-id>` if applicable) so the claim path doesn't
+    /// have to re-derive it. `Mutex<HashMap>` (not `RwLock`) because the
+    /// only access pattern is a single-step claim (`remove`) under the same
+    /// lock as the membership check, which a `RwLock` cannot give us
+    /// atomically.
+    pub pending_spawn: Arc<Mutex<HashMap<SessionId, Session>>>,
 }
 
 impl AppContext {
@@ -97,6 +112,7 @@ impl AppContext {
             metrics_emit,
             ai_session_discover,
             turn_emit,
+            pending_spawn: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -122,6 +138,28 @@ impl AppContext {
 // session_create
 // ---------------------------------------------------------------------------
 
+/// Reject zero-sized PTY dimensions at the command boundary. Raw `u16`
+/// allows `0`; passing `PtySize { cols: 0, rows: 0, ... }` to
+/// `portable_pty::openpty` fails with an opaque OS error on the spawn
+/// thread. We catch it here so the frontend gets a stable, branchable
+/// error code (`InvalidArgs`) it can surface as a real diagnostic
+/// instead of a generic "PTY spawn failed".
+///
+/// In normal use, [`crate::types::SessionCreateArgs`]/`SessionResizeArgs`
+/// are populated by the frontend's `measureInitialPtyDimensions` /
+/// `getTerminalDimensions`, which clamp upward. This guard is purely
+/// defensive against a future refactor that bypasses those helpers, or
+/// a buggy direct caller.
+fn validate_pty_dims(cols: u16, rows: u16) -> Result<(), AppError> {
+    if cols == 0 || rows == 0 {
+        return Err(AppError::new(
+            "InvalidArgs",
+            format!("pty dimensions must be > 0 (got cols={cols}, rows={rows})"),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a new session, materialise its temp files, persist it, and spawn
 /// the PTY child. Returns the [`SessionView`] the frontend can stash in its
 /// store.
@@ -129,6 +167,8 @@ pub fn session_create_impl(
     ctx: &AppContext,
     args: SessionCreateArgs,
 ) -> Result<SessionView, AppError> {
+    validate_pty_dims(args.cols, args.rows)?;
+
     // 1. Validate worktree (canonicalises; rejects relative/missing).
     let worktree = compose::validate_worktree(&args.worktree_path).map_err(AppError::from)?;
 
@@ -266,7 +306,16 @@ pub fn session_create_impl(
     };
     let pid = ctx
         .pool
-        .spawn(&session_to_spawn, ctx.sink.clone())
+        .spawn(
+            &session_to_spawn,
+            ctx.sink.clone(),
+            PtySize {
+                cols: args.cols,
+                rows: args.rows,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )
         .map_err(AppError::from)?;
 
     // 12. Start the per-session metrics watcher (Issue #3). No-op for tools
@@ -316,6 +365,14 @@ pub async fn session_close_impl(
     // 0. Stop the metrics watcher (Issue #3) before tearing the rest down
     //    so it never observes a half-cleaned session.
     ctx.metrics.stop(&id);
+
+    // 0b. Drop any deferred-spawn registration so a session closed before
+    //     the frontend ever measured it doesn't leak — and so a later
+    //     `session_resize` for a stale id can't trigger a phantom spawn
+    //     of an already-removed record.
+    if let Ok(mut g) = ctx.pending_spawn.lock() {
+        g.remove(&id);
+    }
 
     // Capture the worktree path *before* we drop the persisted record —
     // we need it for the optional `git worktree remove` step at the end.
@@ -551,8 +608,87 @@ pub fn session_focus_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppErro
 // ---------------------------------------------------------------------------
 
 pub fn session_resize_impl(ctx: &AppContext, args: SessionResizeArgs) -> Result<(), AppError> {
+    let SessionResizeArgs {
+        session_id,
+        cols,
+        rows,
+    } = args;
+
+    // Reject 0×0 up front. Without this, the deferred-spawn branch below
+    // would forward zeros into `pool.spawn` and the live-resize branch
+    // into `pool.resize`, both of which surface OS-level openpty/ioctl
+    // errors. See [`validate_pty_dims`].
+    validate_pty_dims(cols, rows)?;
+
+    // Atomically claim a pending-spawn entry for this session, if any.
+    // `restore_all_sessions` registers restored sessions here without
+    // spawning, deferring the actual `pool.spawn` until the frontend
+    // measures its host and fires the first `session_resize`. That way
+    // the CLI's first paint sees the correct PTY width rather than the
+    // OS-default 80×24 — see DESIGN §5.5 (restore-on-launch) and the
+    // PR notes for the long-standing splash-screen-too-narrow bug.
+    let pending = {
+        let mut guard = ctx
+            .pending_spawn
+            .lock()
+            .map_err(|_| AppError::new("Internal", "pending_spawn mutex poisoned"))?;
+        guard.remove(&session_id)
+    };
+
+    if let Some(session) = pending {
+        let size = PtySize {
+            cols,
+            rows,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        match ctx.pool.spawn(&session, ctx.sink.clone(), size) {
+            Ok(pid) => {
+                info!(
+                    session_id = %session.id,
+                    pid,
+                    cols,
+                    rows,
+                    "deferred spawn fired by first session_resize",
+                );
+                // Start the metrics watcher (Issue #3) — mirrors what
+                // `restore_all_sessions` used to do immediately after
+                // the inline spawn. For Copilot the persisted
+                // `ai_session_id` (set at create / restart) drives the
+                // events.jsonl tailer to the correct conversation's
+                // path; for Claude it's typically `None` and the
+                // watcher discovers the transcript post-spawn.
+                ctx.metrics.start(
+                    session.id,
+                    session.tool,
+                    session.worktree_path.clone(),
+                    SystemTime::now(),
+                    Arc::clone(&ctx.metrics_emit),
+                    Arc::clone(&ctx.turn_emit),
+                    Arc::clone(&ctx.ai_session_discover),
+                    Arc::clone(&ctx.sink.activity),
+                    session.ai_session_id.clone(),
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                // The deferred spawn failed (e.g. PTY allocation OS error).
+                // Surface as Error status so the UI shows the overlay
+                // with a Restart button — same shape as a restart-time
+                // failure (the user can retry once they've fixed
+                // whatever caused the spawn to fail).
+                let msg = format!("Failed to start restored session: {e}");
+                let _ = ctx
+                    .store
+                    .update_session_status(&session.id, SessionStatus::Error, None);
+                (ctx.sink.status)(&session.id, SessionStatus::Error, None, Some(msg));
+                return Err(AppError::from(e));
+            }
+        }
+    }
+
     ctx.pool
-        .resize(&args.session_id, args.cols, args.rows)
+        .resize(&session_id, cols, rows)
         .map_err(AppError::from)
 }
 
@@ -566,7 +702,10 @@ pub fn session_input_impl(ctx: &AppContext, args: SessionInputArgs) -> Result<()
 // session_restart
 // ---------------------------------------------------------------------------
 
-pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppError> {
+pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Result<(), AppError> {
+    validate_pty_dims(args.cols, args.rows)?;
+
+    let id = args.session_id;
     let sessions = ctx.store.load_sessions();
     let session = sessions
         .get(&id)
@@ -662,10 +801,16 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         session.clone()
     };
 
-    if let Err(e) = ctx
-        .pool
-        .respawn_existing(&session_to_spawn, ctx.sink.clone())
-    {
+    if let Err(e) = ctx.pool.respawn_existing(
+        &session_to_spawn,
+        ctx.sink.clone(),
+        PtySize {
+            cols: args.cols,
+            rows: args.rows,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+    ) {
         let msg = format!("Failed to restart session: {e}");
         let _ = ctx
             .store
@@ -871,36 +1016,27 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         }
 
         match ctx
-            .pool
-            .respawn_existing(&session_to_spawn, ctx.sink.clone())
+            .pending_spawn
+            .lock()
+            .map(|mut g| g.insert(id, session_to_spawn))
         {
-            Ok(pid) => {
-                info!(session_id = %id, pid, "restored session");
-                // Issue #3: spin up the metrics watcher for restored sessions
-                // too, otherwise a user who never recreates a session would
-                // never see the indicator. For Copilot we pass the
-                // persisted ai_session_id so the events.jsonl tailer
-                // attaches to the correct path.
-                ctx.metrics.start(
-                    id,
-                    session.tool,
-                    session.worktree_path.clone(),
-                    SystemTime::now(),
-                    Arc::clone(&ctx.metrics_emit),
-                    Arc::clone(&ctx.turn_emit),
-                    Arc::clone(&ctx.ai_session_discover),
-                    Arc::clone(&ctx.sink.activity),
-                    session.ai_session_id.clone(),
+            Ok(_) => {
+                info!(
+                    session_id = %id,
+                    "restore: registered for deferred spawn (will fire on first session_resize)",
                 );
             }
-            Err(e) => {
-                warn!(session_id = %id, error = ?e, "restore: respawn failed");
-                let msg = format!("Failed to restart session: {e}");
-                // Best-effort: surface as Error status so the UI can show it.
+            Err(_) => {
+                warn!(session_id = %id, "restore: pending_spawn mutex poisoned; skipping deferred registration");
                 let _ = ctx
                     .store
                     .update_session_status(&id, SessionStatus::Error, None);
-                (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+                (ctx.sink.status)(
+                    &id,
+                    SessionStatus::Error,
+                    None,
+                    Some("Internal error: could not register session for restore".to_owned()),
+                );
             }
         }
     }
