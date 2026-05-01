@@ -81,6 +81,46 @@ pub enum ActivityEvent {
     /// `assistant`-line arrival), not by the PTY-stream scanner. Carries
     /// the wall-clock duration of the turn when the source provides it.
     TurnEnd { duration_ms: Option<u64> },
+
+    /// Agent invoked a tool; user is not yet blocked on input. Emitted
+    /// by the Copilot events.jsonl tailer on `tool.execution_start`.
+    /// Tracked by frontend in a per-session open-tool map; the icon
+    /// flips to `runningTool` while the count > 0 and no permission is
+    /// pending.
+    ToolStart {
+        tool_call_id: String,
+        tool_name: String,
+    },
+    /// Tool finished. Pairs with [`Self::ToolStart`] by `tool_call_id`.
+    /// Emitted on `tool.execution_complete`.
+    ToolEnd { tool_call_id: String, success: bool },
+    /// Agent requested a permission (most commonly: shell-command
+    /// approval); user is **blocked**. Emitted on `permission.requested`
+    /// from the Copilot events.jsonl tailer. The frontend promotes this
+    /// to the highest non-error display priority — this is the single
+    /// most actionable cue we can give the user about a sidebar tab.
+    AwaitingPermission {
+        request_id: String,
+        /// Short human-readable identifier for what's being approved
+        /// (e.g. tool name, or `"shell"`). Surfaced in tooltips. Field
+        /// is `permission_kind` (not `kind`) to avoid colliding with
+        /// the serde tag on the parent enum.
+        #[serde(rename = "permissionKind")]
+        permission_kind: String,
+        /// Optional one-line summary (e.g. the shell command). Best-
+        /// effort — may be empty if the source didn't include enough
+        /// detail to render meaningfully.
+        summary: Option<String>,
+    },
+    /// Permission resolved (approved or denied). Pairs with
+    /// [`Self::AwaitingPermission`] by `request_id`. Emitted on
+    /// `permission.completed`.
+    PermissionResolved { request_id: String, approved: bool },
+    /// An assistant turn began. Emitted on `assistant.turn_start` from
+    /// the Copilot events.jsonl tailer. The frontend uses this together
+    /// with the open-tool/open-permission counts to derive the
+    /// `thinking` display state (in-turn AND nothing else open).
+    TurnStart,
 }
 
 #[derive(Debug)]

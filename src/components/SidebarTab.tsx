@@ -17,9 +17,13 @@ import {
   useLastTurnDurationMs,
   useLastTurnEndAt,
   useMetrics,
+  useOpenPermissions,
+  useOpenTools,
   useSessionActions,
   useSessionById,
   type DisplayStatus,
+  type OpenPermission,
+  type OpenTool,
 } from '@/store/session-store';
 import type { SessionId, SessionMetrics, Tool } from '@/types/arborist';
 
@@ -41,6 +45,8 @@ export function SidebarTab({
   const displayStatus = useDisplayStatus(id);
   const lastTurnEndAt = useLastTurnEndAt(id);
   const lastTurnDurationMs = useLastTurnDurationMs(id);
+  const openTools = useOpenTools(id);
+  const openPermissions = useOpenPermissions(id);
   const metrics = useMetrics(id);
   const actions = useSessionActions();
 
@@ -96,6 +102,8 @@ export function SidebarTab({
             hasUnread={hasUnread && !isActive}
             lastTurnEndAt={lastTurnEndAt}
             lastTurnDurationMs={lastTurnDurationMs}
+            openTools={openTools}
+            openPermissions={openPermissions}
           />
         </span>
         <MetricsLine
@@ -220,6 +228,8 @@ interface SessionStatusIndicatorProps {
   hasUnread: boolean;
   lastTurnEndAt: number | undefined;
   lastTurnDurationMs: number | undefined;
+  openTools: Record<string, OpenTool> | undefined;
+  openPermissions: Record<string, OpenPermission> | undefined;
 }
 
 function SessionStatusIndicator({
@@ -227,6 +237,8 @@ function SessionStatusIndicator({
   hasUnread,
   lastTurnEndAt,
   lastTurnDurationMs,
+  openTools,
+  openPermissions,
 }: SessionStatusIndicatorProps): JSX.Element | null {
   // When the icon collapses to nothing (idle), still show the unread dot
   // on its own so the user has *some* signal that output arrived. The
@@ -243,18 +255,27 @@ function SessionStatusIndicator({
   }
 
   const iconClasses = statusIconClasses(status);
-  const tooltip = statusTooltip(status, lastTurnEndAt, lastTurnDurationMs);
+  const tooltip = statusTooltip(
+    status,
+    lastTurnEndAt,
+    lastTurnDurationMs,
+    openTools,
+    openPermissions,
+  );
 
   return (
     <span className="relative inline-flex shrink-0">
       <StatusIcon status={status} title={tooltip} className={iconClasses} />
-      {hasUnread && status !== 'attention' && status !== 'error' && (
-        <span
-          aria-hidden="true"
-          data-testid="status-unread"
-          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 ring-1 ring-white dark:ring-slate-900"
-        />
-      )}
+      {hasUnread &&
+        status !== 'attention' &&
+        status !== 'awaitingPermission' &&
+        status !== 'error' && (
+          <span
+            aria-hidden="true"
+            data-testid="status-unread"
+            className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 ring-1 ring-white dark:ring-slate-900"
+          />
+        )}
     </span>
   );
 }
@@ -271,6 +292,12 @@ function statusIconClasses(status: DisplayStatus): string {
       return `${base} text-sky-500 dark:text-sky-400`;
     case 'attention':
       return `${base} text-amber-500`;
+    case 'awaitingPermission':
+      return `${base} animate-pulse text-amber-500`;
+    case 'runningTool':
+      return `${base} animate-pulse text-emerald-500`;
+    case 'thinking':
+      return `${base} animate-pulse text-emerald-500`;
     case 'exited':
       return `${base} text-slate-400 dark:text-slate-500`;
     case 'error':
@@ -284,6 +311,8 @@ function statusTooltip(
   status: DisplayStatus,
   lastTurnEndAt: number | undefined,
   lastTurnDurationMs: number | undefined,
+  openTools: Record<string, OpenTool> | undefined,
+  openPermissions: Record<string, OpenPermission> | undefined,
 ): string {
   const headline = (() => {
     switch (status) {
@@ -291,6 +320,31 @@ function statusTooltip(
         return 'Starting';
       case 'working':
         return 'Working';
+      case 'thinking':
+        return 'Thinking';
+      case 'runningTool': {
+        // Surface the in-flight tool name(s) — the user often wants to
+        // know whether the agent is doing something benign (`view`) or
+        // something they may want to inspect (`shell`, `edit`).
+        const tools = openTools ? Object.values(openTools) : [];
+        if (tools.length === 1) return `Running tool: ${tools[0]!.toolName}`;
+        if (tools.length > 1)
+          return `Running ${tools.length} tools: ${tools.map((t) => t.toolName).join(', ')}`;
+        return 'Running tool';
+      }
+      case 'awaitingPermission': {
+        // The single most actionable state — make sure the tooltip
+        // identifies the kind so the user knows whether to bring focus
+        // here or let it sit (e.g. an `mcp` prompt vs a `shell` prompt).
+        const perms = openPermissions ? Object.values(openPermissions) : [];
+        if (perms.length === 1) {
+          const p = perms[0]!;
+          const summary = p.summary && p.summary.length > 0 ? `: ${p.summary}` : '';
+          return `Awaiting approval (${p.permissionKind})${summary}`;
+        }
+        if (perms.length > 1) return `Awaiting ${perms.length} approvals`;
+        return 'Awaiting approval';
+      }
       case 'awaiting':
         return 'Awaiting input';
       case 'attention':

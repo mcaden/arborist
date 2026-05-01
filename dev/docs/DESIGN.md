@@ -77,11 +77,21 @@ struct Session {
                                    // respawn_existing can rematerialise them after a
                                    // crash/restart. Omitted from SessionView.
     ai_session_id: Option<String>, // Backend-only; the underlying CLI's session id
-                                   // (Claude's JSONL stem; Copilot's gen_ai.conversation.id).
-                                   // Discovered by the metrics watcher post-spawn and
-                                   // persisted so restore_all_sessions can append
-                                   // `--resume <id>` and continue the conversation
-                                   // across an app restart. Cleared on session_create.
+                                   // (Claude's JSONL stem; Copilot's
+                                   // session-state uuid). For Copilot
+                                   // **pre-allocated at session_create**
+                                   // (and reallocated on session_restart)
+                                   // because `copilot --resume <uuid>`
+                                   // creates a fresh session at any uuid;
+                                   // for Claude it is **discovered** from
+                                   // the transcript by the metrics watcher
+                                   // post-spawn. Persisted so
+                                   // restore_all_sessions can append
+                                   // `--resume <id>` and continue the
+                                   // conversation across an app restart.
+                                   // Cleared on session_create for Claude;
+                                   // populated on session_create for
+                                   // Copilot.
 }
 
 struct TempFileSpec {
@@ -252,9 +262,14 @@ User clicks "Restart"
 ```
 
 User-initiated restart deliberately starts a fresh AI conversation —
-`Session.aiSessionId` is **not** appended on this path. The user clicked
-"Restart" (not "Resume"); honouring that contract avoids surprising them
-when a session has gotten into a bad state mid-conversation.
+the prior conversation id is *not* reused. For **Copilot** the backend
+allocates a brand-new uuid and binds the new spawn to it via
+`--resume <new-uuid>` (Copilot creates a fresh session at any uuid),
+keeping the events.jsonl path deterministic across the restart. For
+**Claude** the persisted `Session.aiSessionId` is cleared and the new
+spawn runs without `--resume`; the metrics watcher repopulates the
+field once the new transcript appears. In neither case is the
+persisted `Session.composedCommand` mutated by this augmentation.
 
 ### 5.5 Session Restore on Launch
 
@@ -283,12 +298,20 @@ App.tsx mounts (frontend)
                 session://status,
              3. calls pty_pool::respawn_existing using the stored
                 composedCommand and worktreePath; if Session.aiSessionId
-                is set and the underlying transcript still exists on disk
-                (`~/.claude/projects/<encoded-cwd>/<id>.jsonl` for Claude,
-                `~/.copilot/session-state/<id>/` for Copilot), the spawn
-                command is *augmented* (not recomposed) by appending
-                `--resume <quoted-id>` to the trailing CLI invocation so
-                the AI conversation continues across the restart. The
+                is set the spawn command is *augmented* (not recomposed)
+                by appending `--resume <quoted-id>` to the trailing CLI
+                invocation so the AI conversation continues across the
+                restart. For **Copilot** the splice is unconditional —
+                a `--resume <unknown-uuid>` is safe (Copilot creates a
+                fresh session at that uuid if the on-disk
+                `~/.copilot/session-state/<id>/` directory has not been
+                materialised yet, e.g. because the previous run crashed
+                before the first `session.start` flush). For **Claude**
+                a preflight checks
+                `~/.claude/projects/<encoded-cwd>/<id>.jsonl`; if the
+                transcript is missing the splice is dropped and the
+                stored id is cleared so the user gets a clean fresh
+                conversation rather than a Claude-side error. The
                 persisted Session.composedCommand is never mutated by
                 this augmentation. The wait thread later flips the
                 status to Running / Exited / Error as the child reports.
@@ -427,7 +450,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `session_focus` | `{ sessionId }` | — | Mark session as active |
 | `session_resize` | `{ sessionId, cols, rows }` | — | Resize PTY |
 | `session_input` | `{ sessionId, data }` | — | Send keystrokes to PTY |
-| `session_restart` | `{ sessionId }` | — | Re-spawn a session using its stored `composedCommand` verbatim (DESIGN §5.4) |
+| `session_restart` | `{ sessionId }` | — | Re-spawn a session using its stored `composedCommand`. The conversation id is rotated (Copilot: a freshly-allocated uuid is spliced via `--resume`; Claude: cleared) so the new spawn is a fresh AI conversation by user contract (DESIGN §5.4). |
 | `frontend_ready` | — | — | One-shot signal from the frontend after first paint; triggers restore-on-launch (re-spawns every session in `lastOpenSessions` via `respawn_existing`). Idempotent — subsequent calls are no-ops. |
 | `config_get` | — | `AppConfig` | Retrieve AppConfig |
 | `config_set` | `Partial<AppConfig>` | — | Update AppConfig (`activeSessionId` is tri-state: omit to leave alone, `null` to clear, value to set) |
@@ -452,7 +475,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 |-------|---------|-------------|
 | `session://output` | `{ sessionId, data: string }` | Stream PTY output to xterm.js |
 | `session://status` | `{ sessionId, status }` | Notify session state changes (including `'error'`) |
-| `session://activity` | `{ sessionId, kind: 'title' \| 'attention' \| 'working' \| 'idle' \| 'promptStart' \| 'commandStart' \| 'commandEnd', value?, exit? }` | Per-session activity inferred from the PTY stream by `src-tauri/src/activity.rs` (OSC parsing + output byte-rate). Drives sidebar tab state indicators (working spinner, attention dot). Best-effort & advisory — UI must degrade gracefully if a CLI emits nothing. |
+| `session://activity` | `{ sessionId, kind: 'title' \| 'attention' \| 'working' \| 'idle' \| 'promptStart' \| 'commandStart' \| 'commandEnd' \| 'turnStart' \| 'turnEnd' \| 'toolStart' \| 'toolEnd' \| 'awaitingPermission' \| 'permissionResolved', value?, exit?, durationMs?, toolName?, toolCallId?, success?, requestId?, permissionKind?, summary?, approved? }` | Per-session activity. Two sources: (1) the legacy PTY-byte scanner in `src-tauri/src/activity.rs` (OSC parsing + output byte-rate) emits `title`/`attention`/`working`/`idle`/`promptStart`/`commandStart`/`commandEnd` for **all** tools; (2) the Copilot `events.jsonl` tailer in `src-tauri/src/copilot_events.rs` emits the richer `turnStart`/`turnEnd`/`toolStart`/`toolEnd`/`awaitingPermission`/`permissionResolved` variants for Copilot sessions whose `ai_session_id` is known. The frontend reducer keeps both axes — they're additive; the `selectDisplayStatus` priority order is `error > starting > exited > awaitingPermission > attention > runningTool > thinking > working > awaiting > idle`. Best-effort & advisory — UI must degrade gracefully if a CLI emits nothing. |
 | `session://metrics` | `{ sessionId, model?, contextUsedPct?, contextTokensUsed?, contextTokensLimit?, inputTokens?, outputTokens?, observedAt }` | Per-session token usage / context-window utilization. Emitted by `src-tauri/src/session_metrics.rs`, which polls Claude's `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` transcripts (heuristic cwd+mtime mapping) and extracts cumulative `usage` from the latest assistant turn. Claude-only in v1; Copilot tabs receive no events. Drives the compact second line on each sidebar tab. Best-effort & debounced — UI must degrade gracefully when no snapshot is present. |
 
 ### Plugin commands routed via the bridge
@@ -504,6 +527,9 @@ arborist/
 │   │   ├── pty_pool.rs           # portable-pty session management
 │   │   ├── config_store.rs       # tauri-plugin-store wrapper
 │   │   ├── commands.rs           # #[tauri::command] handlers
+│   │   ├── activity.rs           # PTY-byte scanner (OSC + byte-rate)
+│   │   ├── session_metrics.rs    # Token/context-window watcher (Claude JSONL + Copilot OTel)
+│   │   ├── copilot_events.rs     # Copilot ~/.copilot/session-state/<aid>/events.jsonl tailer
 │   │   └── types.rs              # Session, InstructionSet, AppConfig (serde)
 │   ├── capabilities/
 │   │   └── main.json             # Tauri capability declarations

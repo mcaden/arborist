@@ -189,7 +189,28 @@ pub fn session_create_impl(
 
     // 7. Build the persisted record. `tab_index` puts the new session at
     //    the end of the current order.
+    //
+    //    For Copilot we *pre-allocate* the conversation id (a fresh
+    //    `--resume <uuid>` causes Copilot to create the session at that
+    //    exact uuid — verified). This guarantees `Session.ai_session_id`
+    //    is populated from create-time onward, so restore-on-launch can
+    //    always splice `--resume` and Copilot never starts a fresh
+    //    conversation just because the user hadn't typed anything before
+    //    the previous shutdown. (Original symptom: "only the active tab
+    //    fully resumes".)
+    //
+    //    The persisted `composed_command` stays bare (DESIGN §5.4 — no
+    //    `--resume` baked into the immutable record); the splice happens
+    //    at every spawn site below, mirroring `restore_all_sessions`.
+    //
+    //    Claude has no equivalent flag to pre-allocate against; its
+    //    `ai_session_id` continues to be discovered from the transcript
+    //    after the first user prompt.
     let tab_index = ctx.store.load_config().tab_order.len().min(usize::MAX - 1);
+    let preallocated_ai_id = match args.tool {
+        Tool::Copilot => Some(uuid::Uuid::new_v4().to_string()),
+        Tool::Claude => None,
+    };
     let session = Session {
         id: session_id,
         tool: args.tool,
@@ -203,7 +224,7 @@ pub fn session_create_impl(
         created_at: now_unix_seconds(),
         tab_index,
         temp_files: composed.temp_files,
-        ai_session_id: None,
+        ai_session_id: preallocated_ai_id.clone(),
     };
 
     // 8. Persist before spawning so a crash mid-spawn still leaves an
@@ -232,13 +253,27 @@ pub fn session_create_impl(
     (ctx.sink.status)(&session.id, SessionStatus::Starting, None, None);
 
     // 11. Spawn. The pool emits Running with PID through the same sink.
+    //     For Copilot we splice the pre-allocated `--resume <uuid>` here
+    //     so Copilot creates the session-state directory at the known
+    //     deterministic path from spawn time. The persisted
+    //     `composed_command` stays bare (see step 7).
+    let session_to_spawn = if let Some(aid) = preallocated_ai_id.as_deref() {
+        let mut s = session.clone();
+        s.composed_command = compose::with_resume(&session.composed_command, args.tool, aid);
+        s
+    } else {
+        session.clone()
+    };
     let pid = ctx
         .pool
-        .spawn(&session, ctx.sink.clone())
+        .spawn(&session_to_spawn, ctx.sink.clone())
         .map_err(AppError::from)?;
 
     // 12. Start the per-session metrics watcher (Issue #3). No-op for tools
     //     we can't introspect; never fatal — surface as a debug log only.
+    //     For Copilot the pre-allocated ai_session_id (step 7) lets the
+    //     events.jsonl tailer attach immediately on the deterministic
+    //     `~/.copilot/session-state/<aid>/events.jsonl` path.
     ctx.metrics.start(
         session.id,
         session.tool,
@@ -247,6 +282,8 @@ pub fn session_create_impl(
         Arc::clone(&ctx.metrics_emit),
         Arc::clone(&ctx.turn_emit),
         Arc::clone(&ctx.ai_session_discover),
+        Arc::clone(&ctx.sink.activity),
+        preallocated_ai_id.clone(),
     );
 
     info!(session_id = %session.id, pid, label = %label, "session created");
@@ -572,24 +609,63 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
 
     // Restart starts a fresh AI conversation (DESIGN §5.4). The previous
     // ai_session_id refers to a transcript the new CLI invocation will
-    // not be writing to, so we clear it eagerly — otherwise a crash
-    // between restart and the new watcher's first discovery would let
-    // the next restore `--resume` the *pre-restart* conversation.
+    // not be writing to.
     //
-    // Order matters: stop the OLD watcher first, *then* clear. We need
-    // `stop_and_join` (not just `stop`) because the worker only re-checks
-    // its `running` flag at the top of each poll iteration — a fire-and-
-    // forget stop would let the in-flight iteration call `discover()` one
-    // more time and persist the stale id back, undoing the clear. After
-    // join returns, the worker thread has fully exited; the new watcher
-    // started below by `metrics.start` will repopulate the field with
-    // the new conversation's id once the CLI starts writing.
+    // For Copilot we *re-allocate* a fresh uuid and pre-bind the new
+    // conversation to it via `--resume <new-uuid>` (Copilot will create a
+    // brand-new session at that uuid). This keeps the events.jsonl path
+    // deterministic across restart (same property as the create path) so
+    // restore-on-launch can resume the post-restart conversation.
+    //
+    // For Claude we keep today's behavior: clear ai_session_id and let
+    // the watcher re-discover the new transcript after the user prompts.
+    //
+    // Order matters: stop the OLD watcher first, *then* mutate
+    // ai_session_id. We need `stop_and_join` (not just `stop`) because
+    // the worker only re-checks its `running` flag at the top of each
+    // poll iteration — a fire-and-forget stop would let the in-flight
+    // iteration call `discover()` one more time and persist the stale id
+    // back, undoing the mutation. After join returns, the worker thread
+    // has fully exited; the new watcher started below by `metrics.start`
+    // will repopulate the field if/when the CLI rotates the conversation
+    // (e.g. user-typed `/clear` or `/resume <other-id>`).
+    //
+    // Persist order:
+    //   - Claude: clear *eagerly* (before respawn). This preserves the
+    //     pre-Phase-2 semantics — a crash between here and the new
+    //     watcher's first discovery could otherwise let the next restore
+    //     `--resume` the pre-restart conversation. Cost: a failed Claude
+    //     restart loses the prior id from the persisted record (same as
+    //     today).
+    //   - Copilot: defer until *after* `respawn_existing` succeeds. The
+    //     pre-allocated uuid is ours and unique; if respawn fails, we
+    //     keep the old conversation id resumable rather than rotating to
+    //     a uuid with no Copilot session-state directory (which would
+    //     irrevocably orphan the prior conversation on a transient
+    //     respawn failure).
     ctx.metrics.stop_and_join(&id);
-    if let Err(e) = ctx.store.update_session_ai_session_id(&id, None) {
-        warn!(session_id = %id, error = ?e, "restart: failed to clear ai_session_id");
+    let restart_ai_id: Option<String> = match session.tool {
+        Tool::Copilot => Some(uuid::Uuid::new_v4().to_string()),
+        Tool::Claude => None,
+    };
+    if matches!(session.tool, Tool::Claude) {
+        if let Err(e) = ctx.store.update_session_ai_session_id(&id, None) {
+            warn!(session_id = %id, error = ?e, "restart: failed to clear ai_session_id");
+        }
     }
 
-    if let Err(e) = ctx.pool.respawn_existing(&session, ctx.sink.clone()) {
+    let session_to_spawn = if let Some(aid) = restart_ai_id.as_deref() {
+        let mut s = session.clone();
+        s.composed_command = compose::with_resume(&session.composed_command, session.tool, aid);
+        s
+    } else {
+        session.clone()
+    };
+
+    if let Err(e) = ctx
+        .pool
+        .respawn_existing(&session_to_spawn, ctx.sink.clone())
+    {
         let msg = format!("Failed to restart session: {e}");
         let _ = ctx
             .store
@@ -597,8 +673,22 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
         return Err(AppError::from(e));
     }
+
+    // Spawn succeeded — *now* persist the rotated Copilot uuid. Doing
+    // this after respawn means a failed restart (above) leaves the prior
+    // ai_session_id intact and resumable.
+    if matches!(session.tool, Tool::Copilot) {
+        if let Err(e) = ctx
+            .store
+            .update_session_ai_session_id(&id, restart_ai_id.clone())
+        {
+            warn!(session_id = %id, error = ?e, "restart: failed to persist rotated ai_session_id");
+        }
+    }
     // Issue #3: restart the metrics watcher with a fresh spawn instant so
-    // the freshness filter on Claude project JSONL files re-anchors.
+    // the freshness filter on Claude project JSONL files re-anchors. For
+    // Copilot, the freshly-allocated ai_session_id (above) drives the
+    // events.jsonl tailer to the new conversation's path.
     ctx.metrics.start(
         session.id,
         session.tool,
@@ -607,6 +697,8 @@ pub fn session_restart_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppEr
         Arc::clone(&ctx.metrics_emit),
         Arc::clone(&ctx.turn_emit),
         Arc::clone(&ctx.ai_session_discover),
+        Arc::clone(&ctx.sink.activity),
+        restart_ai_id.clone(),
     );
     Ok(())
 }
@@ -724,34 +816,57 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         // prior conversation. We *augment*, never *recompose from inputs*
         // (DESIGN §5.4 still holds for the persisted record). We only
         // resume on app-restart restore — user-initiated `session_restart`
-        // intentionally launches a fresh CLI conversation.
+        // intentionally allocates a fresh AI-side conversation (Copilot
+        // gets a freshly-allocated uuid; Claude clears the field).
         //
-        // Known limitation (ROADMAP §4.5): for Claude, the `ai_session_id`
-        // is discovered heuristically from the newest JSONL in the project
-        // dir post-spawn. If two Arborist sessions share the same worktree
-        // (same `<encoded-cwd>`), the watchers can converge on the same
-        // file and persist the same id for both. On restart, both sessions
-        // would then try to `--resume` the same Claude conversation; only
-        // one resumes faithfully and the other will see Claude's own "no
-        // such session" / "conversation in use" error in its terminal.
-        // The fix is a hook-driven session-id source (tracked in #4); the
-        // single-session-per-worktree case (the common one) is unaffected.
-        // Copilot is not affected — its OTel file is per-Arborist-session,
-        // so `gen_ai.conversation.id` is unambiguous.
+        // For **Copilot** we splice unconditionally when `ai_session_id`
+        // is set — we don't preflight against the on-disk session-state
+        // directory because a `--resume <unknown-uuid>` is safe (Copilot
+        // creates a fresh session at that uuid). The pre-allocated
+        // create-time id may legitimately have no directory yet if the
+        // app crashed before Copilot's first `session.start` flush;
+        // splicing anyway gives Copilot a chance to materialize the
+        // session at the persisted id rather than allocating a different
+        // one and losing the link.
+        //
+        // For **Claude** we keep the preflight: a stale id with no
+        // transcript would have Claude error out before the user sees
+        // anything useful, so we drop the splice and start fresh.
+        //
+        // Known limitation (ROADMAP §4.5): for Claude, the
+        // `ai_session_id` is discovered heuristically from the newest
+        // JSONL in the project dir post-spawn. If two Arborist sessions
+        // share the same worktree (same `<encoded-cwd>`), the watchers
+        // can converge on the same file and persist the same id for
+        // both. On restart, both sessions would then try to `--resume`
+        // the same Claude conversation; only one resumes faithfully and
+        // the other will see Claude's own "no such session" /
+        // "conversation in use" error in its terminal. The fix is a
+        // hook-driven session-id source (tracked in #4); the
+        // single-session-per-worktree case (the common one) is
+        // unaffected. Copilot is not affected — its conversation id is
+        // pre-allocated by Arborist at create/restart time.
         let mut session_to_spawn = session.clone();
         if let Some(aid) = session.ai_session_id.as_deref() {
-            if ai_session_transcript_exists(session.tool, &session.worktree_path, aid) {
+            let should_splice = match session.tool {
+                Tool::Copilot => true,
+                Tool::Claude => {
+                    let exists =
+                        ai_session_transcript_exists(session.tool, &session.worktree_path, aid);
+                    if !exists {
+                        warn!(
+                            session_id = %id,
+                            ai_session_id = %aid,
+                            "restore: Claude transcript missing on disk; starting fresh conversation",
+                        );
+                        let _ = ctx.store.update_session_ai_session_id(&id, None);
+                    }
+                    exists
+                }
+            };
+            if should_splice {
                 session_to_spawn.composed_command =
                     compose::with_resume(&session.composed_command, session.tool, aid);
-            } else {
-                // Transcript was deleted between launches. Drop the stored
-                // id so we don't keep trying to resume it, and start fresh.
-                warn!(
-                    session_id = %id,
-                    ai_session_id = %aid,
-                    "restore: AI transcript missing on disk; starting fresh conversation",
-                );
-                let _ = ctx.store.update_session_ai_session_id(&id, None);
             }
         }
 
@@ -763,7 +878,9 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 info!(session_id = %id, pid, "restored session");
                 // Issue #3: spin up the metrics watcher for restored sessions
                 // too, otherwise a user who never recreates a session would
-                // never see the indicator.
+                // never see the indicator. For Copilot we pass the
+                // persisted ai_session_id so the events.jsonl tailer
+                // attaches to the correct path.
                 ctx.metrics.start(
                     id,
                     session.tool,
@@ -772,6 +889,8 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                     Arc::clone(&ctx.metrics_emit),
                     Arc::clone(&ctx.turn_emit),
                     Arc::clone(&ctx.ai_session_discover),
+                    Arc::clone(&ctx.sink.activity),
+                    session.ai_session_id.clone(),
                 );
             }
             Err(e) => {
