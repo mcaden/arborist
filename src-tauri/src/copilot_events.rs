@@ -388,6 +388,72 @@ fn extract_permission_summary(data: &serde_json::Value) -> Option<String> {
 // is consistent across watchers.
 // ---------------------------------------------------------------------------
 
+/// Align an EOF snapshot to the last complete-line boundary.
+///
+/// `metadata().len()` can land mid-line in two cases that both leave a
+/// partial trailing line in `events.jsonl`:
+///
+/// 1. **Crash / interrupted write.** The previous Copilot session was
+///    killed mid-write of a single event line (no trailing `\n`).
+/// 2. **Race with active write.** We polled metadata while Copilot was
+///    actively flushing a line (very narrow window on modern OSes but
+///    non-zero).
+///
+/// If the catch-up target lands inside a partial line, the watcher
+/// would clamp catch-up reads to that target forever. `tail_lines_pub`
+/// only advances the cursor past a `\n`, so cursor sticks just after
+/// the previous complete line and `cursor >= target` never holds.
+/// Result: the watcher silently stops working for that session — no
+/// live emissions, no `emit_current_state` synthesis. The only escape
+/// would be a `session_restart`.
+///
+/// The fix: snap the catch-up target to the byte just past the last
+/// `\n` at-or-before `len`. The trailing partial bytes (if any) get
+/// re-read in the live phase once they are completed by the next
+/// write — and emitted with `suppress=false`, which is the correct
+/// classification (the user *is* watching that event happen).
+///
+/// If no `\n` exists in the file at all (the entire content is one
+/// partial line), returns `0`. Catch-up then completes immediately
+/// with an empty state and the eventual completed line is treated as
+/// live. If the file is unreadable for some reason we return the
+/// caller's `len` unchanged — best-effort, the original (pre-fix)
+/// behavior is no worse than what we'd otherwise have.
+fn align_snapshot_to_line_boundary(path: &std::path::Path, len: u64) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return len,
+    };
+    // Scan backward in 64 KB chunks. Lines should comfortably fit; if
+    // we can't find a `\n` in the entire file, the whole content is one
+    // partial line and returning 0 is correct.
+    const CHUNK: u64 = 64 * 1024;
+    let mut end = len;
+    while end > 0 {
+        let start = end.saturating_sub(CHUNK);
+        let want = (end - start) as usize;
+        if f.seek(SeekFrom::Start(start)).is_err() {
+            return len;
+        }
+        let mut buf = vec![0u8; want];
+        if f.read_exact(&mut buf).is_err() {
+            return len;
+        }
+        if let Some(idx) = buf.iter().rposition(|&b| b == b'\n') {
+            return start + (idx as u64) + 1;
+        }
+        if start == 0 {
+            return 0;
+        }
+        end = start;
+    }
+    0
+}
+
 /// Run the events.jsonl tailer for one Copilot session. Blocking — call
 /// from a dedicated OS thread (see [`spawn_watcher`]).
 ///
@@ -436,8 +502,14 @@ pub fn run_watcher(
             // sees the file. Subsequent iterations keep the original
             // target so events appended *after* catch-up started are
             // treated as live (emitted), not catch-up (suppressed).
+            //
+            // The raw EOF can land mid-line (interrupted prior write or
+            // active flush race); aligning to the last complete-line
+            // boundary keeps `cursor >= target` reachable and prevents
+            // the watcher from wedging in catch-up forever. See
+            // [`align_snapshot_to_line_boundary`].
             if !catch_up_done && catch_up_target.is_none() {
-                catch_up_target = Some(len);
+                catch_up_target = Some(align_snapshot_to_line_boundary(&events_path, len));
             }
             // During catch-up, cap the read end at the snapshot so any
             // bytes appended after we started are deferred to the live
@@ -1061,6 +1133,191 @@ mod tests {
         assert!(
             got.is_empty(),
             "fully-resolved historical events must not bleed through as live emissions; got {got:?}",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // Snapshot-mid-line regression suite
+    // ----------------------------------------------------------------
+    // The catch-up snapshot used to be raw `metadata().len()`, which
+    // could land inside a partial trailing line if the prior Copilot
+    // session had been interrupted mid-write or if we polled while a
+    // line was being flushed. `tail_lines_pub` only advances cursor
+    // past a `\n`, so cursor would stick just after the previous
+    // complete line and `cursor >= target` would never hold —
+    // wedging catch-up forever, with no live emissions and no
+    // `emit_current_state`.
+    //
+    // The fix aligns the snapshot to the last `\n` at-or-before EOF
+    // (see `align_snapshot_to_line_boundary`). These tests pin the
+    // three shapes the bug took.
+
+    #[test]
+    fn align_snapshot_returns_zero_for_empty_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        assert_eq!(align_snapshot_to_line_boundary(&path, 0), 0);
+    }
+
+    #[test]
+    fn align_snapshot_returns_len_for_complete_line_terminated_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        std::fs::write(&path, b"a\nb\n").unwrap();
+        assert_eq!(align_snapshot_to_line_boundary(&path, 4), 4);
+    }
+
+    #[test]
+    fn align_snapshot_truncates_to_last_newline_when_partial_trails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        // Two complete lines (4 bytes "a\nb\n") + a partial trailing
+        // "xxx" with no newline. Snapshot must land on byte 4 so the
+        // partial bytes are deferred to the live phase.
+        std::fs::write(&path, b"a\nb\nxxx").unwrap();
+        assert_eq!(align_snapshot_to_line_boundary(&path, 7), 4);
+    }
+
+    #[test]
+    fn align_snapshot_returns_zero_for_single_partial_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        std::fs::write(&path, b"no_newline_anywhere").unwrap();
+        assert_eq!(align_snapshot_to_line_boundary(&path, 19), 0);
+    }
+
+    #[test]
+    fn run_watcher_does_not_wedge_when_snapshot_lands_in_partial_trailing_line() {
+        // Reproduces the pre-fix hang: events.jsonl ends with a partial
+        // (no-`\n`) trailing line at watcher-start. Pre-fix, the catch-up
+        // target snapped to mid-line, cursor stuck past the previous
+        // complete line, and a later append (which completed the partial
+        // line + added a fresh resolved tool pair) was never emitted
+        // because `read_end` stayed clamped to the mid-line target.
+        // With alignment the target snaps to the boundary just after the
+        // last complete `\n`, the partial trailing bytes get re-read in
+        // the live phase once they are completed by the next write, and
+        // any subsequent fresh events flow through normally.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        // Pre-seed: one complete, fully-resolved tool pair (catch-up
+        // suppresses these) + a partial trailing event (no `\n`).
+        std::fs::write(
+            &path,
+            b"{\"type\":\"tool.execution_start\",\"data\":{\"toolCallId\":\"old\",\"toolName\":\"shell\"}}\n\
+              {\"type\":\"tool.execution_complete\",\"data\":{\"toolCallId\":\"old\",\"success\":true}}\n\
+              {\"type\":\"tool.execution_start\",\"data\":{\"toolCallId\":\"partial\",\"toolName\":\"sh",
+        )
+        .unwrap();
+
+        let bag = Arc::new(Mutex::new(Vec::new()));
+        let bag_for_cb = Arc::clone(&bag);
+        let emit: CopilotActivityCb = Arc::new(move |sid, ev| {
+            bag_for_cb.lock().unwrap().push((*sid, ev));
+        });
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let r = Arc::clone(&running);
+        let p = path.clone();
+        let join = thread::spawn(move || run_watcher(session_id, p, emit, r));
+
+        // Let catch-up settle.
+        thread::sleep(POLL_INTERVAL * 2);
+
+        // Now append: complete the partial line, then add a fresh
+        // resolved permission request that the watcher must surface
+        // as a live event.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"ell\"}}\n").unwrap();
+        f.write_all(b"{\"type\":\"permission.requested\",\"data\":{\"requestId\":\"live\",\"permissionRequest\":{\"kind\":\"shell\",\"command\":\"ls\"}}}\n").unwrap();
+        drop(f);
+
+        let got = drain(
+            &bag,
+            |b| {
+                b.lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(_, ev)| matches!(ev, ActivityEvent::AwaitingPermission { request_id, .. } if request_id == "live"))
+            },
+            Duration::from_secs(5),
+        );
+        running.store(false, Ordering::SeqCst);
+        let _ = join.join();
+
+        assert!(
+            got.iter().any(|(_, ev)| matches!(
+                ev,
+                ActivityEvent::AwaitingPermission { request_id, .. } if request_id == "live"
+            )),
+            "watcher must emit the live AwaitingPermission once the partial \
+             line is completed and a fresh resolved event follows; got {got:?}",
+        );
+    }
+
+    #[test]
+    fn run_watcher_completes_catch_up_with_only_partial_trailing_content() {
+        // File is one partial line, never completed, no further writes.
+        // Pre-fix: catch-up wedged forever. Post-fix: snapshot aligns to
+        // 0, catch_up_done flips immediately, emit_current_state runs
+        // (no-op for empty state), and the watcher reaches live mode
+        // ready to receive the next append.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        std::fs::write(
+            &path,
+            b"{\"type\":\"tool.execution_start\",\"data\":{\"toolCallId\":\"t\",\"toolName\":\"sh",
+        )
+        .unwrap();
+
+        let bag = Arc::new(Mutex::new(Vec::new()));
+        let bag_for_cb = Arc::clone(&bag);
+        let emit: CopilotActivityCb = Arc::new(move |sid, ev| {
+            bag_for_cb.lock().unwrap().push((*sid, ev));
+        });
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let r = Arc::clone(&running);
+        let p = path.clone();
+        let join = thread::spawn(move || run_watcher(session_id, p, emit, r));
+
+        // Allow catch-up to complete.
+        thread::sleep(POLL_INTERVAL * 2);
+
+        // Append a fresh, complete line — must be emitted live (proves
+        // catch-up didn't wedge).
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"ell\"}}\n").unwrap();
+        drop(f);
+
+        let got = drain(
+            &bag,
+            |b| {
+                b.lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(_, ev)| matches!(ev, ActivityEvent::ToolStart { tool_call_id, .. } if tool_call_id == "t"))
+            },
+            Duration::from_secs(5),
+        );
+        running.store(false, Ordering::SeqCst);
+        let _ = join.join();
+
+        assert!(
+            got.iter().any(|(_, ev)| matches!(
+                ev,
+                ActivityEvent::ToolStart { tool_call_id, .. } if tool_call_id == "t"
+            )),
+            "live ToolStart must surface after the partial line is completed; got {got:?}",
         );
     }
 }
