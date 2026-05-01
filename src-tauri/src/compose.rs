@@ -304,10 +304,16 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 }
 
 /// Augment a stored `composed_command` with `--resume <ai_session_id>` so
-/// the AI conversation continues across an app restart. Used by
-/// `restore_all_sessions`; **not** by `session_create` (which has no AI
-/// id yet) and **not** by user-initiated `session_restart` (DESIGN §5.4 —
-/// restart is fresh from the user's POV).
+/// the AI conversation continues across an app restart, a user-initiated
+/// restart, or — for Copilot — pre-binds the brand-new session to a
+/// pre-allocated uuid at create time.
+///
+/// Used by every spawn site that has an `ai_session_id` to honor:
+/// `session_create` (Copilot only — pre-allocated uuid), `session_restart`
+/// (Copilot only — freshly re-allocated uuid), and `restore_all_sessions`
+/// (both tools when an id is persisted). The persisted `composed_command`
+/// itself stays bare (DESIGN §5.4 — the immutable record never contains
+/// `--resume`); the splice happens on a clone at every spawn.
 ///
 /// We append at the end of the command rather than parse and re-emit the
 /// CLI invocation. Both `claude` and `copilot` accept positional flags

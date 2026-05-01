@@ -187,7 +187,20 @@ export type ActivityEvent =
   | { kind: 'promptStart' }
   | { kind: 'commandStart' }
   | { kind: 'commandEnd'; exit: number | null }
-  | { kind: 'turnEnd'; durationMs: number | null };
+  | { kind: 'turnEnd'; durationMs: number | null }
+  // Copilot events.jsonl tailer (Phase 2.5). New variants are emitted
+  // alongside the legacy PTY-byte signals; the reducer treats them as
+  // additive — they don't replace `working` / `idle`.
+  | { kind: 'turnStart' }
+  | { kind: 'toolStart'; toolName: string; toolCallId: string }
+  | { kind: 'toolEnd'; toolCallId: string; success: boolean }
+  | {
+      kind: 'awaitingPermission';
+      requestId: string;
+      permissionKind: string;
+      summary: string | null;
+    }
+  | { kind: 'permissionResolved'; requestId: string; approved: boolean };
 
 // MIRROR: src-tauri/src/types.rs::SessionActivityEvent
 // Payload of the `session://activity` Tauri event (DESIGN §6). The

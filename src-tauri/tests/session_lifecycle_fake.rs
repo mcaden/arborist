@@ -57,6 +57,10 @@ struct SpawnerState {
     /// One entry per spawn so a test can keep killing/respawning.
     eofs: Vec<Arc<AtomicBool>>,
     next_pid: u32,
+    /// If set, the next call to `spawn` returns this error and clears
+    /// the flag (one-shot). Used to drive failed-restart regression
+    /// tests that need to assert on persisted state after the failure.
+    fail_next_with: Option<arborist_lib::types::Error>,
 }
 
 struct FakeSpawner {
@@ -82,6 +86,14 @@ impl PtySpawner for FakeSpawner {
         size: PtySize,
     ) -> Result<SpawnedChild, arborist_lib::types::Error> {
         let mut s = self.state.lock().unwrap();
+        if let Some(err) = s.fail_next_with.take() {
+            // Capture the inputs of the failed attempt too — assertions
+            // about *which* command was attempted still need to work.
+            s.spawn_count += 1;
+            s.last_cwd = Some(cwd.to_path_buf());
+            s.last_cmd = Some(cmd);
+            return Err(err);
+        }
         s.spawn_count += 1;
         s.last_cwd = Some(cwd.to_path_buf());
         s.last_cmd = Some(cmd);
@@ -977,4 +989,301 @@ async fn restore_emits_error_with_message_when_worktree_directory_is_missing() {
     let listed = session_list_impl(&Arc::new(ctx2)).unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].status, SessionStatus::Error);
+}
+
+// ---------------------------------------------------------------------------
+// AI session-id pre-allocation (Phase 2)
+// ---------------------------------------------------------------------------
+//
+// Background. Pre-pre-allocation, `Session.ai_session_id` was discovered
+// post-spawn from a CLI-side write (Claude transcript / Copilot OTel chat
+// span). A session that was created and never prompted before app
+// shutdown therefore had `ai_session_id == None`, and restore-on-launch
+// dropped the `--resume` augmentation entirely — the session came back as
+// a fresh CLI conversation. The user reported this as "only my open tab
+// fully resumes". Pre-allocation closes the gap for Copilot by deciding
+// the conversation id at create-time and binding the spawn to it via
+// `--resume <uuid>`. Copilot starts a fresh session at that uuid (verified
+// against `copilot --help`), so no on-disk transcript is required at
+// spawn time. Claude has no equivalent flag and continues the discovery
+// path.
+
+fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
+    // The shared harness seeds a Claude-only instruction set on disk, so
+    // for Copilot we pass None — Copilot doesn't accept --instructions
+    // anyway (DESIGN §5.6: it auto-discovers `.github/copilot-instructions.md`
+    // from cwd).
+    let instruction_set_id = match tool {
+        Tool::Claude => Some(h.instruction_id.clone()),
+        Tool::Copilot => None,
+    };
+    SessionCreateArgs {
+        tool,
+        worktree_path: h.worktree.path().to_path_buf(),
+        instruction_set_id,
+        cols: 80,
+        rows: 24,
+    }
+}
+
+/// Returns the spawned shell argv as a single string for substring asserts.
+/// The spawn cmd is platform-shaped (`cmd.exe /c <cmd>` on Windows,
+/// `$SHELL -c <cmd>` elsewhere); the composed command lives in the trailing
+/// arg in both cases.
+fn last_spawn_args_joined(spawner: &FakeSpawner) -> String {
+    let st = spawner.state.lock().unwrap();
+    let cmd = st.last_cmd.as_ref().expect("expected at least one spawn");
+    cmd.args.join(" ")
+}
+
+#[tokio::test]
+async fn session_create_preallocates_ai_session_id_for_copilot() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
+
+    let persisted = h
+        .ctx
+        .store
+        .load_sessions()
+        .get(&view.id)
+        .cloned()
+        .expect("session must persist");
+    let aid = persisted
+        .ai_session_id
+        .as_deref()
+        .expect("Copilot create must pre-allocate ai_session_id");
+    assert!(
+        uuid::Uuid::parse_str(aid).is_ok(),
+        "pre-allocated id should be a uuid; got {aid:?}",
+    );
+
+    // composed_command itself stays bare (DESIGN §5.4 — persisted record
+    // is immutable). The splice happens on a clone at spawn time only.
+    assert!(
+        !persisted.composed_command.contains("--resume"),
+        "persisted composed_command must stay bare; got {:?}",
+        persisted.composed_command
+    );
+
+    // The actual spawn DID receive the augmented command.
+    let spawned = last_spawn_args_joined(&h.spawner);
+    assert!(
+        spawned.contains(&format!("--resume {aid}")),
+        "spawn args must include `--resume <preallocated-uuid>`; got {spawned:?}",
+    );
+}
+
+#[tokio::test]
+async fn session_create_does_not_preallocate_for_claude() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Claude)).unwrap();
+
+    let persisted = h.ctx.store.load_sessions().get(&view.id).cloned().unwrap();
+    assert_eq!(
+        persisted.ai_session_id, None,
+        "Claude must not pre-allocate; id is discovered from transcript",
+    );
+
+    let spawned = last_spawn_args_joined(&h.spawner);
+    assert!(
+        !spawned.contains("--resume"),
+        "Claude spawn must not splice --resume on create; got {spawned:?}",
+    );
+}
+
+#[tokio::test]
+async fn session_restart_reallocates_ai_session_id_for_copilot() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
+    let id_before = h
+        .ctx
+        .store
+        .load_sessions()
+        .get(&view.id)
+        .and_then(|s| s.ai_session_id.clone())
+        .expect("Copilot create must pre-allocate");
+
+    session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .unwrap();
+
+    let id_after = h
+        .ctx
+        .store
+        .load_sessions()
+        .get(&view.id)
+        .and_then(|s| s.ai_session_id.clone())
+        .expect("Copilot restart must keep an ai_session_id set");
+    assert_ne!(
+        id_before, id_after,
+        "restart must allocate a fresh uuid (otherwise Copilot would resume the pre-restart conversation)",
+    );
+    assert!(uuid::Uuid::parse_str(&id_after).is_ok());
+
+    let spawned = last_spawn_args_joined(&h.spawner);
+    assert!(
+        spawned.contains(&format!("--resume {id_after}")),
+        "restart spawn must splice the freshly-allocated uuid; got {spawned:?}",
+    );
+}
+
+#[tokio::test]
+async fn session_restart_clears_ai_session_id_for_claude() {
+    // Claude's restart contract: drop the prior conversation id eagerly so
+    // a crash between restart and the new watcher's first discovery can't
+    // leave us pointing at the pre-restart transcript.
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Claude)).unwrap();
+
+    // Simulate the metrics watcher having discovered an id post-spawn.
+    h.ctx
+        .store
+        .update_session_ai_session_id(&view.id, Some("preexisting-claude-id".to_owned()))
+        .unwrap();
+
+    session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .unwrap();
+
+    let after = h.ctx.store.load_sessions().get(&view.id).cloned().unwrap();
+    assert_eq!(
+        after.ai_session_id, None,
+        "Claude restart must clear ai_session_id (no equivalent of --resume <uuid>)",
+    );
+
+    let spawned = last_spawn_args_joined(&h.spawner);
+    assert!(
+        !spawned.contains("--resume"),
+        "Claude restart spawn must not carry --resume; got {spawned:?}",
+    );
+}
+
+#[tokio::test]
+async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent() {
+    // Pre-allocated Copilot uuids may legitimately have no
+    // ~/.copilot/session-state/<uuid>/ dir yet (e.g. app crashed before
+    // Copilot's first session.start flush, or the dir was swept). The
+    // pre-Phase-2 code would have dropped the splice in that case via
+    // `ai_session_transcript_exists`. With pre-allocation we rely on the
+    // fact that `copilot --resume <unknown-uuid>` safely creates a fresh
+    // session at that uuid — so we always splice and let the persisted id
+    // win.
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
+    let preallocated = h
+        .ctx
+        .store
+        .load_sessions()
+        .get(&view.id)
+        .and_then(|s| s.ai_session_id.clone())
+        .expect("Copilot create must pre-allocate");
+
+    // "App restart": new pool + sink + ctx around the same store. The
+    // pre-allocated uuid almost certainly has no ~/.copilot/session-state
+    // dir yet (we never ran a real Copilot in this test), but restore
+    // must splice anyway.
+    let spawner2 = Arc::new(FakeSpawner::new());
+    let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
+    let events2 = Arc::new(CapturedEvents::default());
+    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store.clone());
+    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store.clone(), sink2);
+
+    restore_all_sessions(&ctx2);
+
+    // Restore now defers the actual spawn until first session_resize.
+    // Trigger that explicitly so we can assert on the splice the spawner
+    // sees.
+    session_resize_impl(
+        &ctx2,
+        SessionResizeArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect("deferred spawn via resize ok");
+
+    let spawned = last_spawn_args_joined(&spawner2);
+    assert!(
+        spawned.contains(&format!("--resume {preallocated}")),
+        "Copilot restore must always splice when ai_session_id is set, even if the on-disk dir is missing; got {spawned:?}",
+    );
+
+    // The persisted id must NOT have been cleared.
+    let after = h.ctx.store.load_sessions().get(&view.id).cloned().unwrap();
+    assert_eq!(after.ai_session_id.as_deref(), Some(preallocated.as_str()));
+}
+
+#[tokio::test]
+async fn failed_copilot_restart_preserves_prior_ai_session_id() {
+    // Regression for the restart write-order bug. Pre-fix,
+    // `session_restart_impl` rotated the persisted Copilot
+    // `ai_session_id` to a freshly-allocated uuid *before* attempting
+    // `respawn_existing`. If respawn failed (e.g. transient PTY error,
+    // `cmd.exe` not found, etc.), the store was left pointing at a
+    // brand-new uuid that has no Copilot session-state directory and
+    // the prior — still-resumable — conversation was orphaned.
+    //
+    // The fix defers the persist to *after* respawn succeeds. This
+    // test drives the failure path via `FakeSpawner::fail_next_with`
+    // and asserts the persisted record still carries the original
+    // pre-allocated uuid so the user can recover by restarting again.
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
+    let original_id = h
+        .ctx
+        .store
+        .load_sessions()
+        .get(&view.id)
+        .and_then(|s| s.ai_session_id.clone())
+        .expect("Copilot create must pre-allocate");
+
+    // Arm the spawner to reject the next spawn (the restart path's
+    // `respawn_existing` call).
+    {
+        let mut s = h.spawner.state.lock().unwrap();
+        s.fail_next_with = Some(arborist_lib::types::Error::PtySpawnFailed(
+            "simulated transient spawn failure".to_owned(),
+        ));
+    }
+
+    let result = session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    );
+    assert!(
+        result.is_err(),
+        "restart must surface the spawner failure to the caller; got {result:?}",
+    );
+
+    let after = h
+        .ctx
+        .store
+        .load_sessions()
+        .get(&view.id)
+        .cloned()
+        .expect("session record must still exist after a failed restart");
+    assert_eq!(
+        after.ai_session_id.as_deref(),
+        Some(original_id.as_str()),
+        "failed restart must NOT rotate ai_session_id (would orphan the prior conversation)",
+    );
+    // The session is in Error status (the restart path explicitly sets it).
+    assert_eq!(after.status, SessionStatus::Error);
 }

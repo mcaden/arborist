@@ -53,8 +53,13 @@
 //! 1. **Filter to leaf `chat` spans only.** Copilot's `invoke_agent` parent
 //!    span aggregates the *same* `gen_ai.usage.*` numbers as its child
 //!    `chat` span(s). Counting both would double the totals. We require
-//!    `name` to start with `"chat "` and ignore everything else (including
-//!    `type: "metric"` lines, which are redundant with span attributes).
+//!    the semconv attribute `gen_ai.operation.name == "chat"` and ignore
+//!    everything else (including `type: "metric"` lines, which are
+//!    redundant with span attributes). The op attribute is the source of
+//!    truth — `name` varies (`"chat"` vs `"chat <model>"` across Copilot
+//!    versions) and a previous `name.starts_with("chat ")` filter silently
+//!    dropped bare-name spans, breaking `aiSessionId` tracking after
+//!    `/clear` or `/resume` and zeroing token totals for affected sessions.
 //! 2. **Spans only emit at span CLOSE.** OTel's batch span processor
 //!    flushes after the span ends, not while it's open. Use the existing
 //!    PTY-stream activity scanner for "is the agent currently working" —
@@ -74,6 +79,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 
 use crate::compose;
+use crate::pty_pool::ActivityCb;
 use crate::types::{SessionId, SessionMetricsEvent, Tool};
 
 /// Polling cadence for the watcher. Trade-off: smaller is more responsive,
@@ -113,9 +119,16 @@ pub type TurnCb = Arc<dyn Fn(SessionId, Option<u64>) + Send + Sync>;
 /// guarantee (e.g. `session_restart_impl`, which clears
 /// `Session.ai_session_id` and must ensure no late discovery callback
 /// can persist the stale id back) can use [`MetricsRegistry::stop_and_join`].
+///
+/// `extra_joins` carries sibling watchers that share the same `running`
+/// flag — currently only the Copilot events.jsonl tailer
+/// ([`crate::copilot_events::run_watcher`]). One flag drives stop for
+/// every sibling so a session can never be left with one watcher live
+/// and another stopped.
 struct WatcherHandle {
     running: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
+    extra_joins: Vec<thread::JoinHandle<()>>,
 }
 
 /// Registry of active per-session watchers. Stored on `AppContext`. Calls
@@ -140,6 +153,15 @@ impl MetricsRegistry {
     /// stopped first so the new one starts from a clean slate (used by
     /// session restart). Returns `false` if no watcher could be started
     /// (e.g. Claude session whose home dir could not be resolved).
+    ///
+    /// For Copilot sessions with a known `ai_session_id` (pre-allocated
+    /// at create / restart time, see DESIGN §5.4), a sibling
+    /// events.jsonl tailer is also spawned (see
+    /// [`crate::copilot_events`]). It feeds richer per-state events
+    /// (`AwaitingPermission`, `ToolStart`/`ToolEnd`, `TurnStart`) into
+    /// the same `session://activity` channel via `activity_emit`.
+    /// Failure to spawn the events tailer is non-fatal — the metrics
+    /// watcher still runs.
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         &self,
@@ -150,6 +172,8 @@ impl MetricsRegistry {
         emit: MetricsCb,
         emit_turn: TurnCb,
         discover: AiSessionDiscoveryCb,
+        activity_emit: ActivityCb,
+        ai_session_id: Option<String>,
     ) -> bool {
         // Stop any existing watcher first so the per-tool worker starts
         // from a clean slate (used by session restart).
@@ -197,11 +221,42 @@ impl MetricsRegistry {
         };
         match join {
             Ok(handle) => {
+                // For Copilot with a known ai_session_id, also spawn the
+                // events.jsonl tailer (sibling — same `running` flag).
+                let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
+                if matches!(tool, Tool::Copilot) {
+                    if let (Some(home), Some(aid)) = (home_dir(), ai_session_id) {
+                        let events_path = crate::copilot_events::events_path(&home, &aid);
+                        let events_running = Arc::clone(&running);
+                        let events_emit = Arc::clone(&activity_emit);
+                        match crate::copilot_events::spawn_watcher(
+                            session_id,
+                            events_path,
+                            events_emit,
+                            events_running,
+                        ) {
+                            Ok(h) => extra_joins.push(h),
+                            Err(e) => {
+                                tracing::warn!(
+                                    session_id = %session_id,
+                                    error = %e,
+                                    "copilot events watcher thread spawn failed",
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::debug!(
+                            session_id = %session_id,
+                            "copilot events watcher not started (no home dir or ai_session_id)",
+                        );
+                    }
+                }
                 self.inner.lock().expect("metrics registry lock").insert(
                     session_id,
                     WatcherHandle {
                         running,
                         join: Some(handle),
+                        extra_joins,
                     },
                 );
                 true
@@ -249,6 +304,9 @@ impl MetricsRegistry {
         if let Some(mut h) = removed {
             h.running.store(false, Ordering::SeqCst);
             if let Some(handle) = h.join.take() {
+                let _ = handle.join();
+            }
+            for handle in h.extra_joins.drain(..) {
                 let _ = handle.join();
             }
         }
@@ -516,6 +574,17 @@ fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// Crate-internal re-export of [`tail_lines`] so the Copilot
+/// events.jsonl tailer in [`crate::copilot_events`] can reuse the same
+/// chunked-read + oversized-line-skip behavior without duplicating it.
+/// Kept as a thin alias rather than `pub fn tail_lines` to keep the
+/// surface area honest — this is a sibling-module helper, not a
+/// public API.
+#[doc(hidden)]
+pub(crate) fn tail_lines_pub<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, consume: F) -> u64 {
+    tail_lines(path, cursor, end, consume)
 }
 
 /// Tail `path` from `cursor` up to `end`, invoking `consume` for each
@@ -823,15 +892,17 @@ impl CopilotState {
 ///
 /// The `invoke_agent` filter is critical: that span carries the *same*
 /// `gen_ai.usage.*` numbers as its child `chat` span(s), so counting both
-/// would double the totals. Filtering on `name.starts_with("chat ")`
-/// matches the leaf-only rule.
+/// would double the totals. We filter on the semconv attribute
+/// `gen_ai.operation.name == "chat"` — `name` is unreliable across
+/// Copilot versions (sometimes `"chat"`, sometimes `"chat <model>"`) and
+/// the previous `name.starts_with("chat ")` filter silently dropped
+/// bare-name spans, breaking `aiSessionId` tracking after `/clear` or
+/// `/resume` and zeroing token totals for affected sessions.
 pub(crate) fn ingest_otel_line(line: &[u8], state: &mut CopilotState) {
     #[derive(Deserialize)]
     struct Outer {
         #[serde(default)]
         r#type: String,
-        #[serde(default)]
-        name: String,
         #[serde(default)]
         attributes: Option<serde_json::Value>,
         #[serde(default)]
@@ -851,14 +922,17 @@ pub(crate) fn ingest_otel_line(line: &[u8], state: &mut CopilotState) {
     if outer.r#type != "span" {
         return;
     }
-    // Leaf chat spans only. The space after "chat" is intentional — it
-    // matches `chat <model>` and excludes any future `chat_completion`-
-    // style sibling that we'd want to treat differently.
-    if !outer.name.starts_with("chat ") {
+    // Filter on the semconv operation attribute, NOT on `name`. See the
+    // doc comment above for why `name` is unreliable across Copilot
+    // versions.
+    let attrs = outer.attributes.as_ref();
+    let op = attrs
+        .and_then(|a| a.get("gen_ai.operation.name"))
+        .and_then(|v| v.as_str());
+    if op != Some("chat") {
         return;
     }
 
-    let attrs = outer.attributes.as_ref();
     let input = attrs
         .and_then(|a| a.get("gen_ai.usage.input_tokens"))
         .and_then(|v| v.as_u64())
@@ -1185,6 +1259,8 @@ mod tests {
             cb,
             turn_cb,
             Arc::new(|_, _| {}),
+            Arc::new(|_, _| {}),
+            None,
         );
         assert!(started, "Copilot watcher must start");
         assert!(
@@ -1285,6 +1361,66 @@ mod tests {
     }
 
     #[test]
+    fn ingest_otel_chat_span_bare_name_is_accepted() {
+        // Copilot CLI emits chat spans with two `name` formats — the
+        // older `"chat <model>"` and the newer bare `"chat"`. The op
+        // attribute (`gen_ai.operation.name`) is identical in both. A
+        // previous `name.starts_with("chat ")` filter silently dropped
+        // bare-name spans, breaking aiSessionId tracking after /clear or
+        // /resume and zeroing token totals for affected sessions. This
+        // test pins the new op-based filter to the bare-name shape.
+        let line = br#"{"type":"span","name":"chat","attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"claude-opus-4.7-high","gen_ai.conversation.id":"abc-123","gen_ai.usage.input_tokens":50,"gen_ai.usage.output_tokens":5}}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(line, &mut state);
+        assert!(state.has_any(), "bare-name chat span must be accepted");
+        assert_eq!(state.sum_input, 50);
+        assert_eq!(state.sum_output, 5);
+        assert_eq!(state.last_model.as_deref(), Some("claude-opus-4.7-high"));
+        assert_eq!(state.conversation_id.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn ingest_otel_invoke_agent_with_chat_name_prefix_is_rejected() {
+        // Belt-and-suspenders: invoke_agent carries the same usage numbers
+        // as its chat children. If a future Copilot version named the
+        // parent something like "chat agent invocation" while keeping
+        // op=invoke_agent, a name-prefix filter would double-count. The
+        // op-based filter prevents that regardless of the name string.
+        let line = br#"{"type":"span","name":"chat agent invocation","attributes":{"gen_ai.operation.name":"invoke_agent","gen_ai.usage.input_tokens":999,"gen_ai.usage.output_tokens":99}}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(line, &mut state);
+        assert!(
+            !state.has_any(),
+            "invoke_agent op must be ignored regardless of name",
+        );
+    }
+
+    #[test]
+    fn ingest_otel_unknown_op_is_rejected() {
+        // Defense in depth for any future op kind we haven't yet
+        // characterized — only `chat` is known to carry leaf usage totals
+        // we want to sum.
+        let line = br#"{"type":"span","name":"chat_completion","attributes":{"gen_ai.operation.name":"chat_completion","gen_ai.usage.input_tokens":1000,"gen_ai.usage.output_tokens":100}}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(line, &mut state);
+        assert!(!state.has_any(), "non-chat op must be ignored");
+    }
+
+    #[test]
+    fn ingest_otel_span_without_op_attribute_is_rejected() {
+        // The semconv attribute is the source of truth. A span missing
+        // it (e.g. malformed exporter output) must not be counted even
+        // if `name` happens to start with "chat".
+        let line = br#"{"type":"span","name":"chat foo","attributes":{"gen_ai.usage.input_tokens":10,"gen_ai.usage.output_tokens":1}}"#;
+        let mut state = CopilotState::default();
+        ingest_otel_line(line, &mut state);
+        assert!(
+            !state.has_any(),
+            "missing gen_ai.operation.name must be treated as unknown",
+        );
+    }
+
+    #[test]
     fn ingest_otel_invoke_agent_is_ignored() {
         // The invoke_agent span carries the same gen_ai.usage.* numbers as
         // its child chat span. If we counted both we'd double-count.
@@ -1320,17 +1456,23 @@ mod tests {
 
     #[test]
     fn ingest_otel_full_fixture_no_double_counting() {
-        // Replay the entire fixture (chat span + invoke_agent + metric
-        // lines). Only the chat span should contribute. This is the
-        // regression assertion for the subagent / aggregate-parent shape.
+        // Replay the entire fixture (two chat spans + invoke_agent +
+        // metric lines). Both chat spans should contribute their tokens;
+        // the invoke_agent must NOT (it carries duplicates of the first
+        // chat span's totals). This is the regression assertion for the
+        // subagent / aggregate-parent shape AND for accepting both the
+        // `chat <model>` and bare `chat` name formats.
         let mut state = CopilotState::default();
         for line in fixture_lines() {
             ingest_otel_line(line, &mut state);
         }
-        assert_eq!(state.sum_input, 39_497, "exactly the chat span's tokens");
-        assert_eq!(state.sum_output, 24);
-        assert_eq!(state.token_limit, Some(168_000));
-        assert_eq!(state.current_tokens, Some(29_461));
+        assert_eq!(state.sum_input, 39_497 + 12_345, "both chat spans counted");
+        assert_eq!(state.sum_output, 24 + 67);
+        // The bare-name span comes last in the fixture, so its
+        // `current_tokens` / `token_limit` win the latest-wins race.
+        assert_eq!(state.token_limit, Some(170_000));
+        assert_eq!(state.current_tokens, Some(42_000));
+        assert_eq!(state.last_model.as_deref(), Some("claude-opus-4.7-high"));
     }
 
     #[test]
@@ -1344,8 +1486,8 @@ mod tests {
 
     #[test]
     fn ingest_otel_two_chat_spans_sum_and_latest_wins() {
-        let chat1 = br#"{"type":"span","name":"chat model-a","attributes":{"gen_ai.response.model":"model-a","gen_ai.usage.input_tokens":100,"gen_ai.usage.output_tokens":10},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":1000,"github.copilot.current_tokens":500}}]}"#;
-        let chat2 = br#"{"type":"span","name":"chat model-b","attributes":{"gen_ai.response.model":"model-b","gen_ai.usage.input_tokens":200,"gen_ai.usage.output_tokens":20},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":2000,"github.copilot.current_tokens":700}}]}"#;
+        let chat1 = br#"{"type":"span","name":"chat model-a","attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"model-a","gen_ai.usage.input_tokens":100,"gen_ai.usage.output_tokens":10},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":1000,"github.copilot.current_tokens":500}}]}"#;
+        let chat2 = br#"{"type":"span","name":"chat model-b","attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"model-b","gen_ai.usage.input_tokens":200,"gen_ai.usage.output_tokens":20},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":2000,"github.copilot.current_tokens":700}}]}"#;
         let mut state = CopilotState::default();
         ingest_otel_line(chat1, &mut state);
         ingest_otel_line(chat2, &mut state);
@@ -1362,7 +1504,7 @@ mod tests {
     fn ingest_otel_chat_span_without_usage_info_event() {
         // Totals should still update; context fields stay at their last
         // observed values (None here).
-        let line = br#"{"type":"span","name":"chat foo","attributes":{"gen_ai.response.model":"foo","gen_ai.usage.input_tokens":7,"gen_ai.usage.output_tokens":3}}"#;
+        let line = br#"{"type":"span","name":"chat foo","attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"foo","gen_ai.usage.input_tokens":7,"gen_ai.usage.output_tokens":3}}"#;
         let mut state = CopilotState::default();
         ingest_otel_line(line, &mut state);
         assert_eq!(state.sum_input, 7);
@@ -1373,7 +1515,7 @@ mod tests {
 
     #[test]
     fn ingest_otel_falls_back_to_request_model() {
-        let line = br#"{"type":"span","name":"chat fallback","attributes":{"gen_ai.request.model":"req-only","gen_ai.usage.input_tokens":1,"gen_ai.usage.output_tokens":2}}"#;
+        let line = br#"{"type":"span","name":"chat fallback","attributes":{"gen_ai.operation.name":"chat","gen_ai.request.model":"req-only","gen_ai.usage.input_tokens":1,"gen_ai.usage.output_tokens":2}}"#;
         let mut state = CopilotState::default();
         ingest_otel_line(line, &mut state);
         assert_eq!(state.last_model.as_deref(), Some("req-only"));
@@ -1381,26 +1523,29 @@ mod tests {
 
     #[test]
     fn copilot_state_snapshot_computes_pct_from_current_tokens() {
-        // Critical: pct uses current_tokens (29461) / token_limit (168000),
-        // NOT sum_input. Confirms the "context_tokens_used != input_tokens"
-        // invariant from the design.
+        // Critical: pct uses the LATEST current_tokens / token_limit, NOT
+        // sum_input. Confirms the "context_tokens_used != input_tokens"
+        // invariant from the design. The fixture's bare-name span is the
+        // last chat span, so its 42_000 / 170_000 win the latest-wins
+        // race for context numerator/denominator. Cumulative totals
+        // remain the SUM across both spans.
         let mut state = CopilotState::default();
         for line in fixture_lines() {
             ingest_otel_line(line, &mut state);
         }
         let snap = state.snapshot(SessionId::new());
-        assert_eq!(snap.context_tokens_used, Some(29_461));
-        assert_eq!(snap.context_tokens_limit, Some(168_000));
-        // 29461 * 100 / 168000 = 17
-        assert_eq!(snap.context_used_pct, Some(17));
+        assert_eq!(snap.context_tokens_used, Some(42_000));
+        assert_eq!(snap.context_tokens_limit, Some(170_000));
+        // 42000 * 100 / 170000 = 24
+        assert_eq!(snap.context_used_pct, Some(24));
         // Cumulative totals are independent of the context numerator.
-        assert_eq!(snap.input_tokens, Some(39_497));
-        assert_eq!(snap.output_tokens, Some(24));
+        assert_eq!(snap.input_tokens, Some(39_497 + 12_345));
+        assert_eq!(snap.output_tokens, Some(24 + 67));
     }
 
     #[test]
     fn copilot_state_snapshot_omits_pct_without_limit() {
-        let line = br#"{"type":"span","name":"chat foo","attributes":{"gen_ai.response.model":"foo","gen_ai.usage.input_tokens":1,"gen_ai.usage.output_tokens":1}}"#;
+        let line = br#"{"type":"span","name":"chat foo","attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"foo","gen_ai.usage.input_tokens":1,"gen_ai.usage.output_tokens":1}}"#;
         let mut state = CopilotState::default();
         ingest_otel_line(line, &mut state);
         let snap = state.snapshot(SessionId::new());
@@ -1516,17 +1661,19 @@ mod tests {
             );
         });
 
-        // Append the fixture (one chat span + invoke_agent + metrics) and
-        // wait for the watcher to surface a snapshot.
+        // Append the fixture (two chat spans + invoke_agent + metrics)
+        // and wait for the watcher to surface a snapshot. With both
+        // spans written at once, the first emit reflects the cumulative
+        // totals.
         std::fs::write(&path, COPILOT_OTEL_FIXTURE).unwrap();
         let snap = rx
             .recv_timeout(Duration::from_secs(8))
             .expect("watcher emitted snapshot");
-        assert_eq!(snap.context_tokens_used, Some(29_461));
-        assert_eq!(snap.context_tokens_limit, Some(168_000));
-        assert_eq!(snap.input_tokens, Some(39_497));
-        assert_eq!(snap.output_tokens, Some(24));
-        assert_eq!(snap.model.as_deref(), Some("claude-opus-4.7"));
+        assert_eq!(snap.context_tokens_used, Some(42_000));
+        assert_eq!(snap.context_tokens_limit, Some(170_000));
+        assert_eq!(snap.input_tokens, Some(39_497 + 12_345));
+        assert_eq!(snap.output_tokens, Some(24 + 67));
+        assert_eq!(snap.model.as_deref(), Some("claude-opus-4.7-high"));
 
         // Shut the watcher down.
         running.store(false, Ordering::SeqCst);
@@ -1611,7 +1758,7 @@ mod tests {
             .expect("first snapshot");
 
         // 2) Truncate to a fresh, smaller chat span. Watcher must reset.
-        let smaller = br#"{"type":"span","name":"chat tiny","attributes":{"gen_ai.response.model":"tiny","gen_ai.usage.input_tokens":42,"gen_ai.usage.output_tokens":1},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":1000,"github.copilot.current_tokens":50}}]}
+        let smaller = br#"{"type":"span","name":"chat tiny","attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"tiny","gen_ai.usage.input_tokens":42,"gen_ai.usage.output_tokens":1},"events":[{"name":"github.copilot.session.usage_info","attributes":{"github.copilot.token_limit":1000,"github.copilot.current_tokens":50}}]}
 "#;
         std::fs::write(&path, smaller).unwrap();
 
