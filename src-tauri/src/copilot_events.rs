@@ -49,6 +49,23 @@
 //! open* state is emitted (a single `AwaitingPermission`, a final
 //! `ToolStart`, or `TurnStart` if still in a turn). This keeps the UI
 //! quiet during restore.
+//!
+//! ## Known limitation: `/clear` mid-session
+//!
+//! Copilot's `/clear` rotates the conversation to a *new* uuid and
+//! starts writing to a fresh `events.jsonl` under the new path. The
+//! sibling [`crate::session_metrics`] OTel watcher detects the new
+//! `gen_ai.conversation.id` and persists it to
+//! `Session.ai_session_id`, but **this watcher does not hot-swap its
+//! events path** — it stays bound to the original uuid passed to
+//! [`spawn_watcher`]. After `/clear`, sidebar sub-states
+//! (awaiting-permission / running-tool / thinking) for that session
+//! reflect the last known state of the *old* conversation until the
+//! user issues a `session_restart` (which tears down and re-spawns the
+//! watcher with the rotated id). Token / model / duration metrics
+//! continue to update because the OTel watcher is conversation-id
+//! agnostic. Tracked as a follow-up; out of scope for the initial
+//! Phase 2.5 surface.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
