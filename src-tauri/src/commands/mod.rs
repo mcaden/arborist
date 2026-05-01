@@ -43,12 +43,12 @@ pub async fn ping() -> Result<String, AppError> {
 
 /// Resolve the [`ConfigStore`] for the current Tauri app instance.
 ///
-/// **Avoid in command handlers** — prefer `ctx_of(&app)?.store.clone()`
-/// so all writes share the managed `AppContext`'s mutex (otherwise each
-/// fresh `ConfigStore::open` gets its own mutex and load-modify-write
-/// races between command threads silently lose updates). This helper
-/// remains for boot-time wiring in `lib.rs`, before `AppContext` is
-/// constructed.
+/// **Legacy, no longer used in production boot.** Phase 6 replaced the
+/// boot path with [`crate::boot::bind_workspace`], which opens a
+/// per-(branch, workspace) store under the OS lock. This helper
+/// remains as a diagnostic / fallback that opens a `ConfigStore`
+/// rooted at the legacy `<app_data_dir>` (no isolation, no lock).
+/// Do not use from new code — call `AppContext::store()` instead.
 pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
     let dir: PathBuf = app
         .path()

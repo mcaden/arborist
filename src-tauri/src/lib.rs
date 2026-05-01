@@ -90,6 +90,7 @@ pub(crate) fn window_title_for_branch(branch: &str) -> String {
 /// Branch this binary was built from, captured at compile time by `build.rs`.
 pub(crate) const BUILD_BRANCH: &str = env!("ARBORIST_BUILD_BRANCH");
 
+pub mod boot;
 pub mod seed;
 pub mod store_layout;
 pub mod workspace_lock;
@@ -103,12 +104,15 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
-            // Initialise logging first so every subsequent log call is captured.
+            // Initialise logging first so every subsequent log call is
+            // captured. We hold the WorkerGuard locally throughout the
+            // boot block: `std::process::exit` skips destructors, so any
+            // boot-failure exit path below MUST `drop(log_guard)` first
+            // to flush buffered log lines to disk. On success we hand
+            // the guard off to Tauri's managed state.
             let log_dir = app.path().app_log_dir()?;
             std::fs::create_dir_all(&log_dir)?;
-            if let Some(guard) = init_tracing(Some(&log_dir)) {
-                app.manage(LogGuard(guard));
-            }
+            let log_guard = init_tracing(Some(&log_dir));
             tracing::info!("Arborist starting up");
 
             // If this build came from a branch other than `main`, surface the
@@ -121,10 +125,60 @@ pub fn run() {
                 }
             }
 
+            // Phase 6: resolve, lock, and bind the per-(branch, workspace)
+            // store before any AppContext is built. This guarantees that
+            // restore-on-launch and every later command operates on the
+            // isolated workspace store, never on the legacy shared one.
+            //
+            // Resolution chain: --workspace CLI arg → branch hint file →
+            // legacy `<app_data_dir>/config.json::workspace_root` →
+            // native folder picker (rfd).
+            let app_data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&app_data_dir)?;
+            let cli_args = match boot::parse_cli_args(std::env::args_os()) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::error!(error = %e, "boot CLI parse failed");
+                    eprintln!("Arborist CLI parse error: {e}");
+                    drop(log_guard);
+                    std::process::exit(2);
+                }
+            };
+
+            let binding = match boot::boot_select_workspace(&cli_args, &app_data_dir, BUILD_BRANCH)
+            {
+                Ok(Some(b)) => b,
+                Ok(None) => {
+                    tracing::info!("user cancelled workspace picker; exiting");
+                    drop(log_guard);
+                    std::process::exit(0);
+                }
+                Err(boot::BootError::Contention { branch, workspace }) => {
+                    boot::show_lock_contention_dialog(&branch, &workspace);
+                    drop(log_guard);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "workspace boot bind failed");
+                    eprintln!("Arborist failed to open workspace: {e}");
+                    drop(log_guard);
+                    std::process::exit(1);
+                }
+            };
+
+            // Boot succeeded — hand the WorkerGuard off to Tauri's
+            // managed state so logs continue to flush for the lifetime
+            // of the running app.
+            if let Some(guard) = log_guard {
+                app.manage(LogGuard(guard));
+            }
+
             // Build the production AppContext: portable-pty spawner, the
-            // on-disk ConfigStore, and a PtySink that bridges back into
-            // both Tauri events and the persisted session record.
-            let store = commands::store_for(app.handle())?;
+            // workspace-bound ConfigStore, and a PtySink that bridges back
+            // into both Tauri events and the persisted session record.
+            let store = binding.store.clone();
+            let scope = boot::into_scope(binding);
+            let workspace_handle = std::sync::Arc::new(std::sync::RwLock::new(scope));
             let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(
                 pty_pool::PortablePtySpawner,
             )));
@@ -134,9 +188,9 @@ pub fn run() {
             let turn_emit = commands::build_production_turn_emit(app.handle().clone());
             let git_runner: std::sync::Arc<dyn git::GitRunner> =
                 std::sync::Arc::new(git::RealGitRunner);
-            let ctx = std::sync::Arc::new(commands::AppContext::new(
+            let ctx = std::sync::Arc::new(commands::AppContext::with_workspace(
                 pool,
-                store,
+                workspace_handle,
                 sink,
                 git_runner,
                 metrics_emit,

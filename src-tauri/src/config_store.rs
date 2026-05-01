@@ -84,17 +84,16 @@ pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 /// `ConfigStore` only. Separately opened `ConfigStore` instances
 /// pointing at the same directory do **not** share this mutex and are
 /// therefore not serialized against each other — which is why
-/// command handlers route through the managed `AppContext`'s store
-/// (see `commands::store_for` rustdoc) rather than calling
-/// `ConfigStore::open` per request. Concurrent access from a second
-/// Arborist process is **not yet** prevented; the per-(branch,
-/// workspace) advisory lock primitive lives in [`crate::workspace_lock`]
-/// and the [`StoreLayout`]-aware [`Self::from_layout`] entry point is
-/// in place, but the boot wiring that holds the lock for the running
-/// instance lands in a later phase. Until then, treat overlapping
-/// runs of multiple Arborist binaries against the same `app_data_dir`
-/// as last-writer-wins. A user editing `sessions.json` by hand while
-/// the app is running is also not supported.
+/// command handlers route through the managed `AppContext`'s store via
+/// `AppContext::store()` rather than calling `ConfigStore::open` per
+/// request. Concurrent access from a second Arborist process **is**
+/// prevented at the `(branch, workspace)` granularity by the OS-level
+/// advisory lock acquired in [`crate::boot::bind_workspace`] (held in
+/// [`crate::workspace_scope::WorkspaceScope`] for the lifetime of the
+/// running instance). Two binaries that bind the *same* `(branch,
+/// workspace)` tuple cannot run concurrently. A user editing
+/// `sessions.json` by hand while the app is running is still not
+/// supported.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     dir: PathBuf,
