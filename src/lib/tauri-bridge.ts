@@ -220,12 +220,19 @@ export function configGet(): Promise<AppConfig> {
 }
 
 /**
- * Deep-merges `partial` into the persisted [`AppConfig`]. Only the fields
- * present on `partial` (i.e. not `undefined`) are touched; the rest survive
- * unchanged. Backend may reject relative paths with an `InvalidPath` error.
+ * Deep-merges `partial` into the persisted [`AppConfig`] and returns the
+ * resulting full config. Only the fields present on `partial` (i.e. not
+ * `undefined`) are touched; the rest survive unchanged. Backend may
+ * reject relative paths with an `InvalidPath` error.
+ *
+ * The returned config is the source of truth — callers should mirror it
+ * into their local cache rather than recomputing the merge themselves.
+ * Backend-derived fields like `customProcesses[].iconDataUri` are
+ * populated under the same write lock as the patch and only reach the
+ * frontend through this return value.
  */
-export function configSet(partial: PartialAppConfig): Promise<void> {
-  return invoke<void>('config_set', { partial });
+export function configSet(partial: PartialAppConfig): Promise<AppConfig> {
+  return invoke<AppConfig>('config_set', { partial });
 }
 
 /**

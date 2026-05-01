@@ -217,6 +217,14 @@ describe('CustomProcessesTab', () => {
 
   it('updates the in-memory config snapshot after saving (so the Launch menu reflects edits)', async () => {
     seedDefs([{ id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: true }]);
+    // Mirror what the backend would persist+return: the toggled def
+    // (icon backfill produces no URI for the bare `sh` test stub).
+    bridgeMock.configSet.mockResolvedValueOnce({
+      ...useConfigStore.getState().config,
+      customProcesses: [
+        { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: false },
+      ],
+    });
     render(<CustomProcessesTab onClose={() => {}} />);
     fireEvent.click(screen.getByLabelText(/^Enabled: shell$/i));
     await act(async () => {

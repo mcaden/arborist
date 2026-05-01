@@ -68,16 +68,27 @@ pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
     Ok(ctx.store.load_config())
 }
 
-/// Deep-merges `partial` into the persisted [`AppConfig`].
+/// Deep-merges `partial` into the persisted [`AppConfig`] and returns
+/// the resulting config so the frontend can replace its in-memory
+/// snapshot in a single round trip. Returning the merged config (vs.
+/// `()`) is load-bearing for backend-derived fields like
+/// `icon_data_uri`: the frontend never sends them, but the backfill
+/// pass below populates them under the same write lock — without the
+/// returned value the user would have to restart the app to see
+/// freshly-resolved icons.
 #[tauri::command]
-pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
+pub async fn config_set(
+    app: tauri::AppHandle,
+    partial: PartialAppConfig,
+) -> Result<AppConfig, AppError> {
     let ctx = ctx_of(&app)?;
     // Run the user's patch and the icon backfill *under the same
     // write lock* so two concurrent `config_set` calls can't lose
     // each other's updates. `save_config_with` holds the lock
     // across load → merge → mutate → write.
     let icon_cache = sub_ctx_of(&app).ok().map(|c| c.icon_cache.clone());
-    ctx.store
+    let merged = ctx
+        .store
         .save_config_with(partial, |cfg| {
             // Best-effort: walk every command string and resolve a
             // cached icon data URI. Failures are swallowed — the
@@ -90,7 +101,7 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
             crate::icon_backfill::backfill_icons(cfg, cache, &cwd)
         })
         .map_err(AppError::from)?;
-    Ok(())
+    Ok(merged)
 }
 
 /// Best-effort cwd for resolving relative-path commands at config-save

@@ -111,7 +111,7 @@ export const configGet: Mock<
 export const configSet: Mock<
   Parameters<typeof realBridge.configSet>,
   ReturnType<typeof realBridge.configSet>
-> = vi.fn(() => Promise.resolve());
+> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
 export const instructionsList: Mock<
   Parameters<typeof realBridge.instructionsList>,
@@ -234,7 +234,7 @@ export function resetBridgeMocks(): void {
   sessionRestart.mockReset().mockImplementation(() => Promise.resolve());
   frontendReady.mockReset().mockImplementation(() => Promise.resolve());
   configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
-  configSet.mockReset().mockImplementation(() => Promise.resolve());
+  configSet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));

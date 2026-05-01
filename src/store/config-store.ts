@@ -74,39 +74,7 @@ function stripUndefined(patch: PartialAppConfig): PartialAppConfig {
   return out;
 }
 
-function applyPatch(config: AppConfig, patch: PartialAppConfig): AppConfig {
-  const next: AppConfig = { ...config };
-  if (patch.configVersion !== undefined) next.configVersion = patch.configVersion;
-  if (patch.defaultInstructionSets !== undefined) {
-    next.defaultInstructionSets = {
-      ...next.defaultInstructionSets,
-      ...patch.defaultInstructionSets,
-    };
-  }
-  if (patch.instructionSetsDir !== undefined) next.instructionSetsDir = patch.instructionSetsDir;
-  if (patch.workspaceRoot !== undefined) next.workspaceRoot = patch.workspaceRoot;
-  if (patch.worktreeRoots !== undefined) next.worktreeRoots = patch.worktreeRoots;
-  if (patch.prelaunchCommands !== undefined) next.prelaunchCommands = patch.prelaunchCommands;
-  if (patch.worktreePrelaunchCommands !== undefined) {
-    next.worktreePrelaunchCommands = patch.worktreePrelaunchCommands;
-  }
-  if (patch.aiLaunchCommands !== undefined) {
-    next.aiLaunchCommands = {
-      ...next.aiLaunchCommands,
-      ...patch.aiLaunchCommands,
-    };
-  }
-  if (patch.lastOpenSessions !== undefined) next.lastOpenSessions = patch.lastOpenSessions;
-  if (patch.tabOrder !== undefined) next.tabOrder = patch.tabOrder;
-  if (patch.activeSessionId !== undefined) next.activeSessionId = patch.activeSessionId;
-  if (patch.customProcesses !== undefined) next.customProcesses = patch.customProcesses;
-  if (patch.lastOpenSubSessions !== undefined) {
-    next.lastOpenSubSessions = patch.lastOpenSubSessions;
-  }
-  return next;
-}
-
-export const useConfigStore = create<ConfigStoreState>((set, get) => ({
+export const useConfigStore = create<ConfigStoreState>((set) => ({
   config: EMPTY_CONFIG,
   status: 'idle',
   error: null,
@@ -125,8 +93,12 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
 
   set: async (patch) => {
     const diff = stripUndefined(patch);
-    await configSet(diff);
-    set({ config: applyPatch(get().config, diff) });
+    // The backend returns the merged config — including backend-derived
+    // fields (e.g. `customProcesses[].iconDataUri` populated by the
+    // icon backfill pass) that the original `diff` doesn't carry.
+    // Trust the returned snapshot wholesale.
+    const config = await configSet(diff);
+    set({ config });
   },
 }));
 

@@ -95,17 +95,29 @@ describe('useConfigStore.set', () => {
     expect(arg).not.toHaveProperty('instructionSetsDir');
   });
 
-  it('mirrors the diff into the local cache after a successful write', async () => {
+  it('mirrors the merged config returned by the backend after a successful write', async () => {
     useConfigStore.setState({ config: { ...SAMPLE } });
+    // Backend returns the merged config — the frontend trusts that
+    // snapshot wholesale (load-bearing for backend-derived fields like
+    // `iconDataUri`, which the frontend never sends).
+    bridgeMock.configSet.mockResolvedValueOnce({
+      ...SAMPLE,
+      prelaunchCommands: ['echo hi'],
+    });
+
     await useConfigStore.getState().set({ prelaunchCommands: ['echo hi'] });
 
     expect(useConfigStore.getState().config.prelaunchCommands).toEqual(['echo hi']);
-    // Untouched fields survive.
+    // Untouched fields survive (mirrored from the returned snapshot).
     expect(useConfigStore.getState().config.instructionSetsDir).toBe('/cfg/instr');
   });
 
   it('deep-merges defaultInstructionSets so a partial patch keeps the other tool', async () => {
     useConfigStore.setState({ config: { ...SAMPLE } });
+    bridgeMock.configSet.mockResolvedValueOnce({
+      ...SAMPLE,
+      defaultInstructionSets: { claude: 'claude-other', copilot: 'copilot-default' },
+    });
     await useConfigStore.getState().set({
       defaultInstructionSets: { claude: 'claude-other' },
     });
@@ -130,7 +142,7 @@ describe('useConfigStore.set', () => {
     expect(useConfigStore.getState().config.instructionSetsDir).toBe('/cfg/instr');
   });
 
-  it('mirrors customProcesses + lastOpenSubSessions through applyPatch', async () => {
+  it('mirrors customProcesses + lastOpenSubSessions from the backend snapshot', async () => {
     useConfigStore.setState({ config: { ...SAMPLE } });
     const def = {
       id: 'shell',
@@ -147,11 +159,19 @@ describe('useConfigStore.set', () => {
       label: 'Shell',
       composedCommand: 'bash -i',
     };
+    // Backend returns the merged config; this also mimics the icon
+    // backfill populating `iconDataUri` server-side.
+    const defWithIcon = { ...def, iconDataUri: 'data:image/png;base64,XYZ' };
+    bridgeMock.configSet.mockResolvedValueOnce({
+      ...SAMPLE,
+      customProcesses: [defWithIcon],
+      lastOpenSubSessions: [rec],
+    });
     await useConfigStore.getState().set({
       customProcesses: [def],
       lastOpenSubSessions: [rec],
     });
-    expect(useConfigStore.getState().config.customProcesses).toEqual([def]);
+    expect(useConfigStore.getState().config.customProcesses).toEqual([defWithIcon]);
     expect(useConfigStore.getState().config.lastOpenSubSessions).toEqual([rec]);
   });
 });

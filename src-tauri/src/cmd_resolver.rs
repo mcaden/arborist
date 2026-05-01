@@ -38,12 +38,23 @@ use std::path::{Path, PathBuf};
 /// resolution. Returns `None` if every step in the pipeline fails.
 #[must_use]
 pub fn resolve_command_executable(command: &str, cwd: &Path) -> Option<PathBuf> {
+    resolve_command_executable_detailed(command, cwd).map(|(p, _)| p)
+}
+
+/// Like [`resolve_command_executable`] but also reports whether the
+/// returned path was reached via [`unwrap_script_wrapper`]. Callers
+/// that branch on "did we follow a script shim" (e.g.
+/// [`resolve_command_icon_path`], which only suppresses interpreter
+/// icons when the user *didn't* type the interpreter directly) use
+/// this richer return.
+#[must_use]
+pub fn resolve_command_executable_detailed(command: &str, cwd: &Path) -> Option<(PathBuf, bool)> {
     let program = parse_program(command)?;
     let resolved = resolve_executable(&program, cwd)?;
     if let Some(unwrapped) = unwrap_script_wrapper(&resolved) {
-        return Some(unwrapped);
+        return Some((unwrapped, true));
     }
-    Some(resolved)
+    Some((resolved, false))
 }
 
 /// Parse the leading program token from a shell-style command line.
@@ -329,21 +340,29 @@ impl Iterator for ShellTokens<'_> {
 
 /// Like [`resolve_command_executable`] but suppresses results that
 /// land on a generic language interpreter wrapper (`node.exe`,
-/// `python.exe`, …). Those wrappers are usually the *script host*
-/// for an npm/pip-installed CLI shim, and their icons are useless
-/// branding for the actual tool — the caller (frontend `ToolIcon`)
-/// should fall back to its bundled SVG glyph instead.
+/// `python.exe`, …) **only when the resolution went through a script
+/// shim** ([`unwrap_script_wrapper`] followed it). That's the
+/// npm/pip-installed-CLI case where the wrapper hands us back the
+/// interpreter and its icon is useless branding for the actual tool.
+///
+/// Direct user invocations (`pwsh`, `node`, `cmd`, `bash`, …) are
+/// **not** suppressed — the user explicitly named that runtime as
+/// their custom-process command, so showing its real icon is exactly
+/// what they want. (The previous unconditional filter caused a fresh
+/// `pwsh` custom process to fall back to the generic SVG glyph even
+/// though Windows would happily extract a real PowerShell icon.)
 ///
 /// Returns `None` in three cases:
-/// 1. [`resolve_command_executable`] returned `None`.
-/// 2. The resolved path's basename matches a known interpreter
-///    (see [`is_interpreter_basename`]).
+/// 1. [`resolve_command_executable_detailed`] returned `None`.
+/// 2. The path was reached via script unwrap **and** the resolved
+///    path's basename matches a known interpreter (see
+///    [`is_interpreter_basename`]).
 /// 3. The basename is missing entirely (defensive).
 #[must_use]
 pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
-    let resolved = resolve_command_executable(command, cwd)?;
+    let (resolved, was_unwrapped) = resolve_command_executable_detailed(command, cwd)?;
     let name = resolved.file_name()?.to_string_lossy().to_ascii_lowercase();
-    if is_interpreter_basename(&name) {
+    if was_unwrapped && is_interpreter_basename(&name) {
         return None;
     }
     Some(resolved)
@@ -592,5 +611,70 @@ mod tests {
             resolve_command_icon_path(wrapper.to_str().unwrap(), dir.path()).is_none(),
             "interpreter targets must be filtered for icon use"
         );
+    }
+
+    /// Regression: when the user *directly* names an interpreter as
+    /// their custom-process command (e.g. typed `pwsh` in the
+    /// Settings UI), the icon resolver must return its real path —
+    /// the interpreter blacklist exists for unwrapped script shims,
+    /// not direct invocations.
+    #[test]
+    fn resolve_command_icon_path_allows_direct_interpreter_invocation() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simulate a directly-resolvable `pwsh.exe` binary in `dir`.
+        let pwsh = dir.path().join("pwsh.exe");
+        std::fs::File::create(&pwsh).unwrap();
+
+        // Direct path → no script unwrap → must NOT be filtered, even
+        // though `pwsh.exe` is in `is_interpreter_basename`.
+        let icon = resolve_command_icon_path(pwsh.to_str().unwrap(), dir.path())
+            .expect("direct interpreter invocation must yield its real exe path");
+        assert_eq!(
+            icon.canonicalize().unwrap(),
+            pwsh.canonicalize().unwrap(),
+            "icon path must point at the directly-invoked interpreter"
+        );
+    }
+
+    /// Regression: a wrapper that unwraps to a *non-interpreter* (the
+    /// VS Code `code.cmd` → `Code.exe` case) must still yield an
+    /// icon path. Pairs with [`unwrap_script_wrapper_finds_referenced_exe`]
+    /// but exercises the full icon-path filter.
+    #[test]
+    fn resolve_command_icon_path_passes_unwrapped_non_interpreter_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let real_exe = dir.path().join("Code.exe");
+        std::fs::write(&real_exe, b"binary").unwrap();
+        let wrapper = bin.join("code.cmd");
+        let mut f = std::fs::File::create(&wrapper).unwrap();
+        writeln!(f, r#"@"%~dp0..\Code.exe" %*"#).unwrap();
+        drop(f);
+
+        let icon = resolve_command_icon_path(wrapper.to_str().unwrap(), dir.path())
+            .expect("non-interpreter unwrap targets must resolve for icons");
+        assert_eq!(
+            icon.canonicalize().unwrap(),
+            real_exe.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_command_executable_detailed_reports_unwrap_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("plain.exe");
+        std::fs::File::create(&exe).unwrap();
+        let (_p, was_unwrapped) =
+            resolve_command_executable_detailed(exe.to_str().unwrap(), dir.path()).unwrap();
+        assert!(!was_unwrapped, "direct exe invocations are not unwrapped");
+
+        let wrapper = dir.path().join("shim.cmd");
+        let mut f = std::fs::File::create(&wrapper).unwrap();
+        writeln!(f, r#"@"%~dp0plain.exe" %*"#).unwrap();
+        drop(f);
+        let (_p2, was_unwrapped2) =
+            resolve_command_executable_detailed(wrapper.to_str().unwrap(), dir.path()).unwrap();
+        assert!(was_unwrapped2, "shim invocations report unwrap=true");
     }
 }

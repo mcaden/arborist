@@ -174,13 +174,27 @@ describe('configGet', () => {
 });
 
 describe('configSet', () => {
-  it("calls invoke('config_set') wrapping the partial under `partial`", async () => {
-    invokeMock.mockResolvedValueOnce(undefined);
+  it("calls invoke('config_set') wrapping the partial under `partial` and returns the merged AppConfig", async () => {
+    const merged: AppConfig = {
+      configVersion: 4,
+      defaultInstructionSets: { claude: '', copilot: '' },
+      instructionSetsDir: '',
+      workspaceRoot: null,
+      worktreeRoots: [],
+      prelaunchCommands: ['nvm use'],
+      worktreePrelaunchCommands: {},
+      aiLaunchCommands: { claude: '', copilot: '' },
+      lastOpenSessions: [],
+      tabOrder: [],
+      activeSessionId: null,
+    };
+    invokeMock.mockResolvedValueOnce(merged);
     const patch: PartialAppConfig = { prelaunchCommands: ['nvm use'] };
 
-    await bridge.configSet(patch);
+    const result = await bridge.configSet(patch);
 
     expect(invokeMock).toHaveBeenCalledWith('config_set', { partial: patch });
+    expect(result).toEqual(merged);
   });
 
   it('forwards rejections from the backend', async () => {

@@ -35,6 +35,7 @@ import {
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
 import { useSubSessionStore } from '@/store/sub-session-store';
+import { useConfigStore } from '@/store/config-store';
 import type {
   SessionActivityEvent,
   SessionId,
@@ -364,8 +365,11 @@ export const useSessionStore = create<Store>((set, get) => {
         if (!ids.includes(view.id)) reordered.push(view);
       }
       set({ sessions: reordered });
-      // Diff-only: only the field that actually changed.
-      await configSet({ tabOrder: ids });
+      // Diff-only: only the field that actually changed. Mirror the
+      // backend-returned merged config into `useConfigStore` so its
+      // `tabOrder` selector stays in sync without an extra round trip.
+      const merged = await configSet({ tabOrder: ids });
+      useConfigStore.setState({ config: merged });
     },
 
     requestClose: (id) => {
