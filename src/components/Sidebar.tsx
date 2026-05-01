@@ -23,6 +23,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { CloseConfirmDialog } from './CloseConfirmDialog';
+import { FitDebugButton } from './FitDebugButton';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
 import { SidebarSubTab } from './SidebarSubTab';
@@ -171,6 +172,11 @@ export function Sidebar(): JSX.Element {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (target.isContentEditable) return;
       if (target.closest('[role="dialog"]')) return;
+      // Skip non-tab buttons inside the sidebar (Settings, Fit-debug). They
+      // bubble keydown into this tablist handler, which then `preventDefault`s
+      // Enter/Space and breaks their normal activation. Tabs themselves carry
+      // role="tab", so a tab's button passes the gate.
+      if (tag === 'BUTTON' && !target.matches('[role="tab"]')) return;
     }
     if (ids.length === 0) return;
     const current = Math.min(focusedIndex, ids.length - 1);
@@ -268,7 +274,7 @@ export function Sidebar(): JSX.Element {
           </ul>
         </SortableContext>
       </DndContext>
-      <div className="mt-auto border-t border-slate-200 px-2 py-2 dark:border-slate-800">
+      <div className="mt-auto flex items-center gap-1 border-t border-slate-200 px-2 py-2 dark:border-slate-800">
         <button
           type="button"
           data-testid="settings-button"
@@ -276,11 +282,12 @@ export function Sidebar(): JSX.Element {
             setSettingsInitialTab('general');
             setSettingsOpen(true);
           }}
-          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
+          className="flex flex-1 items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
         >
           <span aria-hidden="true">⚙</span>
           <span>Settings</span>
         </button>
+        <FitDebugButton />
       </div>
       <CloseConfirmDialog />
       {contextMenu && (

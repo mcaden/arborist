@@ -291,6 +291,8 @@ fn create_parent(h: &Harness) -> arborist_lib::types::SessionView {
             tool: Tool::Claude,
             worktree_path: h.worktree.path().to_path_buf(),
             instruction_set_id: Some(h.instruction_id.clone()),
+            cols: 80,
+            rows: 24,
         },
     )
     .expect("parent create ok")

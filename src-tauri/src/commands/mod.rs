@@ -30,8 +30,8 @@ use crate::sub_sessions::SubAppContext;
 use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult,
     SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionOutputEvent,
-    SessionResizeArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
-    SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
+    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView,
+    SubSession, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
     SubSessionResizeArgs, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs,
     WorktreeCreateResult,
 };
@@ -178,14 +178,25 @@ pub async fn session_input(app: tauri::AppHandle, args: SessionInputArgs) -> Res
 }
 
 #[tauri::command]
-pub async fn session_restart(app: tauri::AppHandle, args: SessionIdArg) -> Result<(), AppError> {
+pub async fn session_restart(
+    app: tauri::AppHandle,
+    args: SessionRestartArgs,
+) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    session::session_restart_impl(&ctx, args.session_id)
+    session::session_restart_impl(&ctx, args)
 }
 
 /// Frontend signals that it has subscribed to `session://output` and
 /// `session://status`. The first call triggers restore-on-launch (DESIGN
 /// §5.5); subsequent calls are no-ops.
+///
+/// **Awaits restore registration** before resolving so the frontend can
+/// safely fire its first `session_resize` (issued synchronously by
+/// `attachToHost` → `refitEntry`) and trust that any restored session id
+/// is already registered in `pending_spawn`. Without this, the
+/// resize-arrives-before-restore race would silently drop the deferred
+/// spawn (`pool.resize` → `NotFound`), leaving the session stuck in
+/// `Starting` with no PTY child.
 #[tauri::command]
 pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
@@ -193,19 +204,29 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     if session::frontend_ready_impl(&ctx) {
         let ctx_for_task = Arc::clone(&ctx);
         let sub_ctx_for_task = Arc::clone(&sub_ctx);
-        // `restore_all_sessions` does blocking IO and PTY spawn — run it
-        // on a blocking thread so we don't hold the executor. We
-        // intentionally don't await the JoinHandle: restore is fire-and-
-        // forget from the frontend's perspective.
+        // `restore_all_sessions` no longer spawns PTYs (it only does
+        // disk IO + HashMap inserts), so the work is bounded — but we
+        // still run it on a blocking thread because materialise_temp_files
+        // / cleanup_orphans / store IO can block. We *await* completion
+        // here so the resolution of `frontend_ready` becomes a
+        // happens-before edge for the frontend's first `session_resize`.
         //
-        // Phase 7: after the parent-session restore completes, kick off
-        // the sub-session restore second pass on the SAME blocking
-        // thread so children only attempt to spawn after their parents
-        // have been re-materialised in `sessions.json`.
-        std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
+        // Phase 7: after the parent-session restore completes, run the
+        // sub-session restore second pass on the SAME blocking thread
+        // so children only attempt to spawn after their parents have
+        // been re-materialised in `sessions.json`. Both restores must
+        // be done before we return — same happens-before reasoning.
+        tauri::async_runtime::spawn_blocking(move || {
             session::restore_all_sessions(&ctx_for_task);
             subsession::restore_all_sub_sessions_impl(&ctx_for_task, &sub_ctx_for_task);
-        }));
+        })
+        .await
+        .map_err(|join_err| {
+            AppError::new(
+                "Internal",
+                format!("restore_all_sessions task panicked: {join_err}"),
+            )
+        })?;
     }
     Ok(())
 }

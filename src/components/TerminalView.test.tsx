@@ -10,6 +10,7 @@ const mockTerminals: Array<{
   focus: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
+  paste: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
 }> = [];
@@ -23,6 +24,7 @@ vi.mock('@xterm/xterm', () => {
       focus: vi.fn(),
       dispose: vi.fn(),
       loadAddon: vi.fn(),
+      paste: vi.fn(),
       cols: 80,
       rows: 24,
     };
@@ -104,7 +106,11 @@ describe('TerminalView', () => {
     render(<TerminalView sessionId="s1" isActive={true} />);
     const restart = screen.getByRole('button', { name: /restart/i });
     act(() => restart.click());
-    expect(sessionRestart).toHaveBeenCalledWith({ sessionId: 's1' });
+    expect(sessionRestart).toHaveBeenCalledWith({
+      sessionId: 's1',
+      cols: 80,
+      rows: 24,
+    });
   });
 
   it('shows overlay when status === exited', () => {

@@ -199,10 +199,12 @@ describe('NewSessionDialog', () => {
     fireEvent.click(createBtn);
     await waitFor(() => expect(bridgeMock.worktreeCreate).toHaveBeenCalledWith('my-feature'));
     await waitFor(() =>
-      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
-        tool: 'claude',
-        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
-      }),
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool: 'claude',
+          worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+        }),
+      ),
     );
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
@@ -377,10 +379,12 @@ describe('NewSessionDialog', () => {
     fireEvent.click(createBtn);
     await waitFor(() => expect(bridgeMock.worktreeCreate).toHaveBeenCalledWith('my-feature'));
     await waitFor(() =>
-      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
-        tool: 'claude',
-        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
-      }),
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool: 'claude',
+          worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+        }),
+      ),
     );
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
   });
@@ -640,10 +644,12 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /create session/i }));
 
     await waitFor(() =>
-      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
-        tool: 'claude',
-        worktreePath: `${REPO_ROOT}/.worktrees/main`,
-      }),
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool: 'claude',
+          worktreePath: `${REPO_ROOT}/.worktrees/main`,
+        }),
+      ),
     );
     // Defensive: assert the field was not silently included as undefined
     // either, so the contract change is unambiguous on the wire.

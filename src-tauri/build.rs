@@ -28,16 +28,18 @@ fn git_command() -> Command {
 /// Detect the git branch name this build is being produced from.
 ///
 /// Resolution order:
-///   1. `ARBORIST_BUILD_BRANCH` (explicit override)
-///   2. `GITHUB_HEAD_REF` (set in PR builds — source branch, not `merge`)
-///   3. `GITHUB_REF_NAME` (set in branch/tag builds)
-///   4. `git rev-parse --abbrev-ref HEAD`
+///   1. `GITHUB_HEAD_REF` (set in PR builds — source branch, not `merge`)
+///   2. `GITHUB_REF_NAME` (set in branch/tag builds)
+///   3. `git rev-parse --abbrev-ref HEAD`
 ///
 /// Returns an empty string if none succeed or the branch is detached / `HEAD`.
+///
+/// Note: there is intentionally no `ARBORIST_BUILD_BRANCH` override input.
+/// CI vars + git already cover every legitimate case, and an env-var input
+/// would silently leak into PTY children spawned by the running app (which
+/// inherit the build/dev shell's env), baking the wrong branch into any
+/// nested `tauri:dev` invocation.
 fn detect_branch() -> String {
-    if let Ok(b) = std::env::var("ARBORIST_BUILD_BRANCH") {
-        return b.trim().to_string();
-    }
     for var in ["GITHUB_HEAD_REF", "GITHUB_REF_NAME"] {
         if let Ok(v) = std::env::var(var) {
             let v = v.trim();
@@ -64,11 +66,10 @@ fn detect_branch() -> String {
 
 /// Sanitize a branch name before embedding it in a `cargo:` directive.
 ///
-/// Branch names can in principle contain control characters (notably
-/// newlines via the `ARBORIST_BUILD_BRANCH` override).  Without sanitization
-/// a malicious or malformed value could inject extra `cargo:` lines into
-/// the build output.  Restrict to a single-line, conservative character set:
-/// ASCII alphanumerics plus `-_./+:`.  Anything else is dropped.
+/// CI-provided env vars (`GITHUB_*`) are normally well-formed, but defense
+/// in depth: restrict to a single line and a conservative character set
+/// (ASCII alphanumerics plus `-_./+:`) so a malformed value can't inject
+/// extra `cargo:` lines into the build output.
 fn sanitize_branch(raw: &str) -> String {
     raw.lines()
         .next()
@@ -82,8 +83,9 @@ fn main() {
     let branch = sanitize_branch(&detect_branch());
     println!("cargo:rustc-env=ARBORIST_BUILD_BRANCH={branch}");
 
-    // Re-run when the override or CI env vars change.
-    println!("cargo:rerun-if-env-changed=ARBORIST_BUILD_BRANCH");
+    // Re-run when CI env vars change. We deliberately do NOT
+    // `rerun-if-env-changed=ARBORIST_BUILD_BRANCH` — that variable is no
+    // longer an input (see `detect_branch` doc comment).
     println!("cargo:rerun-if-env-changed=GITHUB_HEAD_REF");
     println!("cargo:rerun-if-env-changed=GITHUB_REF_NAME");
 

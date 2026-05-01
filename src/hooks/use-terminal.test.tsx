@@ -13,9 +13,16 @@ const mockTerminals: Array<{
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
+  paste: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
+  _core: {
+    _renderService: {
+      clear: ReturnType<typeof vi.fn>;
+      handleCharSizeChanged: ReturnType<typeof vi.fn>;
+    };
+  };
 }> = [];
 
 vi.mock('@xterm/xterm', () => {
@@ -28,8 +35,15 @@ vi.mock('@xterm/xterm', () => {
       dispose: vi.fn(),
       loadAddon: vi.fn(),
       refresh: vi.fn(),
+      paste: vi.fn(),
       cols: 80,
       rows: 24,
+      _core: {
+        _renderService: {
+          clear: vi.fn(),
+          handleCharSizeChanged: vi.fn(),
+        },
+      },
     };
     inst.onData.mockImplementation((cb: (data: string) => void) => {
       inst._dataCb = cb;
@@ -55,8 +69,12 @@ import { renderHook } from '@testing-library/react';
 import {
   __resetTerminalRegistryForTests,
   __getTerminalRegistryForTests,
+  captureTerminalDebugSnapshot,
   disposeTerminal,
+  FALLBACK_PTY_DIMS,
+  getTerminalDimensions,
   initTerminalRouter,
+  measureInitialPtyDimensions,
   useSubTerminal,
   useTerminal,
 } from './use-terminal';
@@ -134,6 +152,517 @@ describe('useTerminal', () => {
     expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: 'hello' });
   });
 
+  it('Shift+Enter on host sends ESC+CR via sessionInput and prevents default', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(false); // preventDefault called
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\r' });
+  });
+
+  it('plain Enter on host is left to xterm (no interception, no input sent)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: false,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true); // not preventDefault'd
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Shift+Enter keyup is ignored (only keydown is intercepted)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keyup', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host.dispatchEvent(evt);
+
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Shift+Enter during IME composition is left to the IME', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('legacy IME signal (keyCode 229) is left untouched', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    // KeyboardEvent constructor doesn't accept keyCode; assign on the
+    // dispatched event to mimic legacy WebView behaviour.
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Process',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(evt, 'keyCode', { value: 229 });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+Shift+Enter is not intercepted (other shortcuts unaffected)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = host.dispatchEvent(evt);
+
+    expect(dispatched).toBe(true);
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+V on host triggers navigator.clipboard.readText and term.paste', async () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn().mockResolvedValue('clip-text');
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(readText).toHaveBeenCalled();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('clip-text');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+V (metaKey) on host triggers paste via navigator.clipboard.readText', async () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn().mockResolvedValue('mac-clip');
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(readText).toHaveBeenCalled();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('mac-clip');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+Shift+V on host also triggers paste (Linux terminal convention)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn().mockResolvedValue('linux-clip');
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(readText).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+Alt+V is not intercepted (Alt-modifier passthrough)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+Shift+V is not intercepted (passthrough; "paste and match style" on macOS)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+Alt+V is not intercepted (Alt-modifier passthrough on macOS)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        metaKey: true,
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+Cmd+V is not intercepted (both ctrl and meta together is undefined)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('plain "v" keystroke (no modifier) is not intercepted', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+V on a non-Latin keyboard layout still triggers paste (matches by code, not key)', async () => {
+    // On a Russian QWERTY layout the V position prints `м`, so `event.key`
+    // is `'м'` — not `'v'`. We deliberately match on `event.code === 'KeyV'`
+    // (physical key) rather than `event.key` so the user's normal paste
+    // shortcut works regardless of active keyboard layout.
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn().mockResolvedValue('layout-clip');
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'м',
+        code: 'KeyV',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(readText).toHaveBeenCalled();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('layout-clip');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl + non-V key with key:"v" is not intercepted (matches by code, not by produced character)', () => {
+    // Inverse of the layout test: on a Russian layout, the key that
+    // produces `'v'` is at a different physical position (code `KeyM`,
+    // since Cyrillic `в` is on a different key entirely — but for this
+    // test the important property is that `event.key === 'v'` does not
+    // imply the user pressed the V shortcut). Anything that isn't
+    // `code === 'KeyV'` must pass through unchanged.
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyM',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+V resolved after disposeTerminal does not write to a stale terminal', async () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    const term = mockTerminals[0]!;
+
+    // Hand-rolled deferred so we can dispatch the keydown, dispose the
+    // session, and only THEN resolve `readText` — exactly the race we're
+    // guarding against.
+    let resolveReadText!: (text: string) => void;
+    const readText = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveReadText = resolve;
+        }),
+    );
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      host.dispatchEvent(evt);
+      expect(readText).toHaveBeenCalled();
+
+      // Dispose the session BEFORE the clipboard read resolves.
+      act(() => disposeTerminal('s1'));
+
+      // Now resolve the pending readText. The guard inside
+      // pasteFromClipboard should drop the paste because the registry
+      // entry is gone.
+      resolveReadText('stale-paste');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(term.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Shift+Enter listener is removed on detach', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    act(() => result.current.detach());
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host.dispatchEvent(evt);
+
+    expect(sessionInput).not.toHaveBeenCalled();
+  });
+
+  it('re-attach to a new host moves the keydown listener (no leak on old host)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host1 = makeHost();
+    const host2 = makeHost();
+    act(() => result.current.attach(host1));
+    act(() => result.current.attach(host2));
+
+    const evt1 = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host1.dispatchEvent(evt1);
+    expect(sessionInput).not.toHaveBeenCalled();
+
+    const evt2 = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host2.dispatchEvent(evt2);
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\r' });
+  });
+
   it('routes session://output events to the matching Terminal', async () => {
     renderHook(() => useTerminal('s1'));
     renderHook(() => useTerminal('s2'));
@@ -164,6 +693,245 @@ describe('useTerminal', () => {
     act(() => result.current.detach());
     expect(host.children.length).toBe(0);
     expect(mockTerminals[0]!.dispose).not.toHaveBeenCalled();
+  });
+
+  it('paste DOM event on host forwards clipboard text via term.paste()', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { getData: (type: string) => (type === 'text/plain' ? 'hello world' : '') },
+    });
+    const prevented = !host.dispatchEvent(evt);
+
+    expect(prevented).toBe(true);
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('hello world');
+  });
+
+  it('paste falls back to navigator.clipboard.readText when clipboardData is empty', async () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const readText = vi.fn().mockResolvedValue('from-async-clipboard');
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { readText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
+      host.dispatchEvent(evt);
+
+      expect(readText).toHaveBeenCalled();
+      // Drain the microtask queue so the .then(...) on readText resolves.
+      // Two awaits: one for the readText resolution, one for the chained .then.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('from-async-clipboard');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('paste with empty clipboard and no async fallback does not call term.paste() and does not preventDefault', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+      // When we have no paste path, we MUST let the event propagate so
+      // xterm or any other listener still has a chance to handle it —
+      // otherwise we just turn paste into a silent no-op (regression).
+      expect(dispatched).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+V keydown does not preventDefault when navigator.clipboard.readText is unavailable', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      // Without a clipboard API, we can't paste — so we must not
+      // suppress xterm's own keydown handling. A silent no-op is a
+      // regression vs. the previous behavior (xterm sending \x16).
+      expect(dispatched).toBe(true);
+      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+V keydown does not preventDefault when navigator.clipboard.readText is unavailable', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'v',
+        code: 'KeyV',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('paste with inline clipboardData still preventDefaults even if async clipboard is missing', () => {
+    // Inline payload is the happy path and must always be consumed —
+    // we own the paste end-to-end here.
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: undefined },
+      configurable: true,
+    });
+
+    try {
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(evt, 'clipboardData', {
+        value: { getData: () => 'inline-text' },
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('inline-text');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('paste runs in capture phase, beating a descendants stopPropagation', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    // Mimic xterm's behaviour: a descendant listener that stops propagation.
+    // Because our host listener is in the **capture** phase, it must run
+    // BEFORE this bubble-phase descendant listener gets a chance to stop
+    // the event.
+    const descendant = document.createElement('div');
+    host.appendChild(descendant);
+    descendant.addEventListener('paste', (e) => {
+      e.stopPropagation();
+    });
+
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { getData: () => 'capture-wins' },
+    });
+    descendant.dispatchEvent(evt);
+
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('capture-wins');
+  });
+
+  it('Shift+Enter runs in capture phase, beating a descendants stopPropagation', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    // Same scenario for keydown — xterm registers its keydown listener on
+    // its hidden textarea (a descendant of host) with capture-phase too,
+    // but because OUR listener is registered on a closer-to-root host
+    // capture-phase fires first regardless of where focus actually is.
+    const descendant = document.createElement('div');
+    host.appendChild(descendant);
+    descendant.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+    });
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    descendant.dispatchEvent(evt);
+
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\r' });
+  });
+
+  it('detach removes the paste listener from the host', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    act(() => result.current.detach());
+
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { getData: () => 'after detach' },
+    });
+    host.dispatchEvent(evt);
+
+    expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+  });
+
+  it('re-attach to a new host moves the paste listener (no leak on old host)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host1 = makeHost();
+    const host2 = makeHost();
+    act(() => result.current.attach(host1));
+    act(() => result.current.attach(host2));
+
+    const evt1 = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt1, 'clipboardData', { value: { getData: () => 'old' } });
+    host1.dispatchEvent(evt1);
+    expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+
+    const evt2 = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt2, 'clipboardData', { value: { getData: () => 'new' } });
+    host2.dispatchEvent(evt2);
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('new');
   });
 
   it('disposeTerminal removes from registry and disposes term + addon', () => {
@@ -263,6 +1031,43 @@ describe('useTerminal', () => {
     expect(sessionResize).not.toHaveBeenCalled();
   });
 
+  it('refit() forces a render-service repaint each call (recovers from fit() short-circuit when dims are unchanged)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const handleCharSizeChanged = mockTerminals[0]!._core._renderService.handleCharSizeChanged;
+    const clear = mockTerminals[0]!._core._renderService.clear;
+
+    // Attach already ran one synchronous fit cycle, so each spy fired
+    // exactly once during attachment.
+    expect(handleCharSizeChanged).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledTimes(1);
+
+    // A subsequent imperative refit fires both again — even though the
+    // mocked dims haven't changed (FitAddon.fit() would short-circuit
+    // its internal renderService.clear + term.resize). This is the exact
+    // case where a manual window resize "fixes it" but the old refit
+    // path did nothing visible: the renderer's inline sizes on
+    // .xterm-screen / row elements were never re-applied.
+    act(() => result.current.refit());
+    expect(handleCharSizeChanged).toHaveBeenCalledTimes(2);
+    expect(clear).toHaveBeenCalledTimes(2);
+  });
+
+  it('refit() tolerates xterm builds without _core / _renderService', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    // Simulate a future xterm major that drops or renames the private
+    // fields we poke at — refit should degrade to the old fit+refresh
+    // behaviour rather than throwing.
+    (mockTerminals[0] as unknown as { _core?: unknown })._core = undefined;
+    expect(() => act(() => result.current.attach(host))).not.toThrow();
+    expect(() => act(() => result.current.refit())).not.toThrow();
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalled();
+    expect(mockTerminals[0]!.refresh).toHaveBeenCalled();
+  });
+
   it('refit() does not cancel a pending debounced fit when fit() throws', () => {
     let captured: ResizeObserverCallback | null = null;
     class FakeRO {
@@ -329,5 +1134,172 @@ describe('useSubTerminal', () => {
       rows: 24,
     });
     expect(sessionResize).not.toHaveBeenCalled();
+  });
+});
+
+describe('initial PTY dimension helpers', () => {
+  it('getTerminalDimensions returns null for unknown sessions', () => {
+    expect(getTerminalDimensions('nope')).toBeNull();
+  });
+
+  it('getTerminalDimensions returns null for an entry that has not been attached/fitted yet', () => {
+    // Regression for the "80x24 leaks into session_restart" bug: a
+    // brand-new xterm Terminal defaults to cols=80/rows=24 even before
+    // open()/fit(). Returning those would feed the OS-default size
+    // straight back into the backend on a fast Restart click.
+    renderHook(() => useTerminal('s1'));
+    expect(__getTerminalRegistryForTests().has('s1')).toBe(true);
+    expect(getTerminalDimensions('s1')).toBeNull();
+  });
+
+  it('getTerminalDimensions returns the measured dims after a successful attach/fit', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    // attach() ran one synchronous refit; lastCols/lastRows now mirror
+    // the mock terminal's seeded 80×24.
+    expect(getTerminalDimensions('s1')).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it('getTerminalDimensions returns null after detach (wrapper no longer connected)', () => {
+    // Defensive: detach() leaves the registry entry in place (so the
+    // next attach can re-parent without re-running term.open) but
+    // disconnects the wrapper. We treat that as "no proven-fit dims"
+    // rather than handing back the last-known size, which may not match
+    // the new host's layout.
+    const { result } = renderHook(() => useTerminal('s1'));
+    act(() => result.current.attach(makeHost()));
+    expect(getTerminalDimensions('s1')).toEqual({ cols: 80, rows: 24 });
+    act(() => result.current.detach());
+    expect(getTerminalDimensions('s1')).toBeNull();
+  });
+
+  it('measureInitialPtyDimensions reuses an attached, proven-fit terminal when present', () => {
+    renderHook(() => useTerminal('s1'));
+    // Force-mark the entry as both attached AND proven-fit (lastCols/Rows
+    // > 0 — the same gate getTerminalDimensions uses). Without
+    // lastCols/Rows the helper would correctly fall through to the DOM
+    // probe even though host is connected, since the terminal was never
+    // actually fit.
+    const entry = __getTerminalRegistryForTests().get('s1')!;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    type Mut = {
+      host: HTMLElement | null;
+      wrapper: HTMLElement | null;
+      lastCols: number;
+      lastRows: number;
+    };
+    const mut = entry as unknown as Mut;
+    mut.host = host;
+    // measureInitialPtyDimensions delegates to getTerminalDimensions,
+    // which checks `wrapper?.isConnected` not `host.isConnected`.
+    const wrapper = document.createElement('div');
+    host.appendChild(wrapper);
+    mut.wrapper = wrapper;
+    mut.lastCols = 173;
+    mut.lastRows = 47;
+    expect(measureInitialPtyDimensions()).toEqual({ cols: 173, rows: 47 });
+  });
+
+  it('measureInitialPtyDimensions does NOT reuse a connected-but-unfitted entry (lastCols/Rows still 0)', () => {
+    // Regression for the "splash too narrow" risk that survived the
+    // first round of review fixes: an entry whose host is connected
+    // but whose first fitAddon.fit() threw (e.g. host was zero-size
+    // mid-transition) leaves lastCols/lastRows at 0 even though
+    // term.cols/rows still default to 80/24. Reusing those would feed
+    // 80x24 straight back into session_create — exactly the bug we're
+    // closing. The helper must skip the entry and fall through.
+    renderHook(() => useTerminal('s1'));
+    const entry = __getTerminalRegistryForTests().get('s1')!;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const wrapper = document.createElement('div');
+    host.appendChild(wrapper);
+    type Mut = {
+      host: HTMLElement | null;
+      wrapper: HTMLElement | null;
+      lastCols: number;
+      lastRows: number;
+    };
+    const mut = entry as unknown as Mut;
+    mut.host = host;
+    mut.wrapper = wrapper;
+    // term.cols/rows still default to 80/24 from the xterm mock (the
+    // exact OS-default we want to avoid leaking). lastCols/lastRows
+    // remain 0 — the proven-fit signal. No <main> in the DOM ⇒ helper
+    // must reach the FALLBACK branch instead of returning {80,24}.
+    expect(mockTerminals[0]!.cols).toBe(80);
+    expect(mockTerminals[0]!.rows).toBe(24);
+    expect(mut.lastCols).toBe(0);
+    expect(mut.lastRows).toBe(0);
+    expect(document.querySelector('main')).toBeNull();
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
+  });
+
+  it('measureInitialPtyDimensions ignores stale registry entries whose host is not connected', () => {
+    // Reproduces the "session is mid-dispose" race: the registry entry
+    // still exists, its `host` ref is non-null, but the host has been
+    // removed from the DOM. We must NOT reuse those cols/rows — they
+    // reflect a previous layout and could mislead the new session's
+    // PTY size.
+    renderHook(() => useTerminal('s1'));
+    const entry = __getTerminalRegistryForTests().get('s1')!;
+    const detachedHost = document.createElement('div'); // never appended
+    (entry as unknown as { host: HTMLElement | null }).host = detachedHost;
+    mockTerminals[0]!.cols = 999;
+    mockTerminals[0]!.rows = 999;
+    // No <main>, so we expect the fallback rather than the stale dims.
+    expect(document.querySelector('main')).toBeNull();
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
+  });
+
+  it('measureInitialPtyDimensions falls back to defaults when no <main> exists in the DOM', () => {
+    // No active terminals (registry empty) and no <main> element.
+    expect(document.querySelector('main')).toBeNull();
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
+  });
+
+  it('measureInitialPtyDimensions falls back to defaults when <main> is laid out at 0×0', () => {
+    // jsdom doesn't compute layout, so getBoundingClientRect returns
+    // {width: 0, height: 0}. Without the explicit zero-rect bail, the
+    // helper would clamp 0/cellW up to the 20-col floor and silently
+    // hand back a tiny PTY — exactly the splash-too-narrow regression.
+    const main = document.createElement('main');
+    document.body.appendChild(main);
+    const rect = main.getBoundingClientRect();
+    expect(rect.width).toBe(0);
+    expect(rect.height).toBe(0);
+    expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
+  });
+});
+
+describe('captureTerminalDebugSnapshot', () => {
+  it('returns ancestors oldest-first (root → host parent), matching the documented order', () => {
+    // Build a small DOM tree:  body > article > section > main > host
+    // Snapshot's `ancestors` must come back as
+    // [body, article, section, main] (oldest → youngest).
+    const article = document.createElement('article');
+    const section = document.createElement('section');
+    const main = document.createElement('main');
+    const host = document.createElement('div');
+    section.appendChild(main);
+    article.appendChild(section);
+    document.body.appendChild(article);
+    main.appendChild(host);
+
+    const { result } = renderHook(() => useTerminal('s1'));
+    act(() => result.current.attach(host));
+
+    const snapshot = captureTerminalDebugSnapshot();
+    const entry = snapshot.entries.find((e) => e.sessionId === 's1');
+    expect(entry).toBeDefined();
+    const tags = entry!.ancestors.map((a) => a.tag);
+    // describeAncestors walks `host.parentElement` upward (host = the div
+    // attached above), so closest-first that's [main, section, article,
+    // body, html]. Reversed for oldest-first → [html, body, ...main].
+    expect(tags[0]).toBe('html');
+    expect(tags[tags.length - 1]).toBe('main');
+    expect(tags).toEqual(['html', 'body', 'article', 'section', 'main']);
   });
 });

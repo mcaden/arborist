@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use arborist_lib::compose::{copilot_otel_path, session_temp_dir};
 use arborist_lib::pty_pool::{
     cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink,
-    PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, OUTPUT_CHANNEL_CAPACITY,
+    PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, DEFAULT_PTY_SIZE,
+    OUTPUT_CHANNEL_CAPACITY,
 };
 use arborist_lib::types::{
     InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool,
@@ -164,7 +165,7 @@ fn spawn_banner_then_quit_yields_exited_status() {
 
     let rt = rt();
     let _g = rt.enter();
-    let pid = pool.spawn(&session, sink).expect("spawn");
+    let pid = pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
     assert!(pid > 0);
 
     assert!(
@@ -206,7 +207,7 @@ fn echoes_input_back_through_sink() {
 
     let _rt = rt();
     let _g = _rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
     pool.write(&session.id, b"hello\r\n").expect("write");
     assert!(
@@ -227,7 +228,7 @@ fn resize_calls_do_not_disrupt_io() {
 
     let _rt = rt();
     let _g = _rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
     pool.resize(&session.id, 100, 30).expect("resize");
     pool.resize(&session.id, 80, 24).expect("resize");
@@ -251,7 +252,7 @@ fn nonzero_exit_yields_error_status() {
 
     let _rt = rt();
     let _g = _rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
     pool.write(&session.id, b"exit 7\r\n").expect("write");
     assert!(
@@ -283,7 +284,7 @@ fn kill_terminates_child_and_removes_entry_and_temp_dir() {
 
     let rt = rt();
     let _g = rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready");
 
     rt.block_on(async {
@@ -304,12 +305,16 @@ fn respawn_existing_yields_a_new_pid() {
 
     let rt = rt();
     let _g = rt.enter();
-    let pid1 = pool.spawn(&session, sink.clone()).expect("spawn 1");
+    let pid1 = pool
+        .spawn(&session, sink.clone(), DEFAULT_PTY_SIZE)
+        .expect("spawn 1");
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready 1");
     rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
 
     let (sink2, outs2, _stats2) = recording_sink();
-    let pid2 = pool.respawn_existing(&session, sink2).expect("respawn");
+    let pid2 = pool
+        .respawn_existing(&session, sink2, DEFAULT_PTY_SIZE)
+        .expect("respawn");
     assert_ne!(pid1, pid2, "respawn should yield a new pid");
     assert!(
         wait_for(&outs2, |s| s.contains("READY"), Duration::from_secs(5)).is_some(),
@@ -365,7 +370,7 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
 
     let rt = rt();
     let _g = rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
     // Assert: the spawner saw a ChildCommand with the three OTel env keys.
     let cmd = spawner_for_assert
@@ -429,7 +434,7 @@ fn pool_spawn_prep_is_noop_for_claude_session() {
 
     let rt = rt();
     let _g = rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
     let cmd = spawner_for_assert
         .last_cmd
@@ -662,7 +667,7 @@ fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
 
     let rt = rt();
     let _g = rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
     // Wait for the read thread to finish producing AND for the channel to
     // fill up. The channel cap is 512; 2000 chunks > 512 so drops must occur.
@@ -731,7 +736,7 @@ fn no_output_delivered_after_kill_returns() {
 
     let rt = rt();
     let _g = rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
     rt.block_on(async {
         pool.kill(&session.id).await.expect("kill");
     });
@@ -766,7 +771,7 @@ fn utf8_character_split_across_reads_emerges_intact() {
 
     let rt = rt();
     let _g = rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
     assert!(
         wait_for(&outs, |s| s.contains("a世b"), Duration::from_secs(3)).is_some(),
@@ -801,7 +806,7 @@ fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
     let (sink, _outs, stats) = recording_sink();
     let rt = rt();
     let _g = rt.enter();
-    pool.spawn(&session, sink).expect("spawn");
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
     assert!(
         wait_for_status(
             &stats,

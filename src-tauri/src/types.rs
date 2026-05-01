@@ -682,6 +682,15 @@ pub struct SessionCreateArgs {
     /// See [`Session::instruction_set_id`].
     #[serde(default)]
     pub instruction_set_id: Option<InstructionSetId>,
+    /// Initial PTY width (columns) the child process will see at startup.
+    /// The frontend measures the terminal host before calling `session_create`
+    /// so the CLI's first paint (e.g., a Copilot/Claude splash screen)
+    /// renders at the right width — without this, the child reads 80 cols
+    /// from the OS, draws its splash narrow, and never re-paints when the
+    /// later `session_resize` arrives.
+    pub cols: u16,
+    /// Initial PTY height (rows). See [`Self::cols`].
+    pub rows: u16,
 }
 
 /// Arguments for any command keyed only by session id
@@ -735,6 +744,21 @@ pub struct SessionCloseResult {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionResizeArgs {
+    pub session_id: SessionId,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Arguments for `session_restart`. Carries the current PTY dimensions so
+/// the freshly-spawned child process sees the right size from its very
+/// first `ioctl(TIOCGWINSZ)` / ConPTY query, instead of starting at the
+/// OS-default 80×24 and rendering its initial output (splash screen,
+/// shell prompt, …) at the wrong width.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::SessionRestartArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRestartArgs {
     pub session_id: SessionId,
     pub cols: u16,
     pub rows: u16,

@@ -26,6 +26,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { isInsideWorktreesDir } from '@/lib/worktree-paths';
 import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
+import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { selectPrelaunchCommands, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionActions } from '@/store/session-store';
@@ -250,7 +251,13 @@ export function NewSessionDialog(): JSX.Element | null {
       // We refresh the worktree list lazily only on the failure path — on
       // success the dialog closes and the listing is never shown.
       try {
-        await actions.create({ tool, worktreePath: result.path });
+        const initialDims = measureInitialPtyDimensions();
+        await actions.create({
+          tool,
+          worktreePath: result.path,
+          cols: initialDims.cols,
+          rows: initialDims.rows,
+        });
         close();
       } catch (sessionErr) {
         setSubmitError(formatError(sessionErr));
@@ -303,9 +310,12 @@ export function NewSessionDialog(): JSX.Element | null {
       // `.github/copilot-instructions.md`. Power users can attach an
       // additional instruction-set overlay through Settings; this wizard
       // keeps the per-session create flow opinionated.
+      const initialDims = measureInitialPtyDimensions();
       await actions.create({
         tool,
         worktreePath: worktree.path,
+        cols: initialDims.cols,
+        rows: initialDims.rows,
       });
       close();
     } catch (err) {

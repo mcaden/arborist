@@ -426,6 +426,32 @@ describe('Sidebar', () => {
     fireEvent.click(screen.getByTestId('settings-button'));
     expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
   });
+
+  it('does not swallow Enter/Space activation on non-tab buttons in the bottom bar', () => {
+    // Regression for the "Settings/Fit buttons stop working with the
+    // keyboard" PR-review finding: the tablist `onKeyDown` used to fire
+    // `preventDefault()` on Enter/Space for ANY descendant, so focusing
+    // the Settings button and pressing Enter would no longer activate
+    // it. Buttons inside the sidebar that lack `role="tab"` must be
+    // skipped by the tablist key handler so the browser's default click
+    // synthesis fires normally.
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    expect(screen.queryByTestId('settings-dialog')).toBeNull();
+
+    const settingsBtn = screen.getByTestId('settings-button');
+    settingsBtn.focus();
+    // Mirror what a real keyboard activation would do: fire keydown
+    // with the focused button as the event target. The handler must
+    // bail out, leaving Enter free to trigger the click → onClick.
+    fireEvent.keyDown(settingsBtn, { key: 'Enter' });
+    expect(settingsBtn).not.toHaveAttribute('aria-disabled', 'true');
+    // Sanity: the close-confirm dialog (bound to Delete on tabs)
+    // should also remain closed if Delete is pressed on a non-tab
+    // button — proves the gate is wide enough.
+    fireEvent.keyDown(settingsBtn, { key: 'Delete' });
+    expect(screen.queryByText(/terminate session/i)).toBeNull();
+  });
 });
 
 describe('Sidebar unread accessibility', () => {

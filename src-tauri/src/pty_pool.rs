@@ -146,6 +146,51 @@ pub trait PtyKiller: Send + Sync {
 // Production spawner (portable-pty)
 // ---------------------------------------------------------------------------
 
+/// The reserved env-var namespace prefix for Arborist's own build/dev tooling.
+const ARBORIST_ENV_PREFIX: &str = "ARBORIST_";
+
+/// Strip every `ARBORIST_*` env var from the inherited environment of `builder`.
+///
+/// `portable_pty::CommandBuilder` snapshots the current process env at
+/// construction; `env_remove` records an unset that overrides those entries
+/// when the child is spawned. We enumerate `keys` and remove anything
+/// beginning with the `ARBORIST_` prefix — that namespace is reserved for
+/// Arborist's own build/dev tooling (e.g. `ARBORIST_BUILD_BRANCH` from
+/// build.rs, `ARBORIST_DEV_PORT` from `scripts/tauri-dev.mjs`) and must
+/// never leak into the user shells we spawn.
+///
+/// Prefix matching is **case-insensitive** (ASCII): on Windows env-var names
+/// are themselves case-insensitive, so a stray `Arborist_Dev_Port` set by an
+/// outer shell is the same variable as `ARBORIST_DEV_PORT` and must be
+/// stripped too. On Unix the names are technically distinct but the prefix
+/// is by convention reserved regardless of case, so this is also defensible
+/// (and safer than surprising callers with platform-divergent behaviour).
+///
+/// We compare on raw `OsStr` bytes (`as_encoded_bytes()`) rather than
+/// `to_str()` so non-UTF-8 keys (legal on Unix) whose leading bytes match
+/// `ARBORIST_` are still stripped — `to_str()` would return `None` and
+/// silently leak them.
+fn strip_arborist_env_keys<I, K>(builder: &mut CommandBuilder, keys: I)
+where
+    I: IntoIterator<Item = K>,
+    K: AsRef<std::ffi::OsStr>,
+{
+    let prefix_bytes = ARBORIST_ENV_PREFIX.as_bytes();
+    for k in keys {
+        let key_bytes = k.as_ref().as_encoded_bytes();
+        if key_bytes.len() >= prefix_bytes.len()
+            && key_bytes[..prefix_bytes.len()].eq_ignore_ascii_case(prefix_bytes)
+        {
+            builder.env_remove(k.as_ref());
+        }
+    }
+}
+
+/// Production wrapper: feed the current process env into [`strip_arborist_env_keys`].
+fn strip_arborist_env(builder: &mut CommandBuilder) {
+    strip_arborist_env_keys(builder, std::env::vars_os().map(|(k, _)| k));
+}
+
 /// Production [`PtySpawner`] backed by `portable_pty::native_pty_system()`.
 pub struct PortablePtySpawner;
 
@@ -176,6 +221,15 @@ impl PtySpawner for PortablePtySpawner {
         // DESIGN §5.6: cwd is the discrete worktree path — never spliced into
         // the command string.
         builder.cwd(cwd);
+        // Strip Arborist build/dev tooling env vars from the inherited
+        // environment so they don't leak into PTY children. The running app
+        // inherits its launching shell's env, and any `ARBORIST_*` var set
+        // there (e.g. `ARBORIST_BUILD_BRANCH`, `ARBORIST_DEV_PORT` set by
+        // `scripts/tauri-dev.mjs`) would otherwise propagate to user shells
+        // and to nested `tauri:dev` invocations launched from a session,
+        // baking the wrong values into those builds. These vars are only
+        // meaningful at Arborist's own build/launch time.
+        strip_arborist_env(&mut builder);
         // Per-session env additions. The child still inherits the parent
         // process's env (we never call `env_clear`); these are
         // overrides/additions only — see `compose::env_for_tool`.
@@ -523,9 +577,14 @@ impl PtyPool {
     /// invocation `[shell, flag, session.composed_command]` and passes the
     /// session's worktree as the discrete `cwd`.
     ///
+    /// The `size` is the initial PTY dimensions the child sees at startup.
+    /// Callers must measure the host terminal first — passing the wrong size
+    /// here is the exact race that caused the long-standing "splash screen
+    /// rendered at 80 cols then never re-laid-out" bug.
+    ///
     /// Returns the assigned PID.
-    pub fn spawn(&self, session: &Session, sink: PtySink) -> Result<u32, Error> {
-        self.spawn_internal(session, sink)
+    pub fn spawn(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
+        self.spawn_internal(session, sink, size)
     }
 
     /// Re-spawn a session from its **already-stored** `composed_command`.
@@ -534,17 +593,27 @@ impl PtyPool {
     /// "do not recompose at restart time" rule from DESIGN §5.4.
     ///
     /// [`spawn`]: Self::spawn
-    pub fn respawn_existing(&self, session: &Session, sink: PtySink) -> Result<u32, Error> {
+    pub fn respawn_existing(
+        &self,
+        session: &Session,
+        sink: PtySink,
+        size: PtySize,
+    ) -> Result<u32, Error> {
         // If a previous runtime entry exists (e.g. from a prior spawn that
         // hasn't exited yet), tear it down first.
         if self.contains(&session.id) {
             // Best-effort kill; if the child is already dead this is a no-op.
             let _ = self.kill_blocking(&session.id);
         }
-        self.spawn_internal(session, sink)
+        self.spawn_internal(session, sink, size)
     }
 
-    fn spawn_internal(&self, session: &Session, sink: PtySink) -> Result<u32, Error> {
+    fn spawn_internal(
+        &self,
+        session: &Session,
+        sink: PtySink,
+        size: PtySize,
+    ) -> Result<u32, Error> {
         // ------- 1. Per-session spawn prep (telemetry env, temp dir).
         //
         // We do this here — not in `commands/session.rs` — so every spawn
@@ -594,9 +663,7 @@ impl PtyPool {
         };
 
         // ------- 3. Spawn via injected spawner; cwd is discrete (DESIGN §5.6)
-        let spawned = self
-            .spawner
-            .spawn(cmd, &session.worktree_path, DEFAULT_PTY_SIZE)?;
+        let spawned = self.spawner.spawn(cmd, &session.worktree_path, size)?;
         let SpawnedChild {
             pid,
             reader,
@@ -1064,5 +1131,157 @@ mod tests {
         assert!(!is_possible_partial(&[0xFF])); // invalid lead
         assert!(!is_possible_partial(&[0x80])); // continuation
         assert!(!is_possible_partial(&[]));
+    }
+
+    /// Build a probe builder seeded with the supplied env, then strip
+    /// `ARBORIST_*` keys and return the remaining keys. Mirrors production
+    /// by feeding the strip helper an iterator of owned `OsString`s — the
+    /// same shape `std::env::vars_os()` produces.
+    fn keys_after_strip(seed: &[(&str, &str)], strip_keys: &[&str]) -> Vec<String> {
+        let mut b = CommandBuilder::new("/bin/true");
+        // Replace the auto-inherited env with a known-good set so the
+        // assertion isn't perturbed by the actual host environment.
+        b.env_clear();
+        for (k, v) in seed {
+            b.env(*k, *v);
+        }
+        let owned: Vec<std::ffi::OsString> = strip_keys.iter().map(|s| (*s).into()).collect();
+        strip_arborist_env_keys(&mut b, owned);
+        b.iter_full_env_as_str()
+            .map(|(k, _)| k.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn strip_arborist_env_removes_prefixed_keys() {
+        let keys = keys_after_strip(
+            &[
+                ("PATH", "/usr/bin"),
+                ("ARBORIST_BUILD_BRANCH", "main"),
+                ("ARBORIST_DEV_PORT", "1494"),
+                ("HOME", "/home/u"),
+            ],
+            &["PATH", "ARBORIST_BUILD_BRANCH", "ARBORIST_DEV_PORT", "HOME"],
+        );
+        assert!(keys.iter().any(|k| k == "PATH"));
+        assert!(keys.iter().any(|k| k == "HOME"));
+        assert!(!keys
+            .iter()
+            .any(|k| k.to_ascii_uppercase().starts_with("ARBORIST_")));
+    }
+
+    #[test]
+    fn strip_arborist_env_preserves_lookalike_keys() {
+        // Names that *contain* but don't *start with* the prefix must survive.
+        let keys = keys_after_strip(
+            &[("MY_ARBORIST_VAR", "x"), ("ARBORISH_DEV", "x")],
+            &["MY_ARBORIST_VAR", "ARBORISH_DEV"],
+        );
+        assert!(keys.iter().any(|k| k == "MY_ARBORIST_VAR"));
+        assert!(keys.iter().any(|k| k == "ARBORISH_DEV"));
+    }
+
+    #[test]
+    fn strip_arborist_env_is_case_insensitive() {
+        // On Windows env-var names are case-insensitive, so any casing of
+        // the prefix is the same variable and must be stripped. Unix
+        // matches the same behaviour for namespace-hygiene consistency.
+        let keys = keys_after_strip(
+            &[
+                ("Arborist_Build_Branch", "main"),
+                ("arborist_dev_port", "1494"),
+                ("ARBORIST_FOO", "x"),
+                ("PATH", "/usr/bin"),
+            ],
+            &[
+                "Arborist_Build_Branch",
+                "arborist_dev_port",
+                "ARBORIST_FOO",
+                "PATH",
+            ],
+        );
+        assert_eq!(keys, vec!["PATH".to_string()]);
+    }
+
+    #[test]
+    fn strip_arborist_env_ignores_short_or_empty_keys() {
+        // Keys shorter than the prefix can't match; ensure the length
+        // guard doesn't underflow / panic.
+        let keys = keys_after_strip(&[("AR", "x"), ("A", "y")], &["AR", "A"]);
+        assert!(keys.iter().any(|k| k == "AR"));
+        assert!(keys.iter().any(|k| k == "A"));
+    }
+
+    #[test]
+    fn strip_arborist_env_is_noop_when_no_match() {
+        let before = keys_after_strip(&[("PATH", "/usr/bin")], &["PATH"]);
+        assert_eq!(before, vec!["PATH".to_string()]);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn strip_arborist_env_production_path_strips_real_env_var() {
+        // Exercise the production wrapper that reads `std::env::vars_os()`,
+        // ensuring the OsString-based iteration path actually removes a
+        // matching key from the resulting CommandBuilder. Use a
+        // unique-per-test key so concurrent tests can't false-positive
+        // (std::env mutations are process-global). Marked `#[serial(env)]`
+        // so the test suite serializes any other env-mutating tests against
+        // this one — `std::env::set_var`/`remove_var` are process-global
+        // and inherently racy with concurrent reads.
+        struct EnvProbe(&'static str);
+        impl Drop for EnvProbe {
+            fn drop(&mut self) {
+                std::env::remove_var(self.0);
+            }
+        }
+
+        let key = "ARBORIST_TEST_PROBE_PRODUCTION_PATH_8C4A";
+        let _guard = EnvProbe(key);
+        std::env::set_var(key, "1");
+        let mut b = CommandBuilder::new("/bin/true");
+        // Don't env_clear here — we need the inherited env to include our key.
+        strip_arborist_env(&mut b);
+        let remaining: Vec<String> = b
+            .iter_full_env_as_str()
+            .map(|(k, _)| k.to_string())
+            .collect();
+        assert!(
+            !remaining.iter().any(|k| k == key),
+            "production strip_arborist_env failed to remove {key} via vars_os(); remaining keys with ARBORIST prefix: {:?}",
+            remaining
+                .iter()
+                .filter(|k| k.to_ascii_uppercase().starts_with("ARBORIST_"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn strip_arborist_env_strips_non_utf8_keys() {
+        // Env-var names on Unix are arbitrary `OsStr` byte sequences, not
+        // guaranteed UTF-8. A key whose leading bytes are `ARBORIST_` but
+        // whose trailing bytes are non-UTF-8 must still be stripped — the
+        // earlier `to_str()`-gated impl would silently leak such keys.
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        // "ARBORIST_" + invalid UTF-8 byte (0xFF is never valid UTF-8).
+        let mut bytes = b"ARBORIST_".to_vec();
+        bytes.push(0xFF);
+        bytes.extend_from_slice(b"_TAIL");
+        let bad: OsString = OsString::from_vec(bytes);
+
+        let mut b = CommandBuilder::new("/bin/true");
+        b.env_clear();
+        b.env(&bad, "leak-me");
+        // Sanity: the bad key starts in the env before the strip.
+        assert!(b.get_env(&bad).is_some(), "test setup: env not seeded");
+
+        strip_arborist_env_keys(&mut b, vec![bad.clone()]);
+        assert!(
+            b.get_env(&bad).is_none(),
+            "non-UTF-8 ARBORIST_* key was not stripped"
+        );
     }
 }
