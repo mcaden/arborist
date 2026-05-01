@@ -123,10 +123,12 @@ impl VsCodeOwnerResolver {
         platform::find_vscode_pid(&basename)
     }
 
-    /// Lowercased basename of the worktree path. Used both for window
-    /// matching during resolve and for the liveness probe so it can
-    /// detect "workspace window closed" without requiring `Code.exe`
-    /// itself to die.
+    /// Basename of the worktree path. Used both for window matching
+    /// during resolve and for the liveness probe so it can detect
+    /// "workspace window closed" without requiring `Code.exe` itself
+    /// to die. Returned in its original case; `find_vscode_pid`
+    /// lowercases internally and matches case-insensitively against
+    /// the window title.
     fn basename(&self) -> Option<String> {
         self.worktree_path
             .file_name()
