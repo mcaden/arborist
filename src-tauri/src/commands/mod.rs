@@ -67,9 +67,23 @@ pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
 }
 
 /// Deep-merges `partial` into the persisted [`AppConfig`].
+///
+/// Refused while a workspace switch is in progress — the swap relies on
+/// no new writes landing in the *old* store between the gate flip and
+/// the actual `WorkspaceScope` swap. See `AppContext::store` for the
+/// residual snapshot race that the gate alone cannot close.
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
+    if ctx
+        .switch_in_progress
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err(AppError::new(
+            "WorkspaceSwitchInProgress",
+            "A workspace switch is in progress; retry once it completes.",
+        ));
+    }
     ctx.store().save_config(partial).map_err(AppError::from)?;
     Ok(())
 }

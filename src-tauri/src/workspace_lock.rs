@@ -162,6 +162,17 @@ impl WorkspaceLockGuard {
     /// lock file (the caller should treat this as "no advisory
     /// signal available" and not surface it as contention).
     ///
+    /// **Side-effect avoidance:** if the lock file does not yet
+    /// exist on disk, the probe returns `Ok(true)` *without* creating
+    /// the parent directory or the lock file itself. This matters for
+    /// the workspace picker — without the short-circuit, every probed
+    /// candidate path would materialise a `workspaces/<key>/` directory
+    /// (containing only an empty `.lock`) on disk forever, so a user
+    /// browsing through several candidate workspaces would leave a
+    /// trail of empty directories behind. A path with no `.lock` file
+    /// trivially has no current holder, so the answer is the same
+    /// `Ok(true)` we would have returned after creating-and-releasing.
+    ///
     /// **Race window:** because the guard is dropped before the
     /// caller acts on the result, another process can acquire the
     /// lock between probe and the caller's real `acquire()`. The
@@ -169,6 +180,10 @@ impl WorkspaceLockGuard {
     /// transactional acquire performed by `boot::bind_workspace` /
     /// `workspace_switch_impl_inner`.
     pub fn probe(lock_path: impl AsRef<Path>) -> Result<bool, LockError> {
+        let lock_path = lock_path.as_ref();
+        if !lock_path.exists() {
+            return Ok(true);
+        }
         match Self::acquire(lock_path) {
             Ok(_guard) => Ok(true), // dropped at end of scope; lock released immediately
             Err(LockError::Contention) => Ok(false),
@@ -249,15 +264,42 @@ mod tests {
         let _gb = WorkspaceLockGuard::acquire(&b).expect("b");
     }
 
-    /// Probe on a free lock returns `Ok(true)` and does NOT keep the
-    /// lock — a real acquire after the probe must still succeed.
+    /// Probe against a path that has no lock file yet returns
+    /// `Ok(true)` *without* materialising the parent directory or the
+    /// lock file. This keeps the workspace picker side-effect-free
+    /// when the user clicks through several candidate paths.
+    #[test]
+    fn probe_does_not_create_files_when_lock_path_missing() {
+        let td = tempdir().expect("tempdir");
+        let nested = td.path().join("workspaces/abcdef0123/.lock");
+        assert!(!nested.exists());
+        assert!(!nested.parent().expect("parent").exists());
+        assert!(WorkspaceLockGuard::probe(&nested).expect("probe"));
+        assert!(!nested.exists(), "probe must not create the lock file");
+        assert!(
+            !nested.parent().expect("parent").exists(),
+            "probe must not create the parent directory chain"
+        );
+    }
+
+    /// Probe on a *pre-existing* free lock file returns `Ok(true)`
+    /// (without holding the lock) and a real acquire afterwards must
+    /// succeed. Distinct from the missing-file fast-path above.
     #[test]
     fn probe_returns_true_for_free_lock_and_does_not_hold() {
         let td = tempdir().expect("tempdir");
         let lock = td.path().join(".lock");
+        // Create the file up front so we exercise the real
+        // try-lock-then-drop path, not the missing-file fast-path.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock)
+            .expect("create lock file");
         assert!(WorkspaceLockGuard::probe(&lock).expect("probe"));
-        // The lock file was created by the probe, but the lock itself
-        // is free — a real acquire must succeed.
+        // The lock itself is free — a real acquire must succeed.
         let _g = WorkspaceLockGuard::acquire(&lock).expect("acquire after probe");
     }
 

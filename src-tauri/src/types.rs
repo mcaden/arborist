@@ -710,7 +710,7 @@ pub struct WorktreeCreateResult {
 
 /// Arguments for `workspace_switch` (Phase 7 — in-app workspace switch).
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorkspaceSwitchArgs`.
+/// MIRROR: `src/types/arborist.ts::WorkspaceSwitchArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSwitchArgs {

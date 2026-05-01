@@ -571,6 +571,26 @@ async fn focus_updates_active_session_id_and_rejects_unknown() {
     assert_eq!(err.code, "NotFound");
 }
 
+/// Regression for Phase 9 review Issue 3: `session_focus_impl` must
+/// refuse while a workspace switch is in progress. Without this gate,
+/// a stale tab-click from the frontend could write `active_session_id`
+/// for a not-yet-torn-down old-workspace session into a snapshot of
+/// the *old* store that races the swap.
+#[tokio::test]
+async fn focus_refuses_while_workspace_switch_in_progress() {
+    let h = build_harness();
+    let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    h.ctx
+        .switch_in_progress
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let err = session_focus_impl(&h.ctx, v.id).expect_err("must refuse mid-switch");
+    assert_eq!(err.code, "WorkspaceSwitchInProgress");
+    h.ctx
+        .switch_in_progress
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    session_focus_impl(&h.ctx, v.id).expect("succeeds once gate clears");
+}
+
 #[tokio::test]
 async fn close_kills_pty_removes_record_and_clears_active() {
     let h = build_harness();

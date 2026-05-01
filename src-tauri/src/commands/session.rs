@@ -215,6 +215,36 @@ impl AppContext {
     /// across a downstream operation — call this once per command,
     /// then operate on the returned owned handle.
     ///
+    /// **Residual snapshot race (documented, partially mitigated).**
+    /// Because the returned [`ConfigStore`] is an owned clone, the
+    /// per-store `write_lock: Arc<Mutex<()>>` it carries is *unique to
+    /// the old store*: it does not serialise against the new store
+    /// after a workspace swap. A handler that snapshots **before**
+    /// `switch_in_progress` is set can finish writing **after** the
+    /// swap, against the file path of the just-released old workspace.
+    /// The window is small (the file I/O between snapshot and `persist`
+    /// — microseconds to milliseconds) and the practical exposure in
+    /// v1 is limited because:
+    ///
+    ///   1. `session_create`, `session_restart`, `frontend_ready`,
+    ///      `session_focus`, and `config_set` are all gated on
+    ///      `switch_in_progress` — they refuse outright once the
+    ///      switch has flipped the gate.
+    ///   2. There is no in-app settings UI in v1 (SPEC §7), so
+    ///      user-driven `config_set` calls during a switch are rare.
+    ///   3. Sessions that were live in the old workspace are torn
+    ///      down by step 7 of [`workspace_switch_impl_inner`]; their
+    ///      writers are joined before the swap.
+    ///
+    /// The remaining residual is a write that snapshotted *immediately
+    /// before* the gate flip and is mid-`persist` when the swap
+    /// happens. A truly air-tight fix is a workspace-wide write
+    /// barrier (e.g. an `Arc<RwLock<()>>` separate from the scope,
+    /// where every store-writing handler takes a read guard for the
+    /// duration of the write and the swap takes the write guard before
+    /// drop). That refactor is deliberately deferred — see the
+    /// follow-up tracked on this comment.
+    ///
     /// Will `panic!` if the workspace lock is poisoned (which can only
     /// happen if a writer panicked mid-mutation; recovery is
     /// impossible because the swap is not idempotent).
@@ -651,6 +681,13 @@ fn delete_worktree_after_close(
 // ---------------------------------------------------------------------------
 
 pub fn session_focus_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppError> {
+    // Refuse during a workspace switch. Without the gate, a stale focus
+    // event from the frontend (e.g. user clicked a tab a moment before
+    // triggering a switch) could write `active_session_id` for a
+    // not-yet-torn-down old-workspace session into a snapshot of the
+    // *old* store that races the swap (see Issue 3 in the Phase 9
+    // review and the residual race documented on `AppContext::store`).
+    ensure_no_switch_in_progress(ctx)?;
     let sessions = ctx.store().load_sessions();
     if !sessions.contains_key(&id) {
         return Err(AppError::from(Error::NotFound(format!(
@@ -1321,41 +1358,62 @@ pub async fn workspace_switch_impl_inner(
         });
     }
 
-    // Step 4 — flip the gate. From here until the `false` store at the
-    // end, session_create / session_restart / frontend_ready will refuse.
-    ctx.switch_in_progress.store(true, Ordering::SeqCst);
-
-    // Helper: tear down the gate on any early-return error path.
-    let restore_gate_on_error = |e: AppError| -> AppError {
-        ctx.switch_in_progress.store(false, Ordering::SeqCst);
-        e
-    };
+    // Step 4 — flip the gate. From here until the explicit `disarm()`
+    // at the end of the success path, session_create / session_restart /
+    // session_focus / config_set / frontend_ready will refuse.
+    //
+    // The gate is wrapped in a small RAII guard so a *panic* inside any
+    // of the steps below — most plausibly inside a `session_close_impl`
+    // call in step 7, but also possible from the `expect()`s on poisoned
+    // workspace/pending_spawn locks — clears the gate on unwind. Without
+    // the guard, a panicked switch would leave the gate stuck `true`
+    // forever and every subsequent state-creating command would return
+    // `WorkspaceSwitchInProgress` until the user restarted the app.
+    struct GateGuard<'a>(&'a AtomicBool, bool);
+    impl<'a> GateGuard<'a> {
+        fn arm(flag: &'a AtomicBool) -> Self {
+            flag.store(true, Ordering::SeqCst);
+            Self(flag, true)
+        }
+        fn disarm(mut self) {
+            self.0.store(false, Ordering::SeqCst);
+            self.1 = false;
+        }
+    }
+    impl Drop for GateGuard<'_> {
+        fn drop(&mut self) {
+            if self.1 {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+    let gate = GateGuard::arm(&ctx.switch_in_progress);
 
     // Step 5 — acquire OS lock + ConfigStore for the new workspace.
     if let Err(e) = std::fs::create_dir_all(app_data_dir) {
-        return Err(restore_gate_on_error(AppError::new(
+        return Err(AppError::new(
             "Io",
             format!("create_dir_all({}): {e}", app_data_dir.display()),
-        )));
+        ));
     }
     let binding =
         match crate::boot::bind_workspace(&canonical, app_data_dir, branch) {
             Ok(b) => b,
             Err(crate::boot::BootError::Contention { branch, workspace }) => {
-                return Err(restore_gate_on_error(AppError::new(
+                return Err(AppError::new(
                     "WorkspaceLocked",
                     format!(
                     "Workspace is already open in another Arborist window (branch: {}, path: {}).",
                     if branch.trim().is_empty() { "main" } else { &branch },
                     workspace.display(),
                 ),
-                )));
+                ));
             }
             Err(other) => {
-                return Err(restore_gate_on_error(AppError::new(
+                return Err(AppError::new(
                     "Internal",
                     format!("workspace bind failed: {other}"),
-                )));
+                ));
             }
         };
 
@@ -1375,18 +1433,30 @@ pub async fn workspace_switch_impl_inner(
     // *current* store (still the old one until the swap in step 9).
     // session_close_impl uses ctx.store() which clones from the old
     // scope; safe.
+    //
+    // session_close_impl performs three irreversible operations
+    // (`pool.kill`, `store.remove_session`, `store.save_config`) per
+    // session. If close N succeeds but close N+1 fails partway through,
+    // sessions 0..N are already gone permanently — we cannot rebuild
+    // them from the now-trimmed store. We track the count of completed
+    // closes so the surfaced error names that loss explicitly rather
+    // than silently truncating the user's session list.
     let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
-    for id in old_session_ids {
+    for (closed_count, id) in old_session_ids.into_iter().enumerate() {
         if let Err(e) = session_close_impl(ctx, id, false).await {
             // Hard-fail: partial close + swap would leave mixed-workspace
             // state. Drop the new binding (releases its OS lock via
-            // WorkspaceLockGuard's Drop), restore the gate, surface a
-            // useful error.
+            // WorkspaceLockGuard's Drop). The GateGuard's Drop restores
+            // the gate when this function returns.
             drop(binding);
-            return Err(restore_gate_on_error(AppError::new(
+            return Err(AppError::new(
                 "WorkspaceSwitchFailed",
-                format!("could not close session {id} before workspace switch: {e}"),
-            )));
+                format!(
+                    "could not close session {id} before workspace switch \
+                     (already destroyed {closed_count} earlier session(s) in the \
+                     old workspace; their PTYs and persisted records are gone): {e}",
+                ),
+            ));
         }
     }
 
@@ -1417,8 +1487,11 @@ pub async fn workspace_switch_impl_inner(
         warn!(error = %e, "failed to persist last-workspace hint after switch; non-fatal");
     }
 
-    // Step 11 — open the gate and notify the frontend.
-    ctx.switch_in_progress.store(false, Ordering::SeqCst);
+    // Step 11 — open the gate and notify the frontend. `disarm()`
+    // explicitly clears the gate on the success path; if we panicked
+    // anywhere above, the GateGuard's Drop would have cleared it on
+    // unwind instead.
+    gate.disarm();
     emit_changed(&WorkspaceChangedEvent {
         workspace_root: canonical.clone(),
     });

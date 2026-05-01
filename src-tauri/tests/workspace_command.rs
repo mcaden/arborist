@@ -190,7 +190,9 @@ fn workspace_validate_skips_lock_probe_when_app_data_dir_is_none() {
 
 #[test]
 fn workspace_validate_reports_free_lock_as_not_already_open() {
-    // No prior holder → probe acquires + releases successfully → false.
+    // Fresh app_data_dir → lock file doesn't exist → probe's
+    // missing-file fast-path returns true (free) without creating
+    // anything on disk → Some(false) on the wire.
     let app_data_dir = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
     let dir = TempDir::new().unwrap();
