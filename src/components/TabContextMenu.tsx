@@ -25,7 +25,7 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-import { sessionRestart } from '@/lib/tauri-bridge';
+import { formatError, sessionRestart } from '@/lib/tauri-bridge';
 import { useEnabledCustomProcesses } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
 import { useSubSessionActions } from '@/store/sub-session-store';
@@ -157,7 +157,7 @@ export function TabContextMenu({
 
   const handleRestart = (): void => {
     void sessionRestart({ sessionId: parentSessionId }).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       console.warn(`[TabContextMenu] session_restart failed: ${message}`);
     });
     closeMenu();
@@ -175,7 +175,7 @@ export function TabContextMenu({
         defId: def.id,
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         console.warn(`[TabContextMenu] subsession_create(${def.id}) failed: ${message}`);
       });
     closeMenu();

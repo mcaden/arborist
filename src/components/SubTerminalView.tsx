@@ -15,6 +15,7 @@
 import { useEffect, useRef } from 'react';
 
 import { useSubTerminal } from '@/hooks/use-terminal';
+import { formatError } from '@/lib/tauri-bridge';
 import {
   useSubSessionActions,
   useSubSessionById,
@@ -64,7 +65,7 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
 
   const handleClose = (): void => {
     void subActions.close(subSessionId).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       console.warn(`[SubTerminalView] close(${subSessionId}) failed: ${message}`);
     });
   };

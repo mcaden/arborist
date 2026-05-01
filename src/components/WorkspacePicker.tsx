@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
-import { pickDirectory, workspaceValidate } from '@/lib/tauri-bridge';
+import { formatError, pickDirectory, workspaceValidate } from '@/lib/tauri-bridge';
 
 export type WorkspacePickerMode = 'first-boot' | 'change';
 
@@ -81,7 +81,7 @@ export function WorkspacePicker({
           }
         } catch (err) {
           if (seq !== requestSeq.current) return;
-          const message = err instanceof Error ? err.message : String(err);
+          const message = formatError(err);
           setValidation({ kind: 'invalid', error: message });
         }
       })();
@@ -108,7 +108,7 @@ export function WorkspacePicker({
     try {
       await onConfirm(path.trim());
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       setSubmitError(message);
       setSubmitting(false);
     }

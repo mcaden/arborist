@@ -8,7 +8,7 @@
 
 import { useEffect, useRef } from 'react';
 
-import { sessionRestart } from '@/lib/tauri-bridge';
+import { formatError, sessionRestart } from '@/lib/tauri-bridge';
 import { useTerminal } from '@/hooks/use-terminal';
 import { useSessionById, useStatusMessage } from '@/store/session-store';
 import type { SessionId } from '@/types/arborist';
@@ -61,7 +61,7 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
 
   const handleRestart = (): void => {
     void sessionRestart({ sessionId }).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       console.warn(`[TerminalView] session_restart(${sessionId}) failed: ${message}`);
     });
   };

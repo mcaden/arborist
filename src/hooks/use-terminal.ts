@@ -32,6 +32,7 @@ import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import {
+  formatError,
   onSessionOutput,
   sessionInput,
   sessionResize,
@@ -183,7 +184,7 @@ function createEntry(id: string, ioKind: IoKind): RegistryEntry {
         ? sessionInput({ sessionId: id, data })
         : subSessionInput({ id: id as SubSessionId, data });
     void sendInput.catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       console.warn(`[use-terminal] ${ioKind} input(${id}) failed: ${message}`);
     });
   });
@@ -281,7 +282,7 @@ function refitEntry(id: string, entry: RegistryEntry): void {
       ? sessionResize({ sessionId: id, cols, rows })
       : subSessionResize({ id: id as SubSessionId, cols, rows });
   void sendResize.catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = formatError(err);
     console.warn(`[use-terminal] ${entry.ioKind} resize(${id}) failed: ${message}`);
   });
 }

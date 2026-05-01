@@ -21,7 +21,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { CustomProcessesTab } from './CustomProcessesTab';
 import { WorkspacePicker } from './WorkspacePicker';
-import { pickDirectory } from '@/lib/tauri-bridge';
+import { formatError, pickDirectory } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
 import {
   selectAiLaunchCommands,
@@ -181,7 +181,7 @@ export function SettingsDialog({
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       setSubmitError(message);
     } finally {
       setSaving(false);

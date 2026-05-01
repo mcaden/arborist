@@ -401,19 +401,29 @@ describe('useSubSessionStore', () => {
         subSessions: [sub],
         statusMessages: { [sub.id]: 'previous hint' },
       });
-      bridgeMock.subSessionRelaunch.mockRejectedValueOnce(new Error('capability denied'));
+      // Reject with the wire shape Tauri actually produces (an `AppError`
+      // payload — a plain `{ code, message }` object, *not* an `Error`
+      // instance). A naive `String(err)` on this would yield
+      // "[object Object]"; the rollback path must use `formatError` so the
+      // user sees the real failure.
+      bridgeMock.subSessionRelaunch.mockRejectedValueOnce({
+        code: 'CapabilityDenied',
+        message: 'capability denied',
+      });
 
-      await expect(useSubSessionStore.getState().actions.relaunch(sub.id)).rejects.toThrow(
-        'capability denied',
-      );
+      await expect(useSubSessionStore.getState().actions.relaunch(sub.id)).rejects.toMatchObject({
+        code: 'CapabilityDenied',
+        message: 'capability denied',
+      });
 
       // Status rolled back to the prior terminal state — not stuck in `starting`.
       const after = useSubSessionStore.getState();
       const restored = after.subSessions.find((s) => s.id === sub.id);
       expect(restored?.status).toBe('exited');
       expect(restored?.pid).toBeUndefined();
-      // Failure message replaced the previous hint so the user can see what went wrong.
-      expect(after.statusMessages[sub.id]).toBe('capability denied');
+      // Failure message replaced the previous hint with a human-readable
+      // string (NOT "[object Object]") so the user can see what went wrong.
+      expect(after.statusMessages[sub.id]).toBe('CapabilityDenied: capability denied');
     });
   });
 });

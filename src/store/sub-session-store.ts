@@ -28,6 +28,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import {
+  formatError,
   subSessionClose,
   subSessionCreate,
   subSessionFocus,
@@ -293,7 +294,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
             const nextSubs = [...s.subSessions];
             nextSubs[idx] = { ...current, status: snapshot.status, pid: snapshot.pid };
             const nextMsgs: Record<SubSessionId, string> = { ...s.statusMessages };
-            const failMsg = err instanceof Error ? err.message : String(err);
+            const failMsg = formatError(err);
             if (failMsg) {
               nextMsgs[id] = failMsg;
             } else if (snapshot.message !== undefined) {

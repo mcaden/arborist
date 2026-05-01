@@ -26,6 +26,7 @@ import { useShallow } from 'zustand/react/shallow';
 
 import {
   configSet,
+  formatError,
   sessionClose,
   sessionCreate,
   sessionFocus,
@@ -342,7 +343,7 @@ export const useSessionStore = create<Store>((set, get) => {
       try {
         await sessionFocus({ sessionId: id });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         // No rollback — focus is UI-driven and a backend reject just means
         // the persisted active marker is stale. The user's intent stands.
         console.warn(`[session-store] session_focus(${id}) rejected: ${message}`);

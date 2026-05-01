@@ -28,7 +28,7 @@ import {
   subscribeToSubRestored,
   subscribeToSubStatus,
 } from '@/lib/sub-session-events';
-import { frontendReady } from '@/lib/tauri-bridge';
+import { formatError, frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
@@ -139,7 +139,7 @@ export function App(): JSX.Element {
         setStatus('ready');
       } catch (err) {
         if (cancelled) return;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         setError(message);
         setStatus('error');
       }

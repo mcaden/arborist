@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { selectCustomProcesses, useConfigStore } from '@/store/config-store';
+import { formatError } from '@/lib/tauri-bridge';
 import type { CustomProcessDef, CustomProcessKind } from '@/types/arborist';
 
 export interface CustomProcessesTabProps {
@@ -191,7 +192,7 @@ export function CustomProcessesTab({ onClose }: CustomProcessesTabProps): JSX.El
       await setConfig({ customProcesses: trimmed });
       onClose();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       setSubmitError(message);
     } finally {
       setSaving(false);

@@ -16,7 +16,7 @@
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
-import { configGet, configSet } from '@/lib/tauri-bridge';
+import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
 import type {
   AppConfig,
   CustomProcessDef,
@@ -117,7 +117,7 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       const config = await configGet();
       set({ config, status: 'ready', error: null });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       set({ status: 'error', error: message });
       throw err;
     }
