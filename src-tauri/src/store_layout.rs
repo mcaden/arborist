@@ -123,11 +123,32 @@ pub struct StoreRoot {
 impl StoreRoot {
     /// Construct a root from the OS `app_data_dir` and the `BUILD_BRANCH`
     /// constant baked in at compile time (see `build.rs`).
+    ///
+    /// `branch` is normalised by trimming surrounding ASCII whitespace
+    /// so every downstream method ([`Self::branch_dir`],
+    /// [`Self::last_workspace_hint_path`], etc.) sees the same value
+    /// that [`is_canonical_build`] uses for its canonical-vs-branch
+    /// decision. Without this, a whitespace-padded branch like
+    /// `"  feat  "` would route storage under
+    /// `<app_data_dir>/branches/  feat  /` while
+    /// [`crate::boot::hint_file_path`] (which trims independently)
+    /// would write the picker hint under `<app_data_dir>/branches/feat/`
+    /// — silently splitting the binding's state across two trees.
+    /// Production `BUILD_BRANCH` values are already space-stripped by
+    /// `build.rs::sanitize_branch`, so this trim is defensive in depth
+    /// against direct callers (tests, examples, future tooling).
     #[must_use]
     pub fn new(app_data_dir: impl Into<PathBuf>, branch: impl Into<String>) -> Self {
+        let mut branch = branch.into();
+        let trimmed_len = branch.trim().len();
+        if trimmed_len != branch.len() {
+            // Avoid an allocation in the common case where no trim is
+            // needed; otherwise rebuild from the trimmed slice.
+            branch = branch.trim().to_owned();
+        }
         Self {
             app_data_dir: app_data_dir.into(),
-            branch: branch.into(),
+            branch,
         }
     }
 
@@ -378,6 +399,34 @@ mod tests {
         assert_eq!(
             root("/data", "settings-flush").branch_dir(),
             PathBuf::from("/data/branches/settings-flush"),
+        );
+    }
+
+    /// Regression for the trim-on-construction normalisation: a branch
+    /// passed with surrounding whitespace MUST resolve to the same
+    /// directory tree that `boot::hint_file_path` (which trims
+    /// independently) would produce. Without this, the storage layout
+    /// and the picker hint would silently split across two trees for
+    /// the same logical (branch, workspace) tuple.
+    #[test]
+    fn branch_dir_trims_whitespace_around_branch() {
+        let r = root("/data", "  settings-flush  ");
+        assert_eq!(r.branch(), "settings-flush");
+        assert_eq!(
+            r.branch_dir(),
+            PathBuf::from("/data/branches/settings-flush"),
+        );
+    }
+
+    #[test]
+    fn workspace_dir_for_whitespace_branch_matches_trimmed_layout() {
+        let ws = PathBuf::from("/repos/x");
+        let r1 = root("/data", "feat");
+        let r2 = root("/data", "  feat  ");
+        assert_eq!(
+            r1.for_workspace(ws.clone()).workspace_dir(),
+            r2.for_workspace(ws).workspace_dir(),
+            "whitespace-padded branch must hash to the same workspace dir",
         );
     }
 

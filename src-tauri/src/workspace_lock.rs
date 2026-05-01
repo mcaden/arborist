@@ -65,9 +65,10 @@ impl std::error::Error for LockError {
 
 /// Owned exclusive advisory lock on a workspace directory.
 ///
-/// The lock is released when the guard is dropped (which closes the
-/// underlying OS file handle). For correct semantics, the guard MUST
-/// NOT be cloned or duplicated — see module-level docs.
+/// The lock is released when the guard is dropped — explicitly via the
+/// [`Drop`] impl below (which calls `unlock()`) and then implicitly by
+/// the inner `File` closing its OS handle. For correct semantics, the
+/// guard MUST NOT be cloned or duplicated — see module-level docs.
 #[derive(Debug)]
 pub struct WorkspaceLockGuard {
     // Holding the File alive keeps the OS handle (and thus the lock)
@@ -75,6 +76,21 @@ pub struct WorkspaceLockGuard {
     // lock anchor. Underscore-prefixed because the field is unread.
     _file: File,
     path: PathBuf,
+}
+
+impl Drop for WorkspaceLockGuard {
+    /// Explicitly release the OS-level advisory lock before the inner
+    /// `File` is dropped. Closing the handle would also release the
+    /// lock (per `fs2`'s contract), but on some Unix platforms closing
+    /// *any* fd referring to the file is sufficient to release all
+    /// `flock()`s held against that inode — calling `unlock()` here
+    /// makes the release point deterministic and matches the safety
+    /// note inside [`Self::acquire_inner`]. Errors are swallowed: if
+    /// the file handle is already closed or the OS rejects the
+    /// request, the subsequent `File` drop will release anyway.
+    fn drop(&mut self) {
+        let _ = self._file.unlock();
+    }
 }
 
 impl WorkspaceLockGuard {
@@ -126,12 +142,13 @@ impl WorkspaceLockGuard {
         };
         // SAFETY: code between a successful `lock_exclusive()` /
         // `try_lock_exclusive()` and the `Ok(Self { ... })` return
-        // MUST NOT panic. If it did, the `File` would be dropped
-        // without releasing the OS-level lock through the
-        // `WorkspaceLockGuard::Drop` impl (see Drop below) and the
-        // file would unlock only when the OS reclaims the handle —
-        // fine on most platforms but a footgun. The current branches
-        // only do infallible moves; keep it that way.
+        // MUST NOT panic. If it did, the raw `file` would be dropped
+        // *outside* a `WorkspaceLockGuard`, so the explicit `unlock()`
+        // in `WorkspaceLockGuard::Drop` (defined below) wouldn't fire;
+        // the OS lock would still be released when the OS reclaims the
+        // handle, but the release point would no longer be
+        // deterministic. The current branches only do infallible
+        // moves; keep it that way.
         match result {
             Ok(()) => Ok(Self {
                 _file: file,
@@ -251,6 +268,29 @@ mod tests {
         let g1 = WorkspaceLockGuard::acquire(&lock).expect("first acquire");
         drop(g1);
         let _g2 = WorkspaceLockGuard::acquire(&lock).expect("acquire after drop");
+    }
+
+    /// Regression for the explicit [`WorkspaceLockGuard::Drop`] impl: a
+    /// re-acquire from a separate `File` handle in the *same process*
+    /// MUST succeed immediately after the first guard drops. On Windows
+    /// (`LockFileEx` per-handle) this is the same observation as
+    /// [`acquire_after_drop_succeeds`], but the explicit `unlock()`
+    /// call inside `Drop` is what makes the release point deterministic
+    /// across platforms — without it, some Unix kernels may delay
+    /// release until the OS reclaims the handle. Cross-process
+    /// crash-recovery is exercised separately by
+    /// `tests/workspace_lock_multiprocess.rs`.
+    #[test]
+    fn drop_explicitly_unlocks_before_handle_close() {
+        let td = tempdir().expect("tempdir");
+        let lock = td.path().join(".lock");
+        let g1 = WorkspaceLockGuard::acquire(&lock).expect("first acquire");
+        // Verify the lock file persists (drop must release the lock,
+        // not the file itself).
+        drop(g1);
+        assert!(lock.exists(), "lock file must persist after guard drop");
+        // Subsequent acquire must succeed without contention.
+        let _g2 = WorkspaceLockGuard::acquire(&lock).expect("re-acquire after drop");
     }
 
     /// Independent lock files do not contend with each other — the

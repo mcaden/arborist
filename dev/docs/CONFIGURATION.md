@@ -25,8 +25,8 @@ a per-pair subdirectory:
 
 ```
 <app_data_dir>/
-  config.json                              # legacy — read-fallback for one release
-  sessions.json                            # legacy — read-fallback for one release
+  config.json                              # legacy — first-launch seed source only
+  sessions.json                            # legacy — first-launch seed source only
   workspaces/<workspace-key>/              # canonical layout (main / production builds)
     config.json
     sessions.json
