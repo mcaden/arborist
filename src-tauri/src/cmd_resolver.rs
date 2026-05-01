@@ -338,19 +338,23 @@ impl Iterator for ShellTokens<'_> {
 // Icon-oriented helpers
 // ---------------------------------------------------------------------------
 
-/// Like [`resolve_command_executable`] but suppresses results that
-/// land on a generic language interpreter wrapper (`node.exe`,
-/// `python.exe`, …) **only when the resolution went through a script
-/// shim** ([`unwrap_script_wrapper`] followed it). That's the
-/// npm/pip-installed-CLI case where the wrapper hands us back the
-/// interpreter and its icon is useless branding for the actual tool.
+/// Like [`resolve_command_executable`] but tuned for icon extraction:
+///
+/// 1. Walks `bin/<stem>.exe` launchers up to the parent dir's main
+///    application exe (the VS Code case — `bin/code.exe` is a thin
+///    CLI launcher with no embedded icon, while `../Code.exe` carries
+///    the branded icon resource).
+/// 2. Suppresses results that land on a generic language interpreter
+///    wrapper (`node.exe`, `python.exe`, …) **only when the resolution
+///    went through a script shim** ([`unwrap_script_wrapper`] followed
+///    it). That's the npm/pip-installed-CLI case where the wrapper
+///    hands us back the interpreter and its icon is useless branding
+///    for the actual tool.
 ///
 /// Direct user invocations (`pwsh`, `node`, `cmd`, `bash`, …) are
 /// **not** suppressed — the user explicitly named that runtime as
 /// their custom-process command, so showing its real icon is exactly
-/// what they want. (The previous unconditional filter caused a fresh
-/// `pwsh` custom process to fall back to the generic SVG glyph even
-/// though Windows would happily extract a real PowerShell icon.)
+/// what they want.
 ///
 /// Returns `None` in three cases:
 /// 1. [`resolve_command_executable_detailed`] returned `None`.
@@ -361,11 +365,81 @@ impl Iterator for ShellTokens<'_> {
 #[must_use]
 pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
     let (resolved, was_unwrapped) = resolve_command_executable_detailed(command, cwd)?;
-    let name = resolved.file_name()?.to_string_lossy().to_ascii_lowercase();
+    // Prefer a sibling main-app exe in the parent directory if the
+    // resolved path is a `bin/<stem>.exe` launcher. The launcher
+    // typically carries no icon resource — its parent does.
+    let candidate = unwrap_bin_launcher_for_icon(&resolved).unwrap_or(resolved);
+    let name = candidate
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
     if was_unwrapped && is_interpreter_basename(&name) {
         return None;
     }
-    Some(resolved)
+    Some(candidate)
+}
+
+/// If `path` looks like `<root>/bin/<stem>.exe` (a CLI launcher under
+/// a `bin/` subdirectory), look for a sibling `<root>/<stem>.exe` and
+/// return it. This is the "VS Code launcher" pattern: `bin/code.exe`
+/// is a thin shim that exec's the main `..\Code.exe` (which has the
+/// branded icon resource).
+///
+/// Match rules:
+/// * Parent directory must be named `bin` (case-insensitive). We
+///   intentionally do not match other generic dir names (`cli`,
+///   `launchers`) until we have evidence those layouts exist in the
+///   wild — matching too eagerly risks false positives that pick up
+///   the wrong binary's icon.
+/// * The candidate exe in `<root>` must share the same file stem
+///   (case-insensitive) as the launcher. Capitalisation may differ
+///   (`bin/code.exe` ↔ `Code.exe`).
+/// * The candidate must not canonicalise to the launcher itself
+///   (defensive — avoid loops when `bin/code.exe` happens to also
+///   exist as `<root>/code.exe`).
+///
+/// Returns `None` when the heuristic does not apply or the parent dir
+/// is unreadable / contains no matching exe.
+#[must_use]
+fn unwrap_bin_launcher_for_icon(path: &Path) -> Option<PathBuf> {
+    let bin_dir = path.parent()?;
+    let bin_name = bin_dir.file_name().and_then(|s| s.to_str())?;
+    if !bin_name.eq_ignore_ascii_case("bin") {
+        return None;
+    }
+    let app_dir = bin_dir.parent()?;
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())?
+        .to_ascii_lowercase();
+    let launcher_canonical = path.canonicalize().ok();
+
+    for entry in std::fs::read_dir(app_dir).ok()? {
+        let entry = entry.ok()?;
+        let entry_path = entry.path();
+        let is_exe = entry_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
+        if !is_exe {
+            continue;
+        }
+        let entry_stem = entry_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_ascii_lowercase);
+        if entry_stem.as_deref() != Some(&stem) {
+            continue;
+        }
+        // Don't return the launcher itself.
+        if let (Some(a), Ok(b)) = (launcher_canonical.as_ref(), entry_path.canonicalize()) {
+            if a == &b {
+                continue;
+            }
+        }
+        return Some(entry_path);
+    }
+    None
 }
 
 /// True if `basename_lc` is a known generic language-runtime/interpreter
@@ -676,5 +750,71 @@ mod tests {
         let (_p2, was_unwrapped2) =
             resolve_command_executable_detailed(wrapper.to_str().unwrap(), dir.path()).unwrap();
         assert!(was_unwrapped2, "shim invocations report unwrap=true");
+    }
+
+    /// Regression: VS Code 1.69+ ships `bin/code.exe` as a thin CLI
+    /// launcher with no embedded icon resource; the branded icon
+    /// lives on the parent-dir `Code.exe`. The icon resolver must
+    /// walk that one level up.
+    #[test]
+    fn resolve_command_icon_path_walks_up_from_bin_launcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let launcher = bin.join("code.exe");
+        std::fs::write(&launcher, b"thin launcher").unwrap();
+        // Note: capitalisation differs (Code.exe vs code.exe) — the
+        // walk-up is case-insensitive on stem comparison.
+        let main_exe = dir.path().join("Code.exe");
+        std::fs::write(&main_exe, b"branded ui exe").unwrap();
+
+        let icon = resolve_command_icon_path(launcher.to_str().unwrap(), dir.path())
+            .expect("bin/launcher should walk up to the parent main exe");
+        assert_eq!(
+            icon.canonicalize().unwrap(),
+            main_exe.canonicalize().unwrap(),
+            "icon path must point at the branded parent-dir exe"
+        );
+    }
+
+    /// Negative: a `bin/foo.exe` whose parent dir contains no
+    /// matching exe should resolve to itself (no spurious walk-up).
+    #[test]
+    fn resolve_command_icon_path_keeps_bin_launcher_when_no_parent_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let launcher = bin.join("solo.exe");
+        std::fs::write(&launcher, b"solo binary").unwrap();
+        // No `solo.exe` in `dir` — must not walk up.
+        std::fs::write(dir.path().join("unrelated.exe"), b"x").unwrap();
+
+        let icon = resolve_command_icon_path(launcher.to_str().unwrap(), dir.path()).unwrap();
+        assert_eq!(
+            icon.canonicalize().unwrap(),
+            launcher.canonicalize().unwrap(),
+            "icon path must stay on the launcher when no parent twin exists"
+        );
+    }
+
+    /// Negative: do not match arbitrary subdir names — only literal
+    /// `bin`. Matching `cli/code.exe` could regress fine cases (e.g.
+    /// the `cli` exe really is the user-facing binary).
+    #[test]
+    fn resolve_command_icon_path_does_not_walk_up_from_non_bin_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("cli");
+        std::fs::create_dir(&cli).unwrap();
+        let launcher = cli.join("code.exe");
+        std::fs::write(&launcher, b"x").unwrap();
+        let parent_exe = dir.path().join("Code.exe");
+        std::fs::write(&parent_exe, b"y").unwrap();
+
+        let icon = resolve_command_icon_path(launcher.to_str().unwrap(), dir.path()).unwrap();
+        assert_eq!(
+            icon.canonicalize().unwrap(),
+            launcher.canonicalize().unwrap(),
+            "non-`bin` subdir parents must not trigger walk-up"
+        );
     }
 }
