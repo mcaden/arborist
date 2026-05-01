@@ -50,6 +50,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 use tracing::warn;
 
+use crate::store_layout::StoreLayout;
 use crate::types::{
     AppConfig, AppError, Error, InstructionSet, InstructionSetId, PartialAppConfig,
     PartialDefaultInstructionSets, Session, SessionId, SessionStatus, Tool, CONFIG_VERSION_CURRENT,
@@ -86,28 +87,68 @@ pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 /// command handlers route through the managed `AppContext`'s store
 /// (see `commands::store_for` rustdoc) rather than calling
 /// `ConfigStore::open` per request. Concurrent access from a second
-/// Arborist process (or a user editing `sessions.json` by hand while
-/// the app is running) is also **not** supported — those races would
-/// require OS-level advisory file locking or a single-writer daemon,
-/// neither of which we implement today. The app is designed for one
-/// running instance per user; the store path itself is per-user via
-/// `tauri-plugin-store`.
+/// Arborist process is **not yet** prevented; the per-(branch,
+/// workspace) advisory lock primitive lives in [`crate::workspace_lock`]
+/// and the [`StoreLayout`]-aware [`Self::from_layout`] entry point is
+/// in place, but the boot wiring that holds the lock for the running
+/// instance lands in a later phase. Until then, treat overlapping
+/// runs of multiple Arborist binaries against the same `app_data_dir`
+/// as last-writer-wins. A user editing `sessions.json` by hand while
+/// the app is running is also not supported.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     dir: PathBuf,
+    /// Optional [`StoreLayout`] this store was constructed from. Set by
+    /// [`ConfigStore::from_layout`] (the per-(branch, workspace) entry
+    /// point used by `WorkspaceScope`); `None` when constructed via the
+    /// legacy [`ConfigStore::open`] path (tests, examples, and any
+    /// flat-directory caller). Callers that need the layout's
+    /// auxiliary paths (lock file, seed lock, legacy seed sources)
+    /// should use [`ConfigStore::layout`] and handle the `None` case.
+    layout: Option<StoreLayout>,
     write_lock: Arc<Mutex<()>>,
 }
 
 impl ConfigStore {
     /// Open (or create) a store rooted at `dir`. The directory will be
     /// created if it does not yet exist.
+    ///
+    /// Prefer [`ConfigStore::from_layout`] in production code paths
+    /// where a [`StoreLayout`] is available — it carries enough
+    /// information to resolve the lock-file path, seed-lock path, and
+    /// legacy fall-back seed paths. `open` remains the supported entry
+    /// point for tests, examples, and other flat-directory callers.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, Error> {
         let dir = dir.into();
         fs::create_dir_all(&dir).map_err(Error::Io)?;
         Ok(Self {
             dir,
+            layout: None,
             write_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Open (or create) a store at `layout.workspace_dir()`, retaining
+    /// the [`StoreLayout`] for later access via [`Self::layout`]. This
+    /// is the canonical entry point used by `WorkspaceScope` at boot
+    /// and by the in-app workspace switch.
+    pub fn from_layout(layout: StoreLayout) -> Result<Self, Error> {
+        let dir = layout.workspace_dir();
+        fs::create_dir_all(&dir).map_err(Error::Io)?;
+        Ok(Self {
+            dir,
+            layout: Some(layout),
+            write_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    /// The [`StoreLayout`] this store was constructed from, when
+    /// available. Returns `None` for stores opened via the legacy
+    /// [`Self::open`] path. Use this to reach auxiliary paths
+    /// (`lock_path`, `seed_lock_path`, legacy seed sources).
+    #[must_use]
+    pub fn layout(&self) -> Option<&StoreLayout> {
+        self.layout.as_ref()
     }
 
     /// Filesystem directory backing this store. Mostly useful for tests and
@@ -1713,5 +1754,102 @@ mod tests {
         .expect("write");
         let cfg = store.load_config();
         assert_eq!(cfg.workspace_root, None);
+    }
+
+    // ----- from_layout --------------------------------------------------
+
+    /// `from_layout` must round-trip a save/load on the per-(branch,
+    /// workspace) settings path resolved from the layout, and the
+    /// resulting store must expose its layout via [`ConfigStore::layout`]
+    /// so callers (seed-on-first-launch, in-app workspace switch) can
+    /// reach auxiliary paths like `lock_path()` and
+    /// `legacy_config_path()`.
+    #[test]
+    fn from_layout_writes_under_layout_workspace_dir() {
+        let app_data = TempDir::new().expect("app_data");
+        let workspace = TempDir::new().expect("workspace");
+        let workspace_canon = canon(workspace.path());
+
+        // Branch build → settings live under
+        // `<app_data>/branches/feature-x/workspaces/<key>/config.json`.
+        let root = crate::store_layout::StoreRoot::new(
+            app_data.path().to_path_buf(),
+            "feature-x".to_owned(),
+        );
+        let layout = root.for_workspace(workspace_canon.clone());
+        let expected_settings_path = layout.settings_path();
+        let expected_workspace_dir = layout.workspace_dir();
+
+        let store = ConfigStore::from_layout(layout.clone()).expect("from_layout");
+
+        // The store's directory is exactly the layout's workspace dir.
+        assert_eq!(store.dir(), expected_workspace_dir.as_path());
+        // The retained layout points back at the same workspace.
+        let retained = store.layout().expect("layout retained");
+        assert_eq!(retained.workspace(), workspace_canon.as_path());
+        assert_eq!(retained.settings_path(), expected_settings_path);
+
+        // Round-trip: a save persists to the layout's settings path.
+        let partial = PartialAppConfig {
+            config_version: Some(CONFIG_VERSION_CURRENT),
+            ..PartialAppConfig::default()
+        };
+        store.save_config(partial).expect("save");
+        assert!(
+            expected_settings_path.exists(),
+            "save_config should have written {}",
+            expected_settings_path.display(),
+        );
+        // And no file leaked into the legacy top-level path.
+        assert!(
+            !root.legacy_config_path().exists(),
+            "from_layout must not write to the legacy top-level path",
+        );
+    }
+
+    /// Two `from_layout` stores with identical (branch, workspace)
+    /// inputs must resolve to the same directory — proves the workspace
+    /// key is deterministic and that branch builds in the same
+    /// workspace see one shared on-disk state.
+    #[test]
+    fn from_layout_is_deterministic_for_same_inputs() {
+        let app_data = TempDir::new().expect("app_data");
+        let workspace = TempDir::new().expect("workspace");
+        let canonical = canon(workspace.path());
+
+        let root_a = crate::store_layout::StoreRoot::new(
+            app_data.path().to_path_buf(),
+            "feature-x".to_owned(),
+        );
+        let root_b = root_a.clone();
+        let store_a =
+            ConfigStore::from_layout(root_a.for_workspace(canonical.clone())).expect("a");
+        let store_b =
+            ConfigStore::from_layout(root_b.for_workspace(canonical.clone())).expect("b");
+        assert_eq!(store_a.dir(), store_b.dir());
+    }
+
+    /// Different workspaces under the same branch must produce
+    /// distinct directories — proves isolation between sibling
+    /// workspaces is structural, not best-effort.
+    #[test]
+    fn from_layout_isolates_distinct_workspaces() {
+        let app_data = TempDir::new().expect("app_data");
+        let ws_a = TempDir::new().expect("ws_a");
+        let ws_b = TempDir::new().expect("ws_b");
+
+        let root = crate::store_layout::StoreRoot::new(
+            app_data.path().to_path_buf(),
+            "feature-x".to_owned(),
+        );
+        let store_a =
+            ConfigStore::from_layout(root.for_workspace(canon(ws_a.path()))).expect("a");
+        let store_b =
+            ConfigStore::from_layout(root.for_workspace(canon(ws_b.path()))).expect("b");
+        assert_ne!(
+            store_a.dir(),
+            store_b.dir(),
+            "distinct workspaces must isolate their stores",
+        );
     }
 }
