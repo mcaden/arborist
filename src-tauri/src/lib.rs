@@ -90,6 +90,8 @@ pub(crate) fn window_title_for_branch(branch: &str) -> String {
 /// Branch this binary was built from, captured at compile time by `build.rs`.
 pub(crate) const BUILD_BRANCH: &str = env!("ARBORIST_BUILD_BRANCH");
 
+pub mod store_layout;
+
 /// Build and run the Tauri application.
 pub fn run() {
     tauri::Builder::default()
