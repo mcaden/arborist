@@ -188,6 +188,11 @@ export const subSessionRelaunch: Mock<
   ReturnType<typeof realBridge.subSessionRelaunch>
 > = vi.fn(rejectNotImplemented);
 
+export const subSessionIcon: Mock<
+  Parameters<typeof realBridge.subSessionIcon>,
+  ReturnType<typeof realBridge.subSessionIcon>
+> = vi.fn(() => Promise.resolve(null));
+
 export const onSubSessionStatus: Mock<
   Parameters<typeof realBridge.onSubSessionStatus>,
   ReturnType<typeof realBridge.onSubSessionStatus>
@@ -246,6 +251,7 @@ export function resetBridgeMocks(): void {
   subSessionInput.mockReset().mockImplementation(() => Promise.resolve());
   subSessionResize.mockReset().mockImplementation(() => Promise.resolve());
   subSessionRelaunch.mockReset().mockImplementation(rejectNotImplemented);
+  subSessionIcon.mockReset().mockImplementation(() => Promise.resolve(null));
   onSubSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSubSessionExited.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSubSessionRestored.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
@@ -284,6 +290,7 @@ const _shapeCheck = {
   subSessionInput,
   subSessionResize,
   subSessionRelaunch,
+  subSessionIcon,
   onSubSessionStatus,
   onSubSessionExited,
   onSubSessionRestored,

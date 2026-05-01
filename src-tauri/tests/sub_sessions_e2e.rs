@@ -258,12 +258,16 @@ fn build_harness() -> Harness {
     // tests; passing RealAppSpawner is harmless.
     let app_pool = Arc::new(AppPool::new(Arc::new(RealAppSpawner) as Arc<dyn AppSpawner>));
     let focuser = Arc::new(RecordingFocuser::new());
+    let icon_cache = Arc::new(arborist_lib::process_icon::IconCache::new(Arc::new(
+        arborist_lib::process_icon::RealIconExtractor,
+    )));
     let sub_ctx = Arc::new(arborist_lib::sub_sessions::SubAppContext::new(
         Arc::clone(&sub_pool),
         Arc::clone(&sub_store),
         sub_sink,
         app_pool,
         focuser,
+        icon_cache,
     ));
 
     Harness {

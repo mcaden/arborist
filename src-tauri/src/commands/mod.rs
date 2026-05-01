@@ -424,6 +424,38 @@ pub async fn subsession_relaunch(
     subsession::subsession_relaunch_impl(&ctx, &sub_ctx, args.id).await
 }
 
+/// Best-effort fetch of the OS application icon for an
+/// `application`-kind sub-session. Returns `Some("data:image/png;base64,…")`
+/// if the OS exposes an icon for the running PID's executable;
+/// returns `None` (not an error) for the common cases where
+/// extraction isn't possible (PID exited, terminal sub-session,
+/// platform unsupported, miss). The frontend falls back to the
+/// generic emoji on `None`.
+///
+/// Extraction runs on the blocking pool because each backend
+/// (`SHGetFileInfoW`, `sips`, filesystem walks) can briefly block.
+/// Returning `Ok(None)` rather than an error keeps the frontend hook
+/// simple — there's no meaningful action it can take on a miss.
+#[tauri::command]
+pub async fn subsession_icon(
+    app: tauri::AppHandle,
+    args: SubSessionIdArg,
+) -> Result<Option<String>, AppError> {
+    let sub_ctx = sub_ctx_of(&app)?;
+    let pid = match sub_ctx.store.get(&args.id) {
+        Some(s) => s.pid,
+        None => return Ok(None),
+    };
+    let Some(pid) = pid else {
+        return Ok(None);
+    };
+    let cache = sub_ctx.icon_cache.clone();
+    let result = tokio::task::spawn_blocking(move || cache.data_uri_for(pid))
+        .await
+        .map_err(|err| AppError::new("Internal", format!("icon extraction join failed: {err}")))?;
+    Ok(result)
+}
+
 /// Build the production [`crate::sub_sessions::SubPtySink`] whose callbacks
 /// emit Tauri events over `session://output` (shared UUID id space) and the
 /// new `subsession://status` / `subsession://exited` channels. The status

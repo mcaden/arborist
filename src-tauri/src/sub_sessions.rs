@@ -640,6 +640,10 @@ pub struct SubAppContext {
     /// Phase 3: window focuser used by `subsession_focus` for
     /// application-kind sub-sessions.
     pub focuser: Arc<dyn crate::window_focus::WindowFocuser>,
+    /// Best-effort process-icon cache for application sub-tabs.
+    /// See `crate::process_icon` module docs for the trade-offs (cache
+    /// keyed by exe path, no negative caching).
+    pub icon_cache: Arc<crate::process_icon::IconCache>,
 }
 
 impl SubAppContext {
@@ -650,6 +654,7 @@ impl SubAppContext {
         sink: SubPtySink,
         app_pool: Arc<crate::app_launcher::AppPool>,
         focuser: Arc<dyn crate::window_focus::WindowFocuser>,
+        icon_cache: Arc<crate::process_icon::IconCache>,
     ) -> Self {
         Self {
             pool,
@@ -657,6 +662,7 @@ impl SubAppContext {
             sink,
             app_pool,
             focuser,
+            icon_cache,
         }
     }
 }

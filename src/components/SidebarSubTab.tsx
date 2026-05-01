@@ -24,6 +24,7 @@ import {
   useSubSessionActions,
   useSubSessionById,
 } from '@/store/sub-session-store';
+import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
 import type { SessionId, SubSessionId, SubSessionStatus } from '@/types/arborist';
 
 interface SidebarSubTabProps {
@@ -42,6 +43,7 @@ export function SidebarSubTab({
   const activeSubId = useActiveSubSessionId(parentId);
   const subActions = useSubSessionActions();
   const sessionActions = useSessionActions();
+  const iconDataUri = useSubSessionIcon(subSessionId);
 
   if (!sub) return null;
 
@@ -89,9 +91,7 @@ export function SidebarSubTab({
         onClick={handleClick}
         className={`flex w-full items-center gap-2 rounded-md py-1 pl-7 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
       >
-        <span aria-hidden="true" className="text-xs text-slate-400">
-          {sub.kind === 'application' ? '🪟' : '⌗'}
-        </span>
+        <SubTabIcon kind={sub.kind} iconDataUri={iconDataUri} label={sub.label} />
         <span className="min-w-0 flex-1 truncate">{sub.label}</span>
         <SubStatusDot status={sub.status} />
       </button>
@@ -126,5 +126,38 @@ function SubStatusDot({ status }: { status: SubSessionStatus }): JSX.Element {
       data-testid={`sub-status-${status}`}
       className={`h-2 w-2 shrink-0 rounded-full ${colour}`}
     />
+  );
+}
+
+/**
+ * Sub-tab leading icon. Renders the OS application icon (PNG data
+ * URI) when available; otherwise falls back to the kind-specific
+ * emoji. Decorative — `aria-hidden` because the visible label
+ * already conveys the sub-session identity for assistive tech.
+ */
+function SubTabIcon({
+  kind,
+  iconDataUri,
+  label,
+}: {
+  kind: 'terminal' | 'application';
+  iconDataUri: string | undefined;
+  label: string;
+}): JSX.Element {
+  if (kind === 'application' && iconDataUri) {
+    return (
+      <img
+        src={iconDataUri}
+        alt=""
+        aria-hidden="true"
+        data-testid={`sub-tab-icon-${label}`}
+        className="h-4 w-4 shrink-0 rounded-sm object-contain"
+      />
+    );
+  }
+  return (
+    <span aria-hidden="true" className="text-xs text-slate-400">
+      {kind === 'application' ? '🪟' : '⌗'}
+    </span>
   );
 }

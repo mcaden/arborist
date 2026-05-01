@@ -336,6 +336,20 @@ export function subSessionRelaunch(id: SubSessionId): Promise<SubSession> {
   return invoke<SubSession>('subsession_relaunch', { args: { id } });
 }
 
+/**
+ * Best-effort fetch of the OS application icon for an
+ * `application`-kind sub-session, returned as a `data:image/png;base64,…`
+ * URI. Returns `null` when extraction is not possible (terminal
+ * sub-session, PID exited, platform unsupported, miss, …) — the
+ * caller falls back to the generic emoji.
+ *
+ * Backed by `IconCache` (see `src-tauri/src/process_icon.rs`); the
+ * same exe path is only extracted once per process lifetime.
+ */
+export function subSessionIcon(id: SubSessionId): Promise<string | null> {
+  return invoke<string | null>('subsession_icon', { args: { id } });
+}
+
 export function onSubSessionStatus(
   cb: (payload: SubSessionStatusEvent) => void,
 ): Promise<UnlistenFn> {

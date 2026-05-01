@@ -11,6 +11,7 @@ pub mod commands;
 pub mod compose;
 pub mod config_store;
 pub mod git;
+pub mod process_icon;
 pub mod pty_pool;
 pub mod session_metrics;
 pub mod sub_sessions;
@@ -161,8 +162,11 @@ pub fn run() {
             )));
             let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> =
                 std::sync::Arc::new(window_focus::RealFocuser);
+            let icon_cache = std::sync::Arc::new(process_icon::IconCache::new(
+                std::sync::Arc::new(process_icon::RealIconExtractor),
+            ));
             let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
-                sub_pool, sub_store, sub_sink, app_pool, focuser,
+                sub_pool, sub_store, sub_sink, app_pool, focuser, icon_cache,
             ));
             app.manage(sub_ctx);
             Ok(())
@@ -190,6 +194,7 @@ pub fn run() {
             commands::subsession_input,
             commands::subsession_resize,
             commands::subsession_relaunch,
+            commands::subsession_icon,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arborist");

@@ -98,6 +98,27 @@ fn main_capability_allows_core_default_and_ping() {
         identifiers.contains(&"dialog:allow-open"),
         "main capability must include dialog:allow-open so the file picker is callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-subsession-icon"),
+        "main capability must include allow-subsession-icon so subsession_icon is callable; got {identifiers:?}",
+    );
+}
+
+#[test]
+fn allow_subsession_icon_permission_file_declares_command() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-subsession-icon.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-subsession-icon\""),
+        "permission identifier must remain `allow-subsession-icon`",
+    );
+    assert!(
+        raw.contains("\"subsession_icon\""),
+        "permission must allow the `subsession_icon` command",
+    );
 }
 
 #[test]
