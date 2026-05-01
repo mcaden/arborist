@@ -639,10 +639,11 @@ fn now_unix_seconds() -> i64 {
 }
 
 /// Build the [`crate::app_launcher::OwnerResolver`] (if any) appropriate
-/// for the given def. Today only the built-in `vscode` def needs one —
-/// `code.cmd` hands off to a long-lived `Code.exe` and exits, leaving
-/// the launcher PID dead within seconds. See `vscode_owner.rs` for the
-/// re-discovery strategy.
+/// for the given def. Detection is by **command shape**, not def id —
+/// a user-defined "VSCode" entry with command `code .` gets the same
+/// re-discovery treatment as the built-in `vscode` def. See
+/// [`crate::vscode_owner::looks_like_vscode_command`] for the matching
+/// rules and `vscode_owner.rs` for the re-discovery strategy itself.
 ///
 /// Returns `None` for every other def: most app launchers spawn a
 /// child the user identifies with directly (`open`, `explorer`,
@@ -651,7 +652,7 @@ fn owner_resolver_for(
     def: &crate::types::CustomProcessDef,
     cwd: &std::path::Path,
 ) -> Option<Arc<dyn crate::app_launcher::OwnerResolver>> {
-    if def.id.as_str() == crate::config_store::BUILTIN_DEF_ID_VSCODE {
+    if crate::vscode_owner::looks_like_vscode_command(&def.command) {
         return Some(Arc::new(crate::vscode_owner::VsCodeOwnerResolver::new(
             cwd.to_path_buf(),
         )));

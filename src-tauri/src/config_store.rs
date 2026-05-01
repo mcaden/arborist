@@ -281,6 +281,17 @@ impl ConfigStore {
         Ok(cfg)
     }
 
+    /// Write the supplied [`AppConfig`] verbatim, bumping the version
+    /// stamp. Used by the icon backfill path which mutates the config
+    /// in fields the public `PartialAppConfig` patch surface doesn't
+    /// expose (`icon_data_uri` is backend-derived, not user-editable).
+    pub fn write_full(&self, mut cfg: AppConfig) -> Result<AppConfig, Error> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        cfg.config_version = CONFIG_VERSION_CURRENT;
+        write_atomic(&self.config_path(), &cfg)?;
+        Ok(cfg)
+    }
+
     // ----- Sessions -------------------------------------------------------
 
     /// Load all persisted [`Session`] records, keyed by ID. A missing or
@@ -658,9 +669,17 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(launch) = patch.ai_launch_commands {
         let crate::types::PartialAiLaunchCommands { claude, copilot } = launch;
         if let Some(c) = claude {
+            // Clear cached icon when the command changes — re-resolution
+            // will re-populate it from a post-save backfill pass.
+            if c != cfg.ai_launch_commands.claude {
+                cfg.ai_launch_commands.claude_icon_data_uri = None;
+            }
             cfg.ai_launch_commands.claude = c;
         }
         if let Some(c) = copilot {
+            if c != cfg.ai_launch_commands.copilot {
+                cfg.ai_launch_commands.copilot_icon_data_uri = None;
+            }
             cfg.ai_launch_commands.copilot = c;
         }
     }
@@ -698,8 +717,27 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(active) = patch.active_session_id {
         cfg.active_session_id = active;
     }
-    if let Some(defs) = patch.custom_processes {
+    if let Some(mut defs) = patch.custom_processes {
         validate_custom_processes(&defs)?;
+        // Preserve cached `icon_data_uri` across patches that don't
+        // carry it (the frontend never sends it — it's a backend
+        // derived field). Drop the cache when `command` changes so
+        // the next backfill pass re-resolves.
+        let prev: BTreeMap<crate::types::CustomProcessDefId, &crate::types::CustomProcessDef> = cfg
+            .custom_processes
+            .iter()
+            .map(|d| (d.id.clone(), d))
+            .collect();
+        for def in defs.iter_mut() {
+            if def.icon_data_uri.is_some() {
+                continue;
+            }
+            if let Some(old) = prev.get(&def.id) {
+                if old.command == def.command {
+                    def.icon_data_uri = old.icon_data_uri.clone();
+                }
+            }
+        }
         cfg.custom_processes = defs;
     }
     if let Some(records) = patch.last_open_sub_sessions {
@@ -1099,6 +1137,7 @@ pub fn default_custom_processes() -> Vec<CustomProcessDef> {
             command: default_shell_command(),
             enabled: true,
             icon: None,
+            icon_data_uri: None,
         },
         CustomProcessDef {
             id: CustomProcessDefId::new(BUILTIN_DEF_ID_OPEN_FOLDER),
@@ -1107,6 +1146,7 @@ pub fn default_custom_processes() -> Vec<CustomProcessDef> {
             command: default_open_folder_command().to_owned(),
             enabled: true,
             icon: None,
+            icon_data_uri: None,
         },
         CustomProcessDef {
             id: CustomProcessDefId::new(BUILTIN_DEF_ID_VSCODE),
@@ -1115,6 +1155,7 @@ pub fn default_custom_processes() -> Vec<CustomProcessDef> {
             command: "code .".to_owned(),
             enabled: command_on_path("code"),
             icon: None,
+            icon_data_uri: None,
         },
     ]
 }
@@ -2129,6 +2170,7 @@ mod tests {
             command: "fish -i".to_owned(),
             enabled: false,
             icon: None,
+            icon_data_uri: None,
         };
         let mut defs = vec![user_edited.clone()];
         seed_default_custom_processes(&mut defs);
@@ -2206,6 +2248,7 @@ mod tests {
                     command: "echo".to_owned(),
                     enabled: true,
                     icon: None,
+                    icon_data_uri: None,
                 }]),
                 ..Default::default()
             })
@@ -2229,6 +2272,7 @@ mod tests {
                     command: "echo".to_owned(),
                     enabled: true,
                     icon: None,
+                    icon_data_uri: None,
                 }]),
                 ..Default::default()
             })
@@ -2252,6 +2296,7 @@ mod tests {
                     command: "   ".to_owned(),
                     enabled: true,
                     icon: None,
+                    icon_data_uri: None,
                 }]),
                 ..Default::default()
             })
@@ -2273,6 +2318,7 @@ mod tests {
             command: "echo".to_owned(),
             enabled: true,
             icon: None,
+            icon_data_uri: None,
         };
         let err = store
             .save_config(PartialAppConfig {
@@ -2309,6 +2355,7 @@ mod tests {
             command: "sh -i".to_owned(),
             enabled: true,
             icon: None,
+            icon_data_uri: None,
         };
         let after = store
             .save_config(PartialAppConfig {

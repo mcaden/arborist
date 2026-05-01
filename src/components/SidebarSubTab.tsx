@@ -144,7 +144,7 @@ function SubTabIcon({
   iconDataUri: string | undefined;
   label: string;
 }): JSX.Element {
-  if (kind === 'application' && iconDataUri) {
+  if (iconDataUri) {
     return (
       <img
         src={iconDataUri}

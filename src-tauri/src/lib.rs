@@ -7,10 +7,12 @@
 
 pub mod activity;
 pub mod app_launcher;
+pub mod cmd_resolver;
 pub mod commands;
 pub mod compose;
 pub mod config_store;
 pub mod git;
+pub mod icon_backfill;
 pub mod process_icon;
 pub mod pty_pool;
 pub mod session_metrics;
@@ -168,7 +170,37 @@ pub fn run() {
             let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
                 sub_pool, sub_store, sub_sink, app_pool, focuser, icon_cache,
             ));
-            app.manage(sub_ctx);
+            app.manage(sub_ctx.clone());
+
+            // Best-effort: warm the persisted icon cache for every
+            // sidebar entry now, so the first render after startup
+            // doesn't show emoji-then-icon flicker. Failures are
+            // non-fatal — the frontend already has a graceful
+            // fallback (the bundled SVG / emoji glyph).
+            //
+            // We read the *post-AppContext* config (the same store
+            // the rest of the app uses) so any first-launch defaults
+            // seeded by `load_config` are included.
+            {
+                let store = commands::store_for(app.handle())?;
+                let mut cfg = store.load_config();
+                let cwd = cfg
+                    .workspace_root
+                    .clone()
+                    .filter(|p| p.is_dir())
+                    .unwrap_or_else(std::env::temp_dir);
+                if icon_backfill::backfill_icons(&mut cfg, &sub_ctx.icon_cache, &cwd) {
+                    if let Err(err) = store.write_full(cfg) {
+                        tracing::warn!(
+                            %err,
+                            "startup icon backfill: failed to persist refreshed config"
+                        );
+                    } else {
+                        tracing::debug!("startup icon backfill: cache populated");
+                    }
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -108,6 +108,16 @@ export interface DefaultInstructionSets {
 export interface AiLaunchCommands {
   claude: string;
   copilot: string;
+  /**
+   * Cached `data:image/png;base64,…` for Claude's launcher executable,
+   * resolved from `claude` (preferring the canonical CLI name even
+   * when `claude` above is a custom wrapper). Backend-managed —
+   * frontend patches don't carry it; the merge layer preserves it
+   * across `aiLaunchCommands` patches that don't change the command,
+   * and clears it when the command does change.
+   */
+  claudeIconDataUri?: string;
+  copilotIconDataUri?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::AppConfig
@@ -196,6 +206,14 @@ export interface CustomProcessDef {
   enabled: boolean;
   /** Optional UI hint (icon name / emoji / preset key); reserved for future use. */
   icon?: string;
+  /**
+   * Cached `data:image/png;base64,…` for the resolved app icon. The
+   * backend's `backfill_icons` pass populates this from `command` at
+   * config-save time. Frontend renders synchronously from this — no
+   * per-render IPC. Frontend patches that omit this field do **not**
+   * clobber the cache (see `merge_partial` in the Rust side).
+   */
+  iconDataUri?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::SubSession

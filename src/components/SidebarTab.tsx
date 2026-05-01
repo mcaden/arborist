@@ -11,6 +11,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
+import { useConfigStore } from '@/store/config-store';
 import {
   useDisplayStatus,
   useHasUnread,
@@ -52,6 +53,17 @@ export function SidebarTab({
   const metrics = useMetrics(id);
   const actions = useSessionActions();
   const subActions = useSubSessionActions();
+  // Pull the cached AI-tool icon URI from config. The selector is a
+  // narrow string-or-undefined so unrelated config changes don't
+  // re-render this row.
+  const tool = session?.tool;
+  const toolIconDataUri = useConfigStore((s) =>
+    tool === 'claude'
+      ? s.config.aiLaunchCommands.claudeIconDataUri
+      : tool === 'copilot'
+        ? s.config.aiLaunchCommands.copilotIconDataUri
+        : undefined,
+  );
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id,
@@ -122,6 +134,7 @@ export function SidebarTab({
         <span className="flex w-full items-center gap-2">
           <ToolIcon
             tool={session.tool}
+            iconDataUri={toolIconDataUri}
             className={
               isActive
                 ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300'

@@ -72,8 +72,33 @@ pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    ctx.store.save_config(partial).map_err(AppError::from)?;
+    let mut cfg = ctx.store.save_config(partial).map_err(AppError::from)?;
+    // After persisting the user's patch, walk every command string
+    // and best-effort resolve a cached icon data URI. The frontend
+    // reads these synchronously from config; we never want a render
+    // path waiting on a Win32 icon-extraction call.
+    if let Ok(sub_ctx) = sub_ctx_of(&app) {
+        let cwd = backfill_cwd(&cfg);
+        if crate::icon_backfill::backfill_icons(&mut cfg, &sub_ctx.icon_cache, &cwd) {
+            // Re-persist with the freshly cached icons. Errors here
+            // are non-fatal — the user's patch is already on disk.
+            if let Err(err) = ctx.store.write_full(cfg) {
+                tracing::warn!(%err, "icon backfill: failed to re-persist config after backfill");
+            }
+        }
+    }
     Ok(())
+}
+
+/// Best-effort cwd for resolving relative-path commands at config-save
+/// time. Defs are templates — the user's workspace root is the most
+/// useful default; OS temp is the last resort. Absolute commands
+/// (`C:\Program Files\...`, `/usr/bin/...`) ignore this entirely.
+fn backfill_cwd(cfg: &AppConfig) -> std::path::PathBuf {
+    cfg.workspace_root
+        .clone()
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// Discovers and returns the list of [`InstructionSet`]s available under the

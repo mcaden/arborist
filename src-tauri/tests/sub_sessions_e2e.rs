@@ -220,6 +220,7 @@ fn build_harness() -> Harness {
         command: "sh -i".into(),
         enabled: true,
         icon: None,
+        icon_data_uri: None,
     };
 
     let store = ConfigStore::open(config_dir.path()).unwrap();

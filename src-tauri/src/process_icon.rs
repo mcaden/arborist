@@ -94,16 +94,25 @@ impl IconCache {
     #[must_use]
     pub fn data_uri_for(&self, pid: u32) -> Option<String> {
         let exe = self.extractor.exe_path(pid)?;
+        self.data_uri_for_path(&exe)
+    }
+
+    /// Variant that bypasses the PID → exe path lookup and queries
+    /// the icon for an explicit executable path. Used when the
+    /// caller has already resolved the executable from a command
+    /// string (see [`crate::cmd_resolver`]).
+    #[must_use]
+    pub fn data_uri_for_path(&self, exe: &Path) -> Option<String> {
         // Canonicalise to dedupe `C:/Foo/bar.exe` vs `c:\foo\bar.exe`
         // on Windows; on Unix it resolves symlinks too. `dunce` is
         // already a workspace dep but isn't load-bearing here — a
         // simple `canonicalize` is enough since we only need
         // *stable* keys, not pretty-printable ones.
-        let key = exe.canonicalize().unwrap_or_else(|_| exe.clone());
+        let key = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
         if let Some(cached) = self.by_exe.lock().ok().and_then(|m| m.get(&key).cloned()) {
             return Some(cached);
         }
-        let png = self.extractor.extract_png(&exe)?;
+        let png = self.extractor.extract_png(exe)?;
         let data_uri = format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&png));
         if let Ok(mut m) = self.by_exe.lock() {
             m.insert(key, data_uri.clone());

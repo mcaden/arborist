@@ -47,6 +47,115 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const POLL_DEADLINE: Duration = Duration::from_secs(8);
 const TITLE_SUFFIX: &str = " - Visual Studio Code";
 
+/// First-token program names recognised as launching VS Code. Matched
+/// case-insensitively against the first whitespace-delimited token of
+/// `def.command` after stripping any leading `env … VAR=val` prefix.
+/// Includes Windows-specific extensions and the official Insiders
+/// channel.
+const VSCODE_PROGRAM_NAMES: &[&str] = &[
+    "code",
+    "code.cmd",
+    "code.exe",
+    "code-insiders",
+    "code-insiders.cmd",
+    "code-insiders.exe",
+];
+
+/// True when the `def.command` string launches VS Code (stable or
+/// Insiders, with or without an absolute path or `.cmd`/`.exe`
+/// extension).
+///
+/// Used so user-defined VS Code launchers — not just the built-in
+/// `vscode` def — get the [`VsCodeOwnerResolver`] wired up. Without
+/// this, a custom def named "VSCode" with command `code .` would
+/// never have its launcher PID re-targeted, leaving the sub-tab
+/// pointing at a dead `code.cmd` shim within ~1 second of launch.
+#[must_use]
+pub fn looks_like_vscode_command(command: &str) -> bool {
+    // Quote-aware token iterator: handles leading `"path with spaces"`
+    // and skips over leading `env`/`KEY=value` shell prefixes so that
+    // e.g. `env ELECTRON_RUN_AS_NODE=0 code .` is still recognised.
+    for t in ShellTokens::new(command) {
+        if t == "env" {
+            continue;
+        }
+        if !t.starts_with('/')
+            && !t.starts_with('\\')
+            && !t.contains(['\\', '/'])
+            && t.contains('=')
+        {
+            // Looks like `KEY=value` env prefix — keep skipping.
+            continue;
+        }
+        return is_vscode_program_token(&t);
+    }
+    false
+}
+
+fn is_vscode_program_token(token: &str) -> bool {
+    let basename = std::path::Path::new(token)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(token);
+    let lower = basename.to_ascii_lowercase();
+    VSCODE_PROGRAM_NAMES.iter().any(|n| n == &lower.as_str())
+}
+
+/// Minimal shell-style tokenizer: splits on whitespace but keeps
+/// `"…"` and `'…'` runs together. Just enough for parsing the leading
+/// program of a user-supplied command line — not a full POSIX
+/// parser. Backslash escapes are not interpreted (they're path
+/// separators on Windows).
+struct ShellTokens<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+impl<'a> ShellTokens<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
+    }
+}
+
+impl Iterator for ShellTokens<'_> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        let bytes = self.input.as_bytes();
+        while self.pos < bytes.len() && bytes[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+        if self.pos >= bytes.len() {
+            return None;
+        }
+        let mut out = String::new();
+        let mut quote: Option<u8> = None;
+        while self.pos < bytes.len() {
+            let b = bytes[self.pos];
+            match quote {
+                Some(q) if b == q => {
+                    quote = None;
+                    self.pos += 1;
+                }
+                Some(_) => {
+                    out.push(b as char);
+                    self.pos += 1;
+                }
+                None if b == b'"' || b == b'\'' => {
+                    quote = Some(b);
+                    self.pos += 1;
+                }
+                None if b.is_ascii_whitespace() => break,
+                None => {
+                    out.push(b as char);
+                    self.pos += 1;
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
 /// [`OwnerResolver`] that re-discovers the long-lived `Code.exe`
 /// window owning a given workspace folder. Constructed per-spawn with
 /// the worktree path; the basename is matched against the VS Code
@@ -329,6 +438,56 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
+        }
+    }
+
+    #[test]
+    fn looks_like_vscode_command_matches_canonical_invocations() {
+        for cmd in [
+            "code .",
+            "code",
+            "code.cmd .",
+            "code.exe .",
+            "Code .",
+            "CODE.EXE .",
+            "code-insiders .",
+            "code-insiders.cmd .",
+            "code .  --new-window",
+            "/usr/local/bin/code .",
+            "/usr/local/bin/code-insiders .",
+            "C:\\Users\\me\\AppData\\Local\\Programs\\code.cmd .",
+            "C:/tools/code/bin/code.cmd .",
+            "\"C:\\Program Files\\Microsoft VS Code\\bin\\code.cmd\" .",
+            "'C:\\Program Files\\Microsoft VS Code\\bin\\code.cmd' .",
+            "env ELECTRON_RUN_AS_NODE=0 code .",
+            "FOO=bar code .",
+            "env code .",
+        ] {
+            assert!(looks_like_vscode_command(cmd), "expected match for {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn looks_like_vscode_command_rejects_non_vscode() {
+        for cmd in [
+            "",
+            "   ",
+            "vscode .",
+            "codium .",
+            "vscodium .",
+            "cursor .",
+            "code-runner",
+            "xdg-open .",
+            "echo code",
+            "pwsh -c code",
+            "decode file",
+            "encode file",
+            "/usr/bin/codium .",
+        ] {
+            assert!(
+                !looks_like_vscode_command(cmd),
+                "expected non-match for {cmd:?}"
+            );
         }
     }
 }

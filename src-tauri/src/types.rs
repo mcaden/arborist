@@ -349,6 +349,16 @@ pub struct AiLaunchCommands {
     pub claude: String,
     #[serde(default)]
     pub copilot: String,
+    /// Cached `data:image/png;base64,…` URI for Claude's launcher
+    /// executable, resolved from `claude` at config-save time. `None`
+    /// when resolution fell through to a known interpreter wrapper
+    /// (`node.exe` etc.) — the frontend then falls back to the
+    /// bundled `ToolIcon` SVG. Backend-managed; frontend patches
+    /// don't carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_icon_data_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copilot_icon_data_uri: Option<String>,
 }
 
 /// Persisted application configuration. Lives in `config.json` (Phase 4).
@@ -909,6 +919,17 @@ pub struct CustomProcessDef {
     /// future use; the v1 sidebar renders a generic icon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Cached `data:image/png;base64,…` URI for the app icon, resolved
+    /// from `command` at def-save / first-load time. `None` until
+    /// resolution succeeds (or permanently if no executable can be
+    /// found, e.g. for shell built-ins like `cd`). The frontend
+    /// treats `Some` as overriding the emoji `icon` glyph.
+    ///
+    /// Filled in by the backend's `backfill_icons` pass — frontend
+    /// patches that omit this field do **not** clobber the cache,
+    /// see `config_store::merge_partial`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_data_uri: Option<String>,
 }
 
 /// In-memory + on-the-wire representation of a sub-tab. Sub-sessions live
@@ -1245,6 +1266,8 @@ mod tests {
             ai_launch_commands: AiLaunchCommands {
                 claude: "npx claude".to_owned(),
                 copilot: String::new(),
+                claude_icon_data_uri: None,
+                copilot_icon_data_uri: None,
             },
             last_open_sessions: vec![SessionId(
                 Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
@@ -1262,6 +1285,7 @@ mod tests {
                 command: "sh -i".to_owned(),
                 enabled: true,
                 icon: None,
+                icon_data_uri: None,
             }],
             last_open_sub_sessions: vec![SubSessionRecord {
                 id: SubSessionId(
@@ -1327,6 +1351,7 @@ mod tests {
             command: "code .".to_owned(),
             enabled: true,
             icon: Some("vscode".to_owned()),
+            icon_data_uri: None,
         };
         let fixture = json!({
             "id": "vscode",
@@ -1472,6 +1497,7 @@ mod tests {
             command: "sh -i".to_owned(),
             enabled: true,
             icon: None,
+            icon_data_uri: None,
         };
         let serialized: Value = serde_json::to_value(&value).expect("serialize");
         let obj = serialized.as_object().expect("object");
