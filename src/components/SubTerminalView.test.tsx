@@ -1,14 +1,17 @@
-// Behavioural tests for `SubTerminalView` — focused on the exit overlay
-// (the surface most likely to regress; xterm DOM lifecycle is exercised
-// indirectly through `use-terminal.test.tsx`).
+// Behavioural tests for `SubTerminalView`.
+//
+// Status (running / exited / error) is communicated by the sidebar
+// indicator. `SubTerminalView` deliberately renders no overlay so the
+// final scrollback (e.g. an `exit` echo or an error message) stays
+// visible. These tests pin that contract — particularly the regression
+// the user reported where typing `exit` in pwsh produced a modal
+// dialog instead of leaving the pane intact.
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
-// Stub the terminal hook — these tests don't care about xterm internals,
-// only about the overlay behaviour for exited / errored sub-sessions.
 vi.mock('@/hooks/use-terminal', () => ({
   useSubTerminal: () => ({
     attach: vi.fn(),
@@ -57,55 +60,31 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('SubTerminalView exit overlay', () => {
-  it('hides the overlay while the sub-session is running', () => {
+describe('SubTerminalView', () => {
+  it('renders no overlay or status dialog while the sub-session is running', () => {
     const sub = makeSub({ id: id('01'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /relaunch/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('renders Relaunch and Close buttons when the sub-session has exited', () => {
+  it('renders no overlay when the sub-session has exited (sidebar dot is the indicator)', () => {
     const sub = makeSub({ id: id('02'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(screen.getByRole('alert')).toBeInTheDocument();
-    expect(screen.getByText(/sub-session exited/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /relaunch/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('renders the error overlay copy when status is error', () => {
+  it('renders no overlay when the sub-session is in error state', () => {
     const sub = makeSub({ id: id('03'), status: 'error', pid: undefined });
     useSubSessionStore.setState({
       subSessions: [sub],
       statusMessages: { [sub.id]: 'spawn failed: ENOENT' },
     });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(screen.getByText(/sub-session encountered an error/i)).toBeInTheDocument();
-    expect(screen.getByTestId('sub-terminal-status-message')).toHaveTextContent(
-      'spawn failed: ENOENT',
-    );
-    expect(screen.getByRole('button', { name: /relaunch/i })).toBeInTheDocument();
-  });
-
-  it('Relaunch button invokes subSessionRelaunch with the sub-session id', () => {
-    const sub = makeSub({ id: id('04'), status: 'exited', pid: undefined });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
-    render(<SubTerminalView subSessionId={sub.id} isActive />);
-    fireEvent.click(screen.getByRole('button', { name: /relaunch/i }));
-    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
-    expect(bridgeMock.subSessionClose).not.toHaveBeenCalled();
-  });
-
-  it('Close button still invokes subSessionClose (kept as secondary action)', () => {
-    const sub = makeSub({ id: id('05'), status: 'exited', pid: undefined });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    render(<SubTerminalView subSessionId={sub.id} isActive />);
-    fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
-    expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id);
-    expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });

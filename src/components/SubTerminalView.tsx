@@ -2,26 +2,20 @@
 // Hosts an xterm.js Terminal in the main area for a sub-session. Lifecycle
 // rules match `TerminalView`: the underlying Terminal lives in the
 // `use-terminal` registry and survives hide/show; this component only
-// owns DOM mount/unmount, focus on activation, and the exited overlay.
+// owns DOM mount/unmount and focus on activation.
 //
-// Differences vs `TerminalView`:
-//   * Reads from `useSubSessionById` / `useSubStatusMessage`.
-//   * Uses `useSubTerminal` so input/resize commands target the
-//     `subsession_*` IPC handlers instead of the parent-session ones.
-//   * Exit overlay offers Relaunch (primary) and Close (secondary) so
-//     that a sub-session whose process exited outside the user's
-//     control can be re-spawned in place. Mirrors the sidebar's
-//     click-on-greyed-tab → relaunch behaviour.
+// Status (running / exited / error) is communicated by the sidebar
+// indicator, NOT by an in-pane overlay. When a sub-session exits
+// outside the user's control, the sidebar dot turns grey and the user
+// can click that sidebar tab to relaunch in place. This component
+// deliberately renders no dialog / banner / overlay so the user can
+// continue to read the final scrollback (e.g. an error message or
+// `exit` echo) without a modal blocking it.
 
 import { useEffect, useRef } from 'react';
 
 import { useSubTerminal } from '@/hooks/use-terminal';
-import { formatError } from '@/lib/tauri-bridge';
-import {
-  useSubSessionActions,
-  useSubSessionById,
-  useSubStatusMessage,
-} from '@/store/sub-session-store';
+import { useSubSessionById } from '@/store/sub-session-store';
 import type { SubSessionId } from '@/types/arborist';
 
 interface SubTerminalViewProps {
@@ -37,8 +31,6 @@ interface SubTerminalViewProps {
 export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sub = useSubSessionById(subSessionId);
-  const statusMessage = useSubStatusMessage(subSessionId);
-  const subActions = useSubSessionActions();
   const { attach, detach, focus, refit } = useSubTerminal(subSessionId);
 
   useEffect(() => {
@@ -61,23 +53,6 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
     return () => cancelAnimationFrame(handle);
   }, [isActive, refit, focus]);
 
-  const status = sub?.status;
-  const showOverlay = status === 'error' || status === 'exited';
-
-  const handleRelaunch = (): void => {
-    void subActions.relaunch(subSessionId).catch((err: unknown) => {
-      const message = formatError(err);
-      console.warn(`[SubTerminalView] relaunch(${subSessionId}) failed: ${message}`);
-    });
-  };
-
-  const handleClose = (): void => {
-    void subActions.close(subSessionId).catch((err: unknown) => {
-      const message = formatError(err);
-      console.warn(`[SubTerminalView] close(${subSessionId}) failed: ${message}`);
-    });
-  };
-
   return (
     <div
       role="tabpanel"
@@ -85,42 +60,6 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
       className="relative h-full w-full bg-black p-2"
     >
       <div ref={containerRef} className="h-full w-full bg-black" />
-      {showOverlay && (
-        <div
-          role="alert"
-          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70"
-        >
-          <div className="pointer-events-auto flex max-w-md flex-col items-center gap-3 rounded border border-slate-700 bg-slate-900 p-4 text-slate-100 shadow-lg">
-            <p className="text-sm">
-              {status === 'error' ? 'Sub-session encountered an error.' : 'Sub-session exited.'}
-            </p>
-            {statusMessage && (
-              <p
-                data-testid="sub-terminal-status-message"
-                className="max-w-full break-words text-center text-xs text-slate-300"
-              >
-                {statusMessage}
-              </p>
-            )}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleRelaunch}
-                className="rounded bg-sky-600 px-3 py-1 text-sm font-medium text-white hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-300"
-              >
-                Relaunch
-              </button>
-              <button
-                type="button"
-                onClick={handleClose}
-                className="rounded bg-slate-700 px-3 py-1 text-sm font-medium text-white hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-400"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
