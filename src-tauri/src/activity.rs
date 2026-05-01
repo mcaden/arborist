@@ -53,8 +53,17 @@ pub const TICK_INTERVAL: Duration = Duration::from_millis(250);
 const OSC_MAX_LEN: usize = 4096;
 
 /// What [`ActivityScanner`] reports.
+//
+// `rename_all` controls only variant names. `rename_all_fields` controls
+// the named fields *inside* each variant — without it, a field like
+// `tool_call_id` would serialize as `tool_call_id` on the wire while the
+// TS mirror in `src/types/arborist.ts` expects `toolCallId`. The
+// frontend reducer (`session-store.ts::applyActivity`) reads camelCase
+// keys, so missing this rename silently zeroes every multi-word field.
+// Pinned by the `actvity_event_serde_uses_camelcase_keys` regression
+// test below.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ActivityEvent {
     /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
     Title { value: String },
@@ -316,6 +325,85 @@ mod tests {
 
     fn t0() -> Instant {
         Instant::now()
+    }
+
+    #[test]
+    fn activity_event_serde_uses_camelcase_field_keys() {
+        // The TS mirror in `src/types/arborist.ts` and the reducer in
+        // `src/store/session-store.ts` read camelCase keys
+        // (`toolCallId`, `toolName`, `requestId`, `durationMs`, etc.).
+        // The parent enum's `#[serde(rename_all = "camelCase")]` only
+        // renames *variants*; without `rename_all_fields = "camelCase"`,
+        // multi-word field names serialize in snake_case and the
+        // frontend silently sees `undefined` for every such field.
+        // This test pins the wire shape so a future maintainer can't
+        // regress it.
+        let cases: &[(ActivityEvent, &[&str], &[&str])] = &[
+            (
+                ActivityEvent::ToolStart {
+                    tool_call_id: "c1".into(),
+                    tool_name: "shell".into(),
+                },
+                &["\"toolCallId\":\"c1\"", "\"toolName\":\"shell\""],
+                &["tool_call_id", "tool_name"],
+            ),
+            (
+                ActivityEvent::ToolEnd {
+                    tool_call_id: "c1".into(),
+                    success: true,
+                },
+                &["\"toolCallId\":\"c1\"", "\"success\":true"],
+                &["tool_call_id"],
+            ),
+            (
+                ActivityEvent::AwaitingPermission {
+                    request_id: "r1".into(),
+                    permission_kind: "shell".into(),
+                    summary: Some("ls".into()),
+                },
+                &[
+                    "\"requestId\":\"r1\"",
+                    "\"permissionKind\":\"shell\"",
+                    "\"summary\":\"ls\"",
+                ],
+                &["request_id", "permission_kind"],
+            ),
+            (
+                ActivityEvent::PermissionResolved {
+                    request_id: "r1".into(),
+                    approved: false,
+                },
+                &["\"requestId\":\"r1\"", "\"approved\":false"],
+                &["request_id"],
+            ),
+            (
+                ActivityEvent::TurnEnd {
+                    duration_ms: Some(123),
+                },
+                &["\"durationMs\":123"],
+                &["duration_ms"],
+            ),
+            (
+                ActivityEvent::CommandEnd { exit: Some(1) },
+                &["\"exit\":1"],
+                &[],
+            ),
+        ];
+        for (event, must_contain, must_not_contain) in cases {
+            let json = serde_json::to_string(event).unwrap();
+            for needle in *must_contain {
+                assert!(
+                    json.contains(needle),
+                    "{event:?} → {json} missing `{needle}`",
+                );
+            }
+            for forbidden in *must_not_contain {
+                assert!(
+                    !json.contains(forbidden),
+                    "{event:?} → {json} contained snake_case `{forbidden}`",
+                );
+            }
+        }
     }
 
     #[test]
