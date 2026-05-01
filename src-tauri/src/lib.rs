@@ -15,6 +15,7 @@ pub mod pty_pool;
 pub mod session_metrics;
 pub mod sub_sessions;
 pub mod types;
+pub mod vscode_owner;
 pub mod window_focus;
 
 pub use types::{

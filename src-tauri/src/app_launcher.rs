@@ -87,6 +87,124 @@ pub trait AppKiller: Send + Sync + 'static {
 }
 
 // ---------------------------------------------------------------------------
+// PID-by-PID killer (for re-targeted owners)
+// ---------------------------------------------------------------------------
+
+/// [`AppKiller`] keyed on a raw OS PID rather than a [`Child`] handle.
+///
+/// Used after [`OwnerResolver`] re-targets an [`AppRuntime`] to a
+/// long-lived editor process the launcher handed off to (e.g. VS Code's
+/// `Code.exe`). The launcher's [`RealKiller`] is moot at that point —
+/// the launcher has exited and its `Child` slot is empty — so we swap
+/// it for a [`PidKiller`] that issues `TerminateProcess` (Windows) or
+/// `kill(SIGTERM)` (Unix) directly against the rediscovered PID. This
+/// preserves the property that `pool.kill(id)` actually terminates the
+/// process the user can see.
+///
+/// `kill` is best-effort and returns `Ok` even if the process has
+/// already exited; the OS-level "no such process" error is benign.
+pub struct PidKiller {
+    pid: u32,
+}
+
+impl PidKiller {
+    #[must_use]
+    pub fn new(pid: u32) -> Self {
+        Self { pid }
+    }
+}
+
+impl AppKiller for PidKiller {
+    fn kill(&self) -> Result<(), Error> {
+        platform_kill_pid(self.pid)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn platform_kill_pid(pid: u32) -> Result<(), Error> {
+    use std::ffi::c_void;
+    #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+    type HANDLE = *mut c_void;
+    #[allow(clippy::upper_case_acronyms)]
+    type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
+    type BOOL = i32;
+    const PROCESS_TERMINATE: DWORD = 0x0001;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
+        fn TerminateProcess(handle: HANDLE, exit_code: u32) -> BOOL;
+        fn CloseHandle(handle: HANDLE) -> BOOL;
+    }
+    // Best-effort: a NULL handle means the PID is already gone (benign
+    // race) or we lack permission (rare for processes we spawned).
+    // SAFETY: passing a literal access mask + PID; OpenProcess is
+    // documented to handle invalid PIDs by returning NULL.
+    let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if h.is_null() {
+        return Ok(());
+    }
+    // SAFETY: `h` is a valid handle; exit code is arbitrary (1).
+    unsafe {
+        TerminateProcess(h, 1);
+        CloseHandle(h);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn platform_kill_pid(pid: u32) -> Result<(), Error> {
+    // SAFETY: kill(2) is async-signal-safe; passing a possibly-stale
+    // PID is documented to return ESRCH which we treat as benign.
+    unsafe {
+        let _ = libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Owner resolution / liveness (re-target after launcher exit)
+// ---------------------------------------------------------------------------
+
+/// Strategy for re-discovering the long-lived owner process after a
+/// delegating launcher exits. Set per-spawn — most apps don't need one
+/// (pass `None` to [`AppPool::spawn`]); VS Code does (its `code.cmd`
+/// launcher hands off to `Code.exe` and exits within ~1 s).
+///
+/// Implementations encapsulate their own polling / timeout strategy:
+/// `resolve()` blocks until a match is found OR a per-resolver
+/// deadline expires (returns `None`). Called from a dedicated
+/// `arborist-app-resolve-<pid>` thread so polling does not steal time
+/// from the wait thread.
+pub trait OwnerResolver: Send + Sync + 'static {
+    /// Block until the rediscovered owner is identified or the
+    /// resolver's internal timeout expires.
+    fn resolve(&self) -> Option<RetargetedOwner>;
+}
+
+/// Bundle returned by [`OwnerResolver::resolve`].
+///
+/// `liveness` MUST observe the same PID as `pid` — the [`AppPool`]
+/// hands the probe to a dedicated thread that emits `Exited` once
+/// `wait_for_death` returns, and falsely reporting death would emit a
+/// spurious tab-exit event.
+pub struct RetargetedOwner {
+    pub pid: u32,
+    pub killer: Arc<dyn AppKiller>,
+    pub liveness: Box<dyn LivenessProbe>,
+}
+
+/// Blocking wait for a re-targeted PID to die. Implementors are free
+/// to poll or use OS-level wait (e.g. `WaitForSingleObject` on a
+/// `SYNCHRONIZE` handle). Called from a dedicated
+/// `arborist-app-liveness-<pid>` thread; `wait_for_death` is consumed
+/// (`Box<Self>`) so it cannot be invoked twice.
+pub trait LivenessProbe: Send + 'static {
+    fn wait_for_death(self: Box<Self>);
+}
+
+// ---------------------------------------------------------------------------
 // Real spawner
 // ---------------------------------------------------------------------------
 
@@ -315,9 +433,25 @@ struct AppRuntime {
     pid: u32,
     killer: Arc<dyn AppKiller>,
     killed: Arc<AtomicBool>,
+    /// Set by the resolver thread once it has swapped `pid` and
+    /// `killer` to the rediscovered owner (e.g. VS Code's long-lived
+    /// `Code.exe` after `code.cmd` exits). The wait thread checks
+    /// this flag and stays silent — emitting `Exited` would lie to the
+    /// frontend about a window that's still open. The liveness thread
+    /// is responsible for emitting `Exited` once the rediscovered PID
+    /// actually dies.
+    re_targeted: Arc<AtomicBool>,
     /// Held so dropping the pool joins the wait thread (best-effort).
     /// Wait threads are short-lived for delegated launchers.
     _wait_thread: Option<JoinHandle<()>>,
+    /// Best-effort: the resolver thread polls for the rediscovered
+    /// owner and exits once found (or the timeout fires). Held so the
+    /// pool drop joins it.
+    _resolver_thread: Option<JoinHandle<()>>,
+    /// Set by the resolver thread on successful retarget; held so the
+    /// pool drop joins the liveness thread (which blocks until the
+    /// rediscovered PID dies).
+    _liveness_thread: Option<JoinHandle<()>>,
 }
 
 impl AppPool {
@@ -332,12 +466,22 @@ impl AppPool {
     /// Spawn `cmd` for `id` in `cwd`, register the runtime, and start
     /// the wait thread. Returns the captured PID. Emits `Running` via
     /// `sink.status` synchronously before returning.
+    ///
+    /// If `owner_resolver` is `Some`, the pool also starts a resolver
+    /// thread that calls [`OwnerResolver::resolve`] in the background.
+    /// On a successful resolution, the runtime's `pid` and `killer`
+    /// are swapped to the rediscovered owner under the pool lock, the
+    /// `re_targeted` flag is set so the wait thread stays silent when
+    /// the launcher exits, a second `subsession://status` event is
+    /// emitted with the new PID, and a liveness thread is started to
+    /// emit `Exited` once the rediscovered process dies.
     pub fn spawn(
         &self,
         id: SubSessionId,
         cmd: String,
         cwd: PathBuf,
         sink: AppPoolSink,
+        owner_resolver: Option<Arc<dyn OwnerResolver>>,
     ) -> Result<u32, Error> {
         let SpawnedApp {
             pid,
@@ -346,6 +490,7 @@ impl AppPool {
         } = self.spawner.spawn(&cmd, &cwd)?;
 
         let killed = Arc::new(AtomicBool::new(false));
+        let re_targeted = Arc::new(AtomicBool::new(false));
         let weak_inner = Arc::downgrade(&self.inner);
 
         let wait_id = id;
@@ -369,6 +514,24 @@ impl AppPool {
             }
         };
 
+        // Optional resolver thread: re-target to the long-lived owner
+        // process (e.g. `Code.exe`) once the launcher hands off and
+        // exits. Best-effort — failure to spawn the thread leaves the
+        // sub-session functional with the launcher PID.
+        let resolver_thread = owner_resolver.and_then(|resolver| {
+            let res_id = id;
+            let res_killed = Arc::clone(&killed);
+            let res_sink = sink.clone();
+            let res_weak = weak_inner.clone();
+            std::thread::Builder::new()
+                .name(format!("arborist-app-resolve-{pid}"))
+                .spawn(move || resolver_loop(res_id, resolver, res_sink, res_weak, res_killed))
+                .map_err(|e| {
+                    tracing::warn!(sub_session_id = %id, error = %e, "spawn app resolver thread failed");
+                })
+                .ok()
+        });
+
         {
             let mut g = self
                 .inner
@@ -380,7 +543,10 @@ impl AppPool {
                     pid,
                     killer,
                     killed,
+                    re_targeted,
                     _wait_thread: Some(wait_thread),
+                    _resolver_thread: resolver_thread,
+                    _liveness_thread: None,
                 },
             );
         }
@@ -454,20 +620,37 @@ fn app_wait_loop(
     pool_weak: std::sync::Weak<Mutex<BTreeMap<SubSessionId, AppRuntime>>>,
 ) {
     let result = waiter.wait();
-    // Atomically claim ownership of emission by removing ourselves from
-    // the pool. If `kill` or `detach` already removed the entry, we lose
-    // the race and stay silent — the user already considers this
-    // sub-session gone.
-    let removed_by_us = if let Some(strong) = pool_weak.upgrade() {
+    // Three possible outcomes once the launcher exits:
+    //
+    //   * `Retargeted` — resolver thread already swapped this entry to
+    //     a long-lived owner PID. Stay silent; the liveness thread is
+    //     responsible for eventually emitting `Exited`.
+    //   * `Removed` — we won the race to claim emission rights for
+    //     this entry. Remove ourselves from the pool and emit.
+    //   * `AlreadyGone` — `kill` / `detach` removed us first; the
+    //     user-facing event was the explicit close.
+    enum Action {
+        Retargeted,
+        Removed,
+        AlreadyGone,
+    }
+    let action = if let Some(strong) = pool_weak.upgrade() {
         if let Ok(mut g) = strong.lock() {
-            g.remove(&id).is_some()
+            match g.get(&id) {
+                None => Action::AlreadyGone,
+                Some(rt) if rt.re_targeted.load(Ordering::SeqCst) => Action::Retargeted,
+                Some(_) => {
+                    g.remove(&id);
+                    Action::Removed
+                }
+            }
         } else {
-            false
+            Action::AlreadyGone
         }
     } else {
-        false
+        Action::AlreadyGone
     };
-    if !removed_by_us || killed.load(Ordering::SeqCst) {
+    if !matches!(action, Action::Removed) || killed.load(Ordering::SeqCst) {
         return;
     }
     let status = match result {
@@ -475,6 +658,111 @@ fn app_wait_loop(
         Ok(false) | Err(_) => SubSessionStatus::Error,
     };
     (sink.status)(&id, status, None, None);
+    (sink.exited)(&id, None);
+}
+
+/// Resolver thread body: blocks on [`OwnerResolver::resolve`] then,
+/// under the pool lock, swaps the runtime's `pid` and `killer` to the
+/// rediscovered owner. Emits a `Running` status event with the new
+/// PID and starts the liveness thread that will emit `Exited` once
+/// the rediscovered process dies.
+fn resolver_loop(
+    id: SubSessionId,
+    resolver: Arc<dyn OwnerResolver>,
+    sink: AppPoolSink,
+    pool_weak: std::sync::Weak<Mutex<BTreeMap<SubSessionId, AppRuntime>>>,
+    killed: Arc<AtomicBool>,
+) {
+    if killed.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(bundle) = resolver.resolve() else {
+        return;
+    };
+    if killed.load(Ordering::SeqCst) {
+        return;
+    }
+    let RetargetedOwner {
+        pid: new_pid,
+        killer: new_killer,
+        liveness,
+    } = bundle;
+
+    // Spawn the liveness thread first so `wait_for_death` is consumed
+    // even if the swap below loses the race. `liveness_loop` does
+    // nothing harmful when the runtime is already gone.
+    let live_sink = sink.clone();
+    let live_weak = pool_weak.clone();
+    let live_killed = Arc::clone(&killed);
+    let live_thread = std::thread::Builder::new()
+        .name(format!("arborist-app-liveness-{new_pid}"))
+        .spawn(move || liveness_loop(id, new_pid, liveness, live_sink, live_weak, live_killed))
+        .map_err(|e| {
+            tracing::warn!(sub_session_id = %id, error = %e, "spawn app liveness thread failed");
+        })
+        .ok();
+
+    let did_retarget = if let Some(strong) = pool_weak.upgrade() {
+        if let Ok(mut g) = strong.lock() {
+            if let Some(rt) = g.get_mut(&id) {
+                rt.re_targeted.store(true, Ordering::SeqCst);
+                rt.pid = new_pid;
+                rt.killer = Arc::clone(&new_killer);
+                rt._liveness_thread = live_thread;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if did_retarget {
+        (sink.status)(&id, SubSessionStatus::Running, Some(new_pid), None);
+    }
+    // If !did_retarget the runtime was removed (close/relaunch) between
+    // resolve() and the lock; the liveness thread will discover the
+    // missing entry on its claim-and-emit attempt and exit silently.
+}
+
+/// Liveness thread body: blocks on the [`LivenessProbe`] until the
+/// rediscovered PID dies, then claim-and-emits `Exited` provided the
+/// runtime still belongs to this PID (i.e. the user didn't already
+/// `detach` or `relaunch`).
+fn liveness_loop(
+    id: SubSessionId,
+    new_pid: u32,
+    liveness: Box<dyn LivenessProbe>,
+    sink: AppPoolSink,
+    pool_weak: std::sync::Weak<Mutex<BTreeMap<SubSessionId, AppRuntime>>>,
+    killed: Arc<AtomicBool>,
+) {
+    liveness.wait_for_death();
+
+    // Claim emission rights ONLY if the runtime is still ours
+    // (matching pid). Other outcomes — entry gone (kill/detach), or
+    // entry replaced via relaunch — mean someone else already owns the
+    // user-facing event.
+    let removed_by_us = if let Some(strong) = pool_weak.upgrade() {
+        if let Ok(mut g) = strong.lock() {
+            match g.get(&id) {
+                Some(rt) if rt.pid == new_pid => g.remove(&id).is_some(),
+                _ => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !removed_by_us || killed.load(Ordering::SeqCst) {
+        return;
+    }
+    (sink.status)(&id, SubSessionStatus::Exited, None, None);
     (sink.exited)(&id, None);
 }
 
@@ -606,7 +894,7 @@ mod tests {
         let id = SubSessionId::default();
 
         let pid = pool
-            .spawn(id, "code .".to_owned(), PathBuf::from("."), sink)
+            .spawn(id, "code .".to_owned(), PathBuf::from("."), sink, None)
             .expect("spawn");
         assert!(pid >= 2000);
         assert!(pool.contains(&id));
@@ -636,7 +924,7 @@ mod tests {
         let pool = AppPool::new(spawner.clone());
         let (sink, status_obs, _) = collect_sink();
         let id = SubSessionId::default();
-        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink)
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
             .expect("spawn");
         spawner.child(0).signal_exit(false);
         wait_until(
@@ -658,7 +946,7 @@ mod tests {
         let pool = AppPool::new(spawner.clone());
         let (sink, status_obs, exit_obs) = collect_sink();
         let id = SubSessionId::default();
-        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink)
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
             .expect("spawn");
         // Prime: only Running observed so far.
         wait_until(
@@ -694,7 +982,7 @@ mod tests {
         let (sink, _, _) = collect_sink();
         let id = SubSessionId::default();
         let pid = pool
-            .spawn(id, "x".to_owned(), PathBuf::from("."), sink)
+            .spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
             .unwrap();
         assert_eq!(pool.pid(&id), Some(pid));
         spawner.child(0).signal_exit(true);
@@ -711,7 +999,7 @@ mod tests {
         let pool = AppPool::new(spawner.clone());
         let (sink, status_obs, exit_obs) = collect_sink();
         let id = SubSessionId::default();
-        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink)
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
             .expect("spawn");
         wait_until(
             || !status_obs.lock().unwrap().is_empty(),
@@ -742,6 +1030,358 @@ mod tests {
         assert!(exit_obs.lock().unwrap().is_empty());
     }
 
+    // -----------------------------------------------------------------
+    // Re-target (OwnerResolver / LivenessProbe) tests
+    // -----------------------------------------------------------------
+
+    /// Test resolver: blocks on a barrier, then returns the queued
+    /// [`RetargetedOwner`]. Tests can inspect whether `resolve` was
+    /// called.
+    struct FakeOwnerResolver {
+        barrier: Arc<(StdMutex<Option<RetargetedOwner>>, std::sync::Condvar)>,
+        called: AtomicBool,
+    }
+
+    impl FakeOwnerResolver {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                barrier: Arc::new((StdMutex::new(None), std::sync::Condvar::new())),
+                called: AtomicBool::new(false),
+            })
+        }
+        /// Queue a successful retarget. Wakes the resolver thread.
+        fn signal_retarget(&self, owner: RetargetedOwner) {
+            let (lock, cvar) = &*self.barrier;
+            *lock.lock().unwrap() = Some(owner);
+            cvar.notify_all();
+        }
+        fn was_called(&self) -> bool {
+            self.called.load(Ordering::SeqCst)
+        }
+    }
+
+    impl OwnerResolver for FakeOwnerResolver {
+        fn resolve(&self) -> Option<RetargetedOwner> {
+            self.called.store(true, Ordering::SeqCst);
+            let (lock, cvar) = &*self.barrier;
+            let mut g = lock.lock().unwrap();
+            // Block until either an owner is queued or 5s elapses (so a
+            // misbehaving test fails loudly rather than hanging the
+            // whole suite).
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while g.is_none() {
+                let remaining = deadline.checked_duration_since(Instant::now())?;
+                let (next, timeout) = cvar.wait_timeout(g, remaining).unwrap();
+                if timeout.timed_out() && next.is_none() {
+                    return None;
+                }
+                g = next;
+            }
+            g.take()
+        }
+    }
+
+    /// Test liveness probe: blocks on a Condvar until `signal_dead` is
+    /// called. Mirrors `FakeWaiter`.
+    struct FakeLivenessProbe {
+        signal: Arc<(StdMutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl FakeLivenessProbe {
+        fn new_pair() -> (Box<Self>, Arc<(StdMutex<bool>, std::sync::Condvar)>) {
+            let signal = Arc::new((StdMutex::new(false), std::sync::Condvar::new()));
+            (
+                Box::new(FakeLivenessProbe {
+                    signal: Arc::clone(&signal),
+                }),
+                signal,
+            )
+        }
+    }
+
+    impl LivenessProbe for FakeLivenessProbe {
+        fn wait_for_death(self: Box<Self>) {
+            let (lock, cvar) = &*self.signal;
+            let mut g = lock.lock().unwrap();
+            while !*g {
+                g = cvar.wait(g).unwrap();
+            }
+        }
+    }
+
+    fn signal_liveness_dead(signal: &Arc<(StdMutex<bool>, std::sync::Condvar)>) {
+        let (lock, cvar) = &**signal;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    }
+
+    /// Standalone fake killer keyed by an Arc<AtomicBool>, used to
+    /// observe whether `pool.kill` after retarget targets the
+    /// rediscovered killer (not the original).
+    struct FlagKiller {
+        killed: Arc<AtomicBool>,
+    }
+    impl AppKiller for FlagKiller {
+        fn kill(&self) -> Result<(), Error> {
+            self.killed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pool_retarget_swaps_pid_and_killer_and_emits_running_with_new_pid() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, status_obs, exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        let resolver = FakeOwnerResolver::new();
+        let initial_pid = pool
+            .spawn(
+                id,
+                "code .".to_owned(),
+                PathBuf::from("."),
+                sink,
+                Some(resolver.clone() as Arc<dyn OwnerResolver>),
+            )
+            .expect("spawn");
+
+        // Resolver returns a NEW pid + a fresh killer + a probe we
+        // hold the death-signal for.
+        let new_pid = 99_001;
+        let new_killed_flag = Arc::new(AtomicBool::new(false));
+        let new_killer: Arc<dyn AppKiller> = Arc::new(FlagKiller {
+            killed: Arc::clone(&new_killed_flag),
+        });
+        let (probe, _liveness_signal) = FakeLivenessProbe::new_pair();
+        resolver.signal_retarget(RetargetedOwner {
+            pid: new_pid,
+            killer: Arc::clone(&new_killer),
+            liveness: probe,
+        });
+
+        // Pool's pid for the entry should flip to new_pid.
+        wait_until(
+            || pool.pid(&id) == Some(new_pid),
+            Duration::from_secs(2),
+            "pool.pid should flip to rediscovered owner",
+        );
+
+        // Status events: Running(initial_pid) then Running(new_pid).
+        wait_until(
+            || {
+                status_obs
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(s, p)| matches!(s, SubSessionStatus::Running) && *p == Some(new_pid))
+            },
+            Duration::from_secs(2),
+            "Running event with new pid",
+        );
+
+        let statuses = status_obs.lock().unwrap().clone();
+        assert!(matches!(
+            statuses.first(),
+            Some((SubSessionStatus::Running, Some(p))) if *p == initial_pid
+        ));
+
+        // Now the launcher exits. With re_targeted=true, the wait
+        // thread MUST stay silent — no Exited event.
+        spawner.child(0).signal_exit(true);
+        std::thread::sleep(Duration::from_millis(120));
+        let post = status_obs.lock().unwrap().clone();
+        assert!(
+            !post
+                .iter()
+                .any(|(s, _)| matches!(s, SubSessionStatus::Exited)),
+            "launcher exit must be suppressed after retarget; got {post:?}"
+        );
+        assert!(
+            exit_obs.lock().unwrap().is_empty(),
+            "no exited event after retarget+launcher-exit"
+        );
+        // Entry must still be in the pool (liveness thread owns the
+        // exit emission now).
+        assert!(
+            pool.contains(&id),
+            "entry must remain in pool after launcher exits if retargeted"
+        );
+
+        // pool.kill MUST hit the NEW killer, not the launcher's.
+        pool.kill(&id).expect("kill");
+        assert!(
+            new_killed_flag.load(Ordering::SeqCst),
+            "post-retarget pool.kill must invoke the rediscovered killer"
+        );
+        // The original launcher's killer must NOT receive the kill —
+        // FakeAppSpawner.child(0) was already exited by us above; this
+        // is just a no-double-kill assertion.
+    }
+
+    #[test]
+    fn pool_retarget_then_liveness_death_emits_exited_with_no_pid() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, status_obs, exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        let resolver = FakeOwnerResolver::new();
+        pool.spawn(
+            id,
+            "code .".to_owned(),
+            PathBuf::from("."),
+            sink,
+            Some(resolver.clone() as Arc<dyn OwnerResolver>),
+        )
+        .expect("spawn");
+
+        let new_pid = 99_002;
+        let killed_flag = Arc::new(AtomicBool::new(false));
+        let new_killer: Arc<dyn AppKiller> = Arc::new(FlagKiller {
+            killed: Arc::clone(&killed_flag),
+        });
+        let (probe, liveness_signal) = FakeLivenessProbe::new_pair();
+        resolver.signal_retarget(RetargetedOwner {
+            pid: new_pid,
+            killer: new_killer,
+            liveness: probe,
+        });
+        wait_until(
+            || pool.pid(&id) == Some(new_pid),
+            Duration::from_secs(2),
+            "pool.pid should flip",
+        );
+
+        // Launcher exits — suppressed.
+        spawner.child(0).signal_exit(true);
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Now the rediscovered owner dies (user closed VS Code).
+        signal_liveness_dead(&liveness_signal);
+
+        wait_until(
+            || !pool.contains(&id),
+            Duration::from_secs(2),
+            "pool should drop entry after liveness death",
+        );
+        wait_until(
+            || {
+                status_obs
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(s, p)| matches!(s, SubSessionStatus::Exited) && p.is_none())
+            },
+            Duration::from_secs(2),
+            "Exited(None) emitted after rediscovered owner dies",
+        );
+        assert!(
+            !exit_obs.lock().unwrap().is_empty(),
+            "exited event after rediscovered owner dies"
+        );
+        // We did NOT call pool.kill — killer must not have been
+        // invoked.
+        assert!(
+            !killed_flag.load(Ordering::SeqCst),
+            "natural death must not invoke killer"
+        );
+    }
+
+    #[test]
+    fn pool_resolver_returning_none_falls_through_to_normal_lifecycle() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, status_obs, exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        // A resolver that always returns None (e.g. the resolver gave
+        // up after timeout). We use FakeOwnerResolver and call
+        // `signal_no_retarget` to release the wait without queuing an
+        // owner.
+        struct NeverFinds;
+        impl OwnerResolver for NeverFinds {
+            fn resolve(&self) -> Option<RetargetedOwner> {
+                None
+            }
+        }
+        pool.spawn(
+            id,
+            "x".to_owned(),
+            PathBuf::from("."),
+            sink,
+            Some(Arc::new(NeverFinds) as Arc<dyn OwnerResolver>),
+        )
+        .expect("spawn");
+
+        // Launcher exits naturally — Exited must fire (re_targeted is
+        // still false because resolver returned None).
+        spawner.child(0).signal_exit(true);
+        wait_until(
+            || !pool.contains(&id),
+            Duration::from_secs(2),
+            "pool should drop entry on natural exit when resolver returned None",
+        );
+        let statuses = status_obs.lock().unwrap().clone();
+        assert!(statuses
+            .iter()
+            .any(|(s, _)| matches!(s, SubSessionStatus::Exited)));
+        assert!(!exit_obs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pool_detach_after_retarget_does_not_kill_rediscovered_owner() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _status_obs, _exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        let resolver = FakeOwnerResolver::new();
+        pool.spawn(
+            id,
+            "code .".to_owned(),
+            PathBuf::from("."),
+            sink,
+            Some(resolver.clone() as Arc<dyn OwnerResolver>),
+        )
+        .expect("spawn");
+        let new_pid = 99_003;
+        let killed_flag = Arc::new(AtomicBool::new(false));
+        let new_killer: Arc<dyn AppKiller> = Arc::new(FlagKiller {
+            killed: Arc::clone(&killed_flag),
+        });
+        let (probe, _) = FakeLivenessProbe::new_pair();
+        resolver.signal_retarget(RetargetedOwner {
+            pid: new_pid,
+            killer: new_killer,
+            liveness: probe,
+        });
+        wait_until(
+            || pool.pid(&id) == Some(new_pid),
+            Duration::from_secs(2),
+            "retarget happened",
+        );
+
+        // Closing the sub-tab uses detach (not kill). The
+        // rediscovered editor process must NOT be killed.
+        pool.detach(&id);
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(
+            !killed_flag.load(Ordering::SeqCst),
+            "detach must not invoke the rediscovered killer"
+        );
+        assert!(resolver.was_called(), "resolver should have been invoked");
+    }
+
+    #[test]
+    fn pid_killer_for_dead_pid_returns_ok_no_panic() {
+        // PID extremely unlikely to exist. Cross-platform: this is the
+        // single-process smoke test for `PidKiller` — no actual victim
+        // is killed, but we exercise the OS call paths.
+        let killer = PidKiller::new(4_294_967);
+        assert!(killer.kill().is_ok());
+    }
+
     #[test]
     fn real_spawner_returns_tool_missing_for_unknown_simple_command() {
         let r = RealAppSpawner.spawn("definitely-not-a-real-binary-xyzzy", Path::new("."));
@@ -770,7 +1410,7 @@ mod tests {
         let cmd = "true".to_owned();
 
         let cwd = std::env::temp_dir();
-        pool.spawn(id, cmd, cwd, sink).expect("real spawn");
+        pool.spawn(id, cmd, cwd, sink, None).expect("real spawn");
 
         wait_until(
             || !pool.contains(&id),

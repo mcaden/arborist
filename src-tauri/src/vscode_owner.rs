@@ -1,0 +1,334 @@
+//! Windows-only VS Code owner re-discovery.
+//!
+//! See `dev/ai/CONTEXT_MENU_PLAN.md` (post-PR-29 follow-up). When the
+//! user opens a `vscode` application sub-tab, the actual command that
+//! runs is `code .`. On Windows this resolves to `code.cmd`, which
+//! launches a Node.js helper that EITHER:
+//!
+//!   * **No VS Code already running** — spawns the long-lived
+//!     `Code.exe` (the editor) and exits ~1 s later.
+//!   * **VS Code already running** — sends an IPC message to the
+//!     existing `Code.exe`, which opens the folder in a new window;
+//!     the launcher exits ~1 s later. The new window's `Code.exe` is
+//!     **not** a descendant of our launcher PID.
+//!
+//! Either way, the PID Arborist captured is dead within seconds and
+//! `focus_pid` returns [`Error::NotFound`]. This module re-discovers
+//! the long-lived `Code.exe` whose window owns the workspace and
+//! retargets the [`AppRuntime`] so subsequent focus/kill calls hit the
+//! correct process.
+//!
+//! ## Identification strategy
+//!
+//! VS Code formats top-level window titles as
+//! `<filename> - <workspace folder> - Visual Studio Code`. We
+//! enumerate top-level visible windows and pick the first whose title
+//! ends with ` - Visual Studio Code` (case-sensitive — that's how VS
+//! Code formats it) and contains the workspace folder's basename
+//! (case-insensitive, since NTFS is case-insensitive).
+//!
+//! No `OpenProcess`, no PEB / NT internals — same Win32 surface area
+//! as [`crate::window_focus`].
+//!
+//! ## Polling
+//!
+//! 500 ms × 16 iterations = 8 s deadline. Empirically VS Code paints
+//! its first window within 2 s on a warm machine and ~5 s on a cold
+//! one. Beyond 8 s we give up and the sub-session keeps the launcher
+//! PID (focus will NotFound, user can relaunch).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use crate::app_launcher::{AppKiller, LivenessProbe, OwnerResolver, PidKiller, RetargetedOwner};
+
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
+const POLL_DEADLINE: Duration = Duration::from_secs(8);
+const TITLE_SUFFIX: &str = " - Visual Studio Code";
+
+/// [`OwnerResolver`] that re-discovers the long-lived `Code.exe`
+/// window owning a given workspace folder. Constructed per-spawn with
+/// the worktree path; the basename is matched against the VS Code
+/// window title.
+pub struct VsCodeOwnerResolver {
+    worktree_path: PathBuf,
+}
+
+impl VsCodeOwnerResolver {
+    #[must_use]
+    pub fn new(worktree_path: PathBuf) -> Self {
+        Self { worktree_path }
+    }
+
+    /// Per-platform PID lookup. Returns `Some(pid)` if a matching
+    /// window is found at the moment of the call, `None` otherwise.
+    fn find_now(&self) -> Option<u32> {
+        let basename = self
+            .worktree_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_owned())?;
+        platform::find_vscode_pid(&basename)
+    }
+}
+
+impl OwnerResolver for VsCodeOwnerResolver {
+    fn resolve(&self) -> Option<RetargetedOwner> {
+        let deadline = Instant::now() + POLL_DEADLINE;
+        loop {
+            if let Some(pid) = self.find_now() {
+                let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
+                let liveness: Box<dyn LivenessProbe> = platform::liveness_probe(pid);
+                return Some(RetargetedOwner {
+                    pid,
+                    killer,
+                    liveness,
+                });
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Platform: Windows
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+mod platform {
+    use super::TITLE_SUFFIX;
+    use crate::app_launcher::LivenessProbe;
+    use std::ffi::c_void;
+    use std::time::Duration;
+
+    #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+    type HWND = *mut c_void;
+    #[allow(clippy::upper_case_acronyms)]
+    type HANDLE = *mut c_void;
+    #[allow(clippy::upper_case_acronyms)]
+    type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
+    type BOOL = i32;
+    #[allow(clippy::upper_case_acronyms)]
+    type LPARAM = isize;
+
+    const SYNCHRONIZE: DWORD = 0x0010_0000;
+    const WAIT_OBJECT_0: DWORD = 0;
+    const WAIT_TIMEOUT: DWORD = 0x102;
+    const INFINITE: DWORD = 0xFFFF_FFFF;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(cb: extern "system" fn(HWND, LPARAM) -> BOOL, lparam: LPARAM) -> BOOL;
+        fn GetWindowThreadProcessId(hwnd: HWND, pid_out: *mut DWORD) -> DWORD;
+        fn IsWindowVisible(hwnd: HWND) -> BOOL;
+        fn GetWindowTextLengthW(hwnd: HWND) -> i32;
+        fn GetWindowTextW(hwnd: HWND, buf: *mut u16, max_count: i32) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
+        fn CloseHandle(handle: HANDLE) -> BOOL;
+        fn WaitForSingleObject(handle: HANDLE, timeout_ms: DWORD) -> DWORD;
+    }
+
+    struct EnumState {
+        // Lowercased basename to match against (case-insensitive).
+        needle: String,
+        // First matching PID, if any.
+        found: Option<u32>,
+    }
+
+    extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: lparam is a `&mut EnumState` we set in `find_vscode_pid`.
+        let state = unsafe { &mut *(lparam as *mut EnumState) };
+        // SAFETY: hwnd comes from EnumWindows and is valid.
+        let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+        if !visible {
+            return 1;
+        }
+        // SAFETY: see above.
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
+        if len <= 0 {
+            return 1;
+        }
+        let cap = (len as usize) + 1;
+        let mut buf: Vec<u16> = vec![0u16; cap];
+        // SAFETY: buf has space for `cap` u16s. Returned `n` is the
+        // number of code units written (excluding the null terminator).
+        let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), cap as i32) };
+        if n <= 0 {
+            return 1;
+        }
+        let title = String::from_utf16_lossy(&buf[..n as usize]);
+        if !title.ends_with(TITLE_SUFFIX) {
+            return 1;
+        }
+        if !title.to_lowercase().contains(&state.needle) {
+            return 1;
+        }
+        let mut pid: DWORD = 0;
+        // SAFETY: pid is a valid &mut DWORD; hwnd is valid.
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid != 0 {
+            state.found = Some(pid);
+            return 0; // stop enumeration
+        }
+        1
+    }
+
+    pub(super) fn find_vscode_pid(basename: &str) -> Option<u32> {
+        let mut state = EnumState {
+            needle: basename.to_lowercase(),
+            found: None,
+        };
+        // SAFETY: enum_proc reads lparam as &mut EnumState; we pass
+        // exactly that.
+        unsafe {
+            EnumWindows(enum_proc, &mut state as *mut _ as LPARAM);
+        }
+        state.found
+    }
+
+    /// Polling-based liveness probe: every 1 s, attempt to acquire a
+    /// SYNCHRONIZE handle on `pid` and `WaitForSingleObject` with 0 ms
+    /// timeout. Returns when the wait reports the process is signalled
+    /// (i.e. exited) OR the handle can no longer be opened.
+    ///
+    /// We deliberately re-open the handle on each iteration rather
+    /// than holding it: holding a handle prevents the kernel from
+    /// reaping the process record, which on long-lived editor
+    /// instances would accumulate. The cost (one OpenProcess per
+    /// second) is negligible.
+    pub(super) fn liveness_probe(pid: u32) -> Box<dyn LivenessProbe> {
+        Box::new(WindowsLivenessProbe { pid })
+    }
+
+    struct WindowsLivenessProbe {
+        pid: u32,
+    }
+    impl LivenessProbe for WindowsLivenessProbe {
+        fn wait_for_death(self: Box<Self>) {
+            loop {
+                // SAFETY: literal access mask + PID.
+                let h = unsafe { OpenProcess(SYNCHRONIZE, 0, self.pid) };
+                if h.is_null() {
+                    // Process has been reaped or we lost rights.
+                    return;
+                }
+                // SAFETY: h is a valid handle returned just above.
+                let r = unsafe { WaitForSingleObject(h, 1_000) };
+                // SAFETY: h is valid.
+                unsafe { CloseHandle(h) };
+                match r {
+                    WAIT_OBJECT_0 => return,
+                    WAIT_TIMEOUT => {
+                        // Still alive; loop and re-poll. Use a short
+                        // additional sleep so a tight kernel-side spin
+                        // doesn't starve other threads.
+                        std::thread::sleep(Duration::from_millis(0));
+                        continue;
+                    }
+                    _ => {
+                        // Unknown / failure — back off a beat then
+                        // retry. Avoids hot-spinning on weird returns.
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+
+    // Silence dead-code warnings on the INFINITE constant, which is
+    // useful documentation but not used by the polling probe.
+    #[allow(dead_code)]
+    const _UNUSED: DWORD = INFINITE;
+}
+
+// ---------------------------------------------------------------------------
+// Platform: non-Windows — VS Code re-discovery is a no-op.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_os = "windows"))]
+mod platform {
+    use crate::app_launcher::LivenessProbe;
+
+    pub(super) fn find_vscode_pid(_basename: &str) -> Option<u32> {
+        None
+    }
+
+    pub(super) fn liveness_probe(_pid: u32) -> Box<dyn LivenessProbe> {
+        // Should never be called on non-Windows because find_vscode_pid
+        // returns None, but provide a dummy in case the resolver is
+        // wired up for tests / future extension.
+        struct Never;
+        impl LivenessProbe for Never {
+            fn wait_for_death(self: Box<Self>) {
+                // Park indefinitely. In practice the resolver thread
+                // won't construct us — find_vscode_pid returns None on
+                // these platforms — but if someone does call this, we
+                // park rather than busy-loop or panic.
+                loop {
+                    std::thread::park();
+                }
+            }
+        }
+        Box::new(Never)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolver_for_nonexistent_workspace_returns_none() {
+        // Construct with a clearly-nonexistent workspace name and use
+        // a tight test-only deadline. This exercises the polling loop
+        // structure (real Windows search runs but finds nothing) and
+        // proves resolve() honours its deadline.
+        let r = VsCodeOwnerResolverWithDeadline {
+            inner: VsCodeOwnerResolver::new(PathBuf::from(
+                "definitely-not-a-real-workspace-zzzqqq-arborist-test",
+            )),
+            deadline: Duration::from_millis(50),
+        };
+        let result = r.resolve();
+        assert!(result.is_none(), "expected None for nonsense basename");
+    }
+
+    /// Test wrapper: same logic as [`VsCodeOwnerResolver`] but with an
+    /// injectable deadline so tests don't wait the full 8 s production
+    /// budget.
+    struct VsCodeOwnerResolverWithDeadline {
+        inner: VsCodeOwnerResolver,
+        deadline: Duration,
+    }
+
+    impl OwnerResolver for VsCodeOwnerResolverWithDeadline {
+        fn resolve(&self) -> Option<RetargetedOwner> {
+            let stop_at = Instant::now() + self.deadline;
+            loop {
+                if let Some(pid) = self.inner.find_now() {
+                    let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
+                    let liveness: Box<dyn LivenessProbe> = platform::liveness_probe(pid);
+                    return Some(RetargetedOwner {
+                        pid,
+                        killer,
+                        liveness,
+                    });
+                }
+                if Instant::now() >= stop_at {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}

@@ -123,11 +123,13 @@ pub fn subsession_create_impl(
                 .pool
                 .spawn_terminal(sub.id, composed_command, cwd, sub_ctx.sink.clone())
         }
-        CustomProcessKind::Application => {
-            sub_ctx
-                .app_pool
-                .spawn(sub.id, composed_command, cwd, sub_ctx.sink.clone())
-        }
+        CustomProcessKind::Application => sub_ctx.app_pool.spawn(
+            sub.id,
+            composed_command,
+            cwd.clone(),
+            sub_ctx.sink.clone(),
+            owner_resolver_for(def, &cwd),
+        ),
     };
 
     match spawn_result {
@@ -597,11 +599,13 @@ pub async fn subsession_relaunch_impl(
                 .pool
                 .spawn_terminal(id, composed_command, cwd, sub_ctx.sink.clone())
         }
-        CustomProcessKind::Application => {
-            sub_ctx
-                .app_pool
-                .spawn(id, composed_command, cwd, sub_ctx.sink.clone())
-        }
+        CustomProcessKind::Application => sub_ctx.app_pool.spawn(
+            id,
+            composed_command,
+            cwd.clone(),
+            sub_ctx.sink.clone(),
+            owner_resolver_for(&def, &cwd),
+        ),
     };
 
     match spawn_result {
@@ -632,4 +636,25 @@ fn now_unix_seconds() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Build the [`crate::app_launcher::OwnerResolver`] (if any) appropriate
+/// for the given def. Today only the built-in `vscode` def needs one —
+/// `code.cmd` hands off to a long-lived `Code.exe` and exits, leaving
+/// the launcher PID dead within seconds. See `vscode_owner.rs` for the
+/// re-discovery strategy.
+///
+/// Returns `None` for every other def: most app launchers spawn a
+/// child the user identifies with directly (`open`, `explorer`,
+/// `gimp`, etc.) so the launcher PID IS the long-lived process.
+fn owner_resolver_for(
+    def: &crate::types::CustomProcessDef,
+    cwd: &std::path::Path,
+) -> Option<Arc<dyn crate::app_launcher::OwnerResolver>> {
+    if def.id.as_str() == crate::config_store::BUILTIN_DEF_ID_VSCODE {
+        return Some(Arc::new(crate::vscode_owner::VsCodeOwnerResolver::new(
+            cwd.to_path_buf(),
+        )));
+    }
+    None
 }
