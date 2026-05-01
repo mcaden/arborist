@@ -335,6 +335,30 @@ pub fn into_scope(binding: WorkspaceBinding) -> WorkspaceScope {
     WorkspaceScope::new(Some(binding.workspace_root), binding.store, binding.lock)
 }
 
+/// Persist `workspace_root` into the bound store's `config.json` if it
+/// is not already present (or differs from the canonical path).
+///
+/// Used by both the boot orchestrator and the in-app
+/// `workspace_switch` command (Phase 7) — without this, a freshly-
+/// seeded or brand-new workspace would have `workspace_root: None`
+/// and the React frontend's picker UI would fire on top of an
+/// already-bound workspace. Failures are logged but non-fatal: a
+/// transient IO error here just means the user re-picks on next
+/// launch.
+pub fn ensure_workspace_root_in_config(store: &ConfigStore, canonical: &Path) {
+    let cfg = store.load_config();
+    if cfg.workspace_root.as_deref() == Some(canonical) {
+        return;
+    }
+    let patch = crate::types::PartialAppConfig {
+        workspace_root: Some(Some(canonical.to_path_buf())),
+        ..Default::default()
+    };
+    if let Err(e) = store.save_config(patch) {
+        warn!(error = ?e, "failed to persist bound workspace_root into config.json; non-fatal");
+    }
+}
+
 /// Native folder-picker dialog. Returns the user's chosen path, or
 /// `None` if they cancelled. Synchronous — blocks the calling thread.
 #[must_use]
@@ -391,22 +415,9 @@ pub fn boot_select_workspace(
     };
     let binding = bind_workspace(&workspace_root, app_data_dir, branch)?;
 
-    // Ensure the bound workspace's config.json reflects the
-    // canonical workspace_root. Without this, a freshly-seeded (or
-    // brand-new) workspace would have `workspace_root: None` and the
-    // frontend would show its own picker on top of an already-bound
-    // workspace. Writing it here makes the binding a single source
-    // of truth.
-    let cfg = binding.store.load_config();
-    if cfg.workspace_root.as_deref() != Some(&binding.workspace_root) {
-        let patch = crate::types::PartialAppConfig {
-            workspace_root: Some(Some(binding.workspace_root.clone())),
-            ..Default::default()
-        };
-        if let Err(e) = binding.store.save_config(patch) {
-            warn!(error = ?e, "failed to persist bound workspace_root into config.json; non-fatal");
-        }
-    }
+    // Ensure the bound workspace's config.json reflects the canonical
+    // workspace_root (single source of truth — see helper docs).
+    ensure_workspace_root_in_config(&binding.store, &binding.workspace_root);
 
     if let Err(e) = write_hint(app_data_dir, branch, &binding.workspace_root) {
         warn!(error = %e, "failed to persist last-workspace hint; non-fatal");

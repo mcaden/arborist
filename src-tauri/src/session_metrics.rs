@@ -267,6 +267,32 @@ impl MetricsRegistry {
             h.running.store(false, Ordering::SeqCst);
         }
     }
+
+    /// Stop every active watcher and block until each worker thread has
+    /// fully exited. Used by the Phase 7 workspace-switch path so the
+    /// in-flight discover/turn callbacks (which read the workspace
+    /// scope) cannot fire after the new workspace has been bound and
+    /// inadvertently write into the *new* store with old workspace
+    /// session ids.
+    ///
+    /// Worst-case wait is one `POLL_INTERVAL` per active watcher (joins
+    /// are sequential — fine in practice given the small N of concurrent
+    /// sessions).
+    pub fn stop_all_and_join(&self) {
+        let drained: Vec<WatcherHandle> = self
+            .inner
+            .lock()
+            .expect("metrics registry lock")
+            .drain()
+            .map(|(_, h)| h)
+            .collect();
+        for mut h in drained {
+            h.running.store(false, Ordering::SeqCst);
+            if let Some(handle) = h.join.take() {
+                let _ = handle.join();
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,8 @@ import type {
   SessionView,
   Tool,
   WorktreeInfo,
+  WorkspaceChangedEvent,
+  WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
 } from '@/types/arborist';
@@ -261,6 +263,31 @@ export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
 }
 
 /**
+ * Switch the active workspace at runtime without restarting the process.
+ *
+ * Backend pipeline (see `commands/session.rs::workspace_switch_impl_inner`):
+ * validate the new path → fast-path no-op if unchanged → close every
+ * open session → swap the workspace binding (with its `.lock` file) →
+ * persist `workspace_root` + `last-workspace.json` hint → emit
+ * `workspace://changed` so this frontend can re-fetch.
+ *
+ * Rejects with `AppError`. Notable codes:
+ *  - `WorkspaceLocked` — the target is open in another Arborist window.
+ *  - `WorkspaceSwitchInProgress` — a previous switch hasn't finished yet.
+ *  - `InvalidPath` / `Internal` — validation or filesystem failure.
+ *
+ * On success, callers should NOT manually patch the config store; the
+ * backend has already done so against the *new* workspace and the
+ * `workspace://changed` listener (registered in `App.tsx`) drives the
+ * re-fetch.
+ */
+export function workspaceSwitch(path: string): Promise<WorkspaceSwitchResult> {
+  return invoke<WorkspaceSwitchResult>('workspace_switch', {
+    args: { path },
+  });
+}
+
+/**
  * Open the OS native directory picker. Resolves to the absolute path the
  * user chose, or `null` if they cancelled. Backed by the
  * `tauri-plugin-dialog` plugin (Phase 10).
@@ -299,4 +326,16 @@ export function onSessionActivity(
 
 export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Promise<UnlistenFn> {
   return listen<SessionMetricsEvent>('session://metrics', (event) => cb(event.payload));
+}
+
+/**
+ * Subscribe to in-app workspace switches initiated by `workspaceSwitch`.
+ * The payload carries the canonical new workspace root. Subscribers
+ * should drop any in-memory state derived from the old workspace
+ * (sessions, config) and re-fetch from the backend.
+ */
+export function onWorkspaceChanged(
+  cb: (payload: WorkspaceChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<WorkspaceChangedEvent>('workspace://changed', (event) => cb(event.payload));
 }

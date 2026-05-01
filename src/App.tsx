@@ -23,7 +23,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
-import { frontendReady } from '@/lib/tauri-bridge';
+import { frontendReady, onWorkspaceChanged } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
@@ -102,6 +102,7 @@ export function App(): JSX.Element {
     let unlistenStatus: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
     let unlistenMetrics: (() => void) | null = null;
+    let unlistenWorkspaceChanged: (() => void) | null = null;
 
     const boot = async (): Promise<void> => {
       try {
@@ -113,6 +114,33 @@ export function App(): JSX.Element {
         unlistenStatus = subscribeToStatus();
         unlistenActivity = subscribeToActivity();
         unlistenMetrics = subscribeToMetrics();
+        // Re-hydrate config + sessions and re-issue frontend_ready when the
+        // backend swaps to a different workspace at runtime (Phase 7
+        // in-app workspace switch). The backend has already (a) closed
+        // every old-workspace session, (b) bound the new (branch,
+        // workspace) lock, and (c) persisted the new workspace_root into
+        // the active store before emitting this event — so it is safe to
+        // simply re-fetch.
+        //
+        // Concurrent emits cannot occur: `workspace_switch_impl_inner`
+        // holds `AppContext::switch_serialise` from start to emit, so
+        // at most one `workspace://changed` is in flight at a time.
+        // The fire-and-forget IIFE is therefore safe.
+        unlistenWorkspaceChanged = await onWorkspaceChanged(() => {
+          void (async () => {
+            try {
+              await useConfigStore.getState().hydrate();
+              await useSessionStore.getState().actions.hydrate();
+              await frontendReady();
+            } catch (err) {
+              // The backend swap already succeeded; rehydration failure
+              // here is a frontend-only inconsistency and shouldn't
+              // crash the app. Surface to console so the user can
+              // reload manually if needed.
+              console.error('workspace://changed re-hydrate failed', err);
+            }
+          })();
+        });
         await frontendReady();
         if (cancelled) return;
         setStatus('ready');
@@ -145,6 +173,13 @@ export function App(): JSX.Element {
       if (unlistenMetrics) {
         try {
           unlistenMetrics();
+        } catch {
+          // ignore
+        }
+      }
+      if (unlistenWorkspaceChanged) {
+        try {
+          unlistenWorkspaceChanged();
         } catch {
           // ignore
         }

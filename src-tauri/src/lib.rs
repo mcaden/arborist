@@ -174,17 +174,22 @@ pub fn run() {
             }
 
             // Build the production AppContext: portable-pty spawner, the
-            // workspace-bound ConfigStore, and a PtySink that bridges back
-            // into both Tauri events and the persisted session record.
-            let store = binding.store.clone();
+            // workspace-bound ConfigStore (held behind RwLock so phase 7
+            // workspace_switch can transactionally swap it), and a PtySink
+            // that bridges back into both Tauri events and the persisted
+            // session record. The sink/discover closures take the workspace
+            // handle (not a snapshot) so they always operate on the
+            // currently-bound store, even after a switch.
             let scope = boot::into_scope(binding);
             let workspace_handle = std::sync::Arc::new(std::sync::RwLock::new(scope));
             let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(
                 pty_pool::PortablePtySpawner,
             )));
-            let sink = commands::build_production_sink(app.handle().clone(), store.clone());
+            let sink =
+                commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
             let metrics_emit = commands::build_production_metrics_emit(app.handle().clone());
-            let ai_session_discover = commands::build_production_ai_session_discover(store.clone());
+            let ai_session_discover =
+                commands::build_production_ai_session_discover(workspace_handle.clone());
             let turn_emit = commands::build_production_turn_emit(app.handle().clone());
             let git_runner: std::sync::Arc<dyn git::GitRunner> =
                 std::sync::Arc::new(git::RealGitRunner);
@@ -215,6 +220,7 @@ pub fn run() {
             commands::frontend_ready,
             commands::worktrees_list,
             commands::workspace_validate,
+            commands::workspace_switch,
             commands::worktree_create,
         ])
         .run(tauri::generate_context!())

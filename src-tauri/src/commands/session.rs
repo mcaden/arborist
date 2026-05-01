@@ -97,6 +97,21 @@ pub struct AppContext {
     /// lock as the membership check, which a `RwLock` cannot give us
     /// atomically.
     pub pending_spawn: Arc<Mutex<HashMap<SessionId, Session>>>,
+    /// Phase 7 in-app workspace switch — serialises concurrent
+    /// `workspace_switch` invocations so the close-all + bind + swap
+    /// pipeline cannot interleave with itself. Held across `.await`s
+    /// inside `workspace_switch_impl`, hence `tokio::sync::Mutex`.
+    pub switch_serialise: tokio::sync::Mutex<()>,
+    /// Phase 7 in-app workspace switch — set to `true` while a switch
+    /// is mid-pipeline (after `switch_serialise` is acquired and before
+    /// the swap commits). Other workspace-mutating commands
+    /// (`session_create`, `session_restart`, `frontend_ready`) check
+    /// this flag and return [`AppError::WorkspaceSwitchInProgress`]
+    /// if set. Read-only / per-session commands (`session_input`,
+    /// `session_resize`, `session_close`) intentionally pass — they
+    /// must succeed during teardown so the close-all loop in the
+    /// switch can complete, and they cannot create *new* orphan state.
+    pub switch_in_progress: AtomicBool,
 }
 
 impl AppContext {
@@ -173,6 +188,8 @@ impl AppContext {
             ai_session_discover,
             turn_emit,
             pending_spawn: Arc::new(Mutex::new(HashMap::new())),
+            switch_serialise: tokio::sync::Mutex::new(()),
+            switch_in_progress: AtomicBool::new(false),
         }
     }
 
@@ -244,6 +261,7 @@ pub fn session_create_impl(
     ctx: &AppContext,
     args: SessionCreateArgs,
 ) -> Result<SessionView, AppError> {
+    ensure_no_switch_in_progress(ctx)?;
     validate_pty_dims(args.cols, args.rows)?;
 
     // 1. Validate worktree (canonicalises; rejects relative/missing).
@@ -742,6 +760,7 @@ pub fn session_input_impl(ctx: &AppContext, args: SessionInputArgs) -> Result<()
 // ---------------------------------------------------------------------------
 
 pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Result<(), AppError> {
+    ensure_no_switch_in_progress(ctx)?;
     validate_pty_dims(args.cols, args.rows)?;
 
     let id = args.session_id;
@@ -841,10 +860,33 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
 
 /// Idempotent: returns `true` if this call won the CAS and triggered the
 /// restore path, `false` if restore had already been kicked off.
+///
+/// While a workspace switch is in progress (Phase 7), this returns
+/// `false` without touching the CAS — the frontend will re-issue
+/// `frontend_ready` after the `workspace://changed` event arrives, at
+/// which point the gate is open and the CAS can fire for the new
+/// workspace.
 pub fn frontend_ready_impl(ctx: &AppContext) -> bool {
+    if ctx.switch_in_progress.load(Ordering::SeqCst) {
+        return false;
+    }
     ctx.restored
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
+}
+
+/// Phase 7 helper — refuse new-state-creating commands while a workspace
+/// switch is in progress. Returns the wire-shape `WorkspaceSwitchInProgress`
+/// error so the frontend can branch on it (typically: ignore + retry once
+/// the `workspace://changed` event arrives).
+fn ensure_no_switch_in_progress(ctx: &AppContext) -> Result<(), AppError> {
+    if ctx.switch_in_progress.load(Ordering::SeqCst) {
+        return Err(AppError::new(
+            "WorkspaceSwitchInProgress",
+            "A workspace switch is in progress; retry once it completes.",
+        ));
+    }
+    Ok(())
 }
 
 /// Friendly UI message when a session's worktree directory is no longer
@@ -896,6 +938,14 @@ fn ai_session_transcript_exists(
 /// Re-spawn every persisted session. Called once after the frontend signals
 /// readiness. Failures on individual sessions are logged but do not abort
 /// the rest — a single broken session must not strand the whole app.
+///
+/// Idempotent on a per-session basis: any session already live in the
+/// PTY pool *or* already registered in `pending_spawn` is skipped. This
+/// matters for the Phase 7 in-app workspace switch, which resets
+/// `restored = false` so a subsequent `frontend_ready` fires the
+/// restore for the new workspace — but if the user races a manual
+/// session_create against that, restore must not double-spawn or
+/// overwrite the live record.
 pub fn restore_all_sessions(ctx: &AppContext) {
     let sessions = ctx.store().load_sessions();
     let ids: Vec<SessionId> = sessions.keys().copied().collect();
@@ -907,7 +957,31 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         warn!(error = %e, "cleanup_orphans failed during restore");
     }
 
+    // Snapshot pending_spawn membership once so the per-session check
+    // doesn't re-acquire the mutex N times. Pool membership IS checked
+    // per-iteration because pool.contains is cheap and the value can
+    // change as the loop progresses (a session in the pool now might
+    // exit before we get to the next id).
+    //
+    // Race note: a concurrent `session_create` could insert a new
+    // pending entry *after* this snapshot, in which case the new id
+    // would not appear here. That's benign — the new id is also not
+    // in `sessions` (which we already loaded above), so the loop
+    // never visits it. The `restored` CAS guarantees this loop body
+    // runs at most once per workspace binding, so there's no
+    // double-spawn risk from re-entry either.
+    let pending_ids: std::collections::HashSet<SessionId> = ctx
+        .pending_spawn
+        .lock()
+        .map(|g| g.keys().copied().collect())
+        .unwrap_or_default();
+
     for (id, session) in sessions {
+        if ctx.pool.contains(&id) || pending_ids.contains(&id) {
+            debug!(session_id = %id, "restore: skipping already-live or already-pending session");
+            continue;
+        }
+
         // Worktree path validation — Roadmap §4.3. If the directory is
         // gone (deleted between launches), spawning would fail with an
         // opaque OS error. Surface a friendly message instead so the
@@ -1078,6 +1152,250 @@ pub fn workspace_validate_impl(
     Ok(WorkspaceValidateResult {
         valid: true,
         error: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// workspace_switch (Phase 7)
+// ---------------------------------------------------------------------------
+
+// In-app workspace switch — transactional swap of the active
+// [`WorkspaceScope`] without restarting the process.
+//
+// Pipeline:
+// 1. Acquire `switch_serialise` (so two concurrent switches cannot
+//    interleave their close-all + bind + swap steps).
+// 2. Validate the new path is a real git-repository directory and
+//    canonicalise it. Reject early on any failure — no state mutated.
+// 3. No-op fast path: if the canonical new path equals the current
+//    workspace, return `{ no_op: true }` immediately. The existing
+//    binding stays valid; no event is emitted.
+// 4. Set `switch_in_progress = true` so [`session_create_impl`],
+//    [`session_restart_impl`], and [`frontend_ready_impl`] refuse new
+//    work while the switch is mid-pipeline.
+// 5. Acquire the OS lock + open `ConfigStore` for the new workspace
+//    via [`crate::boot::bind_workspace`]. While step 5 runs we hold
+//    BOTH the old lock (inside the current `WorkspaceScope`) and the
+//    new lock (inside `WorkspaceBinding`). On
+//    [`crate::boot::BootError::Contention`] we abort the switch with
+//    `WorkspaceLocked` — the user stays on the current workspace.
+// 6. Stop and join all metrics watchers
+//    ([`MetricsRegistry::stop_all_and_join`]) BEFORE closing the
+//    sessions. `session_close_impl` calls `metrics.stop()` per
+//    session which **removes** the handle from the registry — if we
+//    closed first, `stop_all_and_join` would find nothing to join
+//    and worker threads could still fire one final
+//    discover/turn callback after the swap, writing an old session
+//    id into the new store. Stopping first while the PTYs are still
+//    alive is harmless: workers observe `running = false` on their
+//    next poll and exit.
+// 7. Quiesce the old workspace's sessions: enumerate from the *old*
+//    store, then [`session_close_impl`] each. **Hard-fail** on the
+//    first close error — partial close + swap would leave mixed
+//    state. The new binding (and its lock) is dropped on failure so
+//    the old workspace remains the only bound one.
+// 8. Clear `pending_spawn` (any restored-but-not-yet-spawned ids from
+//    the old workspace) and reset `restored = false` so the new
+//    workspace's restore-on-launch can fire when the frontend
+//    re-issues `frontend_ready`.
+// 9. Swap [`AppContext::workspace`] under `RwLock` write — the old
+//    `WorkspaceLockGuard` inside the old scope is dropped here, in
+//    one atomic moment, releasing the OS lock on the old workspace.
+//    Other readers were unblocked from step 4 onward only in the no-
+//    op gate — during the swap itself, the very brief write lock
+//    blocks them.
+// 10. Persist `workspace_root` into the *new* store's `config.json`
+//     (so the React picker UI doesn't fire on top of the swap), and
+//     update the per-branch `last-workspace.json` hint so the next
+//     launch resumes the new workspace by default.
+// 11. Clear `switch_in_progress = false` and emit
+//     `workspace://changed`. The frontend reacts by re-fetching
+//     config + sessions and re-issuing `frontend_ready` for the new
+//     workspace's restore.
+
+/// Tauri-shaped wrapper around the inner switch implementation —
+/// converts the [`AppHandle`] into the testable seams the inner
+/// function needs (an `app_data_dir` path and an emit closure).
+///
+/// Production callers go through this; tests can call
+/// [`workspace_switch_impl_inner`] directly with a tempdir and a
+/// capturing closure to avoid having to build a real Tauri app.
+pub async fn workspace_switch_impl(
+    ctx: &AppContext,
+    app_handle: &tauri::AppHandle,
+    new_path: &Path,
+) -> Result<crate::types::WorkspaceSwitchResult, AppError> {
+    use tauri::{Emitter, Manager};
+
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
+    let app_for_emit = app_handle.clone();
+    let emit_fn: Arc<dyn Fn(&crate::types::WorkspaceChangedEvent) + Send + Sync> =
+        Arc::new(move |payload| {
+            if let Err(e) = app_for_emit.emit("workspace://changed", payload.clone()) {
+                warn!(error = %e, "emit workspace://changed failed; frontend may not refresh");
+            }
+        });
+    workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path, emit_fn).await
+}
+
+/// Testable inner of [`workspace_switch_impl`]. See module-level docs
+/// on the public wrapper for the full pipeline. Split out so unit tests
+/// can drive the swap with a tempdir-backed `app_data_dir` and a
+/// capturing emit closure, without standing up a real Tauri app.
+pub async fn workspace_switch_impl_inner(
+    ctx: &AppContext,
+    app_data_dir: &Path,
+    branch: &str,
+    new_path: &Path,
+    emit_changed: Arc<dyn Fn(&crate::types::WorkspaceChangedEvent) + Send + Sync>,
+) -> Result<crate::types::WorkspaceSwitchResult, AppError> {
+    use crate::types::{WorkspaceChangedEvent, WorkspaceSwitchResult};
+
+    // Step 1 — serialise concurrent switches.
+    let _serialise = ctx.switch_serialise.lock().await;
+
+    // Step 2 — validate + canonicalise. We re-use workspace_validate_impl
+    // for parity with what the frontend already showed the user. Empty /
+    // relative / non-dir / non-repo all turn into a clean error here.
+    let validate = workspace_validate_impl(ctx, new_path)?;
+    if !validate.valid {
+        return Err(AppError::new(
+            "InvalidPath",
+            validate
+                .error
+                .unwrap_or_else(|| "workspace validation failed".to_owned()),
+        ));
+    }
+    let canonical = dunce::canonicalize(new_path).map_err(|e| {
+        AppError::new(
+            "InvalidPath",
+            format!("could not canonicalise workspace path: {e}"),
+        )
+    })?;
+
+    // Step 3 — no-op fast path.
+    let current_root = ctx
+        .workspace
+        .read()
+        .expect("workspace lock poisoned")
+        .workspace_root
+        .clone();
+    if current_root.as_ref() == Some(&canonical) {
+        return Ok(WorkspaceSwitchResult {
+            workspace_root: canonical,
+            no_op: true,
+        });
+    }
+
+    // Step 4 — flip the gate. From here until the `false` store at the
+    // end, session_create / session_restart / frontend_ready will refuse.
+    ctx.switch_in_progress.store(true, Ordering::SeqCst);
+
+    // Helper: tear down the gate on any early-return error path.
+    let restore_gate_on_error = |e: AppError| -> AppError {
+        ctx.switch_in_progress.store(false, Ordering::SeqCst);
+        e
+    };
+
+    // Step 5 — acquire OS lock + ConfigStore for the new workspace.
+    if let Err(e) = std::fs::create_dir_all(app_data_dir) {
+        return Err(restore_gate_on_error(AppError::new(
+            "Io",
+            format!("create_dir_all({}): {e}", app_data_dir.display()),
+        )));
+    }
+    let binding =
+        match crate::boot::bind_workspace(&canonical, app_data_dir, branch) {
+            Ok(b) => b,
+            Err(crate::boot::BootError::Contention { branch, workspace }) => {
+                return Err(restore_gate_on_error(AppError::new(
+                    "WorkspaceLocked",
+                    format!(
+                    "Workspace is already open in another Arborist window (branch: {}, path: {}).",
+                    if branch.trim().is_empty() { "main" } else { &branch },
+                    workspace.display(),
+                ),
+                )));
+            }
+            Err(other) => {
+                return Err(restore_gate_on_error(AppError::new(
+                    "Internal",
+                    format!("workspace bind failed: {other}"),
+                )));
+            }
+        };
+
+    // Step 6 — quiesce metrics watchers. We do this BEFORE
+    // session_close so that the per-session `metrics.stop()` calls
+    // inside session_close_impl don't drain the registry first
+    // (`stop()` removes the handle), leaving stop_all_and_join with
+    // nothing to join. Stopping watchers here while the old PTYs are
+    // still alive is harmless: the worker's next poll iteration sees
+    // `running = false` and exits cleanly. The join barrier is the
+    // actual "no callback after the swap" guarantee — without it,
+    // an in-flight discover/turn callback could race the swap and
+    // write an old session id into the new store.
+    ctx.metrics.stop_all_and_join();
+
+    // Step 7 — quiesce old workspace sessions. Enumerate from the
+    // *current* store (still the old one until the swap in step 9).
+    // session_close_impl uses ctx.store() which clones from the old
+    // scope; safe.
+    let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
+    for id in old_session_ids {
+        if let Err(e) = session_close_impl(ctx, id, false).await {
+            // Hard-fail: partial close + swap would leave mixed-workspace
+            // state. Drop the new binding (releases its OS lock via
+            // WorkspaceLockGuard's Drop), restore the gate, surface a
+            // useful error.
+            drop(binding);
+            return Err(restore_gate_on_error(AppError::new(
+                "WorkspaceSwitchFailed",
+                format!("could not close session {id} before workspace switch: {e}"),
+            )));
+        }
+    }
+
+    // Step 8 — drop pending_spawn entries from the old workspace and
+    // reset the restore gate so the new workspace's
+    // restore_all_sessions can fire when the frontend re-issues
+    // frontend_ready.
+    if let Ok(mut g) = ctx.pending_spawn.lock() {
+        g.clear();
+    }
+    ctx.restored.store(false, Ordering::SeqCst);
+
+    // Step 9 — swap WorkspaceScope. The OLD WorkspaceLockGuard inside
+    // the old scope is dropped at this assignment, releasing the OS
+    // lock on the old workspace.
+    let new_scope = crate::boot::into_scope(binding);
+    {
+        let mut w = ctx.workspace.write().expect("workspace lock poisoned");
+        *w = new_scope;
+    }
+
+    // Step 10 — persist single-source-of-truth markers for the new
+    // workspace. Both are best-effort: their failure does not undo the
+    // swap.
+    let new_store = ctx.store();
+    crate::boot::ensure_workspace_root_in_config(&new_store, &canonical);
+    if let Err(e) = crate::boot::write_hint(app_data_dir, branch, &canonical) {
+        warn!(error = %e, "failed to persist last-workspace hint after switch; non-fatal");
+    }
+
+    // Step 11 — open the gate and notify the frontend.
+    ctx.switch_in_progress.store(false, Ordering::SeqCst);
+    emit_changed(&WorkspaceChangedEvent {
+        workspace_root: canonical.clone(),
+    });
+
+    info!(workspace = %canonical.display(), "workspace switch complete");
+    Ok(WorkspaceSwitchResult {
+        workspace_root: canonical,
+        no_op: false,
     })
 }
 

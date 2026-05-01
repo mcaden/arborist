@@ -246,3 +246,29 @@ export interface WorkspaceValidateResult {
 export interface WorktreeCreateResult {
   path: string;
 }
+
+// MIRROR: src-tauri/src/types.rs::WorkspaceSwitchArgs
+// Argument struct for the `workspace_switch` command. The Tauri invoke
+// wrapper passes this as `{ args: { path } }` to match the Rust handler
+// signature `workspace_switch(args: WorkspaceSwitchArgs)`.
+export interface WorkspaceSwitchArgs {
+  path: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorkspaceSwitchResult
+// Resolves on success of `workspace_switch`. `workspaceRoot` is the
+// **canonical** path the backend bound to. `noOp` is `true` if the
+// requested path matched the workspace already in use — no teardown
+// happened and no `workspace://changed` event was emitted.
+export interface WorkspaceSwitchResult {
+  workspaceRoot: string;
+  noOp: boolean;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorkspaceChangedEvent
+// Payload for the `workspace://changed` event. Subscribers should drop
+// any in-memory state derived from the old workspace and re-fetch from
+// the backend.
+export interface WorkspaceChangedEvent {
+  workspaceRoot: string;
+}

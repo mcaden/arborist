@@ -2,7 +2,12 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkspaceIndicator } from './WorkspaceIndicator';
-import { configSet, resetBridgeMocks, workspaceValidate } from '@/lib/tauri-bridge.mock';
+import {
+  configSet,
+  resetBridgeMocks,
+  workspaceSwitch,
+  workspaceValidate,
+} from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
@@ -58,18 +63,20 @@ describe('WorkspaceIndicator', () => {
     expect(screen.getByText('grove')).toBeInTheDocument();
   });
 
-  it('Change… opens the picker, closes all sessions, and writes the new root', async () => {
+  it('Change… opens the picker and delegates the switch to the backend', async () => {
     seedStores('/old/workspace');
     const closeMock = vi.fn().mockResolvedValue(undefined);
     useSessionStore.setState({
       sessions: [{ id: 's1' as never } as never, { id: 's2' as never } as never],
     });
-    // Replace the session actions to record close() calls without running
-    // their full bridge round-trips.
+    // Replace the session actions to record close() calls so we can
+    // assert the frontend does NOT close sessions itself any more —
+    // the backend's `workspace_switch` does that transactionally.
     useSessionStore.setState((s) => ({
       actions: { ...s.actions, close: closeMock },
     }));
     workspaceValidate.mockResolvedValue({ valid: true });
+    workspaceSwitch.mockResolvedValue({ workspaceRoot: '/new', noOp: false });
 
     render(<WorkspaceIndicator />);
     fireEvent.click(screen.getByRole('button', { name: /change/i }));
@@ -88,8 +95,11 @@ describe('WorkspaceIndicator', () => {
     });
 
     await waitFor(() => {
-      expect(closeMock).toHaveBeenCalledTimes(2);
-      expect(configSet).toHaveBeenCalledWith({ workspaceRoot: '/new' });
+      expect(workspaceSwitch).toHaveBeenCalledWith('/new');
     });
+    // The frontend must not directly close sessions or patch the
+    // config store; both are the backend's responsibility now.
+    expect(closeMock).not.toHaveBeenCalled();
+    expect(configSet).not.toHaveBeenCalled();
   });
 });

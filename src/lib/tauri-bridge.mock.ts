@@ -126,6 +126,8 @@ export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.f
 
 export const worktreeCreate: Mock<typeof realBridge.worktreeCreate> = vi.fn(rejectNotImplemented);
 
+export const workspaceSwitch: Mock<typeof realBridge.workspaceSwitch> = vi.fn(rejectNotImplemented);
+
 export const pickDirectory: Mock<typeof realBridge.pickDirectory> = vi.fn(() =>
   Promise.resolve(null),
 );
@@ -148,6 +150,11 @@ export const onSessionActivity: Mock<
 export const onSessionMetrics: Mock<
   Parameters<typeof realBridge.onSessionMetrics>,
   ReturnType<typeof realBridge.onSessionMetrics>
+> = vi.fn(() => Promise.resolve(noopUnlisten));
+
+export const onWorkspaceChanged: Mock<
+  Parameters<typeof realBridge.onWorkspaceChanged>,
+  ReturnType<typeof realBridge.onWorkspaceChanged>
 > = vi.fn(() => Promise.resolve(noopUnlisten));
 
 // Re-export the bridge's argument-shape interfaces so consumers importing
@@ -181,11 +188,13 @@ export function resetBridgeMocks(): void {
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
   worktreeCreate.mockReset().mockImplementation(rejectNotImplemented);
+  workspaceSwitch.mockReset().mockImplementation(rejectNotImplemented);
   pickDirectory.mockReset().mockImplementation(() => Promise.resolve(null));
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionMetrics.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  onWorkspaceChanged.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }
 
 // Compile-time guard: this module must export every member of the real
@@ -209,10 +218,12 @@ const _shapeCheck = {
   worktreesList,
   workspaceValidate,
   worktreeCreate,
+  workspaceSwitch,
   pickDirectory,
   onSessionOutput,
   onSessionStatus,
   onSessionActivity,
   onSessionMetrics,
+  onWorkspaceChanged,
 } satisfies typeof realBridge;
 void _shapeCheck;

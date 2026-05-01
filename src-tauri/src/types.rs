@@ -692,6 +692,42 @@ pub struct WorktreeCreateResult {
     pub path: PathBuf,
 }
 
+/// Arguments for `workspace_switch` (Phase 7 — in-app workspace switch).
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorkspaceSwitchArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSwitchArgs {
+    pub path: String,
+}
+
+/// Result of `workspace_switch`. `workspaceRoot` is the **canonical** path
+/// the backend bound to (which may differ in casing / separators from the
+/// path the frontend submitted). `noOp` is `true` if the requested path
+/// resolved to the workspace already in use, in which case no teardown
+/// happened and no `workspace://changed` event was emitted.
+///
+/// MIRROR: `src/types/arborist.ts::WorkspaceSwitchResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSwitchResult {
+    pub workspace_root: PathBuf,
+    pub no_op: bool,
+}
+
+/// Payload for the `workspace://changed` event, fired after a successful
+/// in-app workspace switch (or on the initial bind if a future phase adds
+/// "open another window" semantics). The frontend reacts by reloading
+/// `config.get`, `session.list`, and re-issuing `frontend_ready` so the
+/// backend's restore-on-launch can fire for the new workspace.
+///
+/// MIRROR: `src/types/arborist.ts::WorkspaceChangedEvent`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceChangedEvent {
+    pub workspace_root: PathBuf,
+}
+
 /// Crate-wide error type. Internal Rust code consumes this via `?`; at the
 /// Tauri command boundary it is converted to [`AppError`] so the frontend
 /// gets a stable, serde-friendly shape it can branch on.
