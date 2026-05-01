@@ -21,7 +21,17 @@ It gives each worktree its own persistent terminal session — Claude CLI or Git
 Pre-built installers for Windows, macOS, and Linux are published on the
 [Releases page](https://github.com/mcaden/arborist/releases). Download the
 asset for your platform and follow the first-run notes below — the binaries
-are **unsigned**, so each OS will show a one-time warning.
+are not OS code-signed (no Apple notarization or Authenticode signature),
+so each OS will show a one-time warning on first launch.
+
+Every published asset has a Sigstore-signed
+[GitHub build attestation](https://github.com/mcaden/arborist/attestations)
+linking it to the exact source commit and release workflow run that produced
+it. To verify a downloaded file before installing:
+
+```sh
+gh attestation verify <downloaded-file> --repo mcaden/arborist
+```
 
 - **Windows** (`Arborist_<version>_x64-setup.exe` or `Arborist_<version>_x64_en-US.msi`)
   — double-click to install. Windows SmartScreen will say "Windows protected
