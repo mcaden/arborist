@@ -1,0 +1,195 @@
+//! Per-(branch, workspace) uniqueness lock.
+//!
+//! Each running Arborist instance is bound to one (build branch,
+//! workspace) tuple and holds an exclusive advisory lock on a sidecar
+//! `.lock` file inside that tuple's storage directory for the lifetime
+//! of the bound scope. A second process trying to bind the same tuple
+//! gets [`LockError::Contention`] and is expected to refuse to start
+//! (with a user-facing dialog naming the branch + workspace).
+//!
+//! This is an *advisory* lock — it does not protect the data files
+//! themselves from external manipulation. Data-loss prevention is via
+//! single-writer-per-(branch, workspace), not file locking; the lock
+//! is what enforces "single writer".
+//!
+//! ## Handle ownership (Windows footgun)
+//!
+//! Hold the locked `File` handle for the lifetime of the lock; do NOT
+//! clone or duplicate it. `fs2` documents that lock state is tied to
+//! the underlying OS handle, so duplicating it can produce surprising
+//! behaviour around release. The guard's inner `File` is private and
+//! not exposed.
+//!
+//! ## Crash semantics
+//!
+//! When the process exits (cleanly or by crash), the OS closes its
+//! file handles, which releases the lock. There is no stale-lock
+//! cleanup needed. Verified by [`tests::acquire_after_drop_succeeds`].
+
+use fs2::FileExt as _;
+use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// Errors returned by [`WorkspaceLockGuard::acquire`].
+#[derive(Debug)]
+pub enum LockError {
+    /// The lock is currently held by another process. The caller is
+    /// expected to surface a user-facing message and refuse to bind
+    /// this (branch, workspace) tuple.
+    Contention,
+    /// I/O error opening or interacting with the lock file (e.g.
+    /// permission denied, parent-dir creation failed). Distinct from
+    /// `Contention` so the caller can distinguish "another instance
+    /// already running" from "your filesystem is broken".
+    Io(io::Error),
+}
+
+impl std::fmt::Display for LockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Contention => write!(f, "workspace lock is held by another process"),
+            Self::Io(e) => write!(f, "workspace lock I/O error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for LockError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Contention => None,
+            Self::Io(e) => Some(e),
+        }
+    }
+}
+
+/// Owned exclusive advisory lock on a workspace directory.
+///
+/// The lock is released when the guard is dropped (which closes the
+/// underlying OS file handle). For correct semantics, the guard MUST
+/// NOT be cloned or duplicated — see module-level docs.
+#[derive(Debug)]
+pub struct WorkspaceLockGuard {
+    // Holding the File alive keeps the OS handle (and thus the lock)
+    // alive. We never read or write through this File — it's just the
+    // lock anchor. Underscore-prefixed because the field is unread.
+    _file: File,
+    path: PathBuf,
+}
+
+impl WorkspaceLockGuard {
+    /// Try to acquire an exclusive lock on `lock_path`. Non-blocking
+    /// (`try_lock_exclusive`); contention returns
+    /// [`LockError::Contention`] rather than blocking.
+    ///
+    /// Creates `lock_path` and any missing parent directories. Hold
+    /// the returned guard for the lifetime of the bound (branch,
+    /// workspace) scope.
+    pub fn acquire(lock_path: impl AsRef<Path>) -> Result<Self, LockError> {
+        let lock_path = lock_path.as_ref().to_path_buf();
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent).map_err(LockError::Io)?;
+        }
+        // Open with read+write+create+no-truncate. The lock-file
+        // contents are intentionally meaningless (we only care about
+        // the OS-level lock state on the handle); using
+        // `truncate(false)` avoids racing with any sibling process
+        // that already opened the file.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(LockError::Io)?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Self {
+                _file: file,
+                path: lock_path,
+            }),
+            Err(e) if is_contention_error(&e) => Err(LockError::Contention),
+            Err(e) => Err(LockError::Io(e)),
+        }
+    }
+
+    /// Path of the lock file this guard holds. Useful for diagnostics
+    /// and for log messages identifying which (branch, workspace) is
+    /// bound to the running instance.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Cross-platform detection of "lock is held by someone else" vs a
+/// real I/O failure on `try_lock_exclusive`.
+///
+/// Unix returns `WouldBlock`; Windows returns a different OS error
+/// code (`ERROR_LOCK_VIOLATION` / `ERROR_IO_PENDING` depending on
+/// which lock API). Rather than hard-code platform-specific kinds,
+/// we compare against the platform-correct error that
+/// `fs2::lock_contended_error` constructs.
+fn is_contention_error(e: &io::Error) -> bool {
+    let contended = fs2::lock_contended_error();
+    e.kind() == contended.kind() && e.raw_os_error() == contended.raw_os_error()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn acquire_creates_parent_dir_and_lock_file() {
+        let td = tempdir().expect("tempdir");
+        let lock = td.path().join("nested/dir/.lock");
+        let g = WorkspaceLockGuard::acquire(&lock).expect("acquire");
+        assert!(lock.exists(), "lock file should exist after acquire");
+        assert_eq!(g.path(), lock);
+    }
+
+    /// Same-process double-acquire MUST return `Contention` on
+    /// Windows, where `LockFileEx` semantics are per-handle. On Unix,
+    /// `flock(2)` is per-process: a second `try_lock_exclusive` from
+    /// the same PID against the same inode succeeds even via a
+    /// separate `File` handle. The cross-process guarantee that
+    /// matters at boot is verified by the multi-process integration
+    /// test in `tests/workspace_lock_multiprocess.rs`, which spawns
+    /// `arborist-test-locker` as a real second process.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn second_acquire_returns_contention_same_process_windows() {
+        let td = tempdir().expect("tempdir");
+        let lock = td.path().join(".lock");
+        let _g1 = WorkspaceLockGuard::acquire(&lock).expect("first acquire");
+        match WorkspaceLockGuard::acquire(&lock) {
+            Err(LockError::Contention) => {}
+            Err(other) => panic!("expected Contention, got {other:?}"),
+            Ok(_) => panic!("second acquire unexpectedly succeeded"),
+        }
+    }
+
+    /// Dropping the guard must release the lock; this is what gives
+    /// us crash-safe semantics (the OS releases the handle when the
+    /// process exits) and what makes the in-app workspace switch
+    /// transactional swap feasible.
+    #[test]
+    fn acquire_after_drop_succeeds() {
+        let td = tempdir().expect("tempdir");
+        let lock = td.path().join(".lock");
+        let g1 = WorkspaceLockGuard::acquire(&lock).expect("first acquire");
+        drop(g1);
+        let _g2 = WorkspaceLockGuard::acquire(&lock).expect("acquire after drop");
+    }
+
+    /// Independent lock files do not contend with each other — the
+    /// per-(branch, workspace) layout depends on this.
+    #[test]
+    fn distinct_lock_paths_do_not_contend() {
+        let td = tempdir().expect("tempdir");
+        let a = td.path().join("a/.lock");
+        let b = td.path().join("b/.lock");
+        let _ga = WorkspaceLockGuard::acquire(&a).expect("a");
+        let _gb = WorkspaceLockGuard::acquire(&b).expect("b");
+    }
+}
