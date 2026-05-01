@@ -583,7 +583,7 @@ fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
 /// surface area honest — this is a sibling-module helper, not a
 /// public API.
 #[doc(hidden)]
-pub fn tail_lines_pub<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, consume: F) -> u64 {
+pub(crate) fn tail_lines_pub<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, consume: F) -> u64 {
     tail_lines(path, cursor, end, consume)
 }
 
