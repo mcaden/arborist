@@ -39,6 +39,21 @@ use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+/// Upper bound on how long [`app_wait_loop`] will wait for the owner
+/// resolver to publish its final result after the launcher process
+/// exits, before falling through to its existing pool-state check.
+///
+/// Rationale: VS Code's resolver polls 500 ms × 16 = 8 s; this gives
+/// it the full window plus 1 s of slack so a slow paint doesn't race
+/// the wait thread into emitting `Exited` for a sub-tab whose `Code.exe`
+/// is in the middle of warming up. See `vscode_owner.rs::POLL_DEADLINE`.
+const RESOLVER_GRACE_DEADLINE: Duration = Duration::from_secs(9);
+
+/// Poll tick inside the grace window. Tight enough that `kill` /
+/// `detach` mid-grace returns control to the wait thread quickly.
+const RESOLVER_GRACE_POLL: Duration = Duration::from_millis(50);
 
 use crate::sub_sessions::SubPtySink;
 use crate::types::{Error, SubSessionId, SubSessionStatus};
@@ -441,6 +456,22 @@ struct AppRuntime {
     /// is responsible for emitting `Exited` once the rediscovered PID
     /// actually dies.
     re_targeted: Arc<AtomicBool>,
+    /// Set to `true` once the resolver thread has published its final
+    /// result (success → `re_targeted=true` and pid/killer swapped;
+    /// failure → resolver returned `None` or was never started). The
+    /// wait thread polls this after the launcher exits so a slow
+    /// paint of the rediscovered owner (cold-start `Code.exe` can
+    /// take several seconds) doesn't race the wait thread into
+    /// emitting a premature `Exited`.
+    ///
+    /// Set synchronously to `true` at spawn time when no
+    /// `OwnerResolver` was provided, so non-VSCode app sub-tabs skip
+    /// the grace window entirely.
+    ///
+    /// Held on the runtime to keep the `Arc` alive (and ownership
+    /// symmetric with `re_targeted` and `killed`) even though only
+    /// the worker threads read or write it.
+    _resolver_done: Arc<AtomicBool>,
     /// Held so dropping the pool joins the wait thread (best-effort).
     /// Wait threads are short-lived for delegated launchers.
     _wait_thread: Option<JoinHandle<()>>,
@@ -475,6 +506,17 @@ impl AppPool {
     /// the launcher exits, a second `subsession://status` event is
     /// emitted with the new PID, and a liveness thread is started to
     /// emit `Exited` once the rediscovered process dies.
+    ///
+    /// ## Ordering invariant
+    ///
+    /// The runtime is inserted into the pool **before** the wait /
+    /// resolver threads are spawned. Both worker loops upgrade the
+    /// pool weak-ref then look up `id`; if the entry isn't there they
+    /// silently treat the runtime as "already gone". Inserting first
+    /// closes the pre-registration race where a fast launcher exit
+    /// (or a synchronous-returning resolver in tests) could otherwise
+    /// observe an empty pool and orphan the entry that this method
+    /// then inserted after the fact.
     pub fn spawn(
         &self,
         id: SubSessionId,
@@ -491,47 +533,14 @@ impl AppPool {
 
         let killed = Arc::new(AtomicBool::new(false));
         let re_targeted = Arc::new(AtomicBool::new(false));
-        let weak_inner = Arc::downgrade(&self.inner);
+        // `resolver_done` defaults to `true` when no resolver is
+        // attached so the wait thread skips its grace poll entirely
+        // for non-VSCode apps.
+        let resolver_done = Arc::new(AtomicBool::new(owner_resolver.is_none()));
 
-        let wait_id = id;
-        let wait_killed = Arc::clone(&killed);
-        let wait_sink = sink.clone();
-        let wait_weak = weak_inner.clone();
-        let wait_thread = match std::thread::Builder::new()
-            .name(format!("arborist-app-wait-{pid}"))
-            .spawn(move || app_wait_loop(wait_id, waiter, wait_sink, wait_killed, wait_weak))
-        {
-            Ok(t) => t,
-            Err(e) => {
-                // Critical: we already spawned a detached external
-                // process. Without a wait thread we can't track it, so
-                // best-effort kill it now to avoid leaking an untracked
-                // GUI app every time thread creation fails.
-                let _ = killer.kill();
-                return Err(Error::AppSpawnFailed(format!(
-                    "spawn app wait thread failed: {e}"
-                )));
-            }
-        };
-
-        // Optional resolver thread: re-target to the long-lived owner
-        // process (e.g. `Code.exe`) once the launcher hands off and
-        // exits. Best-effort — failure to spawn the thread leaves the
-        // sub-session functional with the launcher PID.
-        let resolver_thread = owner_resolver.and_then(|resolver| {
-            let res_id = id;
-            let res_killed = Arc::clone(&killed);
-            let res_sink = sink.clone();
-            let res_weak = weak_inner.clone();
-            std::thread::Builder::new()
-                .name(format!("arborist-app-resolve-{pid}"))
-                .spawn(move || resolver_loop(res_id, resolver, res_sink, res_weak, res_killed))
-                .map_err(|e| {
-                    tracing::warn!(sub_session_id = %id, error = %e, "spawn app resolver thread failed");
-                })
-                .ok()
-        });
-
+        // Insert the runtime FIRST (with no thread handles yet) so the
+        // worker loops always observe the entry. See "Ordering
+        // invariant" above.
         {
             let mut g = self
                 .inner
@@ -541,14 +550,97 @@ impl AppPool {
                 id,
                 AppRuntime {
                     pid,
-                    killer,
-                    killed,
-                    re_targeted,
-                    _wait_thread: Some(wait_thread),
-                    _resolver_thread: resolver_thread,
+                    killer: Arc::clone(&killer),
+                    killed: Arc::clone(&killed),
+                    re_targeted: Arc::clone(&re_targeted),
+                    _resolver_done: Arc::clone(&resolver_done),
+                    _wait_thread: None,
+                    _resolver_thread: None,
                     _liveness_thread: None,
                 },
             );
+        }
+
+        let weak_inner = Arc::downgrade(&self.inner);
+
+        // Spawn the wait thread. If creation fails we must roll back
+        // the inserted runtime AND kill the spawned child so we don't
+        // leak an untracked GUI process.
+        let wait_id = id;
+        let wait_killed = Arc::clone(&killed);
+        let wait_resolver_done = Arc::clone(&resolver_done);
+        let wait_sink = sink.clone();
+        let wait_weak = weak_inner.clone();
+        let wait_thread = match std::thread::Builder::new()
+            .name(format!("arborist-app-wait-{pid}"))
+            .spawn(move || {
+                app_wait_loop(
+                    wait_id,
+                    waiter,
+                    wait_sink,
+                    wait_killed,
+                    wait_resolver_done,
+                    wait_weak,
+                )
+            }) {
+            Ok(t) => t,
+            Err(e) => {
+                // Roll back the registration and best-effort kill the
+                // child. Without a wait thread we can't track the
+                // process, so leaking it would be worse.
+                if let Ok(mut g) = self.inner.lock() {
+                    g.remove(&id);
+                }
+                let _ = killer.kill();
+                return Err(Error::AppSpawnFailed(format!(
+                    "spawn app wait thread failed: {e}"
+                )));
+            }
+        };
+
+        // Optional resolver thread: re-target to the long-lived owner
+        // process (e.g. `Code.exe`) once the launcher hands off and
+        // exits. Best-effort — if the thread fails to spawn we mark
+        // `resolver_done=true` so the wait thread doesn't sit in its
+        // grace window for nothing.
+        let resolver_thread = if let Some(resolver) = owner_resolver {
+            let res_id = id;
+            let res_killed = Arc::clone(&killed);
+            let res_resolver_done = Arc::clone(&resolver_done);
+            let res_sink = sink.clone();
+            let res_weak = weak_inner.clone();
+            match std::thread::Builder::new()
+                .name(format!("arborist-app-resolve-{pid}"))
+                .spawn(move || {
+                    resolver_loop(
+                        res_id,
+                        resolver,
+                        res_sink,
+                        res_weak,
+                        res_killed,
+                        res_resolver_done,
+                    )
+                }) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!(sub_session_id = %id, error = %e, "spawn app resolver thread failed");
+                    resolver_done.store(true, Ordering::SeqCst);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Patch the thread join handles into the already-registered
+        // runtime so pool-drop can join them.
+        {
+            if let Ok(mut g) = self.inner.lock() {
+                if let Some(rt) = g.get_mut(&id) {
+                    rt._wait_thread = Some(wait_thread);
+                    rt._resolver_thread = resolver_thread;
+                }
+            }
         }
 
         (sink.status)(&id, SubSessionStatus::Running, Some(pid), None);
@@ -617,9 +709,29 @@ fn app_wait_loop(
     waiter: Box<dyn AppWaiter>,
     sink: AppPoolSink,
     killed: Arc<AtomicBool>,
+    resolver_done: Arc<AtomicBool>,
     pool_weak: std::sync::Weak<Mutex<BTreeMap<SubSessionId, AppRuntime>>>,
 ) {
     let result = waiter.wait();
+
+    // The launcher has exited. If a resolver thread is still polling
+    // for the rediscovered owner (e.g. `Code.exe` is still painting
+    // its first window), give it up to `RESOLVER_GRACE_DEADLINE` to
+    // publish its final result before deciding whether to emit
+    // `Exited`. Without this grace, a fast-exiting launcher
+    // (`code.cmd` returns in ~1 s) races a cold-start `Code.exe`
+    // (often 3-5 s to paint), leading to a spurious sub-tab close
+    // even though VS Code is up and running.
+    if !resolver_done.load(Ordering::SeqCst) && !killed.load(Ordering::SeqCst) {
+        let deadline = Instant::now() + RESOLVER_GRACE_DEADLINE;
+        while !resolver_done.load(Ordering::SeqCst) && !killed.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(RESOLVER_GRACE_POLL);
+        }
+    }
+
     // Three possible outcomes once the launcher exits:
     //
     //   * `Retargeted` — resolver thread already swapped this entry to
@@ -666,13 +778,27 @@ fn app_wait_loop(
 /// rediscovered owner. Emits a `Running` status event with the new
 /// PID and starts the liveness thread that will emit `Exited` once
 /// the rediscovered process dies.
+///
+/// Always sets `resolver_done` to `true` on exit (including panic
+/// unwind) via [`ResolverDoneGuard`] so [`app_wait_loop`]'s grace
+/// poll can never hang waiting for a thread that is no longer
+/// running. The Drop runs *after* this function's body returns, so
+/// on the success path the guard fires only after the pid/killer
+/// swap and liveness-thread attachment are committed under the pool
+/// lock — wait_loop seeing `resolver_done=true` therefore implies
+/// `re_targeted` is also visible.
 fn resolver_loop(
     id: SubSessionId,
     resolver: Arc<dyn OwnerResolver>,
     sink: AppPoolSink,
     pool_weak: std::sync::Weak<Mutex<BTreeMap<SubSessionId, AppRuntime>>>,
     killed: Arc<AtomicBool>,
+    resolver_done: Arc<AtomicBool>,
 ) {
+    // Drop guard: fires on every return path AND on panic unwind so
+    // `resolver_done` is always set before this thread truly exits.
+    let _done_guard = ResolverDoneGuard(resolver_done);
+
     if killed.load(Ordering::SeqCst) {
         return;
     }
@@ -726,6 +852,18 @@ fn resolver_loop(
     // If !did_retarget the runtime was removed (close/relaunch) between
     // resolve() and the lock; the liveness thread will discover the
     // missing entry on its claim-and-emit attempt and exit silently.
+}
+
+/// RAII guard that flips its inner `AtomicBool` to `true` on drop.
+/// Used by [`resolver_loop`] so `resolver_done` is set on every
+/// return path AND on panic unwind. See [`resolver_loop`] for why
+/// the timing of this signal matters relative to the pid/killer swap.
+struct ResolverDoneGuard(Arc<AtomicBool>);
+
+impl Drop for ResolverDoneGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Liveness thread body: blocks on the [`LivenessProbe`] until the
@@ -1327,6 +1465,234 @@ mod tests {
             .iter()
             .any(|(s, _)| matches!(s, SubSessionStatus::Exited)));
         assert!(!exit_obs.lock().unwrap().is_empty());
+    }
+
+    /// **Regression**: launcher exits at t≈0 but the rediscovered
+    /// owner (e.g. cold-start `Code.exe`) doesn't paint until t≈400 ms.
+    /// Without the wait-thread grace window, this would emit a
+    /// spurious `Exited` and the frontend would close the VS Code
+    /// sub-tab even though VS Code is still up. With the grace, the
+    /// wait thread sits until the resolver publishes its result and
+    /// then sees `re_targeted=true` → stays silent.
+    #[test]
+    fn pool_launcher_exits_before_resolver_succeeds_no_premature_exited() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, status_obs, exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        let resolver = FakeOwnerResolver::new();
+        let initial_pid = pool
+            .spawn(
+                id,
+                "code .".to_owned(),
+                PathBuf::from("."),
+                sink,
+                Some(resolver.clone() as Arc<dyn OwnerResolver>),
+            )
+            .expect("spawn");
+
+        // Launcher exits IMMEDIATELY — before the resolver has had a
+        // chance to find the rediscovered owner. Wait thread enters
+        // its grace poll.
+        spawner.child(0).signal_exit(true);
+
+        // No Exited / Error event yet — wait thread is in grace,
+        // entry is still in pool.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            pool.contains(&id),
+            "entry must remain while wait thread is in resolver grace"
+        );
+        assert!(
+            !status_obs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(s, _)| matches!(s, SubSessionStatus::Exited | SubSessionStatus::Error)),
+            "no Exited/Error during grace; got {:?}",
+            status_obs.lock().unwrap()
+        );
+        assert!(
+            exit_obs.lock().unwrap().is_empty(),
+            "no exited callback during grace"
+        );
+
+        // Now the resolver finally finds the rediscovered owner.
+        let new_pid = 90_001;
+        let new_killer: Arc<dyn AppKiller> = Arc::new(FlagKiller {
+            killed: Arc::new(AtomicBool::new(false)),
+        });
+        let (probe, _liveness_signal) = FakeLivenessProbe::new_pair();
+        resolver.signal_retarget(RetargetedOwner {
+            pid: new_pid,
+            killer: new_killer,
+            liveness: probe,
+        });
+
+        // Pid should flip and a second Running event with new_pid
+        // should fire. Critically, NO Exited event should EVER appear
+        // for this run — the launcher exit is fully suppressed.
+        wait_until(
+            || pool.pid(&id) == Some(new_pid),
+            Duration::from_secs(2),
+            "pool.pid should flip to rediscovered owner after grace",
+        );
+        // Give the wait thread a generous chance to wake and decide.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let statuses = status_obs.lock().unwrap().clone();
+        assert!(
+            !statuses
+                .iter()
+                .any(|(s, _)| matches!(s, SubSessionStatus::Exited | SubSessionStatus::Error)),
+            "launcher exit suppressed after late retarget; got {statuses:?}"
+        );
+        assert!(
+            exit_obs.lock().unwrap().is_empty(),
+            "no exited callback after late retarget"
+        );
+        assert!(
+            pool.contains(&id),
+            "entry remains because liveness owns final exit"
+        );
+        // Sanity: the Running events for both pids fired in order.
+        let running_pids: Vec<_> = statuses
+            .iter()
+            .filter_map(|(s, p)| matches!(s, SubSessionStatus::Running).then_some(*p))
+            .collect();
+        assert_eq!(
+            running_pids,
+            vec![Some(initial_pid), Some(new_pid)],
+            "Running events: launcher pid then rediscovered pid"
+        );
+    }
+
+    /// **Regression**: while the wait thread is sitting in the
+    /// resolver-grace poll, an explicit `kill` (or `detach`) must
+    /// wake it within a few ticks AND must suppress the Exited event
+    /// so the user-facing event remains the explicit close.
+    #[test]
+    fn pool_kill_during_resolver_grace_suppresses_exit_and_returns_promptly() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, status_obs, exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        let resolver = FakeOwnerResolver::new();
+        pool.spawn(
+            id,
+            "code .".to_owned(),
+            PathBuf::from("."),
+            sink,
+            Some(resolver.clone() as Arc<dyn OwnerResolver>),
+        )
+        .expect("spawn");
+
+        // Launcher exits → wait thread enters grace.
+        spawner.child(0).signal_exit(true);
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(pool.contains(&id), "still in grace");
+
+        // Explicit close while we're in grace.
+        let start = Instant::now();
+        pool.kill(&id).expect("kill");
+        // The wait thread should wake on its next poll tick (50 ms)
+        // and see `killed=true`, returning silently. Give a generous
+        // upper bound to keep the test non-flaky in CI.
+        wait_until(
+            || !pool.contains(&id),
+            Duration::from_secs(2),
+            "kill must remove entry promptly even while wait thread is grace-polling",
+        );
+        // No Exited/Error from the wait thread — the explicit close
+        // owns the user-facing signal.
+        let statuses = status_obs.lock().unwrap().clone();
+        assert!(
+            !statuses
+                .iter()
+                .any(|(s, _)| matches!(s, SubSessionStatus::Exited | SubSessionStatus::Error)),
+            "kill during grace must suppress wait-thread emission; got {statuses:?}"
+        );
+        assert!(
+            exit_obs.lock().unwrap().is_empty(),
+            "no exited callback after kill during grace"
+        );
+        // Don't assert a tight upper bound on kill latency — CI
+        // schedulers can stall threads. Just ensure it didn't sit for
+        // the full grace window.
+        assert!(
+            start.elapsed() < RESOLVER_GRACE_DEADLINE,
+            "kill returned within grace window"
+        );
+    }
+
+    /// **Regression for the pre-registration race**: with a waiter
+    /// that exits *immediately* (before the wait thread is even
+    /// scheduled), the runtime must still be observable via the pool
+    /// for the duration of the user-facing signalling. Previously the
+    /// pool inserted the runtime AFTER spawning the wait thread, so a
+    /// fast-exit waiter could observe an empty pool, treat the entry
+    /// as `AlreadyGone`, and silently exit — leaving the runtime
+    /// orphaned in the pool with nobody to emit `Exited`.
+    #[test]
+    fn pool_immediately_exiting_waiter_emits_exited_and_clears_pool() {
+        struct InstantExitSpawner {
+            next_pid: std::sync::atomic::AtomicU32,
+        }
+        impl AppSpawner for InstantExitSpawner {
+            fn spawn(&self, _cmd: &str, _cwd: &Path) -> Result<SpawnedApp, Error> {
+                struct InstantWaiter;
+                impl AppWaiter for InstantWaiter {
+                    fn wait(self: Box<Self>) -> Result<bool, Error> {
+                        Ok(true)
+                    }
+                }
+                struct NoopKiller;
+                impl AppKiller for NoopKiller {
+                    fn kill(&self) -> Result<(), Error> {
+                        Ok(())
+                    }
+                }
+                Ok(SpawnedApp {
+                    pid: self
+                        .next_pid
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                    waiter: Box::new(InstantWaiter),
+                    killer: Arc::new(NoopKiller),
+                })
+            }
+        }
+
+        let pool = AppPool::new(Arc::new(InstantExitSpawner {
+            next_pid: std::sync::atomic::AtomicU32::new(70_000),
+        }));
+        let (sink, status_obs, exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        // No owner_resolver — `resolver_done` is `true` synchronously
+        // so the wait thread skips the grace window entirely.
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
+            .expect("spawn");
+
+        // Entry must clear and Exited must fire even though the
+        // waiter returned before the wait thread was scheduled.
+        wait_until(
+            || !pool.contains(&id),
+            Duration::from_secs(2),
+            "pool entry cleared even when waiter exits before thread scheduling",
+        );
+        let statuses = status_obs.lock().unwrap().clone();
+        assert!(
+            statuses
+                .iter()
+                .any(|(s, _)| matches!(s, SubSessionStatus::Exited)),
+            "Exited must fire after immediate-exit waiter; got {statuses:?}"
+        );
+        assert!(
+            !exit_obs.lock().unwrap().is_empty(),
+            "exited callback must fire after immediate-exit waiter"
+        );
     }
 
     #[test]
