@@ -60,10 +60,14 @@ const OSC_MAX_LEN: usize = 4096;
 // TS mirror in `src/types/arborist.ts` expects `toolCallId`. The
 // frontend reducer (`session-store.ts::applyActivity`) reads camelCase
 // keys, so missing this rename silently zeroes every multi-word field.
-// Pinned by the `actvity_event_serde_uses_camelcase_keys` regression
-// test below.
+// Pinned by the `activity_event_serde_uses_camelcase_field_keys`
+// regression test below.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ActivityEvent {
     /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
     Title { value: String },

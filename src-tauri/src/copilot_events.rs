@@ -369,7 +369,10 @@ fn extract_permission_kind(data: &serde_json::Value) -> String {
 /// Extract a one-line summary for a permission request. Best-effort —
 /// returns `None` if no shape we recognise is present.
 fn extract_permission_summary(data: &serde_json::Value) -> Option<String> {
-    let pr = data.get("permissionRequest").or(Some(data))?;
+    // Prefer the nested `permissionRequest` object when present; fall
+    // back to the envelope itself for shapes that inline the fields.
+    // Always-Some, so use `unwrap_or` rather than `or(Some(_))?`.
+    let pr = data.get("permissionRequest").unwrap_or(data);
     if let Some(s) = pr.get("command").and_then(|v| v.as_str()) {
         return Some(s.to_owned());
     }
