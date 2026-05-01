@@ -145,6 +145,10 @@ pub fn run() {
                 ai_session_discover,
                 turn_emit,
             ));
+            // Hold a local Arc so the startup backfill below can
+            // share the *same* `ConfigStore` (and its write lock)
+            // that subsequent `config_set` calls will use.
+            let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
 
             // Phase 2: parallel sub-session pool + store + sink. Lives
@@ -178,26 +182,33 @@ pub fn run() {
             // non-fatal — the frontend already has a graceful
             // fallback (the bundled SVG / emoji glyph).
             //
-            // We read the *post-AppContext* config (the same store
-            // the rest of the app uses) so any first-launch defaults
-            // seeded by `load_config` are included.
+            // Routed through the same `AppContext.store` the rest of
+            // the runtime uses (cloning the `Arc`-backed `write_lock`
+            // so we share it with subsequent `config_set` calls), and
+            // through `save_config_with` so the load/mutate/write
+            // sequence is atomic against any future writers. (Tauri
+            // setup is single-threaded, so today there are no other
+            // writers; we still hold the lock for forward
+            // compatibility.)
             {
-                let store = commands::store_for(app.handle())?;
-                let mut cfg = store.load_config();
-                let cwd = cfg
-                    .workspace_root
-                    .clone()
-                    .filter(|p| p.is_dir())
-                    .unwrap_or_else(std::env::temp_dir);
-                if icon_backfill::backfill_icons(&mut cfg, &sub_ctx.icon_cache, &cwd) {
-                    if let Err(err) = store.write_full(cfg) {
-                        tracing::warn!(
-                            %err,
-                            "startup icon backfill: failed to persist refreshed config"
-                        );
-                    } else {
-                        tracing::debug!("startup icon backfill: cache populated");
-                    }
+                let store = ctx_for_backfill.store.clone();
+                let cache = sub_ctx.icon_cache.clone();
+                if let Err(err) =
+                    store.save_config_with(types::PartialAppConfig::default(), move |cfg| {
+                        let cwd = cfg
+                            .workspace_root
+                            .clone()
+                            .filter(|p| p.is_dir())
+                            .unwrap_or_else(std::env::temp_dir);
+                        icon_backfill::backfill_icons(cfg, &cache, &cwd)
+                    })
+                {
+                    tracing::warn!(
+                        %err,
+                        "startup icon backfill: failed to persist refreshed config"
+                    );
+                } else {
+                    tracing::debug!("startup icon backfill: cache populated");
                 }
             }
 

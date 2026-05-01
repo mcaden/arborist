@@ -385,10 +385,17 @@ pub fn is_interpreter_basename(basename_lc: &str) -> bool {
             | "java.exe"
             | "javaw"
             | "javaw.exe"
-            // Shell hosts — same logic: showing cmd's icon for `cmd /c whatever`
-            // is worse than falling back to the SVG.
+            // Shell hosts — same logic: showing cmd's / pwsh's icon
+            // for `pwsh -c whatever` is worse than falling back to
+            // the SVG. PowerShell ships under two basenames:
+            // `pwsh` (PowerShell 7+, cross-platform) and
+            // `powershell` (Windows PowerShell 5.x, legacy).
             | "cmd"
             | "cmd.exe"
+            | "pwsh"
+            | "pwsh.exe"
+            | "powershell"
+            | "powershell.exe"
             | "sh"
             | "bash"
             | "zsh"
@@ -545,10 +552,16 @@ mod tests {
             "java",
             "cmd.exe",
             "bash",
+            // PowerShell hosts: showing pwsh's terminal icon for a
+            // user's `pwsh -c …` command would be misleading.
+            "pwsh",
+            "pwsh.exe",
+            "powershell",
+            "powershell.exe",
         ] {
             assert!(is_interpreter_basename(name), "expected {name} to match");
         }
-        for name in ["code.exe", "pwsh.exe", "explorer.exe", "vim", "claude.exe"] {
+        for name in ["code.exe", "explorer.exe", "vim", "claude.exe"] {
             assert!(
                 !is_interpreter_basename(name),
                 "expected {name} to NOT match"

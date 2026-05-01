@@ -273,9 +273,28 @@ impl ConfigStore {
     /// are canonicalized; keys that fail canonicalization are dropped with a
     /// warning rather than poisoning the whole call.
     pub fn save_config(&self, patch: PartialAppConfig) -> Result<AppConfig, Error> {
+        self.save_config_with(patch, |_| false)
+    }
+
+    /// Variant of [`Self::save_config`] that also runs an arbitrary
+    /// in-place mutation against the merged config **while holding
+    /// the write lock**, then persists once. The mutation's return
+    /// value is unused — we always write because the patch was
+    /// already merged in. The lock spans load → merge → mutate →
+    /// write, eliminating the read-modify-write race that would
+    /// exist if a caller did `save_config` followed by `write_full`.
+    pub fn save_config_with<F>(
+        &self,
+        patch: PartialAppConfig,
+        mut mutate: F,
+    ) -> Result<AppConfig, Error>
+    where
+        F: FnMut(&mut AppConfig) -> bool,
+    {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = self.load_config();
         merge_partial(&mut cfg, patch)?;
+        let _ = mutate(&mut cfg);
         cfg.config_version = CONFIG_VERSION_CURRENT;
         write_atomic(&self.config_path(), &cfg)?;
         Ok(cfg)
@@ -285,6 +304,11 @@ impl ConfigStore {
     /// stamp. Used by the icon backfill path which mutates the config
     /// in fields the public `PartialAppConfig` patch surface doesn't
     /// expose (`icon_data_uri` is backend-derived, not user-editable).
+    ///
+    /// **Caution:** holds the write lock for its own duration only;
+    /// don't sandwich it with a `load_config` from a separate caller
+    /// expecting an atomic read-modify-write — use
+    /// [`Self::save_config_with`] for that case.
     pub fn write_full(&self, mut cfg: AppConfig) -> Result<AppConfig, Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         cfg.config_version = CONFIG_VERSION_CURRENT;

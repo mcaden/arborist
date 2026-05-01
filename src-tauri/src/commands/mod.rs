@@ -72,21 +72,24 @@ pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    let mut cfg = ctx.store.save_config(partial).map_err(AppError::from)?;
-    // After persisting the user's patch, walk every command string
-    // and best-effort resolve a cached icon data URI. The frontend
-    // reads these synchronously from config; we never want a render
-    // path waiting on a Win32 icon-extraction call.
-    if let Ok(sub_ctx) = sub_ctx_of(&app) {
-        let cwd = backfill_cwd(&cfg);
-        if crate::icon_backfill::backfill_icons(&mut cfg, &sub_ctx.icon_cache, &cwd) {
-            // Re-persist with the freshly cached icons. Errors here
-            // are non-fatal — the user's patch is already on disk.
-            if let Err(err) = ctx.store.write_full(cfg) {
-                tracing::warn!(%err, "icon backfill: failed to re-persist config after backfill");
-            }
-        }
-    }
+    // Run the user's patch and the icon backfill *under the same
+    // write lock* so two concurrent `config_set` calls can't lose
+    // each other's updates. `save_config_with` holds the lock
+    // across load → merge → mutate → write.
+    let icon_cache = sub_ctx_of(&app).ok().map(|c| c.icon_cache.clone());
+    ctx.store
+        .save_config_with(partial, |cfg| {
+            // Best-effort: walk every command string and resolve a
+            // cached icon data URI. Failures are swallowed — the
+            // user's patch is what matters here, the icon is a
+            // cosmetic enhancement.
+            let Some(cache) = &icon_cache else {
+                return false;
+            };
+            let cwd = backfill_cwd(cfg);
+            crate::icon_backfill::backfill_icons(cfg, cache, &cwd)
+        })
+        .map_err(AppError::from)?;
     Ok(())
 }
 

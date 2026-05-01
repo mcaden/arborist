@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::app_launcher::{AppKiller, LivenessProbe, OwnerResolver, PidKiller, RetargetedOwner};
+use crate::cmd_resolver::ShellTokens;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const POLL_DEADLINE: Duration = Duration::from_secs(8);
@@ -99,61 +100,6 @@ fn is_vscode_program_token(token: &str) -> bool {
         .unwrap_or(token);
     let lower = basename.to_ascii_lowercase();
     VSCODE_PROGRAM_NAMES.iter().any(|n| n == &lower.as_str())
-}
-
-/// Minimal shell-style tokenizer: splits on whitespace but keeps
-/// `"…"` and `'…'` runs together. Just enough for parsing the leading
-/// program of a user-supplied command line — not a full POSIX
-/// parser. Backslash escapes are not interpreted (they're path
-/// separators on Windows).
-struct ShellTokens<'a> {
-    input: &'a str,
-    pos: usize,
-}
-
-impl<'a> ShellTokens<'a> {
-    fn new(input: &'a str) -> Self {
-        Self { input, pos: 0 }
-    }
-}
-
-impl Iterator for ShellTokens<'_> {
-    type Item = String;
-
-    fn next(&mut self) -> Option<String> {
-        let bytes = self.input.as_bytes();
-        while self.pos < bytes.len() && bytes[self.pos].is_ascii_whitespace() {
-            self.pos += 1;
-        }
-        if self.pos >= bytes.len() {
-            return None;
-        }
-        let mut out = String::new();
-        let mut quote: Option<u8> = None;
-        while self.pos < bytes.len() {
-            let b = bytes[self.pos];
-            match quote {
-                Some(q) if b == q => {
-                    quote = None;
-                    self.pos += 1;
-                }
-                Some(_) => {
-                    out.push(b as char);
-                    self.pos += 1;
-                }
-                None if b == b'"' || b == b'\'' => {
-                    quote = Some(b);
-                    self.pos += 1;
-                }
-                None if b.is_ascii_whitespace() => break,
-                None => {
-                    out.push(b as char);
-                    self.pos += 1;
-                }
-            }
-        }
-        Some(out)
-    }
 }
 
 /// [`OwnerResolver`] that re-discovers the long-lived `Code.exe`

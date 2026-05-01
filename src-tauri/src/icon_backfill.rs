@@ -94,14 +94,31 @@ fn resolve_ai_icon(
     cwd: &Path,
     cache: &IconCache,
 ) -> Option<String> {
-    if let Some(uri) = resolve_one(default_name, cwd, cache) {
+    resolve_ai_icon_with(default_name, launch_command, cwd, cache, resolve_one)
+}
+
+/// Test seam for [`resolve_ai_icon`]: the resolver is injected so
+/// unit tests can exercise the default-first ordering without
+/// touching the global `PATH` / `PATHEXT` environment (which would
+/// race with parallel tests in the same process).
+fn resolve_ai_icon_with<F>(
+    default_name: &str,
+    launch_command: &str,
+    cwd: &Path,
+    cache: &IconCache,
+    resolve: F,
+) -> Option<String>
+where
+    F: Fn(&str, &Path, &IconCache) -> Option<String>,
+{
+    if let Some(uri) = resolve(default_name, cwd, cache) {
         return Some(uri);
     }
     let launch = launch_command.trim();
     if launch.is_empty() {
         return None;
     }
-    resolve_one(launch, cwd, cache)
+    resolve(launch, cwd, cache)
 }
 
 #[cfg(test)]
@@ -212,95 +229,78 @@ mod tests {
     /// resolvable. This is the "agency wrapper" use case — the user
     /// runs Claude through some in-house dispatcher but still wants
     /// the Claude brand icon, not the wrapper's.
+    ///
+    /// We test via the injectable `resolve_ai_icon_with` seam so the
+    /// test never has to touch the global `PATH` env var (which races
+    /// with parallel tests in the same process).
     #[test]
     fn ai_icon_prefers_default_name_over_launch_command_wrapper() {
-        let dir = tempfile::tempdir().unwrap();
-
-        // Set up a *fake* default `claude.exe` in our isolated PATH.
-        let default_dir = dir.path().join("default");
-        std::fs::create_dir_all(&default_dir).unwrap();
-        let default_exe = default_dir.join(if cfg!(windows) {
-            "claude.exe"
-        } else {
-            "claude"
-        });
-        std::fs::File::create(&default_exe).unwrap();
-
-        // And a *wrapper* exe at a different path that isn't on PATH.
-        let wrapper_dir = dir.path().join("wrapper");
-        std::fs::create_dir_all(&wrapper_dir).unwrap();
-        let wrapper_exe = wrapper_dir.join(if cfg!(windows) {
-            "agency.exe"
-        } else {
-            "agency"
-        });
-        std::fs::File::create(&wrapper_exe).unwrap();
-
-        // Pretend each call to the icon extractor returns a unique
-        // PNG so we can tell which path resolved.
-        struct PathTaggingExtractor;
-        impl IconExtractor for PathTaggingExtractor {
-            fn exe_path(&self, _pid: u32) -> Option<PathBuf> {
-                None
-            }
-            fn extract_png(&self, exe: &Path) -> Option<Vec<u8>> {
-                // Embed the basename in the bytes — base64 of these
-                // is what the resulting data URI carries.
-                Some(
-                    exe.file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .as_bytes()
-                        .to_vec(),
-                )
-            }
-        }
-        let cache = IconCache::new(Arc::new(PathTaggingExtractor));
-
-        // Inject our isolated PATH so `claude` resolves to default_exe.
-        let prev_path = std::env::var_os("PATH");
-        let mut new_path = std::ffi::OsString::from(default_dir.as_os_str());
-        if let Some(p) = &prev_path {
-            new_path.push(if cfg!(windows) { ";" } else { ":" });
-            new_path.push(p);
-        }
-        // SAFETY: tests run sequentially within a single process by default
-        // for cargo test (no parallelism inside this binary's #[test]s
-        // unless run with --test-threads). Other tests that read PATH
-        // could race; we restore below.
-        unsafe {
-            std::env::set_var("PATH", &new_path);
-        }
-        let result = resolve_ai_icon("claude", wrapper_exe.to_str().unwrap(), dir.path(), &cache);
-        unsafe {
-            match prev_path {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-
-        let uri = result.expect("icon should resolve");
-        // Decode the base64 payload to recover the basename we embedded.
-        let b64 = uri.strip_prefix("data:image/png;base64,").unwrap();
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .unwrap();
-        let recovered = String::from_utf8(bytes).unwrap();
-        let expected = if cfg!(windows) {
-            "claude.exe"
-        } else {
-            "claude"
+        let cache = IconCache::new(Arc::new(CountingExtractor::new()));
+        let cwd = std::env::temp_dir();
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls_for_resolver = Arc::clone(&calls);
+        // Fake resolver: returns Some only when asked about the
+        // canonical default name. For anything else (the wrapper
+        // command), pretends resolution fails.
+        let resolve = move |program: &str, _: &Path, _: &IconCache| -> Option<String> {
+            calls_for_resolver.lock().unwrap().push(program.to_owned());
+            (program == "claude").then(|| "data:image/png;base64,DEFAULT".to_owned())
         };
-        // PATHEXT is typically `.EXE;.CMD;…` on Windows, so the
-        // resolver may return `claude.EXE` even though we created
-        // `claude.exe` on disk. Compare case-insensitively — what
-        // matters is that the *basename* came from the default name,
-        // not from `agency`.
-        assert_eq!(
-            recovered.to_ascii_lowercase(),
-            expected,
-            "AI icon should come from the default CLI name, not the wrapper"
+
+        let result = resolve_ai_icon_with(
+            "claude",
+            "C:/wrappers/agency.exe --tool=claude",
+            &cwd,
+            &cache,
+            resolve,
         );
+        assert_eq!(result.as_deref(), Some("data:image/png;base64,DEFAULT"));
+        // Critical assertion: only the *default* name was queried —
+        // the wrapper command was never asked about, because the
+        // default succeeded first.
+        assert_eq!(*calls.lock().unwrap(), vec!["claude".to_owned()]);
+    }
+
+    /// Mirror of the above: when the default name is *not*
+    /// resolvable, the wrapper command's icon is used as a fallback.
+    #[test]
+    fn ai_icon_falls_back_to_launch_command_when_default_unresolvable() {
+        let cache = IconCache::new(Arc::new(CountingExtractor::new()));
+        let cwd = std::env::temp_dir();
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls_for_resolver = Arc::clone(&calls);
+        let resolve = move |program: &str, _: &Path, _: &IconCache| -> Option<String> {
+            calls_for_resolver.lock().unwrap().push(program.to_owned());
+            (program == "C:/wrappers/agency.exe --tool=claude")
+                .then(|| "data:image/png;base64,WRAPPER".to_owned())
+        };
+
+        let result = resolve_ai_icon_with(
+            "claude",
+            "C:/wrappers/agency.exe --tool=claude",
+            &cwd,
+            &cache,
+            resolve,
+        );
+        assert_eq!(result.as_deref(), Some("data:image/png;base64,WRAPPER"));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                "claude".to_owned(),
+                "C:/wrappers/agency.exe --tool=claude".to_owned()
+            ],
+            "default tried first, wrapper tried as fallback"
+        );
+    }
+
+    /// Empty / whitespace launch command + unresolvable default →
+    /// `None` (frontend falls back to the bundled SVG).
+    #[test]
+    fn ai_icon_returns_none_when_default_fails_and_launch_is_empty() {
+        let cache = IconCache::new(Arc::new(CountingExtractor::new()));
+        let cwd = std::env::temp_dir();
+        let resolve = |_: &str, _: &Path, _: &IconCache| -> Option<String> { None };
+        assert!(resolve_ai_icon_with("claude", "   ", &cwd, &cache, resolve).is_none());
+        assert!(resolve_ai_icon_with("claude", "", &cwd, &cache, resolve).is_none());
     }
 }
