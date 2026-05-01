@@ -227,23 +227,37 @@ impl AppContext {
     /// v1 is limited because:
     ///
     ///   1. `session_create`, `session_restart`, `frontend_ready`,
-    ///      `session_focus`, and `config_set` are all gated on
-    ///      `switch_in_progress` — they refuse outright once the
-    ///      switch has flipped the gate.
+    ///      `session_focus`, `session_close`, and `config_set` are
+    ///      all gated on `switch_in_progress` — they refuse outright
+    ///      once the switch has flipped the gate.
     ///   2. There is no in-app settings UI in v1 (SPEC §7), so
     ///      user-driven `config_set` calls during a switch are rare.
     ///   3. Sessions that were live in the old workspace are torn
     ///      down by step 7 of [`workspace_switch_impl_inner`]; their
     ///      writers are joined before the swap.
     ///
-    /// The remaining residual is a write that snapshotted *immediately
-    /// before* the gate flip and is mid-`persist` when the swap
-    /// happens. A truly air-tight fix is a workspace-wide write
-    /// barrier (e.g. an `Arc<RwLock<()>>` separate from the scope,
-    /// where every store-writing handler takes a read guard for the
-    /// duration of the write and the swap takes the write guard before
-    /// drop). That refactor is deliberately deferred — see the
-    /// follow-up tracked on this comment.
+    /// **Known residual #1 — pre-snapshot write.** A write that
+    /// snapshotted *immediately before* the gate flip and is
+    /// mid-`persist` when the swap happens still races. The window
+    /// is the file I/O between snapshot and persist (microseconds
+    /// to milliseconds).
+    ///
+    /// **Known residual #2 — `session_resize` deferred-spawn failure
+    /// path.** `session_resize_impl` is intentionally *not* gated:
+    /// it fires on every UI resize and a hard refusal would noisily
+    /// break legitimate resizes during a switch. Its only store
+    /// mutation is the `update_session_status(..., Error, ...)` call
+    /// on deferred-spawn-failure (rare), which can land in the old
+    /// store if a switch is racing. Mitigated by step 8 of the
+    /// switch clearing `pending_spawn` (no further deferred spawns
+    /// can fire after step 8).
+    ///
+    /// A truly air-tight fix for both residuals is a workspace-wide
+    /// write barrier (e.g. an `Arc<RwLock<()>>` separate from the
+    /// scope, where every store-writing handler takes a read guard
+    /// for the duration of the write and the swap takes the write
+    /// guard before drop). That refactor is deliberately deferred —
+    /// see the follow-up tracked on this comment.
     ///
     /// Will `panic!` if the workspace lock is poisoned (which can only
     /// happen if a writer panicked mid-mutation; recovery is

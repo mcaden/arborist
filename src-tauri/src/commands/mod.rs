@@ -130,6 +130,25 @@ pub async fn session_close(
     args: SessionCloseArgs,
 ) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
+    // Refuse user-initiated close while a workspace switch is in
+    // progress. Without this gate, a frontend-issued close can run
+    // concurrently with the switch's own step-7 close loop; the two
+    // load-then-mutate sequences against the old store can lose
+    // updates to `tab_order` / `active_session_id` (the per-store
+    // write-mutex serialises file writes, but not the read-modify-
+    // write computation each `_impl` does between snapshot and
+    // save). Gated at the wrapper so the switch's *internal* calls
+    // to `session::session_close_impl` are not blocked by their own
+    // gate.
+    if ctx
+        .switch_in_progress
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err(AppError::new(
+            "WorkspaceSwitchInProgress",
+            "A workspace switch is in progress; retry once it completes.",
+        ));
+    }
     session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
 }
 
