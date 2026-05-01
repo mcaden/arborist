@@ -19,7 +19,8 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
-import type { SessionStatus, SessionView } from '@/types/arborist';
+import { useSubSessionStore } from '@/store/sub-session-store';
+import type { SessionStatus, SessionView, SubSession } from '@/types/arborist';
 
 import { Sidebar } from './Sidebar';
 
@@ -104,6 +105,39 @@ describe('Sidebar', () => {
 
     expect(useSessionStore.getState().activeId).toBe('b');
     expect(bridgeMock.sessionFocus).toHaveBeenCalledWith({ sessionId: 'b' });
+  });
+
+  it('clicking the parent tab swaps the viewport back from a focused terminal sub-tab', () => {
+    // Regression: when a terminal sub-tab owns the viewport for its parent
+    // (`activeByParent[parentId] = subId`), clicking the parent tab must
+    // clear that entry so MainArea swaps back to the parent's own
+    // TerminalView. Without `subActions.activateParent(id)` in the click
+    // handler, the parent tab click was a visual no-op because MainArea's
+    // visible-id rule prefers the sub.
+    seed([makeView('a')], 'a');
+    const sub: SubSession = {
+      id: 'sub-1',
+      parentSessionId: 'a',
+      defId: 'shell',
+      kind: 'terminal',
+      label: 'shell',
+      status: 'running',
+      pid: 1234,
+      composedCommand: 'bash',
+      createdAt: 1_700_000_000_000,
+    };
+    useSubSessionStore.setState({
+      subSessions: [sub],
+      activeByParent: { a: 'sub-1' },
+      statusMessages: {},
+      isHydrated: true,
+    });
+    render(<Sidebar />);
+
+    fireEvent.click(tabByLabel('claude session a'));
+
+    expect(useSubSessionStore.getState().activeByParent).not.toHaveProperty('a');
+    expect(useSessionStore.getState().activeId).toBe('a');
   });
 
   it('clicking close opens the confirm dialog with the right label', () => {
