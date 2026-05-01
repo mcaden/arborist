@@ -195,10 +195,7 @@ impl StoreRoot {
     /// Returns `None` when this root **is** the canonical root — a
     /// canonical build seeding from itself makes no sense.
     #[must_use]
-    pub fn canonical_workspace_settings_path(
-        &self,
-        canonical_workspace: &Path,
-    ) -> Option<PathBuf> {
+    pub fn canonical_workspace_settings_path(&self, canonical_workspace: &Path) -> Option<PathBuf> {
         if self.is_canonical() {
             None
         } else {
@@ -406,7 +403,10 @@ mod tests {
         // app_data_dir — that's where pre-isolation Arborist wrote.
         let r = root("/data", "feat");
         assert_eq!(r.legacy_config_path(), PathBuf::from("/data/config.json"));
-        assert_eq!(r.legacy_sessions_path(), PathBuf::from("/data/sessions.json"));
+        assert_eq!(
+            r.legacy_sessions_path(),
+            PathBuf::from("/data/sessions.json")
+        );
     }
 
     // ----- canonical_workspace_settings_path ----------------------------
@@ -460,7 +460,10 @@ mod tests {
         let dir = layout.workspace_dir();
         assert_eq!(layout.settings_path(), dir.join("config.json"));
         assert_eq!(layout.sessions_path(), dir.join("sessions.json"));
-        assert_eq!(layout.workspace_meta_path(), dir.join("workspace-meta.json"));
+        assert_eq!(
+            layout.workspace_meta_path(),
+            dir.join("workspace-meta.json")
+        );
         assert_eq!(layout.lock_path(), dir.join(".lock"));
         assert_eq!(layout.seed_lock_path(), dir.join(".config-seed.lock"));
     }

@@ -165,7 +165,7 @@ fn workspace_validate_rejects_subdirectory_of_a_repo() {
 // ---------- worktree_create ----------
 
 fn set_workspace(ctx: &AppContext, root: &Path) {
-    ctx.store
+    ctx.store()
         .save_config(PartialAppConfig {
             workspace_root: Some(Some(root.to_path_buf())),
             ..Default::default()

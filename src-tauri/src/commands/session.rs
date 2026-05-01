@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use portable_pty::PtySize;
@@ -41,12 +41,20 @@ use crate::types::{
     SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs,
     SessionStatus, SessionView, Tool,
 };
+use crate::workspace_scope::WorkspaceScope;
 
 /// Wiring shared by every Phase 7 session command. Built once at startup
 /// (production) or per-test (integration tests).
 pub struct AppContext {
     pub pool: Arc<PtyPool>,
-    pub store: ConfigStore,
+    /// Per-(branch, workspace) binding. Held behind an `RwLock` so the
+    /// in-app workspace switch (phase 7) can transactionally swap the
+    /// entire scope under a write lock without any caller seeing a
+    /// torn intermediate state. Read-side callers should prefer the
+    /// [`Self::store`] helper below — it takes a brief read lock and
+    /// returns an owned [`ConfigStore`] clone, never holding the
+    /// lock across a downstream operation.
+    pub workspace: Arc<RwLock<WorkspaceScope>>,
     pub sink: PtySink,
     /// Injected git seam (Phase 10). Production wires [`RealGitRunner`];
     /// tests pass a fake to avoid depending on the real `git` binary.
@@ -102,9 +110,61 @@ impl AppContext {
         ai_session_discover: AiSessionDiscoveryCb,
         turn_emit: TurnCb,
     ) -> Self {
+        // Production code that wants to bind to a real (branch,
+        // workspace) tuple should use [`Self::with_workspace`] so the
+        // OS-level lock guard is held for the lifetime of the context.
+        // This constructor wraps the supplied store in a
+        // [`WorkspaceScope::for_test`] (no OS lock) — historically all
+        // callers were tests and the boot path, and the boot path will
+        // migrate to `with_workspace` in phase 6.
+        let scope = WorkspaceScope::for_test(store, None);
+        Self::with_workspace_internal(
+            pool,
+            Arc::new(RwLock::new(scope)),
+            sink,
+            git_runner,
+            metrics_emit,
+            ai_session_discover,
+            turn_emit,
+        )
+    }
+
+    /// Production constructor (phase 6 boot wiring): bind the context
+    /// to an already-acquired [`WorkspaceScope`] held behind the
+    /// shared `RwLock` that workspace-switch (phase 7) will mutate.
+    #[must_use]
+    pub fn with_workspace(
+        pool: Arc<PtyPool>,
+        workspace: Arc<RwLock<WorkspaceScope>>,
+        sink: PtySink,
+        git_runner: Arc<dyn GitRunner>,
+        metrics_emit: MetricsCb,
+        ai_session_discover: AiSessionDiscoveryCb,
+        turn_emit: TurnCb,
+    ) -> Self {
+        Self::with_workspace_internal(
+            pool,
+            workspace,
+            sink,
+            git_runner,
+            metrics_emit,
+            ai_session_discover,
+            turn_emit,
+        )
+    }
+
+    fn with_workspace_internal(
+        pool: Arc<PtyPool>,
+        workspace: Arc<RwLock<WorkspaceScope>>,
+        sink: PtySink,
+        git_runner: Arc<dyn GitRunner>,
+        metrics_emit: MetricsCb,
+        ai_session_discover: AiSessionDiscoveryCb,
+        turn_emit: TurnCb,
+    ) -> Self {
         Self {
             pool,
-            store,
+            workspace,
             sink,
             git_runner,
             restored: AtomicBool::new(false),
@@ -131,6 +191,23 @@ impl AppContext {
             Arc::new(|_, _| {}),
             Arc::new(|_, _| {}),
         )
+    }
+
+    /// Snapshot the current [`ConfigStore`] for this context. Cheap
+    /// (read lock + `Arc` clone). Never holds the workspace lock
+    /// across a downstream operation — call this once per command,
+    /// then operate on the returned owned handle.
+    ///
+    /// Will `panic!` if the workspace lock is poisoned (which can only
+    /// happen if a writer panicked mid-mutation; recovery is
+    /// impossible because the swap is not idempotent).
+    #[must_use]
+    pub fn store(&self) -> ConfigStore {
+        self.workspace
+            .read()
+            .expect("workspace lock poisoned")
+            .store
+            .clone()
     }
 }
 
@@ -176,7 +253,7 @@ pub fn session_create_impl(
     //    Empty-string IDs from the frontend are treated as "no selection"
     //    so an over-eager wizard can't trigger a NotFound for a `none`
     //    sentinel.
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     let id_opt = args
         .instruction_set_id
         .as_ref()
@@ -195,7 +272,7 @@ pub fn session_create_impl(
     };
 
     // 4. Derive a non-colliding label from the worktree basename.
-    let existing_sessions = ctx.store.load_sessions();
+    let existing_sessions = ctx.store().load_sessions();
     let existing_labels: Vec<&str> = existing_sessions
         .values()
         .map(|s| s.label.as_str())
@@ -229,7 +306,12 @@ pub fn session_create_impl(
 
     // 7. Build the persisted record. `tab_index` puts the new session at
     //    the end of the current order.
-    let tab_index = ctx.store.load_config().tab_order.len().min(usize::MAX - 1);
+    let tab_index = ctx
+        .store()
+        .load_config()
+        .tab_order
+        .len()
+        .min(usize::MAX - 1);
     let session = Session {
         id: session_id,
         tool: args.tool,
@@ -248,7 +330,7 @@ pub fn session_create_impl(
 
     // 8. Persist before spawning so a crash mid-spawn still leaves an
     //    auditable record we can clean up on restart.
-    ctx.store.save_session(&session).map_err(AppError::from)?;
+    ctx.store().save_session(&session).map_err(AppError::from)?;
 
     // 9. Append to lastOpenSessions / tabOrder.
     let mut last = cfg.last_open_sessions.clone();
@@ -259,7 +341,7 @@ pub fn session_create_impl(
     if !order.contains(&session.id) {
         order.push(session.id);
     }
-    ctx.store
+    ctx.store()
         .save_config(PartialAppConfig {
             last_open_sessions: Some(last),
             tab_order: Some(order),
@@ -311,7 +393,7 @@ pub fn session_create_impl(
 // ---------------------------------------------------------------------------
 
 pub fn session_list_impl(ctx: &AppContext) -> Result<Vec<SessionView>, AppError> {
-    let mut sessions: Vec<Session> = ctx.store.load_sessions().into_values().collect();
+    let mut sessions: Vec<Session> = ctx.store().load_sessions().into_values().collect();
     sessions.sort_by_key(|s| s.tab_index);
     Ok(sessions.iter().map(SessionView::from).collect())
 }
@@ -345,7 +427,7 @@ pub async fn session_close_impl(
     // missing-record we surface a `worktree_delete_error` later instead
     // of attempting deletion.
     let worktree_intent: WorktreeDeleteIntent = if delete_worktree {
-        match ctx.store.try_load_sessions() {
+        match ctx.store().try_load_sessions() {
             Ok(map) => match map.get(&id) {
                 Some(s) => WorktreeDeleteIntent::Path(s.worktree_path.clone()),
                 None => WorktreeDeleteIntent::Refused(format!(
@@ -376,10 +458,10 @@ pub async fn session_close_impl(
     }
 
     // 3. Drop the persisted record.
-    ctx.store.remove_session(&id).map_err(AppError::from)?;
+    ctx.store().remove_session(&id).map_err(AppError::from)?;
 
     // 4. Trim AppConfig ordering & active selection.
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     let new_last: Vec<SessionId> = cfg
         .last_open_sessions
         .iter()
@@ -391,7 +473,7 @@ pub async fn session_close_impl(
         Some(active) if active == id => Some(new_order.first().copied()),
         _ => None,
     };
-    ctx.store
+    ctx.store()
         .save_config(PartialAppConfig {
             last_open_sessions: Some(new_last),
             tab_order: Some(new_order),
@@ -515,7 +597,7 @@ fn delete_worktree_after_close(
     // snapshot itself must be loaded *strictly* — for a destructive
     // operation, an unreadable or quarantined sessions.json cannot be
     // silently treated as "no other sessions exist".
-    let sessions = ctx.store.try_load_sessions().map_err(|e| {
+    let sessions = ctx.store().try_load_sessions().map_err(|e| {
         AppError::from(Error::Internal(format!(
             "refusing to delete worktree because the sessions snapshot could not be read reliably: {e}"
         )))
@@ -551,13 +633,13 @@ fn delete_worktree_after_close(
 // ---------------------------------------------------------------------------
 
 pub fn session_focus_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppError> {
-    let sessions = ctx.store.load_sessions();
+    let sessions = ctx.store().load_sessions();
     if !sessions.contains_key(&id) {
         return Err(AppError::from(Error::NotFound(format!(
             "session {id} not found"
         ))));
     }
-    ctx.store
+    ctx.store()
         .save_config(PartialAppConfig {
             active_session_id: Some(Some(id)),
             ..Default::default()
@@ -636,7 +718,7 @@ pub fn session_resize_impl(ctx: &AppContext, args: SessionResizeArgs) -> Result<
                 // whatever caused the spawn to fail).
                 let msg = format!("Failed to start restored session: {e}");
                 let _ = ctx
-                    .store
+                    .store()
                     .update_session_status(&session.id, SessionStatus::Error, None);
                 (ctx.sink.status)(&session.id, SessionStatus::Error, None, Some(msg));
                 return Err(AppError::from(e));
@@ -663,7 +745,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     validate_pty_dims(args.cols, args.rows)?;
 
     let id = args.session_id;
-    let sessions = ctx.store.load_sessions();
+    let sessions = ctx.store().load_sessions();
     let session = sessions
         .get(&id)
         .cloned()
@@ -675,7 +757,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     if !session.worktree_path.is_dir() {
         let msg = stale_worktree_message(&session.worktree_path);
         let _ = ctx
-            .store
+            .store()
             .update_session_status(&id, SessionStatus::Error, None);
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
         return Err(AppError::from(Error::WorktreeMissing(
@@ -690,7 +772,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     if let Err(e) = materialise_temp_files(&session.temp_files) {
         let msg = format!("Failed to prepare session temp files: {e}");
         let _ = ctx
-            .store
+            .store()
             .update_session_status(&id, SessionStatus::Error, None);
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
         return Err(e);
@@ -698,7 +780,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
 
     // Mark Starting in the persisted record up front so a UI poll right
     // after restart doesn't see stale Running/pid.
-    ctx.store
+    ctx.store()
         .update_session_status(&id, SessionStatus::Starting, None)
         .map_err(AppError::from)?;
     (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
@@ -718,7 +800,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // started below by `metrics.start` will repopulate the field with
     // the new conversation's id once the CLI starts writing.
     ctx.metrics.stop_and_join(&id);
-    if let Err(e) = ctx.store.update_session_ai_session_id(&id, None) {
+    if let Err(e) = ctx.store().update_session_ai_session_id(&id, None) {
         warn!(session_id = %id, error = ?e, "restart: failed to clear ai_session_id");
     }
 
@@ -734,7 +816,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     ) {
         let msg = format!("Failed to restart session: {e}");
         let _ = ctx
-            .store
+            .store()
             .update_session_status(&id, SessionStatus::Error, None);
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
         return Err(AppError::from(e));
@@ -815,7 +897,7 @@ fn ai_session_transcript_exists(
 /// readiness. Failures on individual sessions are logged but do not abort
 /// the rest — a single broken session must not strand the whole app.
 pub fn restore_all_sessions(ctx: &AppContext) {
-    let sessions = ctx.store.load_sessions();
+    let sessions = ctx.store().load_sessions();
     let ids: Vec<SessionId> = sessions.keys().copied().collect();
 
     // Sweep stale temp dirs whose UUIDs no longer correspond to any
@@ -834,7 +916,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             let msg = stale_worktree_message(&session.worktree_path);
             warn!(session_id = %id, path = %session.worktree_path.display(), "restore: worktree missing");
             let _ = ctx
-                .store
+                .store()
                 .update_session_status(&id, SessionStatus::Error, None);
             (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
             continue;
@@ -846,14 +928,14 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             warn!(session_id = %id, error = ?e, "restore: temp-file materialise failed");
             let msg = format!("Failed to restore session temp files: {e}");
             let _ = ctx
-                .store
+                .store()
                 .update_session_status(&id, SessionStatus::Error, None);
             (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
             continue;
         }
 
         if let Err(e) = ctx
-            .store
+            .store()
             .update_session_status(&id, SessionStatus::Starting, None)
         {
             warn!(session_id = %id, error = ?e, "restore: status update failed");
@@ -893,7 +975,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                     ai_session_id = %aid,
                     "restore: AI transcript missing on disk; starting fresh conversation",
                 );
-                let _ = ctx.store.update_session_ai_session_id(&id, None);
+                let _ = ctx.store().update_session_ai_session_id(&id, None);
             }
         }
 
@@ -911,7 +993,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             Err(_) => {
                 warn!(session_id = %id, "restore: pending_spawn mutex poisoned; skipping deferred registration");
                 let _ = ctx
-                    .store
+                    .store()
                     .update_session_status(&id, SessionStatus::Error, None);
                 (ctx.sink.status)(
                     &id,
@@ -1011,7 +1093,7 @@ pub fn worktree_create_impl(
     let validated = compose::validate_worktree_name(name)
         .map_err(|msg| AppError::from(Error::InvalidPath(msg)))?;
 
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     let Some(workspace) = cfg.workspace_root.as_ref() else {
         return Err(AppError::from(Error::NotFound(
             "workspaceRoot is not set; cannot create worktree".to_owned(),

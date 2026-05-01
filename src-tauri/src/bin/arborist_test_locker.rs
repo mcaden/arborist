@@ -26,7 +26,10 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(lock_path) = args.next() else {
-        let _ = writeln!(io::stderr(), "ERROR: usage: arborist-test-locker <lock_path>");
+        let _ = writeln!(
+            io::stderr(),
+            "ERROR: usage: arborist-test-locker <lock_path>"
+        );
         return ExitCode::from(3);
     };
 

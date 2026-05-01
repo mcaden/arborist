@@ -61,14 +61,14 @@ pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
 #[tauri::command]
 pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
     let ctx = ctx_of(&app)?;
-    Ok(ctx.store.load_config())
+    Ok(ctx.store().load_config())
 }
 
 /// Deep-merges `partial` into the persisted [`AppConfig`].
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    ctx.store.save_config(partial).map_err(AppError::from)?;
+    ctx.store().save_config(partial).map_err(AppError::from)?;
     Ok(())
 }
 
@@ -77,7 +77,7 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
 #[tauri::command]
 pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionSet>, AppError> {
     let ctx = ctx_of(&app)?;
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     list_instructions_for(&cfg)
 }
 

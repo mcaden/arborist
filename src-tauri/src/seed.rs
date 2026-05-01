@@ -173,8 +173,8 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
 
     // Block on the seed lock so concurrent first-launchers serialise
     // through the marker re-check below.
-    let _seed_lock = WorkspaceLockGuard::acquire_blocking(layout.seed_lock_path())
-        .map_err(SeedError::Lock)?;
+    let _seed_lock =
+        WorkspaceLockGuard::acquire_blocking(layout.seed_lock_path()).map_err(SeedError::Lock)?;
 
     // Lock-then-recheck: the predecessor may already have written the
     // marker while we were waiting on the lock.
@@ -191,7 +191,9 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
     // ---- config.json ----
     let dest_config = layout.settings_path();
     if !dest_config.exists() {
-        if let Some(canonical_src) = layout.root().canonical_workspace_settings_path(layout.workspace())
+        if let Some(canonical_src) = layout
+            .root()
+            .canonical_workspace_settings_path(layout.workspace())
         {
             if canonical_src.exists() {
                 copy_atomic(&canonical_src, &dest_config, &workspace_dir)?;
@@ -214,7 +216,9 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
     let dest_sessions = layout.sessions_path();
     if layout.root().is_canonical() && !dest_sessions.exists() {
         let legacy = layout.root().legacy_sessions_path();
-        if legacy.exists() && legacy_workspace_root_matches(&layout.root().legacy_config_path(), layout) {
+        if legacy.exists()
+            && legacy_workspace_root_matches(&layout.root().legacy_config_path(), layout)
+        {
             copy_atomic(&legacy, &dest_sessions, &workspace_dir)?;
             outcomes.push(SeedOutcome::SeededSessionsFromLegacy);
         }
@@ -426,7 +430,10 @@ mod tests {
         let report = initialise_workspace_dir(&branch_layout).unwrap();
 
         assert!(!report.already_seeded);
-        assert_eq!(report.outcomes, vec![SeedOutcome::SeededConfigFromCanonical]);
+        assert_eq!(
+            report.outcomes,
+            vec![SeedOutcome::SeededConfigFromCanonical]
+        );
         assert!(branch_layout.settings_path().exists());
         assert!(
             !branch_layout.sessions_path().exists(),
@@ -456,8 +463,12 @@ mod tests {
 
         let report = initialise_workspace_dir(&layout).unwrap();
         assert!(!report.already_seeded);
-        assert!(report.outcomes.contains(&SeedOutcome::SeededConfigFromLegacy));
-        assert!(report.outcomes.contains(&SeedOutcome::SeededSessionsFromLegacy));
+        assert!(report
+            .outcomes
+            .contains(&SeedOutcome::SeededConfigFromLegacy));
+        assert!(report
+            .outcomes
+            .contains(&SeedOutcome::SeededSessionsFromLegacy));
         assert!(layout.settings_path().exists());
         assert!(layout.sessions_path().exists());
     }
@@ -508,7 +519,9 @@ mod tests {
         fs::write(root.legacy_sessions_path(), b"{}").unwrap();
 
         let report = initialise_workspace_dir(&layout).unwrap();
-        assert!(report.outcomes.contains(&SeedOutcome::SeededConfigFromLegacy));
+        assert!(report
+            .outcomes
+            .contains(&SeedOutcome::SeededConfigFromLegacy));
         assert!(!layout.sessions_path().exists());
     }
 

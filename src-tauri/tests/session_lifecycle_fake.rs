@@ -359,7 +359,7 @@ async fn create_emits_starting_then_running_and_persists_session() {
     assert_eq!(listed[0].pid, view.pid);
 
     // AppConfig active selection should point at the new session.
-    let cfg = h.ctx.store.load_config();
+    let cfg = h.ctx.store().load_config();
     assert_eq!(cfg.active_session_id, Some(view.id));
     assert_eq!(cfg.tab_order, vec![view.id]);
     assert_eq!(cfg.last_open_sessions, vec![view.id]);
@@ -561,10 +561,10 @@ async fn focus_updates_active_session_id_and_rejects_unknown() {
     assert_ne!(v1.id, v2.id);
 
     // After creating two, the second is the active one (most recent create).
-    assert_eq!(h.ctx.store.load_config().active_session_id, Some(v2.id));
+    assert_eq!(h.ctx.store().load_config().active_session_id, Some(v2.id));
 
     session_focus_impl(&h.ctx, v1.id).unwrap();
-    assert_eq!(h.ctx.store.load_config().active_session_id, Some(v1.id));
+    assert_eq!(h.ctx.store().load_config().active_session_id, Some(v1.id));
 
     let unknown = SessionId::new();
     let err = session_focus_impl(&h.ctx, unknown).expect_err("should fail");
@@ -582,7 +582,7 @@ async fn close_kills_pty_removes_record_and_clears_active() {
 
     assert!(!h.ctx.pool.contains(&view.id));
     assert!(session_list_impl(&h.ctx).unwrap().is_empty());
-    let cfg = h.ctx.store.load_config();
+    let cfg = h.ctx.store().load_config();
     assert_eq!(cfg.active_session_id, None);
     assert!(cfg.tab_order.is_empty());
     assert!(cfg.last_open_sessions.is_empty());
@@ -601,7 +601,7 @@ async fn close_with_delete_worktree_invokes_git_runner_remove() {
     // the containment check passes.
     let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
     h.ctx
-        .store
+        .store()
         .save_config(PartialAppConfig {
             workspace_root: Some(Some(ws_root.clone())),
             ..Default::default()
@@ -647,7 +647,7 @@ async fn close_with_delete_worktree_refuses_main_workspace_root() {
     // Point workspace_root at the same path as the session's worktree so
     // the safety check trips.
     h.ctx
-        .store
+        .store()
         .save_config(PartialAppConfig {
             workspace_root: Some(Some(h.worktree.path().to_path_buf())),
             ..Default::default()
@@ -682,7 +682,7 @@ async fn close_with_delete_worktree_propagates_git_failure() {
     let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
     let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
     h.ctx
-        .store
+        .store()
         .save_config(PartialAppConfig {
             workspace_root: Some(Some(ws_root)),
             ..Default::default()
@@ -739,7 +739,7 @@ async fn close_with_delete_worktree_refuses_when_sessions_snapshot_unreadable() 
     let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
     let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
     h.ctx
-        .store
+        .store()
         .save_config(PartialAppConfig {
             workspace_root: Some(Some(ws_root)),
             ..Default::default()
@@ -751,7 +751,7 @@ async fn close_with_delete_worktree_refuses_when_sessions_snapshot_unreadable() 
     // close fails. The destructive worktree-delete path must refuse
     // rather than treat the unreadable snapshot as "session not found,
     // skip silently".
-    std::fs::write(h.ctx.store.dir().join("sessions.json"), b"###bad###").unwrap();
+    std::fs::write(h.ctx.store().dir().join("sessions.json"), b"###bad###").unwrap();
 
     let result = session_close_impl(&h.ctx, view.id, true)
         .await
@@ -777,7 +777,7 @@ async fn close_with_delete_worktree_refuses_when_outside_workspace_root() {
     // worktree is *not* contained under it.
     let unrelated_root = TempDir::new().unwrap();
     h.ctx
-        .store
+        .store()
         .save_config(PartialAppConfig {
             workspace_root: Some(Some(unrelated_root.path().to_path_buf())),
             ..Default::default()
@@ -846,7 +846,7 @@ async fn restore_defers_spawn_until_first_session_resize() {
     let original = session_create_impl(&h.ctx, create_args(&h)).unwrap();
     let persisted = h
         .ctx
-        .store
+        .store()
         .load_sessions()
         .get(&original.id)
         .cloned()
@@ -857,8 +857,12 @@ async fn restore_defers_spawn_until_first_session_resize() {
     let spawner2 = Arc::new(FakeSpawner::new());
     let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
     let events2 = Arc::new(CapturedEvents::default());
-    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store.clone());
-    let ctx2 = Arc::new(AppContext::with_real_git(pool2, h.ctx.store.clone(), sink2));
+    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store().clone());
+    let ctx2 = Arc::new(AppContext::with_real_git(
+        pool2,
+        h.ctx.store().clone(),
+        sink2,
+    ));
 
     restore_all_sessions(&ctx2);
 
@@ -934,8 +938,8 @@ async fn restore_emits_error_with_message_when_worktree_directory_is_missing() {
     let spawner2 = Arc::new(FakeSpawner::new());
     let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
     let events2 = Arc::new(CapturedEvents::default());
-    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store.clone());
-    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store.clone(), sink2);
+    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store().clone());
+    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store().clone(), sink2);
 
     restore_all_sessions(&ctx2);
 

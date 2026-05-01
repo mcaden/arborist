@@ -1822,10 +1822,8 @@ mod tests {
             "feature-x".to_owned(),
         );
         let root_b = root_a.clone();
-        let store_a =
-            ConfigStore::from_layout(root_a.for_workspace(canonical.clone())).expect("a");
-        let store_b =
-            ConfigStore::from_layout(root_b.for_workspace(canonical.clone())).expect("b");
+        let store_a = ConfigStore::from_layout(root_a.for_workspace(canonical.clone())).expect("a");
+        let store_b = ConfigStore::from_layout(root_b.for_workspace(canonical.clone())).expect("b");
         assert_eq!(store_a.dir(), store_b.dir());
     }
 
@@ -1842,10 +1840,8 @@ mod tests {
             app_data.path().to_path_buf(),
             "feature-x".to_owned(),
         );
-        let store_a =
-            ConfigStore::from_layout(root.for_workspace(canon(ws_a.path()))).expect("a");
-        let store_b =
-            ConfigStore::from_layout(root.for_workspace(canon(ws_b.path()))).expect("b");
+        let store_a = ConfigStore::from_layout(root.for_workspace(canon(ws_a.path()))).expect("a");
+        let store_b = ConfigStore::from_layout(root.for_workspace(canon(ws_b.path()))).expect("b");
         assert_ne!(
             store_a.dir(),
             store_b.dir(),
