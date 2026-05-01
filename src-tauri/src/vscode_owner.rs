@@ -119,22 +119,31 @@ impl VsCodeOwnerResolver {
     /// Per-platform PID lookup. Returns `Some(pid)` if a matching
     /// window is found at the moment of the call, `None` otherwise.
     fn find_now(&self) -> Option<u32> {
-        let basename = self
-            .worktree_path
+        let basename = self.basename()?;
+        platform::find_vscode_pid(&basename)
+    }
+
+    /// Lowercased basename of the worktree path. Used both for window
+    /// matching during resolve and for the liveness probe so it can
+    /// detect "workspace window closed" without requiring `Code.exe`
+    /// itself to die.
+    fn basename(&self) -> Option<String> {
+        self.worktree_path
             .file_name()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_owned())?;
-        platform::find_vscode_pid(&basename)
+            .map(|s| s.to_owned())
     }
 }
 
 impl OwnerResolver for VsCodeOwnerResolver {
     fn resolve(&self) -> Option<RetargetedOwner> {
+        let basename = self.basename()?;
         let deadline = Instant::now() + POLL_DEADLINE;
         loop {
             if let Some(pid) = self.find_now() {
                 let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
-                let liveness: Box<dyn LivenessProbe> = platform::liveness_probe(pid);
+                let liveness: Box<dyn LivenessProbe> =
+                    platform::liveness_probe(pid, basename.clone());
                 return Some(RetargetedOwner {
                     pid,
                     killer,
@@ -173,8 +182,6 @@ mod platform {
 
     const SYNCHRONIZE: DWORD = 0x0010_0000;
     const WAIT_OBJECT_0: DWORD = 0;
-    const WAIT_TIMEOUT: DWORD = 0x102;
-    const INFINITE: DWORD = 0xFFFF_FFFF;
 
     #[link(name = "user32")]
     extern "system" {
@@ -250,60 +257,80 @@ mod platform {
         state.found
     }
 
-    /// Polling-based liveness probe: every 1 s, attempt to acquire a
-    /// SYNCHRONIZE handle on `pid` and `WaitForSingleObject` with 0 ms
-    /// timeout. Returns when the wait reports the process is signalled
-    /// (i.e. exited) OR the handle can no longer be opened.
+    /// Window-based liveness probe with PID death as a fallback.
     ///
-    /// We deliberately re-open the handle on each iteration rather
-    /// than holding it: holding a handle prevents the kernel from
-    /// reaping the process record, which on long-lived editor
-    /// instances would accumulate. The cost (one OpenProcess per
-    /// second) is negligible.
-    pub(super) fn liveness_probe(pid: u32) -> Box<dyn LivenessProbe> {
-        Box::new(WindowsLivenessProbe { pid })
+    /// VS Code is multi-window: closing **the workspace** doesn't
+    /// necessarily kill `Code.exe` — the user may have other
+    /// windows / workspaces open in the same process tree. A
+    /// PID-only probe would therefore wait forever for a process
+    /// that's still running, leaving the sub-tab stuck on `Running`
+    /// long after the workspace was closed.
+    ///
+    /// Strategy: every 1 s, (1) poll the matched PID with
+    /// `WaitForSingleObject(0)` so the probe still fires immediately
+    /// when `Code.exe` itself exits; (2) re-enumerate top-level
+    /// windows for one whose title still matches the workspace
+    /// folder. If the window is gone for two consecutive polls (a
+    /// 1 s grace to avoid spurious misses during e.g. a quick
+    /// title-bar repaint), report the workspace closed. Either
+    /// signal returning ends the probe; the [`AppPool`] then emits
+    /// `Exited` and the sub-tab goes grey.
+    pub(super) fn liveness_probe(pid: u32, basename: String) -> Box<dyn LivenessProbe> {
+        Box::new(WindowsLivenessProbe { pid, basename })
     }
 
     struct WindowsLivenessProbe {
         pid: u32,
+        basename: String,
     }
     impl LivenessProbe for WindowsLivenessProbe {
         fn wait_for_death(self: Box<Self>) {
+            // Number of consecutive polls in which the workspace
+            // window wasn't found. Two-poll debounce guards against
+            // a transient "no window matched right now" miss
+            // (window briefly without the suffix during a title
+            // animation, EnumWindows racing a window list update,
+            // etc.). 2 polls × 1 s = up to ~2 s detection latency
+            // for a closed workspace, which the user perceives as
+            // "near-instant".
+            let mut window_gone_polls: u32 = 0;
+            const WINDOW_GONE_THRESHOLD: u32 = 2;
+
             loop {
+                // (1) Process-death fast path. If `Code.exe` itself
+                // exited (last window closed → app quits) the
+                // wait returns immediately.
                 // SAFETY: literal access mask + PID.
                 let h = unsafe { OpenProcess(SYNCHRONIZE, 0, self.pid) };
-                if h.is_null() {
-                    // Process has been reaped or we lost rights.
+                if !h.is_null() {
+                    // SAFETY: h is a valid handle returned just above.
+                    let r = unsafe { WaitForSingleObject(h, 0) };
+                    // SAFETY: h is valid.
+                    unsafe { CloseHandle(h) };
+                    if r == WAIT_OBJECT_0 {
+                        return;
+                    }
+                } else {
+                    // Process gone or we lost rights — treat as exited.
                     return;
                 }
-                // SAFETY: h is a valid handle returned just above.
-                let r = unsafe { WaitForSingleObject(h, 1_000) };
-                // SAFETY: h is valid.
-                unsafe { CloseHandle(h) };
-                match r {
-                    WAIT_OBJECT_0 => return,
-                    WAIT_TIMEOUT => {
-                        // Still alive; loop and re-poll. Use a short
-                        // additional sleep so a tight kernel-side spin
-                        // doesn't starve other threads.
-                        std::thread::sleep(Duration::from_millis(0));
-                        continue;
+
+                // (2) Window-based check. If the workspace window
+                // is no longer enumerable for `WINDOW_GONE_THRESHOLD`
+                // consecutive polls, the workspace was closed.
+                if find_vscode_pid(&self.basename).is_none() {
+                    window_gone_polls = window_gone_polls.saturating_add(1);
+                    if window_gone_polls >= WINDOW_GONE_THRESHOLD {
+                        return;
                     }
-                    _ => {
-                        // Unknown / failure — back off a beat then
-                        // retry. Avoids hot-spinning on weird returns.
-                        std::thread::sleep(Duration::from_millis(500));
-                        continue;
-                    }
+                } else {
+                    window_gone_polls = 0;
                 }
+
+                std::thread::sleep(Duration::from_millis(1_000));
             }
         }
     }
-
-    // Silence dead-code warnings on the INFINITE constant, which is
-    // useful documentation but not used by the polling probe.
-    #[allow(dead_code)]
-    const _UNUSED: DWORD = INFINITE;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +345,7 @@ mod platform {
         None
     }
 
-    pub(super) fn liveness_probe(_pid: u32) -> Box<dyn LivenessProbe> {
+    pub(super) fn liveness_probe(_pid: u32, _basename: String) -> Box<dyn LivenessProbe> {
         // Should never be called on non-Windows because find_vscode_pid
         // returns None, but provide a dummy in case the resolver is
         // wired up for tests / future extension.
@@ -368,11 +395,13 @@ mod tests {
 
     impl OwnerResolver for VsCodeOwnerResolverWithDeadline {
         fn resolve(&self) -> Option<RetargetedOwner> {
+            let basename = self.inner.basename()?;
             let stop_at = Instant::now() + self.deadline;
             loop {
                 if let Some(pid) = self.inner.find_now() {
                     let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
-                    let liveness: Box<dyn LivenessProbe> = platform::liveness_probe(pid);
+                    let liveness: Box<dyn LivenessProbe> =
+                        platform::liveness_probe(pid, basename.clone());
                     return Some(RetargetedOwner {
                         pid,
                         killer,
