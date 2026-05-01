@@ -180,13 +180,20 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(
             }
         }
         "assistant.turn_end" => {
+            let turn_id = env
+                .data
+                .as_ref()
+                .and_then(|d| d.get("turnId"))
+                .and_then(|v| v.as_str());
             // The metrics watcher is the canonical source of TurnEnd-with-duration
             // (Copilot OTel `invoke_agent` span). We emit a TurnEnd here without a
             // duration so the frontend's reducer flips out of `thinking` promptly
             // even when OTel is delayed or missing.
-            #[allow(clippy::collapsible_match)]
-            if state.in_turn.take().is_some() && !suppress_resolved {
-                emit(ActivityEvent::TurnEnd { duration_ms: None });
+            if turn_id.is_some() && state.in_turn.as_deref() == turn_id {
+                state.in_turn = None;
+                if !suppress_resolved {
+                    emit(ActivityEvent::TurnEnd { duration_ms: None });
+                }
             }
         }
         "tool.execution_start" => {
