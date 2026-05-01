@@ -1,11 +1,17 @@
 // SidebarSubTab — indented row beneath a parent SidebarTab representing a
 // single sub-session (terminal or application). Sub-tabs are deliberately
 // simpler than parent tabs: no drag-reorder, no metrics line, and a single
-// status dot. Click forwards to `subSessionStore.focus`, which:
-//   * for terminal sub-sessions, swaps the MainArea viewport to this sub
-//     and brings the parent into view;
-//   * for application sub-sessions, raises the OS window without touching
-//     the viewport (the parent terminal stays visible).
+// status dot. Click forwards to:
+//   * `subSessionStore.relaunch` when the row is greyed (status `exited`
+//     or `error`) — the same gesture for both kinds, since a sub-session
+//     that exited outside the user's control should re-spawn under the
+//     same id rather than focus a dead process or get stranded as a tab
+//     the user can only close;
+//   * otherwise `subSessionStore.focus`, which:
+//     * for terminal sub-sessions, swaps the MainArea viewport to this
+//       sub and brings the parent into view;
+//     * for application sub-sessions, raises the OS window without
+//       touching the viewport (the parent terminal stays visible).
 //
 // Accessibility: the row is a plain `<button>` (implicit `role="button"`),
 // not `role="tab"`. Sub-tabs live inside the parent's `<ul role="group">`
@@ -54,12 +60,17 @@ export function SidebarSubTab({
   const isViewportOwner = sub.kind === 'terminal' && activeSubId === subSessionId && parentIsActive;
 
   const handleClick = (): void => {
-    // Phase 7: clicking a greyed-out application sub-tab triggers a
-    // relaunch (re-spawn under the same id). Status flows back via
-    // `subsession://status`; the row visually transitions starting →
-    // running. Per-id dedupe in the store action prevents double-clicks
-    // from spawning two processes.
-    if (sub.kind === 'application' && (sub.status === 'exited' || sub.status === 'error')) {
+    // When a sub-session has exited outside the user's control (the
+    // process died, the launcher exited and the resolver gave up,
+    // etc.) the row goes grey but stays put. Clicking it re-spawns
+    // under the same id — for both kinds — so the user gets a
+    // consistent "click greyed tab → restart" gesture without having
+    // to close + recreate the tab. Per-id dedupe in the store action
+    // prevents double-clicks from spawning two processes.
+    //
+    // Status flows back via `subsession://status`; the row visually
+    // transitions starting → running.
+    if (sub.status === 'exited' || sub.status === 'error') {
       void subActions.relaunch(subSessionId);
       return;
     }

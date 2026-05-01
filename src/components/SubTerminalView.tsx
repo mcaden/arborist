@@ -8,9 +8,10 @@
 //   * Reads from `useSubSessionById` / `useSubStatusMessage`.
 //   * Uses `useSubTerminal` so input/resize commands target the
 //     `subsession_*` IPC handlers instead of the parent-session ones.
-//   * No Restart button — terminal sub-sessions are single-shot in v1
-//     (CONTEXT_MENU_PLAN.md, MainArea section). The overlay offers Close
-//     instead, which removes the sub-tab and the registry entry.
+//   * Exit overlay offers Relaunch (primary) and Close (secondary) so
+//     that a sub-session whose process exited outside the user's
+//     control can be re-spawned in place. Mirrors the sidebar's
+//     click-on-greyed-tab → relaunch behaviour.
 
 import { useEffect, useRef } from 'react';
 
@@ -63,6 +64,13 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
   const status = sub?.status;
   const showOverlay = status === 'error' || status === 'exited';
 
+  const handleRelaunch = (): void => {
+    void subActions.relaunch(subSessionId).catch((err: unknown) => {
+      const message = formatError(err);
+      console.warn(`[SubTerminalView] relaunch(${subSessionId}) failed: ${message}`);
+    });
+  };
+
   const handleClose = (): void => {
     void subActions.close(subSessionId).catch((err: unknown) => {
       const message = formatError(err);
@@ -94,13 +102,22 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
                 {statusMessage}
               </p>
             )}
-            <button
-              type="button"
-              onClick={handleClose}
-              className="rounded bg-slate-700 px-3 py-1 text-sm font-medium text-white hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-400"
-            >
-              Close
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRelaunch}
+                className="rounded bg-sky-600 px-3 py-1 text-sm font-medium text-white hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-300"
+              >
+                Relaunch
+              </button>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="rounded bg-slate-700 px-3 py-1 text-sm font-medium text-white hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-400"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

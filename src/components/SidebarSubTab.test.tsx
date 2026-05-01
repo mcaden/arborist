@@ -167,4 +167,28 @@ describe('SidebarSubTab', () => {
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
     expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
   });
+
+  it('clicking a greyed exited terminal sub-tab triggers relaunch', () => {
+    // Mirrors the application-kind behaviour: when a terminal sub-session's
+    // PTY child exits outside the user's control (process died), the row
+    // stays put with a grey dot and clicking it re-spawns under the same
+    // id rather than focusing a dead session.
+    const sub = makeSub({ id: id('0a'), kind: 'terminal', status: 'exited', pid: undefined });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    fireEvent.click(screen.getByRole('button', { name: sub.label }));
+    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
+    expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+  });
+
+  it('clicking a greyed errored terminal sub-tab triggers relaunch', () => {
+    const sub = makeSub({ id: id('0b'), kind: 'terminal', status: 'error', pid: undefined });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    fireEvent.click(screen.getByRole('button', { name: sub.label }));
+    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
+    expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+  });
 });
