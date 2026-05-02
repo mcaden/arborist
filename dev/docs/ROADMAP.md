@@ -41,8 +41,13 @@ within.
 ### 1.3 Workspace switching
 - **Gap**: No mechanism to switch to a different workspace after initial setup.
 - **Needed**: A button near the workspace indicator (e.g. "Change workspace…")
-  that re-opens the workspace picker. Switching workspace should close all open
-  sessions after confirmation (they are tied to the previous repo).
+  that re-opens the workspace picker. Switching workspace **parks** all open
+  sessions of the old workspace (kills the PTYs but preserves every persisted
+  record — `sessions.json`, `last_open_sessions`, `tab_order`,
+  `active_session_id`); a later switch back to that workspace re-spawns them
+  via the standard `restore_all_sessions` path, with Claude/Copilot
+  `--resume` keeping AI conversation context intact (see DESIGN §5.5c
+  step 7).
 
 ---
 

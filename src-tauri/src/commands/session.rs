@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use portable_pty::PtySize;
 use tracing::{debug, info, warn};
@@ -614,6 +614,57 @@ pub async fn session_close_impl(
     Ok(result)
 }
 
+/// **Park** an old-workspace session in preparation for a workspace
+/// switch. Tears down the live PTY (and ancillary metrics watcher,
+/// pending-spawn registration, temp-dir on disk) but **preserves
+/// every persisted record**: the entry in `sessions.json` stays put,
+/// `last_open_sessions` / `tab_order` / `active_session_id` are not
+/// touched. When the user switches back to this workspace,
+/// [`restore_all_sessions`] re-spawns the PTY from the unchanged
+/// `Session` record using `composed_command` verbatim — Claude /
+/// Copilot `--resume` splicing (see [`compose::with_resume`]) keeps
+/// the AI conversation context alive across the round-trip.
+///
+/// Best-effort by design: `pool.kill` may fail (rare; e.g. the child
+/// has already exited and the wait thread is mid-cleanup). We log
+/// and continue rather than abort the workspace switch — park
+/// performs zero irreversible store mutations, so a partial-park
+/// state is benign and self-heals on the next switch-back. This is
+/// the key behavioural difference vs. `session_close_impl`, which
+/// destroys persisted state and therefore historically had to
+/// hard-fail the switch on partial close.
+async fn park_session_for_switch_impl(ctx: &AppContext, id: SessionId) {
+    // 1. Stop the metrics watcher (mirrors session_close_impl step 0
+    //    and step 6 of workspace_switch which already drained all
+    //    watchers up front; this is belt-and-braces for any watcher
+    //    that may have been re-armed between then and now).
+    ctx.metrics.stop(&id);
+
+    // 2. Drop any deferred-spawn registration so a stale resize for
+    //    this id can't trigger a phantom spawn against the new
+    //    (post-swap) workspace.
+    if let Ok(mut g) = ctx.pending_spawn.lock() {
+        g.remove(&id);
+    }
+
+    // 3. Best-effort kill. Temp dir is removed by pool.kill itself
+    //    (step 6 inside pool::kill); restore re-materialises temp
+    //    files from the persisted `Session.temp_files` so this is
+    //    safe.
+    if ctx.pool.contains(&id) {
+        if let Err(e) = ctx.pool.kill(&id).await {
+            warn!(
+                session_id = %id,
+                error = ?e,
+                "park: pool.kill failed during workspace switch; continuing without aborting swap (record preserved for restore)"
+            );
+        }
+    }
+    // **Intentionally absent**: store.remove_session, save_config,
+    // worktree-delete. Those are the irreversible side-effects of
+    // session_close_impl that we explicitly *don't* perform on park.
+}
+
 /// What `session_close_impl` decided to do about the optional `delete_worktree`
 /// flag, captured *before* the persisted session record is dropped so the
 /// decision is based on the pre-close state.
@@ -1130,17 +1181,48 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             continue;
         }
 
-        // Worktree path validation — Roadmap §4.3. If the directory is
-        // gone (deleted between launches), spawning would fail with an
-        // opaque OS error. Surface a friendly message instead so the
-        // terminal overlay can explain the situation.
+        // Worktree path validation — Roadmap §4.3 / Phase 7 in-app
+        // workspace switch. If the worktree directory is gone (e.g.
+        // user ran `git worktree remove` while the session was parked
+        // across a workspace switch, or deleted the directory by hand
+        // between launches), spawning would fail with an opaque OS
+        // error. Drop the persisted record entirely (and trim it from
+        // last_open_sessions / tab_order / active_session_id) so the
+        // user doesn't get a permanent ghost tab they have to close
+        // manually. The session is irrecoverable at this point — its
+        // working directory is gone, and `composed_command` references
+        // a path that no longer exists.
         if !session.worktree_path.is_dir() {
-            let msg = stale_worktree_message(&session.worktree_path);
-            warn!(session_id = %id, path = %session.worktree_path.display(), "restore: worktree missing");
-            let _ = ctx
-                .store()
-                .update_session_status(&id, SessionStatus::Error, None);
-            (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+            warn!(
+                session_id = %id,
+                path = %session.worktree_path.display(),
+                "restore: worktree missing; dropping persisted session record"
+            );
+            if let Err(e) = ctx.store().remove_session(&id) {
+                warn!(session_id = %id, error = ?e, "restore: remove_session failed for stale-worktree drop");
+                continue;
+            }
+            let cfg = ctx.store().load_config();
+            let new_last: Vec<SessionId> = cfg
+                .last_open_sessions
+                .iter()
+                .copied()
+                .filter(|s| s != &id)
+                .collect();
+            let new_order: Vec<SessionId> =
+                cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
+            let active_patch: Option<Option<SessionId>> = match cfg.active_session_id {
+                Some(active) if active == id => Some(new_order.first().copied()),
+                _ => None,
+            };
+            if let Err(e) = ctx.store().save_config(PartialAppConfig {
+                last_open_sessions: Some(new_last),
+                tab_order: Some(new_order),
+                active_session_id: active_patch,
+                ..Default::default()
+            }) {
+                warn!(session_id = %id, error = ?e, "restore: save_config failed for stale-worktree drop");
+            }
             continue;
         }
 
@@ -1590,56 +1672,29 @@ pub async fn workspace_switch_impl_inner(
     // *current* store (still the old one until the swap in step 9).
     // session_close_impl uses ctx.store() which clones from the old
     // scope; safe.
+    // Step 7 — **park** old workspace sessions. We kill the PTYs but
+    // **preserve** every session record (sessions.json, lastOpenSessions,
+    // tabOrder, activeSessionId untouched). When the user switches back
+    // to this workspace, restore_all_sessions will re-spawn the PTYs
+    // from the persisted records — Claude/Copilot `--resume` splicing
+    // (compose::with_resume) keeps the AI conversation context alive
+    // across the round-trip.
     //
-    // session_close_impl performs three irreversible operations
-    // (`pool.kill`, `store.remove_session`, `store.save_config`) per
-    // session. If close N succeeds but close N+1 fails partway through,
-    // sessions 0..N are already gone permanently — we cannot rebuild
-    // them from the now-trimmed store. We track the count of completed
-    // closes so the surfaced error names that loss explicitly rather
-    // than silently truncating the user's session list.
+    // Park is *best-effort*: a failed `pool.kill` (rare; e.g. PTY
+    // already dead) is logged and ignored. There is no abort path
+    // because park performs zero irreversible store mutations — at
+    // worst we leak a still-running child PTY whose record will be
+    // re-found on the next switch-back. The previous "close + recovery
+    // loop" complexity was driven by `session_close_impl`'s
+    // `store.remove_session` + `save_config` being permanent; with
+    // park, neither happens, so neither does the recovery.
+    //
+    // Enumerate from the *current* store (still the old one until the
+    // swap in step 9). park_session_for_switch_impl uses ctx.store()
+    // which clones from the old scope; safe.
     let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
-    for (closed_count, id) in old_session_ids.into_iter().enumerate() {
-        if let Err(e) = session_close_impl(ctx, id, false).await {
-            // Hard-fail: partial close + swap would leave mixed-workspace
-            // state. Drop the new binding (releases its OS lock via
-            // WorkspaceLockGuard's Drop). The GateGuard's Drop restores
-            // the gate when this function returns.
-            drop(binding);
-            // Recovery: step 6 stopped+joined every metrics watcher up
-            // front (so the post-swap join barrier would actually have
-            // something to drain). The sessions that survived this
-            // failed close loop are still alive (PTYs running, store
-            // entries intact) but have no token/activity tailers.
-            // Restart their watchers so the user doesn't have to
-            // restart each surviving tab manually to see live metrics.
-            // `created_at` (unix seconds) is used as the spawn-instant
-            // approximation — the true PTY spawn instant isn't
-            // persisted, but this is conservative: it lets the Claude
-            // transcript watcher pick up any jsonl created since this
-            // session was first launched.
-            for (_, session) in ctx.store().load_sessions() {
-                ctx.metrics.start(
-                    session.id,
-                    session.tool,
-                    session.worktree_path.clone(),
-                    UNIX_EPOCH + Duration::from_secs(session.created_at.max(0) as u64),
-                    Arc::clone(&ctx.metrics_emit),
-                    Arc::clone(&ctx.turn_emit),
-                    Arc::clone(&ctx.ai_session_discover),
-                    Arc::clone(&ctx.sink.activity),
-                    session.ai_session_id.clone(),
-                );
-            }
-            return Err(AppError::new(
-                "WorkspaceSwitchFailed",
-                format!(
-                    "could not close session {id} before workspace switch \
-                     (already destroyed {closed_count} earlier session(s) in the \
-                     old workspace; their PTYs and persisted records are gone): {e}",
-                ),
-            ));
-        }
+    for id in old_session_ids {
+        park_session_for_switch_impl(ctx, id).await;
     }
 
     // Step 8 — drop pending_spawn entries from the old workspace and

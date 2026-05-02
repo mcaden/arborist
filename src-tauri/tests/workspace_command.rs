@@ -538,3 +538,171 @@ async fn workspace_switch_returns_locked_when_target_is_held() {
             .load(std::sync::atomic::Ordering::SeqCst));
     }
 }
+
+// ---------- workspace switch park / restore round-trip ----------
+
+/// Build a `Session` record for parking-round-trip tests. We only need
+/// the persisted record (workspace switch step 7 enumerates sessions
+/// from the store) — we deliberately avoid spawning a real PTY because
+/// the assertions are about *record preservation*, not PTY lifecycle.
+fn fake_session(worktree: &Path, label: &str) -> arborist_lib::types::Session {
+    arborist_lib::types::Session {
+        id: SessionId::new(),
+        tool: arborist_lib::types::Tool::Claude,
+        worktree_path: worktree.to_path_buf(),
+        worktree_name: label.to_owned(),
+        label: label.to_owned(),
+        instruction_set_id: None,
+        composed_command: format!("echo {label}"),
+        status: SessionStatus::Running,
+        pid: None,
+        created_at: 1_700_000_000,
+        tab_index: 0,
+        temp_files: Vec::new(),
+        ai_session_id: None,
+    }
+}
+
+/// Regression for the in-app workspace-switch park semantics: the
+/// switch-out path must **preserve** every old-workspace session
+/// record (sessions.json, last_open_sessions, tab_order,
+/// active_session_id) so that a later switch-back can restore them.
+/// Previously the switch closed every session, permanently removing
+/// the records.
+#[tokio::test]
+async fn workspace_switch_parks_old_sessions_preserving_records() {
+    let app_data_dir = TempDir::new().unwrap();
+    let ws_a = TempDir::new().unwrap();
+    let ws_b = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_repo_root(ws_a.path());
+    let (ctx, ws_a_canon) = build_switch_ctx(
+        Arc::clone(&runner) as Arc<dyn GitRunner>,
+        app_data_dir.path(),
+        ws_a.path(),
+        "main",
+    );
+
+    // Seed two sessions in workspace A's store + matching config keys.
+    // No PTY: park's pool.kill is a no-op for sessions not in the pool.
+    let s1 = fake_session(ws_a.path(), "alpha");
+    let s2 = fake_session(ws_a.path(), "beta");
+    ctx.store().save_session(&s1).unwrap();
+    ctx.store().save_session(&s2).unwrap();
+    ctx.store()
+        .save_config(PartialAppConfig {
+            last_open_sessions: Some(vec![s1.id, s2.id]),
+            tab_order: Some(vec![s1.id, s2.id]),
+            active_session_id: Some(Some(s1.id)),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // Switch A → B.
+    runner.set_repo_root(ws_b.path());
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    workspace_switch_impl_inner(
+        &ctx,
+        app_data_dir.path(),
+        "main",
+        ws_b.path(),
+        switch_emit_capturing(captured.clone()),
+    )
+    .await
+    .expect("switch must succeed");
+
+    // The bound store is now B's; B starts empty.
+    assert!(ctx.store().load_sessions().is_empty(), "B starts empty");
+    assert!(ctx.store().load_config().last_open_sessions.is_empty());
+
+    // ❗ The crucial assertion: A's records must STILL be on disk under
+    // its branch-scoped workspace dir, untouched by the park.
+    let layout_a = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
+        .for_workspace(ws_a_canon.clone());
+    let store_a_after =
+        ConfigStore::from_layout(layout_a.clone()).expect("re-open A's store after switch");
+    let a_sessions = store_a_after.load_sessions();
+    assert_eq!(
+        a_sessions.len(),
+        2,
+        "park must preserve A's session records; got {a_sessions:?}"
+    );
+    assert!(a_sessions.contains_key(&s1.id));
+    assert!(a_sessions.contains_key(&s2.id));
+    let a_cfg = store_a_after.load_config();
+    assert_eq!(a_cfg.last_open_sessions, vec![s1.id, s2.id]);
+    assert_eq!(a_cfg.tab_order, vec![s1.id, s2.id]);
+    assert_eq!(a_cfg.active_session_id, Some(s1.id));
+    drop(store_a_after);
+
+    // Switch B → A. The records seeded above must still be present in
+    // the freshly-bound A store (so restore_all_sessions has something
+    // to spawn).
+    runner.set_repo_root(ws_a.path());
+    workspace_switch_impl_inner(
+        &ctx,
+        app_data_dir.path(),
+        "main",
+        ws_a.path(),
+        switch_emit_capturing(captured.clone()),
+    )
+    .await
+    .expect("switch back must succeed");
+
+    let after = ctx.store().load_sessions();
+    assert_eq!(after.len(), 2, "round-trip must preserve session count");
+    assert!(after.contains_key(&s1.id));
+    assert!(after.contains_key(&s2.id));
+    let cfg_back = ctx.store().load_config();
+    assert_eq!(cfg_back.last_open_sessions, vec![s1.id, s2.id]);
+    assert_eq!(cfg_back.tab_order, vec![s1.id, s2.id]);
+    assert_eq!(cfg_back.active_session_id, Some(s1.id));
+}
+
+/// Regression for the restore stale-worktree drop: if a parked
+/// session's worktree was deleted by some other means (e.g.
+/// `git worktree remove` while parked across a workspace switch),
+/// `restore_all_sessions` must drop the persisted record + trim the
+/// id from last_open_sessions / tab_order / active_session_id rather
+/// than leave a permanent ghost tab in error state.
+#[test]
+fn restore_drops_session_when_worktree_directory_is_missing() {
+    use arborist_lib::commands::session::restore_all_sessions;
+
+    let store_dir = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner as Arc<dyn GitRunner>, &store_dir);
+
+    // Persist a session pointing at a path that does not exist.
+    let dead = store_dir.path().join("never-existed");
+    let stale = fake_session(&dead, "ghost");
+    ctx.store().save_session(&stale).unwrap();
+    ctx.store()
+        .save_config(PartialAppConfig {
+            last_open_sessions: Some(vec![stale.id]),
+            tab_order: Some(vec![stale.id]),
+            active_session_id: Some(Some(stale.id)),
+            ..Default::default()
+        })
+        .unwrap();
+
+    restore_all_sessions(&ctx);
+
+    assert!(
+        ctx.store().load_sessions().is_empty(),
+        "stale-worktree session must be removed from sessions.json"
+    );
+    let cfg = ctx.store().load_config();
+    assert!(
+        cfg.last_open_sessions.is_empty(),
+        "stale id must be trimmed from last_open_sessions"
+    );
+    assert!(
+        cfg.tab_order.is_empty(),
+        "stale id must be trimmed from tab_order"
+    );
+    assert_eq!(
+        cfg.active_session_id, None,
+        "active_session_id pointing at the dropped session must be cleared"
+    );
+}

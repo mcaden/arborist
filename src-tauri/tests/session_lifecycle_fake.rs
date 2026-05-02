@@ -949,17 +949,33 @@ async fn restore_defers_spawn_until_first_session_resize() {
 // (no extra trailing helpers)
 
 #[tokio::test]
-async fn restore_emits_error_with_message_when_worktree_directory_is_missing() {
+async fn restore_drops_session_record_when_worktree_directory_is_missing() {
     // Bootstrap a harness, persist a session, then delete the worktree
-    // directory before restore. The restore loop should emit an Error
-    // status with a human-readable "Worktree path no longer exists"
-    // message instead of attempting to spawn (which would fail with an
-    // opaque OS error).
+    // directory before restore. The restore loop must drop the persisted
+    // record and trim its id from `last_open_sessions` / `tab_order` /
+    // `active_session_id` rather than spawn (which would fail with an
+    // opaque OS error) or leave a permanent ghost tab in `Error` state.
+    //
+    // This is the cross-restart counterpart to the workspace-switch
+    // park flow: parked sessions are revived by the same restore path,
+    // so a worktree that disappeared while parked must be cleaned up
+    // during restore rather than re-projected as a phantom tab.
     let h = build_harness();
     let original = session_create_impl(&h.ctx, create_args(&h)).unwrap();
-    let worktree_path = h.worktree.path().to_path_buf();
 
-    // Drop the harness's TempDir handle so the directory disappears.
+    // Seed config so we can prove last_open_sessions/tab_order/active_session_id
+    // get trimmed too.
+    h.ctx
+        .store()
+        .save_config(arborist_lib::types::PartialAppConfig {
+            last_open_sessions: Some(vec![original.id]),
+            tab_order: Some(vec![original.id]),
+            active_session_id: Some(Some(original.id)),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let worktree_path = h.worktree.path().to_path_buf();
     drop(h.worktree);
     assert!(
         !worktree_path.exists(),
@@ -975,44 +991,33 @@ async fn restore_emits_error_with_message_when_worktree_directory_is_missing() {
 
     restore_all_sessions(&ctx2);
 
-    // Spawner must not have been invoked — we short-circuited before the
-    // PTY pool got involved.
+    // Spawner must not have been invoked.
     assert!(
         spawner2.state.lock().unwrap().last_cmd.is_none(),
         "spawn must not be attempted when worktree is missing"
     );
 
-    // The status sink received exactly one Error with the annotated
-    // message naming the missing path.
-    let statuses = events2.status.lock().unwrap();
-    let entry = statuses
-        .iter()
-        .find(|(id, _, _, _)| *id == original.id)
-        .expect("expected a status entry for the restored session");
-    assert_eq!(entry.1, SessionStatus::Error);
-    assert_eq!(entry.2, None);
-    let message = entry.3.as_deref().expect("message should be present");
+    // The persisted record is gone — no phantom tab.
+    let listed = session_list_impl(&Arc::new(ctx2)).unwrap();
     assert!(
-        message.contains("Worktree path is no longer available"),
-        "message did not mention stale worktree: {message}"
-    );
-    // The path mentioned in the message comes from the canonicalized
-    // session record, which may differ in formatting from the original
-    // temp-dir path. Just assert the message includes *some* path
-    // component matching the temp-dir basename.
-    let basename = worktree_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    assert!(
-        !basename.is_empty() && message.contains(basename),
-        "message did not include the missing path basename {basename}: {message}"
+        listed.is_empty(),
+        "stale-worktree session record must be dropped, got: {listed:?}"
     );
 
-    // The persisted record reflects the Error status too.
-    let listed = session_list_impl(&Arc::new(ctx2)).unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].status, SessionStatus::Error);
+    // Config bookkeeping is trimmed too.
+    let cfg = h.ctx.store().load_config();
+    assert!(
+        cfg.last_open_sessions.is_empty(),
+        "stale id must be trimmed from last_open_sessions"
+    );
+    assert!(
+        cfg.tab_order.is_empty(),
+        "stale id must be trimmed from tab_order"
+    );
+    assert_eq!(
+        cfg.active_session_id, None,
+        "active_session_id pointing at a dropped session must be cleared"
+    );
 }
 
 // ---------------------------------------------------------------------------

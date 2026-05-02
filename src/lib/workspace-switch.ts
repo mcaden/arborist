@@ -1,15 +1,17 @@
 // Shared "switch the active workspace" flow used by both the sidebar
 // header (`WorkspaceIndicator`) and the in-app Settings panel
-// (`SettingsDialog`). Centralised here so the close-all-sessions
+// (`SettingsDialog`). Centralised here so the park-old-sessions
 // invariant is enforced in exactly one place — by the **backend**, in
 // `commands/session.rs::workspace_switch_impl_inner`.
 //
-// Behaviour: delegate the entire transactional swap (validate → close
-// every open session → bind new (branch, workspace) lock → swap the
-// active store → emit `workspace://changed`) to the backend in a single
-// `workspaceSwitch` invoke. On `WorkspaceLocked` we re-throw with a
-// caller-friendly message so picker UIs can surface "already open in
-// another window" without parsing wire-format strings.
+// Behaviour: delegate the entire transactional swap (validate → park
+// every open session of the old workspace (PTYs killed, persisted
+// records preserved so a later switch-back can restore them) → bind
+// new (branch, workspace) lock → swap the active store → emit
+// `workspace://changed`) to the backend in a single `workspaceSwitch`
+// invoke. On `WorkspaceLocked` we re-throw with a caller-friendly
+// message so picker UIs can surface "already open in another window"
+// without parsing wire-format strings.
 
 import { isAppErrorLike, workspaceSwitch } from '@/lib/tauri-bridge';
 import { rehydrateActiveWorkspace } from '@/lib/rehydrate-workspace';
@@ -27,10 +29,12 @@ import { rehydrateActiveWorkspace } from '@/lib/rehydrate-workspace';
  * `rehydrate-workspace.ts` makes the duplicate work race-safe — the
  * losing call simply bails after its first await.
  *
- * Throws on validation, lock-contention, or close-all failure. The
- * caller (picker / settings dialog) keeps the user on the previous
- * workspace because the backend is fully transactional: on failure no
- * swap occurs, so the in-memory state is already consistent.
+ * Throws on validation or lock-contention. The caller (picker /
+ * settings dialog) keeps the user on the previous workspace because
+ * the backend is fully transactional: on failure no swap occurs, so
+ * the in-memory state is already consistent. (Park itself is
+ * best-effort and never aborts the switch — see DESIGN §5.5c
+ * step 7.)
  */
 export async function changeWorkspace(path: string): Promise<void> {
   let result;
