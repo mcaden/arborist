@@ -256,13 +256,16 @@ export interface WorktreeInfo {
 // probe acquired the lock cleanly (and immediately released it), and
 // `undefined` if the probe was not performed (e.g. the path failed
 // earlier validation, or the call site didn't have an `app_data_dir`
-// to derive the lock path from). Contention with a *different* branch
-// (e.g. release vs dev build of the same workspace) is **not**
-// detected here because each branch gets its own scoped lock path.
-// Picker UIs should surface a warning when `true` but still allow
-// the user to confirm — the authoritative lock acquire happens at
-// switch/boot time and will fail with `WorkspaceLocked` if the
-// contention is still present then.
+// to derive the lock path from). The lock is OS-advisory and
+// auto-releases when the holding process exits (clean or crash) — so
+// `true` here means "another live instance" and never a stale-lock
+// remnant. Contention with a *different* branch (e.g. release vs dev
+// build of the same workspace) is **not** detected here because each
+// branch gets its own scoped lock path. Picker UIs should surface a
+// warning when `true` but still allow the user to confirm — the
+// authoritative lock acquire happens at switch/boot time and will
+// fail with `WorkspaceLocked` if the contention is still present
+// then.
 export interface WorkspaceValidateResult {
   valid: boolean;
   error?: string;

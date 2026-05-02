@@ -12,13 +12,20 @@
 // another window" without parsing wire-format strings.
 
 import { isAppErrorLike, workspaceSwitch } from '@/lib/tauri-bridge';
+import { rehydrateActiveWorkspace } from '@/lib/rehydrate-workspace';
 
 /**
  * Switch the active workspace to `path`. On success the backend has
  * already swapped the live `WorkspaceScope` and emitted
- * `workspace://changed`, so this function does **not** touch the
- * frontend `useConfigStore` directly — the top-level `App` listener
- * picks up the event and re-fetches.
+ * `workspace://changed`; the top-level `App` listener picks that up
+ * and re-hydrates. We **also** drive `rehydrateActiveWorkspace()`
+ * here as a defensive fallback: the backend only **logs** if
+ * emitting the event fails (the Rust handler still resolves with
+ * `Ok`), so without this fallback an emit failure would leave the
+ * UI pointed at the old workspace even though the backend had
+ * already rebound to the new one. The shared generation counter in
+ * `rehydrate-workspace.ts` makes the duplicate work race-safe — the
+ * losing call simply bails after its first await.
  *
  * Throws on validation, lock-contention, or close-all failure. The
  * caller (picker / settings dialog) keeps the user on the previous
@@ -26,8 +33,9 @@ import { isAppErrorLike, workspaceSwitch } from '@/lib/tauri-bridge';
  * swap occurs, so the in-memory state is already consistent.
  */
 export async function changeWorkspace(path: string): Promise<void> {
+  let result;
   try {
-    await workspaceSwitch(path);
+    result = await workspaceSwitch(path);
   } catch (err) {
     if (isAppErrorLike(err) && err.code === 'WorkspaceLocked') {
       throw new Error(
@@ -35,5 +43,8 @@ export async function changeWorkspace(path: string): Promise<void> {
       );
     }
     throw err;
+  }
+  if (!result.noOp) {
+    await rehydrateActiveWorkspace();
   }
 }

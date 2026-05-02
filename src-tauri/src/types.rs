@@ -668,7 +668,11 @@ pub struct WorkspaceValidateArgs {
 /// non-blocking probe of the per-(branch, workspace) `.lock` file
 /// could not acquire the OS lock — i.e. another Arborist process
 /// **bound to the same `(branch, workspace)` pair** currently holds
-/// it, *or* a stale lock with no owner is still pinning the file.
+/// it. The lock is OS-advisory: if a previous owner exited (cleanly
+/// or by crash) the OS releases the file handle and the probe will
+/// succeed, so this flag does **not** indicate a stale lock —
+/// `WorkspaceLockGuard` does not require any explicit cleanup
+/// (see `workspace_lock.rs` "Crash semantics").
 /// Contention with a different branch (e.g. release vs dev build of
 /// the same workspace) is **not** detected here because each branch
 /// gets its own scoped lock path under
