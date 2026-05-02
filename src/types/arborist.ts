@@ -292,6 +292,19 @@ export interface SubSessionIdArg {
   id: SubSessionId;
 }
 
+// MIRROR: src-tauri/src/types.rs::SubSessionCloseIntent
+//
+// Discriminated tag describing what should happen to the underlying
+// process when the user closes a sub-tab. Terminal kind ignores the
+// variant; application kind branches on it.
+export type SubSessionCloseIntent = 'tabOnly' | 'requestAppClose' | 'forceKill';
+
+// MIRROR: src-tauri/src/types.rs::SubSessionCloseArgs
+export interface SubSessionCloseArgs {
+  id: SubSessionId;
+  intent?: SubSessionCloseIntent;
+}
+
 // MIRROR: src-tauri/src/types.rs::SubSessionListArgs
 export interface SubSessionListArgs {
   parentSessionId?: SessionId;

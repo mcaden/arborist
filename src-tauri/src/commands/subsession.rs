@@ -21,8 +21,8 @@ use tracing::{info, warn};
 use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
-    AppError, CustomProcessKind, Error, SubSession, SubSessionCreateArgs, SubSessionId,
-    SubSessionRecord, SubSessionStatus,
+    AppError, CustomProcessKind, Error, SubSession, SubSessionCloseIntent, SubSessionCreateArgs,
+    SubSessionId, SubSessionRecord, SubSessionStatus,
 };
 
 /// Create a new sub-session under `parent_session_id` using the
@@ -149,15 +149,27 @@ pub fn subsession_create_impl(
     }
 }
 
-/// Close a sub-session: for terminal kind, kill the PTY; for
-/// application kind, drop our tracking of it (we deliberately do **not**
-/// kill the external app — closing the tab should not terminate the
-/// user's editor / file browser). Always removes the in-memory store
-/// entry and prunes the persisted record.
+/// Close a sub-session. Behaviour depends on `intent`:
+///
+/// * **Terminal kind** — `intent` is ignored; we always kill the
+///   underlying PTY (the tab IS the process) and remove the record.
+/// * **Application + `TabOnly`** — detach our tracking; leave the
+///   external app running.
+/// * **Application + `RequestAppClose`** — best-effort: post
+///   `WM_CLOSE` (or platform equivalent) to the resolver-matched
+///   window via [`crate::app_launcher::AppPool::request_window_close`],
+///   then detach. The app may show a save-changes prompt and decline
+///   to actually close — Arborist's tab is removed regardless.
+/// * **Application + `ForceKill`** — `pool.kill` the underlying
+///   process and remove the record. Use sparingly.
+///
+/// The store entry and persisted `lastOpenSubSessions` slot are
+/// removed in all cases.
 pub async fn subsession_close_impl(
     ctx: &AppContext,
     sub_ctx: Arc<SubAppContext>,
     id: SubSessionId,
+    intent: SubSessionCloseIntent,
 ) -> Result<(), AppError> {
     let snapshot = sub_ctx
         .store
@@ -169,14 +181,38 @@ pub async fn subsession_close_impl(
                 sub_ctx.pool.kill(&id).await.map_err(AppError::from)?;
             }
         }
-        CustomProcessKind::Application => {
-            // Drop our tracking; do NOT kill the external app.
-            // Rationale: a launcher like `code .` or `explorer .`
-            // delegates to a long-lived GUI process the user is
-            // actively interacting with. The "X" on the sub-tab is
-            // tab-removal, not "close my editor".
-            sub_ctx.app_pool.detach(&id);
-        }
+        CustomProcessKind::Application => match intent {
+            SubSessionCloseIntent::TabOnly => {
+                // Drop our tracking; do NOT kill the external app.
+                // Rationale: a launcher like `code .` or `explorer .`
+                // delegates to a long-lived GUI process the user is
+                // actively interacting with. The "X" on the sub-tab is
+                // tab-removal, not "close my editor".
+                sub_ctx.app_pool.detach(&id);
+            }
+            SubSessionCloseIntent::RequestAppClose => {
+                // Best-effort polite close. Errors are logged but
+                // swallowed — we still want to detach the tab.
+                if let Err(e) = sub_ctx
+                    .app_pool
+                    .request_window_close(&id, &*sub_ctx.focuser)
+                {
+                    tracing::warn!(
+                        sub_session_id = %id,
+                        error = %e,
+                        "request_window_close failed; detaching tab anyway",
+                    );
+                }
+                sub_ctx.app_pool.detach(&id);
+            }
+            SubSessionCloseIntent::ForceKill => {
+                if sub_ctx.app_pool.contains(&id) {
+                    sub_ctx.app_pool.kill(&id).map_err(AppError::from)?;
+                } else {
+                    sub_ctx.app_pool.detach(&id);
+                }
+            }
+        },
     }
     sub_ctx.store.remove(&id);
     let _ = ctx.store.remove_last_open_sub_session(&id);
@@ -184,30 +220,35 @@ pub async fn subsession_close_impl(
 }
 
 /// Focus handler. Terminal kind is a frontend-only tab swap (no backend
-/// state to update). Application kind delegates to the configured
-/// [`crate::window_focus::WindowFocuser`] using the live PID; if the
-/// process has exited (no PID in the store), returns
-/// `Error::NotApplicable` so the frontend can decide whether to
-/// relaunch (Phase 7) or just leave the tab greyed.
+/// state to update). Application kind delegates to
+/// [`crate::app_launcher::AppPool::focus`], which prefers the
+/// resolver-matched HWND (via [`crate::window_focus::WindowFocuser::focus_hwnd`])
+/// before falling back to the runtime PID. If the process has exited
+/// (no PID in the store), returns `Error::NotApplicable` so the
+/// frontend can decide whether to relaunch (Phase 7) or just leave
+/// the tab greyed.
 pub fn subsession_focus_impl(sub_ctx: &SubAppContext, id: SubSessionId) -> Result<(), AppError> {
     let sub = sub_ctx
         .store
         .get(&id)
         .ok_or_else(|| AppError::new("NotFound", format!("sub session {id} not found")))?;
     if matches!(sub.kind, CustomProcessKind::Application) {
-        let pid = sub.pid.ok_or_else(|| {
-            AppError::from(Error::NotApplicable(format!(
+        if sub.pid.is_none() {
+            return Err(AppError::from(Error::NotApplicable(format!(
                 "sub session {id} is not running (status: {:?})",
                 sub.status
-            )))
-        })?;
+            ))));
+        }
         if !matches!(sub.status, SubSessionStatus::Running) {
             return Err(AppError::from(Error::NotApplicable(format!(
                 "sub session {id} status is {:?}, cannot focus",
                 sub.status
             ))));
         }
-        sub_ctx.focuser.focus_pid(pid).map_err(AppError::from)?;
+        sub_ctx
+            .app_pool
+            .focus(&id, &*sub_ctx.focuser)
+            .map_err(AppError::from)?;
     }
     Ok(())
 }

@@ -28,6 +28,7 @@ import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
 import { SidebarSubTab } from './SidebarSubTab';
 import { SidebarTab } from './SidebarTab';
+import { SubCloseConfirmDialog } from './SubCloseConfirmDialog';
 import { TabContextMenu } from './TabContextMenu';
 import { WorkspaceIndicator } from './WorkspaceIndicator';
 import { useActiveSessionId, useSessionActions, useSessions } from '@/store/session-store';
@@ -290,6 +291,7 @@ export function Sidebar(): JSX.Element {
         <FitDebugButton />
       </div>
       <CloseConfirmDialog />
+      <SubCloseConfirmDialog />
       {contextMenu && (
         <TabContextMenu
           parentSessionId={contextMenu.sessionId}

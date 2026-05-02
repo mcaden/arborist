@@ -2,16 +2,26 @@
 // single sub-session (terminal or application). Sub-tabs are deliberately
 // simpler than parent tabs: no drag-reorder, no metrics line, and a single
 // status dot. Click forwards to:
-//   * `subSessionStore.relaunch` when the row is greyed (status `exited`
-//     or `error`) — the same gesture for both kinds, since a sub-session
-//     that exited outside the user's control should re-spawn under the
-//     same id rather than focus a dead process or get stranded as a tab
-//     the user can only close;
+//   * `subSessionStore.relaunch` when an *application* sub-tab is greyed
+//     (status `exited` or `error`) — the user clicked a launcher chrome
+//     for a process that died and should re-spawn under the same id;
+//   * `subSessionStore.focus` (which navigates the sub-tab pane into
+//     view) when a *terminal* sub-tab is greyed — the user gets to see
+//     the relaunch / close pane rendered by `SubTerminalView` instead
+//     of an automatic reset of their scrollback;
 //   * otherwise `subSessionStore.focus`, which:
 //     * for terminal sub-sessions, swaps the MainArea viewport to this
 //       sub and brings the parent into view;
 //     * for application sub-sessions, raises the OS window without
 //       touching the viewport (the parent terminal stays visible).
+//
+// Close (×) handler:
+//   * Terminal kind — immediate close (the tab IS the process).
+//   * Application kind, currently running — opens
+//     `SubCloseConfirmDialog` so the user can decide whether to keep
+//     the underlying window open.
+//   * Application kind, already exited — immediate close (no window
+//     to address).
 //
 // Accessibility: the row is a plain `<button>` (implicit `role="button"`),
 // not `role="tab"`. Sub-tabs live inside the parent's `<ul role="group">`
@@ -58,19 +68,15 @@ export function SidebarSubTab({
   // never get the viewport, so they're never visually selected by the
   // viewport-swap rule (we just dim the row).
   const isViewportOwner = sub.kind === 'terminal' && activeSubId === subSessionId && parentIsActive;
+  const isExited = sub.status === 'exited' || sub.status === 'error';
 
   const handleClick = (): void => {
-    // When a sub-session has exited outside the user's control (the
-    // process died, the launcher exited and the resolver gave up,
-    // etc.) the row goes grey but stays put. Clicking it re-spawns
-    // under the same id — for both kinds — so the user gets a
-    // consistent "click greyed tab → restart" gesture without having
-    // to close + recreate the tab. Per-id dedupe in the store action
-    // prevents double-clicks from spawning two processes.
-    //
-    // Status flows back via `subsession://status`; the row visually
-    // transitions starting → running.
-    if (sub.status === 'exited' || sub.status === 'error') {
+    if (isExited && sub.kind === 'application') {
+      // Application launcher whose process exited (or whose resolver
+      // gave up): re-spawn under the same id. Per-id dedupe in the
+      // store action prevents a double-click from spawning twice.
+      // Status flows back via `subsession://status`; the row visually
+      // transitions starting → running.
       void subActions.relaunch(subSessionId);
       return;
     }
@@ -87,6 +93,14 @@ export function SidebarSubTab({
 
   const handleClose = (e: React.MouseEvent): void => {
     e.stopPropagation();
+    if (sub.kind === 'application' && !isExited) {
+      // Running app sub-tab: ask the user whether they also want to
+      // close the underlying window (e.g. quit VS Code).
+      subActions.requestClose(subSessionId);
+      return;
+    }
+    // Terminal kind, or already-exited app kind: there's no window to
+    // address, so close immediately with the default tabOnly intent.
     void subActions.close(subSessionId);
   };
 
@@ -110,7 +124,7 @@ export function SidebarSubTab({
         type="button"
         aria-label={`Close sub-session ${sub.label}`}
         onClick={handleClose}
-        className="absolute right-3 top-1 rounded p-0.5 text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+        className="absolute right-2 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-xs leading-none text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
         <span aria-hidden="true">×</span>
       </button>

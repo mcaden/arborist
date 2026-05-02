@@ -797,6 +797,43 @@ pub struct SubSessionIdArg {
     pub id: SubSessionId,
 }
 
+/// What the user wants to happen to the underlying app when their
+/// sub-tab is closed. Terminal sub-tabs ignore the variant — there's
+/// no GUI window to address — and always behave as `TabOnly` (the
+/// PTY child gets killed because the tab IS the process).
+///
+/// The variants exist so app sub-tabs (VS Code, etc.) can offer the
+/// user the choice between detaching the tab while leaving the
+/// editor open, asking the editor to close itself, or force-killing
+/// the underlying process (escape hatch when the editor refuses).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SubSessionCloseIntent {
+    /// Detach the sub-tab from Arborist; leave any external app
+    /// window running. Default — preserves prior behaviour.
+    #[default]
+    TabOnly,
+    /// Detach AND ask the OS to politely close the matched app
+    /// window (Windows: `WM_CLOSE` to the resolver-matched HWND).
+    /// Best-effort: the app may show a save-changes prompt and
+    /// stay open; Arborist's tab is removed regardless.
+    RequestAppClose,
+    /// Detach AND force-kill the underlying process (`TerminateProcess`
+    /// on Windows; `kill -9` on Unix). Use only when `RequestAppClose`
+    /// has been refused or isn't available.
+    ForceKill,
+}
+
+/// Arguments for `subsession_close`. `intent` defaults to
+/// [`SubSessionCloseIntent::TabOnly`] when the field is absent.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionCloseArgs {
+    pub id: SubSessionId,
+    #[serde(default)]
+    pub intent: SubSessionCloseIntent,
+}
+
 /// Arguments for `subsession_list`. When `parent_session_id` is `None`
 /// the result is the full set across every parent; when `Some(id)` the
 /// result is filtered to that parent and ordered as the sub-sessions

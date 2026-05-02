@@ -608,6 +608,17 @@ export interface UseTerminalApi {
    */
   refit: () => void;
   /**
+   * Clear the visible viewport AND scrollback. Lighter than
+   * `term.reset()` (which also resets parsing state and rebuilds the
+   * renderer); we only want to wipe what the user sees so the next
+   * session starts clean. No-op when there's no entry yet.
+   *
+   * Used by `SubTerminalView` on the exited→starting transition so a
+   * relaunched terminal doesn't begin atop the previous run's final
+   * frame.
+   */
+  clear: () => void;
+  /**
    * Current xterm `cols`/`rows` for this session, or `null` if the
    * terminal has no entry yet (created lazily on first `attach`/render).
    * Used by callers that need to drive a backend respawn at the right
@@ -656,6 +667,16 @@ function useTerminalInternal(id: string, ioKind: IoKind): UseTerminalApi {
     refitEntry(currentId, entry);
   }, []);
 
+  const clear = useCallback(() => {
+    const entry = registry.get(idRef.current);
+    if (!entry) return;
+    // xterm's `clear()` wipes viewport + scrollback but preserves
+    // renderer/state — exactly what we want for a sub-session
+    // relaunch (heavier `reset()` would re-init the renderer and
+    // briefly flash).
+    entry.term.clear();
+  }, []);
+
   const getDimensions = useCallback(() => getTerminalDimensions(idRef.current), []);
 
   // Eagerly create the terminal so `session://output` events are buffered
@@ -665,8 +686,8 @@ function useTerminalInternal(id: string, ioKind: IoKind): UseTerminalApi {
   }, [id, ioKind]);
 
   return useMemo(
-    () => ({ attach, detach, focus, refit, getDimensions }),
-    [attach, detach, focus, refit, getDimensions],
+    () => ({ attach, detach, focus, refit, clear, getDimensions }),
+    [attach, detach, focus, refit, clear, getDimensions],
   );
 }
 

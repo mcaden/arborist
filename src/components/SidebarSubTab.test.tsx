@@ -15,7 +15,17 @@ import { SidebarSubTab } from './SidebarSubTab';
 const PARENT: SessionId = '00000000-0000-0000-0000-000000000a01' as SessionId;
 const PARENT_OTHER: SessionId = '00000000-0000-0000-0000-000000000b01' as SessionId;
 
-function makeSub(overrides: Partial<SubSession> & Pick<SubSession, 'id'>): SubSession {
+// Override type permits `pid: undefined` explicitly even though
+// `SubSession.pid?: number` rejects it under
+// `exactOptionalPropertyTypes: true`. Tests need to construct
+// already-exited rows where pid is gone, so we widen here and the
+// `as SubSession` cast in the helper drops the `| undefined` away.
+type SubOverrides = Partial<Omit<SubSession, 'id' | 'pid'>> &
+  Pick<SubSession, 'id'> & {
+    pid?: number | undefined;
+  };
+
+function makeSub(overrides: SubOverrides): SubSession {
   return {
     parentSessionId: PARENT,
     defId: 'shell',
@@ -38,6 +48,7 @@ beforeEach(() => {
     subSessions: [],
     activeByParent: {},
     statusMessages: {},
+    pendingClose: undefined,
     isHydrated: true,
   });
   useSessionStore.setState({
@@ -92,14 +103,46 @@ describe('SidebarSubTab', () => {
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
 
-  it('close button invokes subSessionClose and stops propagation', () => {
+  it('close button on a terminal sub-tab invokes subSessionClose with default intent and stops propagation', () => {
     const sub = makeSub({ id: id('04') });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
     fireEvent.click(screen.getByLabelText(/close sub-session/i));
-    expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id);
+    // Terminal kind closes immediately (the tab IS the process); intent
+    // is left undefined so the backend defaults to `tabOnly`.
+    expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
     // The parent tab's click handler must not run for the close button.
     expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+  });
+
+  it('close button on a running application sub-tab opens the close-confirm dialog (no immediate close)', () => {
+    const sub = makeSub({
+      id: id('04b'),
+      kind: 'application',
+      status: 'running',
+      pid: 42,
+    });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    fireEvent.click(screen.getByLabelText(/close sub-session/i));
+    // Running app tab must NOT call the backend close — the dialog
+    // mediates the user's choice.
+    expect(bridgeMock.subSessionClose).not.toHaveBeenCalled();
+    expect(useSubSessionStore.getState().pendingClose).toBe(sub.id);
+  });
+
+  it('close button on an already-exited application sub-tab closes immediately (no dialog)', () => {
+    const sub = makeSub({
+      id: id('04c'),
+      kind: 'application',
+      status: 'exited',
+      pid: undefined,
+    });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
+    fireEvent.click(screen.getByLabelText(/close sub-session/i));
+    expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
+    expect(useSubSessionStore.getState().pendingClose).toBeUndefined();
   });
 
   it('uses role=button (not role=tab) so it stays out of the sidebar tablist roving-tabindex model', () => {
@@ -168,27 +211,27 @@ describe('SidebarSubTab', () => {
     expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
   });
 
-  it('clicking a greyed exited terminal sub-tab triggers relaunch', () => {
-    // Mirrors the application-kind behaviour: when a terminal sub-session's
-    // PTY child exits outside the user's control (process died), the row
-    // stays put with a grey dot and clicking it re-spawns under the same
-    // id rather than focusing a dead session.
+  it('clicking a greyed exited terminal sub-tab focuses (does NOT relaunch — relaunch lives in the in-pane overlay)', () => {
+    // When a terminal sub-session's PTY child exits outside the user's
+    // control (process died, `exit` typed in shell, etc.) the row stays
+    // put with a grey dot. Clicking it brings the (still-mounted) pane
+    // back into view; SubTerminalView then renders the relaunch / close
+    // overlay so the user can decide. Sidebar click does NOT spawn a
+    // new process — the user explicitly opted out of automatic restart.
     const sub = makeSub({ id: id('0a'), kind: 'terminal', status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
-    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
-    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
-    expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+    expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
+    expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
 
-  it('clicking a greyed errored terminal sub-tab triggers relaunch', () => {
+  it('clicking a greyed errored terminal sub-tab focuses (does NOT relaunch)', () => {
     const sub = makeSub({ id: id('0b'), kind: 'terminal', status: 'error', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
-    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
-    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
-    expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+    expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
+    expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
 });

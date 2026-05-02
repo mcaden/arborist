@@ -41,7 +41,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::app_launcher::{AppKiller, LivenessProbe, OwnerResolver, PidKiller, RetargetedOwner};
+use crate::app_launcher::{
+    AppKiller, LivenessProbe, OwnerResolver, PidKiller, RetargetedOwner, WindowFinder, WindowTarget,
+};
 use crate::cmd_resolver::ShellTokens;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -116,17 +118,19 @@ impl VsCodeOwnerResolver {
         Self { worktree_path }
     }
 
-    /// Per-platform PID lookup. Returns `Some(pid)` if a matching
-    /// window is found at the moment of the call, `None` otherwise.
-    fn find_now(&self) -> Option<u32> {
+    /// Per-platform PID + HWND lookup. Returns `Some((pid, hwnd))`
+    /// if a matching window is found at the moment of the call,
+    /// `None` otherwise. `hwnd` is the platform window handle cast to
+    /// `usize` (a real Win32 HWND on Windows).
+    fn find_now(&self) -> Option<(u32, usize)> {
         let basename = self.basename()?;
-        platform::find_vscode_pid(&basename)
+        platform::find_vscode_window(&basename)
     }
 
     /// Basename of the worktree path. Used both for window matching
     /// during resolve and for the liveness probe so it can detect
     /// "workspace window closed" without requiring `Code.exe` itself
-    /// to die. Returned in its original case; `find_vscode_pid`
+    /// to die. Returned in its original case; `find_vscode_window`
     /// lowercases internally and matches case-insensitively against
     /// the window title.
     fn basename(&self) -> Option<String> {
@@ -142,14 +146,22 @@ impl OwnerResolver for VsCodeOwnerResolver {
         let basename = self.basename()?;
         let deadline = Instant::now() + POLL_DEADLINE;
         loop {
-            if let Some(pid) = self.find_now() {
+            if let Some((pid, hwnd)) = self.find_now() {
                 let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
                 let liveness: Box<dyn LivenessProbe> =
                     platform::liveness_probe(pid, basename.clone());
+                let window_target = Some(WindowTarget {
+                    pid,
+                    hwnd,
+                    refinder: Some(Arc::new(VsCodeWindowFinder {
+                        basename: basename.clone(),
+                    })),
+                });
                 return Some(RetargetedOwner {
                     pid,
                     killer,
                     liveness,
+                    window_target,
                 });
             }
             if Instant::now() >= deadline {
@@ -157,6 +169,22 @@ impl OwnerResolver for VsCodeOwnerResolver {
             }
             std::thread::sleep(POLL_INTERVAL);
         }
+    }
+}
+
+/// [`WindowFinder`] that re-runs the VS Code title heuristic, used as
+/// the stale-handle escape hatch for [`crate::app_launcher::AppPool::focus`]
+/// and [`crate::app_launcher::AppPool::request_window_close`].
+///
+/// On non-Windows platforms `find_window` returns `None` (the
+/// platform module's `find_vscode_window` is a stub).
+pub struct VsCodeWindowFinder {
+    basename: String,
+}
+
+impl WindowFinder for VsCodeWindowFinder {
+    fn find_window(&self) -> Option<usize> {
+        platform::find_vscode_window(&self.basename).map(|(_pid, hwnd)| hwnd)
     }
 }
 
@@ -204,12 +232,16 @@ mod platform {
     struct EnumState {
         // Lowercased basename to match against (case-insensitive).
         needle: String,
-        // First matching PID, if any.
-        found: Option<u32>,
+        // First matching (pid, hwnd), if any. Stored as `usize`
+        // because HWND is `*mut c_void` which isn't `Send`; storing
+        // the raw integer avoids the need for unsafe `Send` impls and
+        // matches the wire format used elsewhere
+        // (e.g. `crate::app_launcher::WindowTarget::hwnd`).
+        found: Option<(u32, usize)>,
     }
 
     extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        // SAFETY: lparam is a `&mut EnumState` we set in `find_vscode_pid`.
+        // SAFETY: lparam is a `&mut EnumState` we set in `find_vscode_window`.
         let state = unsafe { &mut *(lparam as *mut EnumState) };
         // SAFETY: hwnd comes from EnumWindows and is valid.
         let visible = unsafe { IsWindowVisible(hwnd) } != 0;
@@ -240,13 +272,15 @@ mod platform {
         // SAFETY: pid is a valid &mut DWORD; hwnd is valid.
         unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
         if pid != 0 {
-            state.found = Some(pid);
+            state.found = Some((pid, hwnd as usize));
             return 0; // stop enumeration
         }
         1
     }
 
-    pub(super) fn find_vscode_pid(basename: &str) -> Option<u32> {
+    /// Returns `(pid, hwnd_as_usize)` for the first visible top-level
+    /// window whose title matches the VS Code workspace pattern.
+    pub(super) fn find_vscode_window(basename: &str) -> Option<(u32, usize)> {
         let mut state = EnumState {
             needle: basename.to_lowercase(),
             found: None,
@@ -320,7 +354,7 @@ mod platform {
                 // (2) Window-based check. If the workspace window
                 // is no longer enumerable for `WINDOW_GONE_THRESHOLD`
                 // consecutive polls, the workspace was closed.
-                if find_vscode_pid(&self.basename).is_none() {
+                if find_vscode_window(&self.basename).is_none() {
                     window_gone_polls = window_gone_polls.saturating_add(1);
                     if window_gone_polls >= WINDOW_GONE_THRESHOLD {
                         return;
@@ -343,21 +377,21 @@ mod platform {
 mod platform {
     use crate::app_launcher::LivenessProbe;
 
-    pub(super) fn find_vscode_pid(_basename: &str) -> Option<u32> {
+    pub(super) fn find_vscode_window(_basename: &str) -> Option<(u32, usize)> {
         None
     }
 
     pub(super) fn liveness_probe(_pid: u32, _basename: String) -> Box<dyn LivenessProbe> {
-        // Should never be called on non-Windows because find_vscode_pid
+        // Should never be called on non-Windows because find_vscode_window
         // returns None, but provide a dummy in case the resolver is
         // wired up for tests / future extension.
         struct Never;
         impl LivenessProbe for Never {
             fn wait_for_death(self: Box<Self>) {
                 // Park indefinitely. In practice the resolver thread
-                // won't construct us — find_vscode_pid returns None on
-                // these platforms — but if someone does call this, we
-                // park rather than busy-loop or panic.
+                // won't construct us — find_vscode_window returns None
+                // on these platforms — but if someone does call this,
+                // we park rather than busy-loop or panic.
                 loop {
                     std::thread::park();
                 }
@@ -400,14 +434,22 @@ mod tests {
             let basename = self.inner.basename()?;
             let stop_at = Instant::now() + self.deadline;
             loop {
-                if let Some(pid) = self.inner.find_now() {
+                if let Some((pid, hwnd)) = self.inner.find_now() {
                     let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
                     let liveness: Box<dyn LivenessProbe> =
                         platform::liveness_probe(pid, basename.clone());
+                    let window_target = Some(WindowTarget {
+                        pid,
+                        hwnd,
+                        refinder: Some(Arc::new(VsCodeWindowFinder {
+                            basename: basename.clone(),
+                        })),
+                    });
                     return Some(RetargetedOwner {
                         pid,
                         killer,
                         liveness,
+                        window_target,
                     });
                 }
                 if Instant::now() >= stop_at {

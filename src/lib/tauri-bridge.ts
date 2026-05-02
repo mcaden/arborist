@@ -32,6 +32,8 @@ import type {
   SessionMetricsEvent,
   SessionView,
   SubSession,
+  SubSessionCloseArgs,
+  SubSessionCloseIntent,
   SubSessionCreateArgs,
   SubSessionExitedEvent,
   SubSessionId,
@@ -332,8 +334,9 @@ export function subSessionCreate(args: SubSessionCreateArgs): Promise<SubSession
   return invoke<SubSession>('subsession_create', { args });
 }
 
-export function subSessionClose(id: SubSessionId): Promise<void> {
-  return invoke<void>('subsession_close', { args: { id } });
+export function subSessionClose(id: SubSessionId, intent?: SubSessionCloseIntent): Promise<void> {
+  const args: SubSessionCloseArgs = intent === undefined ? { id } : { id, intent };
+  return invoke<void>('subsession_close', { args });
 }
 
 export function subSessionFocus(id: SubSessionId): Promise<void> {

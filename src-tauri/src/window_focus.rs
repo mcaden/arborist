@@ -49,6 +49,38 @@ pub trait WindowFocuser: Send + Sync + 'static {
     /// * `Err(Error::Unsupported(...))` if the platform fundamentally
     ///   does not support programmatic focus (Wayland in most setups).
     fn focus_pid(&self, pid: u32) -> Result<(), Error>;
+
+    /// Best-effort focus on a specific OS window handle (HWND on
+    /// Windows, cast to `usize`). Used when the caller has already
+    /// identified the exact window the user expects (e.g. one
+    /// specific VS Code workspace), to avoid the ambiguity of "first
+    /// visible window owned by this PID".
+    ///
+    /// Default impl returns [`Error::Unsupported`] so platforms that
+    /// don't expose a stable handle concept (or `WindowFocuser`
+    /// implementations that don't care) can opt out.
+    ///
+    /// Returns [`Error::NotFound`] when the handle is no longer valid
+    /// (window destroyed); the caller is expected to fall back to a
+    /// re-find or to [`focus_pid`] on the same runtime.
+    fn focus_hwnd(&self, _hwnd: usize) -> Result<(), Error> {
+        Err(Error::Unsupported(
+            "focus_hwnd not implemented for this platform".into(),
+        ))
+    }
+
+    /// Asks the OS to politely close a specific window (Windows:
+    /// `PostMessageW(hwnd, WM_CLOSE, 0, 0)`). The target app may
+    /// prompt the user (e.g. unsaved changes) before actually closing
+    /// — that's intentional. Returns immediately; whether the window
+    /// actually goes away is up to the app.
+    ///
+    /// Default impl returns [`Error::Unsupported`].
+    fn post_close_message(&self, _hwnd: usize) -> Result<(), Error> {
+        Err(Error::Unsupported(
+            "post_close_message not implemented for this platform".into(),
+        ))
+    }
 }
 
 /// Recording fake for tests. Captures the sequence of `focus_pid`
@@ -61,6 +93,10 @@ pub struct RecordingFocuser {
 struct RecordingState {
     calls: Vec<u32>,
     next_results: std::collections::VecDeque<Result<(), Error>>,
+    hwnd_calls: Vec<usize>,
+    next_hwnd_results: std::collections::VecDeque<Result<(), Error>>,
+    close_calls: Vec<usize>,
+    next_close_results: std::collections::VecDeque<Result<(), Error>>,
 }
 
 impl RecordingFocuser {
@@ -70,6 +106,10 @@ impl RecordingFocuser {
             inner: Mutex::new(RecordingState {
                 calls: Vec::new(),
                 next_results: std::collections::VecDeque::new(),
+                hwnd_calls: Vec::new(),
+                next_hwnd_results: std::collections::VecDeque::new(),
+                close_calls: Vec::new(),
+                next_close_results: std::collections::VecDeque::new(),
             }),
         }
     }
@@ -77,8 +117,30 @@ impl RecordingFocuser {
     pub fn queue(&self, result: Result<(), Error>) {
         self.inner.lock().unwrap().next_results.push_back(result);
     }
+    /// Queue a result for the next `focus_hwnd` call.
+    pub fn queue_hwnd(&self, result: Result<(), Error>) {
+        self.inner
+            .lock()
+            .unwrap()
+            .next_hwnd_results
+            .push_back(result);
+    }
+    /// Queue a result for the next `post_close_message` call.
+    pub fn queue_close(&self, result: Result<(), Error>) {
+        self.inner
+            .lock()
+            .unwrap()
+            .next_close_results
+            .push_back(result);
+    }
     pub fn calls(&self) -> Vec<u32> {
         self.inner.lock().unwrap().calls.clone()
+    }
+    pub fn hwnd_calls(&self) -> Vec<usize> {
+        self.inner.lock().unwrap().hwnd_calls.clone()
+    }
+    pub fn close_calls(&self) -> Vec<usize> {
+        self.inner.lock().unwrap().close_calls.clone()
     }
 }
 
@@ -93,6 +155,16 @@ impl WindowFocuser for RecordingFocuser {
         let mut g = self.inner.lock().unwrap();
         g.calls.push(pid);
         g.next_results.pop_front().unwrap_or(Ok(()))
+    }
+    fn focus_hwnd(&self, hwnd: usize) -> Result<(), Error> {
+        let mut g = self.inner.lock().unwrap();
+        g.hwnd_calls.push(hwnd);
+        g.next_hwnd_results.pop_front().unwrap_or(Ok(()))
+    }
+    fn post_close_message(&self, hwnd: usize) -> Result<(), Error> {
+        let mut g = self.inner.lock().unwrap();
+        g.close_calls.push(hwnd);
+        g.next_close_results.pop_front().unwrap_or(Ok(()))
     }
 }
 
@@ -121,18 +193,25 @@ mod platform {
     type BOOL = i32;
     #[allow(clippy::upper_case_acronyms)]
     type LPARAM = isize;
+    #[allow(clippy::upper_case_acronyms)]
+    type WPARAM = usize;
+    #[allow(clippy::upper_case_acronyms)]
+    type UINT = u32;
 
     #[link(name = "user32")]
     extern "system" {
         fn EnumWindows(cb: extern "system" fn(HWND, LPARAM) -> BOOL, lparam: LPARAM) -> BOOL;
         fn GetWindowThreadProcessId(hwnd: HWND, pid_out: *mut DWORD) -> DWORD;
         fn IsWindowVisible(hwnd: HWND) -> BOOL;
+        fn IsWindow(hwnd: HWND) -> BOOL;
         fn SetForegroundWindow(hwnd: HWND) -> BOOL;
         fn AllowSetForegroundWindow(pid: DWORD) -> BOOL;
         fn ShowWindow(hwnd: HWND, cmd: i32) -> BOOL;
+        fn PostMessageW(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> BOOL;
     }
 
     const SW_RESTORE: i32 = 9;
+    const WM_CLOSE: UINT = 0x0010;
 
     struct EnumState {
         target_pid: DWORD,
@@ -164,17 +243,67 @@ mod platform {
         if state.found.is_null() {
             return Err(Error::NotFound(format!("no visible window for pid {pid}")));
         }
+        focus_hwnd_raw(state.found, Some(pid))
+    }
+
+    /// Brings a specific HWND to the foreground without re-running
+    /// `EnumWindows`. `pid` is optional; when present we feed it to
+    /// `AllowSetForegroundWindow` to lift Windows' focus-stealing block.
+    fn focus_hwnd_raw(hwnd: HWND, pid: Option<u32>) -> Result<(), Error> {
+        // SAFETY: hwnd is non-null at this point.
         unsafe {
-            // Best-effort: lift Windows' focus-stealing block.
-            AllowSetForegroundWindow(pid);
-            // Restore (in case minimised) before raising.
-            ShowWindow(state.found, SW_RESTORE);
-            if SetForegroundWindow(state.found) == 0 {
-                // SetForegroundWindow returns 0 on failure but leaves
-                // GetLastError unset reliably, so there's nothing
-                // useful to report. Treat as best-effort success — the
-                // common cause is the focus-stealing rule which we
-                // can't override.
+            if IsWindow(hwnd) == 0 {
+                return Err(Error::NotFound("window handle is no longer valid".into()));
+            }
+            if let Some(p) = pid {
+                AllowSetForegroundWindow(p);
+            }
+            ShowWindow(hwnd, SW_RESTORE);
+            // SetForegroundWindow returns 0 on failure but doesn't set
+            // GetLastError reliably, so there's nothing useful to
+            // surface. Treat as best-effort success — the common cause
+            // is the focus-stealing rule which we can't override.
+            SetForegroundWindow(hwnd);
+        }
+        Ok(())
+    }
+
+    pub(super) fn focus_hwnd(hwnd: usize) -> Result<(), Error> {
+        if hwnd == 0 {
+            return Err(Error::NotFound("null window handle".into()));
+        }
+        // Look up the owning PID so we can allow-set-foreground on the
+        // right process. If the lookup fails the handle is stale.
+        let h = hwnd as HWND;
+        let pid = unsafe {
+            if IsWindow(h) == 0 {
+                return Err(Error::NotFound("window handle is no longer valid".into()));
+            }
+            let mut p: DWORD = 0;
+            GetWindowThreadProcessId(h, &mut p);
+            if p == 0 {
+                None
+            } else {
+                Some(p)
+            }
+        };
+        focus_hwnd_raw(h, pid)
+    }
+
+    pub(super) fn post_close_message(hwnd: usize) -> Result<(), Error> {
+        if hwnd == 0 {
+            return Err(Error::NotFound("null window handle".into()));
+        }
+        let h = hwnd as HWND;
+        // SAFETY: PostMessageW is safe to call against any HWND value;
+        // it returns 0 (false) without side-effects when the handle
+        // isn't a real window.
+        unsafe {
+            if IsWindow(h) == 0 {
+                return Err(Error::NotFound("window handle is no longer valid".into()));
+            }
+            if PostMessageW(h, WM_CLOSE, 0, 0) == 0 {
+                return Err(Error::Internal("PostMessageW(WM_CLOSE) returned 0".into()));
             }
         }
         Ok(())
@@ -286,6 +415,16 @@ impl WindowFocuser for RealFocuser {
     fn focus_pid(&self, pid: u32) -> Result<(), Error> {
         platform::focus_pid(pid)
     }
+
+    #[cfg(target_os = "windows")]
+    fn focus_hwnd(&self, hwnd: usize) -> Result<(), Error> {
+        platform::focus_hwnd(hwnd)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn post_close_message(&self, hwnd: usize) -> Result<(), Error> {
+        platform::post_close_message(hwnd)
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +440,34 @@ mod tests {
         assert!(matches!(f.focus_pid(202), Err(Error::NotFound(_))));
         assert!(f.focus_pid(303).is_ok()); // default Ok when queue empty
         assert_eq!(f.calls(), vec![101, 202, 303]);
+    }
+
+    #[test]
+    fn recording_focuser_records_hwnd_and_close_calls() {
+        let f = RecordingFocuser::new();
+        f.queue_hwnd(Err(Error::NotFound("stale".into())));
+        f.queue_close(Ok(()));
+        assert!(matches!(f.focus_hwnd(0xABCD), Err(Error::NotFound(_))));
+        assert!(f.focus_hwnd(0x1234).is_ok());
+        assert!(f.post_close_message(0xCAFE).is_ok());
+        assert_eq!(f.hwnd_calls(), vec![0xABCD, 0x1234]);
+        assert_eq!(f.close_calls(), vec![0xCAFE]);
+    }
+
+    #[test]
+    fn focus_hwnd_default_is_unsupported() {
+        struct OnlyPid;
+        impl WindowFocuser for OnlyPid {
+            fn focus_pid(&self, _pid: u32) -> Result<(), Error> {
+                Ok(())
+            }
+        }
+        let f = OnlyPid;
+        assert!(matches!(f.focus_hwnd(0x1234), Err(Error::Unsupported(_))));
+        assert!(matches!(
+            f.post_close_message(0x1234),
+            Err(Error::Unsupported(_))
+        ));
     }
 
     #[test]
@@ -323,5 +490,25 @@ mod tests {
             | Err(Error::Internal(_)) => {}
             Err(other) => panic!("unexpected error variant: {other:?}"),
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn real_focuser_focus_hwnd_rejects_null_and_invalid_handles() {
+        let f = RealFocuser;
+        assert!(matches!(f.focus_hwnd(0), Err(Error::NotFound(_))));
+        // 0xDEADBEEF is virtually certain not to be a real HWND.
+        assert!(matches!(f.focus_hwnd(0xDEAD_BEEF), Err(Error::NotFound(_))));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn real_focuser_post_close_rejects_null_and_invalid_handles() {
+        let f = RealFocuser;
+        assert!(matches!(f.post_close_message(0), Err(Error::NotFound(_))));
+        assert!(matches!(
+            f.post_close_message(0xDEAD_BEEF),
+            Err(Error::NotFound(_))
+        ));
     }
 }

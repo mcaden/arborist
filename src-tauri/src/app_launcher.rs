@@ -204,10 +204,63 @@ pub trait OwnerResolver: Send + Sync + 'static {
 /// hands the probe to a dedicated thread that emits `Exited` once
 /// `wait_for_death` returns, and falsely reporting death would emit a
 /// spurious tab-exit event.
+///
+/// `window_target` is `Some` when the resolver also identified a
+/// specific OS window (HWND on Windows) belonging to the rediscovered
+/// owner. [`AppPool::focus`] and [`AppPool::request_window_close`]
+/// prefer that exact window over a generic "first window for this
+/// PID" lookup, which is critical for multi-window apps like VS Code
+/// where every workspace window is owned by the same process.
 pub struct RetargetedOwner {
     pub pid: u32,
     pub killer: Arc<dyn AppKiller>,
     pub liveness: Box<dyn LivenessProbe>,
+    pub window_target: Option<WindowTarget>,
+}
+
+/// Pointer to the specific OS window the resolver matched, with a
+/// re-find escape hatch so a stale handle (window recreated mid-flight,
+/// e.g. VS Code "Reload Window") doesn't permanently break focus/close.
+///
+/// The `hwnd` field is a platform window handle cast to `usize`
+/// (HWND on Windows). It's plain data so it can be cloned freely.
+/// `refinder` is `Some` when the resolver knows how to recompute the
+/// handle from durable inputs (e.g. a workspace basename); callers
+/// fall back to it on the stale-handle path.
+pub struct WindowTarget {
+    pub pid: u32,
+    pub hwnd: usize,
+    pub refinder: Option<Arc<dyn WindowFinder>>,
+}
+
+impl WindowTarget {
+    /// Best-effort re-resolution of `hwnd` after a stale-handle error.
+    /// Mutates self so subsequent calls reuse the new handle.
+    pub fn refresh(&mut self) -> bool {
+        let Some(finder) = &self.refinder else {
+            return false;
+        };
+        match finder.find_window() {
+            Some(new) if new != 0 => {
+                self.hwnd = new;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Locates a window for an app whose process may have multiple
+/// concurrent windows (e.g. a multi-workspace VS Code instance).
+/// Implementations re-run their identifying heuristic on each call —
+/// HWNDs become invalid when the user closes the matching window, and
+/// in some flows (e.g. Reload Window) the same workspace gets a fresh
+/// HWND while the process keeps running.
+pub trait WindowFinder: Send + Sync + 'static {
+    /// Returns the platform window handle (HWND on Windows) for the
+    /// owner this finder was constructed for, or `None` if no
+    /// matching window is currently visible.
+    fn find_window(&self) -> Option<usize>;
 }
 
 /// Blocking wait for a re-targeted PID to die. Implementors are free
@@ -483,6 +536,12 @@ struct AppRuntime {
     /// pool drop joins the liveness thread (which blocks until the
     /// rediscovered PID dies).
     _liveness_thread: Option<JoinHandle<()>>,
+    /// Optional pointer to the specific OS window the resolver
+    /// matched. Used by [`AppPool::focus`] and
+    /// [`AppPool::request_window_close`] to act on the precise window
+    /// the user expects, not "the first visible window owned by this
+    /// PID" (which picks the wrong workspace for VS Code).
+    window_target: Option<WindowTarget>,
 }
 
 impl AppPool {
@@ -557,6 +616,7 @@ impl AppPool {
                     _wait_thread: None,
                     _resolver_thread: None,
                     _liveness_thread: None,
+                    window_target: None,
                 },
             );
         }
@@ -702,6 +762,142 @@ impl AppPool {
             rt.killed.store(true, Ordering::SeqCst);
         }
     }
+
+    /// Best-effort focus on the runtime's window. Tries the stored
+    /// HWND first (so VS Code workspaces don't get confused for one
+    /// another), refreshes via the resolver's [`WindowFinder`] if the
+    /// stored handle is stale, then falls back to `fallback.focus_pid`
+    /// for the runtime PID. Returns the underlying error if every
+    /// strategy fails.
+    ///
+    /// Returns `Err(Error::NotFound)` when no runtime is registered
+    /// for `id` (the caller should treat this as a no-op — the
+    /// sub-tab is already gone).
+    pub fn focus(
+        &self,
+        id: &SubSessionId,
+        fallback: &dyn crate::window_focus::WindowFocuser,
+    ) -> Result<(), Error> {
+        // Snapshot pid + window_target under the lock and drop the
+        // guard before any focus syscall — focus_hwnd / focus_pid can
+        // call into Win32, which we never want to do while holding
+        // the pool mutex.
+        let snapshot = {
+            let g = self
+                .inner
+                .lock()
+                .map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            let Some(rt) = g.get(id) else {
+                return Err(Error::NotFound(format!("no runtime for sub-session {id}")));
+            };
+            (
+                rt.pid,
+                rt.window_target
+                    .as_ref()
+                    .map(|wt| (wt.hwnd, wt.refinder.clone())),
+            )
+        };
+        let pid = snapshot.0;
+
+        if let Some((hwnd, refinder)) = snapshot.1 {
+            match fallback.focus_hwnd(hwnd) {
+                Ok(()) => return Ok(()),
+                Err(Error::NotFound(_)) => {
+                    // Stale handle. Try to re-find via the resolver's
+                    // WindowFinder (if any) and update the stored HWND
+                    // for next time.
+                    if let Some(finder) = refinder {
+                        if let Some(fresh) = finder.find_window().filter(|h| *h != 0) {
+                            let updated = self.update_window_handle(id, fresh);
+                            if updated {
+                                if let Ok(()) = fallback.focus_hwnd(fresh) {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                    // Fall through to PID-based fallback.
+                }
+                Err(Error::Unsupported(_)) => {
+                    // Platform doesn't support hwnd-based focus; fall
+                    // through to PID fallback silently.
+                }
+                Err(other) => return Err(other),
+            }
+        }
+
+        fallback.focus_pid(pid)
+    }
+
+    /// Best-effort: ask the OS to politely close the window the
+    /// resolver matched for `id`. The runtime is **not** removed from
+    /// the pool — callers that want to detach the sub-tab too must
+    /// also call [`detach`]. Idempotent across stale handles.
+    ///
+    /// Returns:
+    /// * `Ok(())` on a successful PostMessage (the app may still
+    ///   prompt the user before actually closing).
+    /// * `Err(Error::NotFound)` when no runtime is registered, or
+    ///   when no `window_target` is known and we can't act.
+    /// * `Err(Error::Unsupported)` when the platform doesn't
+    ///   support window-handle close (non-Windows today).
+    pub fn request_window_close(
+        &self,
+        id: &SubSessionId,
+        focuser: &dyn crate::window_focus::WindowFocuser,
+    ) -> Result<(), Error> {
+        let snapshot = {
+            let g = self
+                .inner
+                .lock()
+                .map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            let Some(rt) = g.get(id) else {
+                return Err(Error::NotFound(format!("no runtime for sub-session {id}")));
+            };
+            rt.window_target
+                .as_ref()
+                .map(|wt| (wt.hwnd, wt.refinder.clone()))
+        };
+        let Some((hwnd, refinder)) = snapshot else {
+            return Err(Error::NotFound(format!(
+                "no window target known for sub-session {id}"
+            )));
+        };
+        match focuser.post_close_message(hwnd) {
+            Ok(()) => Ok(()),
+            Err(Error::NotFound(_)) => {
+                if let Some(finder) = refinder {
+                    if let Some(fresh) = finder.find_window().filter(|h| *h != 0) {
+                        let _ = self.update_window_handle(id, fresh);
+                        return focuser.post_close_message(fresh);
+                    }
+                }
+                Err(Error::NotFound(format!(
+                    "window for sub-session {id} no longer exists"
+                )))
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Updates the stored HWND on the runtime under the pool lock.
+    /// Returns `false` if the runtime is no longer registered.
+    fn update_window_handle(&self, id: &SubSessionId, hwnd: usize) -> bool {
+        let Ok(mut g) = self.inner.lock() else {
+            return false;
+        };
+        match g.get_mut(id) {
+            Some(rt) => {
+                if let Some(wt) = rt.window_target.as_mut() {
+                    wt.hwnd = hwnd;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    }
 }
 
 fn app_wait_loop(
@@ -812,6 +1008,7 @@ fn resolver_loop(
         pid: new_pid,
         killer: new_killer,
         liveness,
+        window_target: new_window_target,
     } = bundle;
 
     // Spawn the liveness thread first so `wait_for_death` is consumed
@@ -835,6 +1032,7 @@ fn resolver_loop(
                 rt.pid = new_pid;
                 rt.killer = Arc::clone(&new_killer);
                 rt._liveness_thread = live_thread;
+                rt.window_target = new_window_target;
                 true
             } else {
                 false
@@ -1296,6 +1494,7 @@ mod tests {
             pid: new_pid,
             killer: Arc::clone(&new_killer),
             liveness: probe,
+            window_target: None,
         });
 
         // Pool's pid for the entry should flip to new_pid.
@@ -1384,6 +1583,7 @@ mod tests {
             pid: new_pid,
             killer: new_killer,
             liveness: probe,
+            window_target: None,
         });
         wait_until(
             || pool.pid(&id) == Some(new_pid),
@@ -1528,6 +1728,7 @@ mod tests {
             pid: new_pid,
             killer: new_killer,
             liveness: probe,
+            window_target: None,
         });
 
         // Pid should flip and a second Running event with new_pid
@@ -1721,6 +1922,7 @@ mod tests {
             pid: new_pid,
             killer: new_killer,
             liveness: probe,
+            window_target: None,
         });
         wait_until(
             || pool.pid(&id) == Some(new_pid),
@@ -1800,5 +2002,193 @@ mod tests {
             Err(other) => panic!("expected AppSpawnFailed, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
         }
+    }
+
+    /// Test [`WindowFinder`] backed by a queue of HWNDs.
+    struct QueuedFinder {
+        next: StdMutex<std::collections::VecDeque<Option<usize>>>,
+        calls: AtomicU64,
+    }
+
+    impl QueuedFinder {
+        fn new(values: impl IntoIterator<Item = Option<usize>>) -> Arc<Self> {
+            Arc::new(Self {
+                next: StdMutex::new(values.into_iter().collect()),
+                calls: AtomicU64::new(0),
+            })
+        }
+        fn call_count(&self) -> u64 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl WindowFinder for QueuedFinder {
+        fn find_window(&self) -> Option<usize> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.next.lock().unwrap().pop_front().flatten()
+        }
+    }
+
+    use std::sync::atomic::AtomicU64;
+
+    fn spawn_with_window_target(pool: &AppPool, target: WindowTarget) -> (SubSessionId, u32) {
+        let id = SubSessionId::default();
+        let (sink, _s, _e) = collect_sink();
+        let runtime_pid = pool
+            .spawn(id, "noop".into(), PathBuf::from("."), sink, None)
+            .expect("spawn");
+        // Inject the window target directly so the test doesn't need to
+        // drive a full resolver loop.
+        {
+            let mut g = pool.inner.lock().unwrap();
+            let rt = g.get_mut(&id).unwrap();
+            rt.window_target = Some(target);
+        }
+        (id, runtime_pid)
+    }
+
+    #[test]
+    fn focus_uses_stored_hwnd_when_present() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: 4242,
+            hwnd: 0xABCD,
+            refinder: None,
+        };
+        let (id, _pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_hwnd(Ok(()));
+        pool.focus(&id, &focuser).expect("focus");
+
+        assert_eq!(focuser.hwnd_calls(), vec![0xABCD]);
+        assert!(focuser.calls().is_empty(), "must not fall back to PID");
+    }
+
+    #[test]
+    fn focus_falls_back_to_refinder_then_pid_when_hwnd_stale() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+
+        // Refinder returns a fresh handle on first call.
+        let finder = QueuedFinder::new(vec![Some(0xCAFE)]);
+        let target = WindowTarget {
+            pid: 7777,
+            hwnd: 0xDEAD,
+            refinder: Some(finder.clone() as Arc<dyn WindowFinder>),
+        };
+        let (id, _pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_hwnd(Err(Error::NotFound("stale".into())));
+        focuser.queue_hwnd(Ok(())); // refreshed handle
+        pool.focus(&id, &focuser).expect("focus");
+
+        assert_eq!(focuser.hwnd_calls(), vec![0xDEAD, 0xCAFE]);
+        assert_eq!(finder.call_count(), 1);
+        assert!(focuser.calls().is_empty(), "PID fallback not needed");
+    }
+
+    #[test]
+    fn focus_falls_back_to_pid_when_no_window_target() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let id = SubSessionId::default();
+        let (sink, _s, _e) = collect_sink();
+        let pid = pool
+            .spawn(id, "noop".into(), PathBuf::from("."), sink, None)
+            .expect("spawn");
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        pool.focus(&id, &focuser).expect("focus");
+        assert_eq!(focuser.calls(), vec![pid]);
+        assert!(focuser.hwnd_calls().is_empty());
+    }
+
+    #[test]
+    fn focus_falls_back_to_pid_when_hwnd_stale_and_refinder_empty() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let finder = QueuedFinder::new(vec![None]);
+        let target = WindowTarget {
+            pid: 5151,
+            hwnd: 0xBEEF,
+            refinder: Some(finder as Arc<dyn WindowFinder>),
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_hwnd(Err(Error::NotFound("stale".into())));
+        pool.focus(&id, &focuser).expect("focus");
+        // Falls back to the runtime PID (NOT the WindowTarget.pid),
+        // matching production semantics: window_target tracks the
+        // resolver's identification of a specific window, but the
+        // PID-based fallback always targets whatever PID the runtime
+        // currently believes the owner is.
+        assert_eq!(focuser.calls(), vec![runtime_pid]);
+    }
+
+    #[test]
+    fn focus_returns_not_found_when_runtime_unknown() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        let res = pool.focus(&SubSessionId::default(), &focuser);
+        assert!(matches!(res, Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn request_window_close_posts_to_stored_hwnd() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: 1234,
+            hwnd: 0xFACE,
+            refinder: None,
+        };
+        let (id, _pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Ok(()));
+        pool.request_window_close(&id, &focuser).expect("close");
+        assert_eq!(focuser.close_calls(), vec![0xFACE]);
+
+        // Runtime is NOT removed by request_window_close.
+        assert!(pool.contains(&id));
+    }
+
+    #[test]
+    fn request_window_close_retries_via_refinder_on_stale_handle() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let finder = QueuedFinder::new(vec![Some(0x9999)]);
+        let target = WindowTarget {
+            pid: 1234,
+            hwnd: 0x1111,
+            refinder: Some(finder.clone() as Arc<dyn WindowFinder>),
+        };
+        let (id, _pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Err(Error::NotFound("stale".into())));
+        focuser.queue_close(Ok(()));
+        pool.request_window_close(&id, &focuser).expect("close");
+        assert_eq!(focuser.close_calls(), vec![0x1111, 0x9999]);
+    }
+
+    #[test]
+    fn request_window_close_returns_not_found_when_no_target() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let id = SubSessionId::default();
+        let (sink, _s, _e) = collect_sink();
+        let _ = pool
+            .spawn(id, "noop".into(), PathBuf::from("."), sink, None)
+            .expect("spawn");
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        let res = pool.request_window_close(&id, &focuser);
+        assert!(matches!(res, Err(Error::NotFound(_))));
+        assert!(focuser.close_calls().is_empty());
     }
 }

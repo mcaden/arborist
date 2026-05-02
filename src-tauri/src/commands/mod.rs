@@ -31,9 +31,9 @@ use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult,
     SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionOutputEvent,
     SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView,
-    SubSession, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
-    SubSessionResizeArgs, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs,
-    WorktreeCreateResult,
+    SubSession, SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs,
+    SubSessionListArgs, SubSessionResizeArgs, WorkspaceValidateArgs, WorkspaceValidateResult,
+    WorktreeCreateArgs, WorktreeCreateResult,
 };
 
 pub use session::AppContext;
@@ -427,11 +427,11 @@ pub async fn subsession_create(
 #[tauri::command]
 pub async fn subsession_close(
     app: tauri::AppHandle,
-    args: SubSessionIdArg,
+    args: SubSessionCloseArgs,
 ) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
-    subsession::subsession_close_impl(&ctx, sub_ctx, args.id).await
+    subsession::subsession_close_impl(&ctx, sub_ctx, args.id, args.intent).await
 }
 
 #[tauri::command]

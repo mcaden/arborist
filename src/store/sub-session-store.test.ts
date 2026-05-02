@@ -13,7 +13,15 @@ import { useSubSessionStore } from './sub-session-store';
 const PARENT_A: SessionId = '00000000-0000-0000-0000-000000000a01' as SessionId;
 const PARENT_B: SessionId = '00000000-0000-0000-0000-000000000b01' as SessionId;
 
-function makeSub(overrides: Partial<SubSession> & Pick<SubSession, 'id'>): SubSession {
+// Override type permits `pid: undefined` explicitly even though
+// `SubSession.pid?: number` rejects it under
+// `exactOptionalPropertyTypes: true`.
+type SubOverrides = Partial<Omit<SubSession, 'id' | 'pid'>> &
+  Pick<SubSession, 'id'> & {
+    pid?: number | undefined;
+  };
+
+function makeSub(overrides: SubOverrides): SubSession {
   return {
     parentSessionId: PARENT_A,
     defId: 'shell',
