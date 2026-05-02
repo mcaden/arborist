@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use portable_pty::PtySize;
 use tracing::{debug, info, warn};
@@ -1583,6 +1583,31 @@ pub async fn workspace_switch_impl_inner(
             // WorkspaceLockGuard's Drop). The GateGuard's Drop restores
             // the gate when this function returns.
             drop(binding);
+            // Recovery: step 6 stopped+joined every metrics watcher up
+            // front (so the post-swap join barrier would actually have
+            // something to drain). The sessions that survived this
+            // failed close loop are still alive (PTYs running, store
+            // entries intact) but have no token/activity tailers.
+            // Restart their watchers so the user doesn't have to
+            // restart each surviving tab manually to see live metrics.
+            // `created_at` (unix seconds) is used as the spawn-instant
+            // approximation — the true PTY spawn instant isn't
+            // persisted, but this is conservative: it lets the Claude
+            // transcript watcher pick up any jsonl created since this
+            // session was first launched.
+            for (_, session) in ctx.store().load_sessions() {
+                ctx.metrics.start(
+                    session.id,
+                    session.tool,
+                    session.worktree_path.clone(),
+                    UNIX_EPOCH + Duration::from_secs(session.created_at.max(0) as u64),
+                    Arc::clone(&ctx.metrics_emit),
+                    Arc::clone(&ctx.turn_emit),
+                    Arc::clone(&ctx.ai_session_discover),
+                    Arc::clone(&ctx.sink.activity),
+                    session.ai_session_id.clone(),
+                );
+            }
             return Err(AppError::new(
                 "WorkspaceSwitchFailed",
                 format!(
