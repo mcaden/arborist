@@ -146,8 +146,20 @@ pub fn run() {
                 }
             };
 
-            let binding = match boot::boot_select_workspace(&cli_args, &app_data_dir, BUILD_BRANCH)
-            {
+            // Boot needs a GitRunner to verify resolved workspace paths
+            // are git repository roots before binding (matches the
+            // `workspace_validate` command for the in-app picker).
+            // RealGitRunner is cheap to construct (zero-sized) — we
+            // build one early and reuse the same instance for the
+            // AppContext below so the in-app commands share it.
+            let boot_git_runner = git::RealGitRunner;
+
+            let binding = match boot::boot_select_workspace(
+                &cli_args,
+                &app_data_dir,
+                BUILD_BRANCH,
+                &boot_git_runner,
+            ) {
                 Ok(Some(b)) => b,
                 Ok(None) => {
                     tracing::info!("user cancelled workspace picker; exiting");
@@ -156,6 +168,11 @@ pub fn run() {
                 }
                 Err(boot::BootError::Contention { branch, workspace }) => {
                     boot::show_lock_contention_dialog(&branch, &workspace);
+                    drop(log_guard);
+                    std::process::exit(1);
+                }
+                Err(boot::BootError::NotARepository { workspace, reason }) => {
+                    boot::show_not_a_repo_dialog(&workspace, &reason);
                     drop(log_guard);
                     std::process::exit(1);
                 }

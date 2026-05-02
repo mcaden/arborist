@@ -1530,26 +1530,49 @@ pub async fn workspace_switch_impl_inner(
             format!("create_dir_all({}): {e}", app_data_dir.display()),
         ));
     }
-    let binding =
-        match crate::boot::bind_workspace(&canonical, app_data_dir, branch) {
-            Ok(b) => b,
-            Err(crate::boot::BootError::Contention { branch, workspace }) => {
-                return Err(AppError::new(
-                    "WorkspaceLocked",
-                    format!(
+    let binding = match crate::boot::bind_workspace(
+        &canonical,
+        app_data_dir,
+        branch,
+        ctx.git_runner.as_ref(),
+    ) {
+        Ok(b) => b,
+        Err(crate::boot::BootError::Contention { branch, workspace }) => {
+            return Err(AppError::new(
+                "WorkspaceLocked",
+                format!(
                     "Workspace is already open in another Arborist window (branch: {}, path: {}).",
-                    if branch.trim().is_empty() { "main" } else { &branch },
+                    if branch.trim().is_empty() {
+                        "main"
+                    } else {
+                        &branch
+                    },
                     workspace.display(),
                 ),
-                ));
-            }
-            Err(other) => {
-                return Err(AppError::new(
-                    "Internal",
-                    format!("workspace bind failed: {other}"),
-                ));
-            }
-        };
+            ));
+        }
+        Err(crate::boot::BootError::NotARepository { workspace, reason }) => {
+            // Defensively unreachable: step 2 above already ran
+            // `workspace_validate_impl` which performs the same
+            // git-toplevel check. Surface as InvalidPath so the
+            // frontend treats it like the validate-failure shape
+            // rather than a generic internal error if it ever
+            // does fire (e.g. the repo was deleted between steps).
+            return Err(AppError::new(
+                "InvalidPath",
+                format!(
+                    "workspace path is not a git repository root ({}): {reason}",
+                    workspace.display()
+                ),
+            ));
+        }
+        Err(other) => {
+            return Err(AppError::new(
+                "Internal",
+                format!("workspace bind failed: {other}"),
+            ));
+        }
+    };
 
     // Step 6 — quiesce metrics watchers. We do this BEFORE
     // session_close so that the per-session `metrics.stop()` calls
