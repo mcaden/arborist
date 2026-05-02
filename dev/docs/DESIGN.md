@@ -147,24 +147,29 @@ OS `app_data_dir`. Both files are scoped per **(branch, workspace)** so that
 parallel Arborist instances — a release host plus any number of dev builds in
 worktrees — cannot silently clobber each other's settings:
 
-```
-<app_data_dir>/
-  config.json                              # legacy — first-launch seed source only
-  sessions.json                            # legacy — first-launch seed source only
-  workspaces/<key>/                        # canonical (main / production builds)
-    config.json
-    sessions.json
-    workspace-meta.json
-    .lock                                  # fs2 advisory exclusive lock
-    .config-seed.lock                      # serialises first-launch seed
-  branches/<branch>/                       # collapsed when BUILD_BRANCH is "" or "main"
-    last-workspace.json                    # picker default for next launch
-    workspaces/<key>/
-      config.json
-      sessions.json
-      workspace-meta.json
-      .lock
-      .config-seed.lock
+```mermaid
+graph TD
+    ROOT["&lt;app_data_dir&gt;/"]
+    ROOT --> LEG_CFG["config.json<br/><i>legacy — first-launch seed source only</i>"]
+    ROOT --> LEG_SES["sessions.json<br/><i>legacy — first-launch seed source only</i>"]
+    ROOT --> CANON_HINT["last-workspace.json<br/><i>picker default (collapsed-branch builds: BUILD_BRANCH empty or 'main')</i>"]
+    ROOT --> CANON_WS["workspaces/&lt;key&gt;/<br/><i>canonical (main / production builds)</i>"]
+    ROOT --> BRANCHES["branches/&lt;branch&gt;/<br/><i>collapsed when BUILD_BRANCH is empty or 'main'</i>"]
+
+    CANON_WS --> CW_CFG[config.json]
+    CANON_WS --> CW_SES[sessions.json]
+    CANON_WS --> CW_META[workspace-meta.json]
+    CANON_WS --> CW_LOCK[".lock<br/><i>fs2 advisory exclusive lock</i>"]
+    CANON_WS --> CW_SEED[".config-seed.lock<br/><i>serialises first-launch seed</i>"]
+
+    BRANCHES --> BR_HINT["last-workspace.json<br/><i>picker default for next launch</i>"]
+    BRANCHES --> BR_WS["workspaces/&lt;key&gt;/"]
+
+    BR_WS --> BW_CFG[config.json]
+    BR_WS --> BW_SES[sessions.json]
+    BR_WS --> BW_META[workspace-meta.json]
+    BR_WS --> BW_LOCK[.lock]
+    BR_WS --> BW_SEED[.config-seed.lock]
 ```
 
 The branch axis is keyed off the build-time `BUILD_BRANCH` (`build.rs`); the
