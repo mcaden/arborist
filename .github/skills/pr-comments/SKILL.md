@@ -209,7 +209,8 @@ outdated.
   If any of these fail, fix in a follow-up commit on the same branch
   (or amend if the broken commit hasn't been pushed yet) before
   pushing — **never** bypass hooks with `--no-verify` (see
-  `.github/copilot-instructions.md` "Dogfooding safety").
+  `.github/copilot-instructions.md` "Shift-left quality
+  (principles)").
 - Commit messages should reference the reviewer when natural, e.g.
   `fix(session): handle null worktree path (review feedback)`.
 - Include the standard Copilot trailer if the agent posting is Copilot
@@ -395,13 +396,17 @@ can do the final pass.
   require **both** of:
   - `comments.nodes[-1].author.login == $ME` (the comment was posted by
     the same gh account the agent is using), **and**
-  - `comments.nodes[-1].body` starts with `🤖 AI agent reply` (matches
-    the disclaimer prefix exactly).
-  
+  - `comments.nodes[-1].body` starts with the literal disclaimer
+    prefix `🤖 AI agent reply (acting for @` (the username and
+    closing `):` vary per agent, so match the fixed leading
+    substring — looser matches like just `🤖 AI agent reply` will
+    catch unrelated quotes).
+
   If both hold and **no human has replied since** that AI reply, treat
   the thread as already addressed and skip — never reply to your own
-  reply in a loop. Prefix-only matching is not enough: a human can
-  legitimately quote the prefix in their own comment.
+  reply in a loop. Author-only matching is not enough either: a
+  human-attributed comment from the same gh account that doesn't
+  carry the disclaimer should still be treated as a real reply.
 - **Suggestion blocks** (` ```suggestion ` ): there is no REST/GraphQL
   endpoint for applying a suggestion programmatically — that's a
   GitHub UI feature only. If accepting, read the suggestion from the
