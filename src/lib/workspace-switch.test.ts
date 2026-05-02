@@ -64,4 +64,26 @@ describe('changeWorkspace', () => {
     await expect(changeWorkspace('/locked')).rejects.toThrow(/already open in another/i);
     expect(configHydrate).not.toHaveBeenCalled();
   });
+
+  it('does not surface a post-switch rehydrate failure as a switch failure', async () => {
+    // Regression for PR #32 review: if the backend swap succeeds but
+    // the fallback rehydrate throws, callers (picker / settings
+    // dialog) used to see the error and keep the modal open showing
+    // "switch failed" — even though the backend had already rebound.
+    // The rehydrate failure must be swallowed (and logged) so the
+    // promise resolves cleanly; the App-level `workspace://changed`
+    // listener is the recovery path.
+    workspaceSwitch.mockResolvedValue({ workspaceRoot: '/new', noOp: false });
+    configHydrate.mockRejectedValue(new Error('hydrate failed'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(changeWorkspace('/new')).resolves.toBeUndefined();
+
+    expect(workspaceSwitch).toHaveBeenCalledWith('/new');
+    expect(configHydrate).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('rehydrate failed'),
+      expect.any(Error),
+    );
+  });
 });

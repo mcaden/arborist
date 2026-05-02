@@ -15,6 +15,7 @@
 use arborist_lib::workspace_lock::{LockError, WorkspaceLockGuard};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -24,6 +25,22 @@ const READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Spawn the locker child and block until it prints `LOCKED` on stdout
 /// (proving it has acquired the lock). Returns the running child; the
 /// caller is responsible for cleaning it up via `release_child`.
+///
+/// `BufRead::read_line` is blocking, so an inline read-then-check
+/// loop would never honour `READY_TIMEOUT` if the child hangs before
+/// printing anything (the read would wait forever). To make the
+/// timeout *actually* bound the test's wall time, the read is driven
+/// from a dedicated reader thread that forwards each line via an
+/// `mpsc` channel; the main loop `recv_timeout`s with the remaining
+/// budget. On timeout we kill the child; the reader thread then
+/// observes EOF on the broken pipe and exits naturally.
+///
+/// Per `arborist_test_locker`'s protocol, the locker writes exactly
+/// one line (`LOCKED` or `CONTENDED`) and then blocks on stdin until
+/// EOF — no further stdout writes happen, so leaving the reader
+/// thread parked on `read_line` after we see `LOCKED` is harmless;
+/// it terminates when `release_child` drops stdin and the child
+/// exits.
 ///
 /// `#[allow(clippy::zombie_processes)]` is justified because every
 /// panic site inside this helper kills *and* waits for the child
@@ -41,25 +58,41 @@ fn spawn_locker_and_wait_ready(lock_path: &std::path::Path) -> Child {
         .expect("spawn arborist-test-locker");
 
     let stdout = child.stdout.take().expect("child stdout pipe");
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
+    let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break, // EOF: child exited
+                Ok(_) => {
+                    if tx.send(Ok(line)).is_err() {
+                        break; // main dropped the receiver
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
 
     let start = Instant::now();
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => {
+        let elapsed = start.elapsed();
+        let remaining = match READY_TIMEOUT.checked_sub(elapsed) {
+            Some(d) if !d.is_zero() => d,
+            _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("locker exited before producing READY sentinel");
+                panic!("timed out waiting for locker READY sentinel");
             }
-            Ok(_) => {
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(Ok(line)) => {
                 let trimmed = line.trim_end_matches(['\r', '\n']);
                 if trimmed == "LOCKED" {
-                    // Reattach stdout so the child can keep writing if it
-                    // wants to (it doesn't, but we don't want to drop the
-                    // pipe and SIGPIPE the child).
-                    child.stdout = Some(reader.into_inner());
                     return child;
                 }
                 if trimmed == "CONTENDED" {
@@ -69,16 +102,21 @@ fn spawn_locker_and_wait_ready(lock_path: &std::path::Path) -> Child {
                 }
                 // Unknown line: keep reading; useful for debug dumps.
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 panic!("read from locker stdout failed: {e}");
             }
-        }
-        if start.elapsed() > READY_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for locker READY sentinel");
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("timed out waiting for locker READY sentinel");
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("locker exited before producing READY sentinel");
+            }
         }
     }
 }

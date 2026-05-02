@@ -460,8 +460,15 @@ pub fn show_lock_contention_dialog(branch: &str, workspace: &Path) {
 /// explicitly chose it) — for `--workspace` / hint / legacy sources
 /// the boot orchestrator surfaces the error via stderr / log instead.
 pub fn show_not_a_repo_dialog(workspace: &Path, reason: &str) {
+    // `validate_repo_root` requires `git rev-parse --show-toplevel` to
+    // equal the canonicalised picked path. That accepts BOTH primary
+    // repos (which have a `.git` *directory* at the top level) and
+    // linked worktrees (which have a `.git` *file* containing
+    // `gitdir: ...`). The dialog text must not say "directory" or
+    // users will be steered away from worktree roots that Arborist
+    // can actually open.
     let body = format!(
-        "Arborist could not open this folder as a workspace because it is not a git repository root.\n\nWorkspace: {}\n\nReason: {reason}\n\nPick a folder that contains a `.git` directory at its top level and try again.",
+        "Arborist could not open this folder as a workspace because it is not a git repository root.\n\nWorkspace: {}\n\nReason: {reason}\n\nPick the top level of a git repository (a folder containing a `.git` entry — either the directory inside a primary clone or the marker file inside a linked worktree) and try again.",
         workspace.display(),
     );
     let _ = rfd::MessageDialog::new()

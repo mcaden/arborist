@@ -29,6 +29,15 @@ import { rehydrateActiveWorkspace } from '@/lib/rehydrate-workspace';
  * `rehydrate-workspace.ts` makes the duplicate work race-safe — the
  * losing call simply bails after its first await.
  *
+ * Rehydrate failures after a successful `workspaceSwitch` are
+ * swallowed (logged only): the backend has already rebound, so
+ * surfacing the error would tell the user the operation failed when
+ * it actually succeeded — the picker modal would stay open showing
+ * "error" for a completed switch and a retry would hit the new
+ * workspace as a no-op. The `workspace://changed` listener (or the
+ * next user-initiated event that triggers a hydrate) is the
+ * recovery path.
+ *
  * Throws on validation or lock-contention. The caller (picker /
  * settings dialog) keeps the user on the previous workspace because
  * the backend is fully transactional: on failure no swap occurs, so
@@ -49,6 +58,17 @@ export async function changeWorkspace(path: string): Promise<void> {
     throw err;
   }
   if (!result.noOp) {
-    await rehydrateActiveWorkspace();
+    try {
+      await rehydrateActiveWorkspace();
+    } catch (err) {
+      // The switch already succeeded backend-side; do not propagate
+      // the rehydrate failure to the caller. The App-level
+      // `workspace://changed` listener will retry rehydrate, and the
+      // shared generation counter makes the duplicate work safe.
+      console.warn(
+        'changeWorkspace: post-switch rehydrate failed; relying on event-driven rehydrate',
+        err,
+      );
+    }
   }
 }
