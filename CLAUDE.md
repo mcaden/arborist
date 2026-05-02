@@ -142,5 +142,5 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 
 Claude does not auto-discover skill files. When a task matches one of these, **read the linked file before acting**:
 
-- **Addressing PR review comments / responding to PR feedback** → read `.github/skills/pr-comments/SKILL.md`. Covers the exact `gh api` / GraphQL calls for listing review threads, replying in-thread (with the **mandatory `🤖 AI agent reply (acting for @<user>):` disclaimer prefix**), and the resolve-only-when-code-changed policy.
+- **Addressing PR review comments / responding to PR feedback** → read `.github/skills/pr-comments/SKILL.md`. Covers the exact `gh api` / GraphQL calls for listing review threads, replying in-thread (with the **mandatory `🤖 AI agent reply (acting for @<gh-user>):` disclaimer prefix**, where `<gh-user>` is replaced literally with the output of `gh api user --jq .login`), and the resolve-only-when-code-changed policy.
 - **Build / lint / test command lookup, Husky hooks, test architecture** → read `.github/skills/quality-workflow/SKILL.md`.

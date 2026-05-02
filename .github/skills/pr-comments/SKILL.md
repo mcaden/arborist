@@ -127,10 +127,26 @@ belong to an unsubmitted review and shouldn't be replied to. Keep
 `isOutdated` threads in scope but flag them — the line they reference
 may no longer exist, which changes how you respond.
 
-If `reviewThreads.pageInfo.hasNextPage` or any per-thread
-`comments.pageInfo.hasNextPage` is `true`, **paginate** with the
-returned `endCursor` (add an `after: $cursor` variable). Don't proceed
-on a partial dataset — silently skipping threads is worse than asking
+**Pagination.** Two connections in this query can paginate
+independently — handle each separately, since GraphQL cursors are
+per-connection (you cannot reuse a thread cursor for comments or
+vice versa):
+
+1. **`reviewThreads.pageInfo.hasNextPage == true`**: re-issue the
+   query above with an added `$cursor: String` variable and
+   `reviewThreads(first: 100, after: $cursor)`, threading the
+   returned `endCursor` through until `hasNextPage` is false.
+2. **Any thread's `comments.pageInfo.hasNextPage == true`**: that
+   thread has a long conversation. Issue a *separate* GraphQL query
+   per such thread to walk its comments connection — e.g.
+   `node(id: $threadId) { ... on PullRequestReviewThread {
+   comments(first: 50, after: $commentCursor) { pageInfo {...}
+   nodes {...} } } }` — until `hasNextPage` is false. Don't try to
+   page nested comments by adding `after` to the outer query; the
+   cursor types don't match.
+
+Don't proceed on a partial dataset — silently skipping threads (or
+silently truncating a long thread's history) is worse than asking
 the user to confirm the scope.
 
 ## 4. Triage each thread
@@ -176,9 +192,11 @@ outdated.
 
 - One logical change per commit when practical; group only when changes
   are genuinely interdependent.
-- Run the local quality gate **before** committing. The exact set lives
-  in the `quality-workflow` skill, but for self-containment the
-  required commands are:
+- Run the local quality gate **before pushing** (the recipe in §8 has
+  it as step 3, after the commit, so the staged-file lint that runs in
+  the pre-commit hook can do its job first). The exact set lives in
+  the `quality-workflow` skill, but for self-containment the required
+  commands are:
 
   ```sh
   npm run lint
@@ -188,9 +206,10 @@ outdated.
   cargo test --workspace
   ```
 
-  If any of these fail, fix or revert before pushing — **never**
-  bypass hooks with `--no-verify` (see `.github/copilot-instructions.md`
-  "Dogfooding safety").
+  If any of these fail, fix in a follow-up commit on the same branch
+  (or amend if the broken commit hasn't been pushed yet) before
+  pushing — **never** bypass hooks with `--no-verify` (see
+  `.github/copilot-instructions.md` "Dogfooding safety").
 - Commit messages should reference the reviewer when natural, e.g.
   `fix(session): handle null worktree path (review feedback)`.
 - Include the standard Copilot trailer if the agent posting is Copilot
@@ -221,14 +240,17 @@ to the user's GitHub account.
 ### Disclaimer format (exact)
 
 ```
-🤖 AI agent reply (acting for @<ME>):
+🤖 AI agent reply (acting for @<gh-user>):
 
 <body>
 ```
 
-Where `<ME>` is the value of `gh api user --jq .login` (computed in
-step 2). Keep the emoji, the parenthetical, the colon, and the blank
-line. The body follows on the next line.
+`<gh-user>` is a placeholder — at posting time, replace it literally
+with the output of `gh api user --jq .login` (the same value captured
+as `$ME` in §2). For example, if `$ME` is `mcaden`, the prefix is
+`🤖 AI agent reply (acting for @mcaden):`. Keep the emoji, the
+parenthetical, the colon, and the blank line. The body follows on the
+next line.
 
 ### Body conventions
 
