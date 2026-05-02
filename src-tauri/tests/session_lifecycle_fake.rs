@@ -1020,6 +1020,115 @@ async fn restore_drops_session_record_when_worktree_directory_is_missing() {
     );
 }
 
+#[tokio::test]
+async fn restore_trims_orphan_ids_in_config_with_no_session_record() {
+    // Defense-in-depth: the seed-fix in `seed.rs` strips
+    // `lastOpenSessions` / `tabOrder` / `activeSessionId` from
+    // `config.json` when a branch build seeds without a paired
+    // `sessions.json`. Pre-fix-state stores already have phantom
+    // IDs in config that don't correspond to any record. The
+    // `trim_unknown_session_refs` step in `restore_all_sessions`
+    // cleans those up on first restore after the upgrade.
+    //
+    // Distinct from the worktree-missing test above: there, the
+    // record DOES exist but its worktree is gone. Here, the record
+    // never existed at all — only the config refers to the IDs.
+    let h = build_harness();
+
+    // Stuff config with phantom IDs only (no `session_create_impl`).
+    let phantom_a = arborist_lib::types::SessionId(uuid::Uuid::new_v4());
+    let phantom_b = arborist_lib::types::SessionId(uuid::Uuid::new_v4());
+    h.ctx
+        .store()
+        .save_config(arborist_lib::types::PartialAppConfig {
+            last_open_sessions: Some(vec![phantom_a, phantom_b]),
+            tab_order: Some(vec![phantom_a, phantom_b]),
+            active_session_id: Some(Some(phantom_a)),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // Sessions store is empty (matches the bug scenario where the
+    // seed copied config.json but skipped sessions.json).
+    assert!(h.ctx.store().load_sessions().is_empty());
+
+    // "Restart": new pool + sink + ctx around the same store.
+    let spawner2 = Arc::new(FakeSpawner::new());
+    let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
+    let events2 = Arc::new(CapturedEvents::default());
+    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store().clone());
+    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store().clone(), sink2);
+
+    restore_all_sessions(&ctx2);
+
+    // Spawner must not have been invoked — there are no real records.
+    assert!(
+        spawner2.state.lock().unwrap().last_cmd.is_none(),
+        "spawn must not be attempted for phantom-only IDs"
+    );
+
+    // Config orphan IDs must be trimmed.
+    let cfg = h.ctx.store().load_config();
+    assert!(
+        cfg.last_open_sessions.is_empty(),
+        "phantom IDs must be trimmed from last_open_sessions, got {:?}",
+        cfg.last_open_sessions
+    );
+    assert!(
+        cfg.tab_order.is_empty(),
+        "phantom IDs must be trimmed from tab_order, got {:?}",
+        cfg.tab_order
+    );
+    assert_eq!(
+        cfg.active_session_id, None,
+        "phantom active_session_id must be cleared"
+    );
+}
+
+#[tokio::test]
+async fn restore_does_not_rewrite_config_when_no_orphans_present() {
+    // The trim helper must be a no-op when nothing needs trimming
+    // (otherwise every launch would needlessly rewrite config.json).
+    // We can't directly observe "no write" without a fake store, but
+    // we can prove value-stability: a pre-existing config with all
+    // valid IDs must round-trip byte-for-byte after restore.
+    let h = build_harness();
+    let session = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    h.ctx
+        .store()
+        .save_config(arborist_lib::types::PartialAppConfig {
+            last_open_sessions: Some(vec![session.id]),
+            tab_order: Some(vec![session.id]),
+            active_session_id: Some(Some(session.id)),
+            ..Default::default()
+        })
+        .unwrap();
+    let cfg_before = h.ctx.store().load_config();
+
+    // Fresh ctx so restore actually runs.
+    let spawner2 = Arc::new(FakeSpawner::new());
+    let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
+    let events2 = Arc::new(CapturedEvents::default());
+    let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store().clone());
+    let ctx2 = AppContext::with_real_git(pool2, h.ctx.store().clone(), sink2);
+
+    restore_all_sessions(&ctx2);
+
+    let cfg_after = h.ctx.store().load_config();
+    assert_eq!(
+        cfg_before.last_open_sessions, cfg_after.last_open_sessions,
+        "no-orphan restore must not mutate last_open_sessions"
+    );
+    assert_eq!(
+        cfg_before.tab_order, cfg_after.tab_order,
+        "no-orphan restore must not mutate tab_order"
+    );
+    assert_eq!(
+        cfg_before.active_session_id, cfg_after.active_session_id,
+        "no-orphan restore must not mutate active_session_id"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AI session-id pre-allocation (Phase 2)
 // ---------------------------------------------------------------------------

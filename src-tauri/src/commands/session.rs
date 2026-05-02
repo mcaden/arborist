@@ -1134,6 +1134,60 @@ fn ai_session_transcript_exists(
     }
 }
 
+/// Defense-in-depth helper for [`restore_all_sessions`]: trim
+/// `last_open_sessions` / `tab_order` / `active_session_id` of any
+/// IDs that have no corresponding entry in `sessions.json`. Such
+/// orphan IDs can be left over when a previous build seeded
+/// `config.json` from a legacy/canonical source without seeding
+/// `sessions.json` (the bug that motivated this helper). The
+/// `seed.rs` strip prevents NEW instances; this helper cleans up
+/// existing ones on first restore after the upgrade.
+///
+/// No-op when nothing needs trimming, so the common path doesn't
+/// rewrite `config.json` on every launch.
+fn trim_unknown_session_refs(
+    ctx: &AppContext,
+    known: &std::collections::HashSet<SessionId>,
+) -> Result<(), Error> {
+    let cfg = ctx.store().load_config();
+    let mut patch = PartialAppConfig::default();
+    let mut dirty = false;
+
+    let trimmed_last: Vec<SessionId> = cfg
+        .last_open_sessions
+        .iter()
+        .copied()
+        .filter(|s| known.contains(s))
+        .collect();
+    if trimmed_last.len() != cfg.last_open_sessions.len() {
+        patch.last_open_sessions = Some(trimmed_last);
+        dirty = true;
+    }
+
+    let trimmed_order: Vec<SessionId> = cfg
+        .tab_order
+        .iter()
+        .copied()
+        .filter(|s| known.contains(s))
+        .collect();
+    if trimmed_order.len() != cfg.tab_order.len() {
+        patch.tab_order = Some(trimmed_order);
+        dirty = true;
+    }
+
+    if let Some(active) = cfg.active_session_id {
+        if !known.contains(&active) {
+            patch.active_session_id = Some(None);
+            dirty = true;
+        }
+    }
+
+    if dirty {
+        ctx.store().save_config(patch)?;
+    }
+    Ok(())
+}
+
 /// Re-spawn every persisted session. Called once after the frontend signals
 /// readiness. Failures on individual sessions are logged but do not abort
 /// the rest — a single broken session must not strand the whole app.
@@ -1154,6 +1208,21 @@ pub fn restore_all_sessions(ctx: &AppContext) {
     // intentionally kept (DESIGN §5.6 / Phase 6 spec).
     if let Err(e) = cleanup_orphans(&ids) {
         warn!(error = %e, "cleanup_orphans failed during restore");
+    }
+
+    // Defense-in-depth: trim IDs that appear in config's
+    // `last_open_sessions` / `tab_order` / `active_session_id` but
+    // have NO corresponding record in `sessions.json`. This catches
+    // pre-fix-state stores where a branch build seeded `config.json`
+    // from a legacy/canonical source without seeding `sessions.json`,
+    // leaving the seeded config carrying phantom IDs that the per-
+    // session worktree-missing trim below never visits (it iterates
+    // over actual records, not config refs). The seed-fix in
+    // `seed.rs` prevents new instances of this; this trim cleans up
+    // existing ones on first restore after the upgrade.
+    let known: std::collections::HashSet<SessionId> = ids.iter().copied().collect();
+    if let Err(e) = trim_unknown_session_refs(ctx, &known) {
+        warn!(error = ?e, "restore: trim_unknown_session_refs failed");
     }
 
     // Snapshot pending_spawn membership once so the per-session check

@@ -189,21 +189,38 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
     let mut outcomes = Vec::new();
 
     // ---- config.json ----
+    //
+    // Branch builds strip `lastOpenSessions` / `tabOrder` /
+    // `activeSessionId` from the seeded config because they don't
+    // also seed `sessions.json` (per SPEC §C-04). Without the strip,
+    // the seeded config carries IDs that point at sessions which
+    // never existed in this storage dir — phantom IDs that
+    // `restore_all_sessions`'s per-session worktree-missing trim
+    // never visits (it iterates over actual records, not config
+    // refs). `restore_all_sessions` also has an upfront orphan-trim
+    // step as defense in depth, but the cleaner fix is to not
+    // produce the inconsistency in the first place.
     let dest_config = layout.settings_path();
+    let strip_session_fields = !layout.root().is_canonical();
     if !dest_config.exists() {
         if let Some(canonical_src) = layout
             .root()
             .canonical_workspace_settings_path(layout.workspace())
         {
             if canonical_src.exists() {
-                copy_atomic(&canonical_src, &dest_config, &workspace_dir)?;
+                copy_config_atomic(
+                    &canonical_src,
+                    &dest_config,
+                    &workspace_dir,
+                    strip_session_fields,
+                )?;
                 outcomes.push(SeedOutcome::SeededConfigFromCanonical);
             }
         }
         if !dest_config.exists() {
             let legacy = layout.root().legacy_config_path();
             if should_seed_from_legacy_config(&legacy, layout) {
-                copy_atomic(&legacy, &dest_config, &workspace_dir)?;
+                copy_config_atomic(&legacy, &dest_config, &workspace_dir, strip_session_fields)?;
                 outcomes.push(SeedOutcome::SeededConfigFromLegacy);
             }
         }
@@ -340,6 +357,46 @@ fn copy_atomic(src: &Path, dest: &Path, dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Like [`copy_atomic`] but, when `strip_session_fields` is true,
+/// removes `lastOpenSessions`, `tabOrder`, and `activeSessionId` from
+/// the JSON before writing. Used by branch builds seeding `config.json`
+/// without a paired `sessions.json` (those IDs would be phantoms).
+///
+/// If the source isn't a JSON object (corrupted file, unexpected
+/// schema), falls back to a verbatim copy — better to surface "garbage
+/// in, garbage out" to the config-store loader (which quarantines bad
+/// files at load time) than to silently lose every other setting in
+/// the source.
+fn copy_config_atomic(
+    src: &Path,
+    dest: &Path,
+    dir: &Path,
+    strip_session_fields: bool,
+) -> io::Result<()> {
+    let bytes = fs::read(src)?;
+    let payload = if strip_session_fields {
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.remove("lastOpenSessions");
+                map.remove("tabOrder");
+                map.remove("activeSessionId");
+                serde_json::to_vec_pretty(&serde_json::Value::Object(map))
+                    .map_err(io::Error::other)?
+            }
+            _ => bytes,
+        }
+    } else {
+        bytes
+    };
+    let mut tmp = NamedTempFile::new_in(dir)?;
+    use std::io::Write as _;
+    tmp.write_all(&payload)?;
+    tmp.flush()?;
+    tmp.persist(dest)
+        .map_err(|e: tempfile::PersistError| e.error)?;
+    Ok(())
+}
+
 fn write_marker_create_new(layout: &StoreLayout, dest: &Path) -> io::Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -408,6 +465,11 @@ mod tests {
 
     /// Branch build with a matching canonical workspace settings file
     /// seeds `config.json` from canonical and never touches sessions.
+    /// Per SPEC §C-04 (branch builds start with a fresh session list),
+    /// the seeded copy must have `lastOpenSessions` / `tabOrder` /
+    /// `activeSessionId` stripped — otherwise it would carry IDs that
+    /// point at sessions which never existed in this branch's
+    /// `sessions.json`.
     #[test]
     fn branch_build_seeds_config_from_canonical_only() {
         let app_data = TempDir::new().unwrap();
@@ -416,10 +478,17 @@ mod tests {
 
         let canonical_root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
         let canonical_layout = canonical_root.for_workspace(workspace_canon.clone());
-        // Pre-seed the canonical workspace settings.
+        // Pre-seed the canonical workspace settings, including
+        // session-list fields the strip must remove.
         touch_json(
             &canonical_layout.settings_path(),
-            &serde_json::json!({"configVersion": 4, "instructionSetsDir": "/x"}),
+            &serde_json::json!({
+                "configVersion": 4,
+                "instructionSetsDir": "/x",
+                "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
+                "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
+                "activeSessionId": "550e8400-e29b-41d4-a716-446655440000",
+            }),
         );
         // Pre-create a canonical sessions file too — branch build must IGNORE it.
         fs::create_dir_all(canonical_layout.sessions_path().parent().unwrap()).unwrap();
@@ -439,10 +508,92 @@ mod tests {
             !branch_layout.sessions_path().exists(),
             "branch build must never seed sessions",
         );
+
+        // Strip assertion: session-list fields must be absent in the
+        // seeded copy. Other fields must survive.
+        let seeded: serde_json::Value =
+            serde_json::from_slice(&fs::read(branch_layout.settings_path()).unwrap()).unwrap();
+        let obj = seeded.as_object().expect("seeded config is an object");
+        assert!(
+            !obj.contains_key("lastOpenSessions"),
+            "lastOpenSessions must be stripped from branch-seeded config"
+        );
+        assert!(
+            !obj.contains_key("tabOrder"),
+            "tabOrder must be stripped from branch-seeded config"
+        );
+        assert!(
+            !obj.contains_key("activeSessionId"),
+            "activeSessionId must be stripped from branch-seeded config"
+        );
+        assert_eq!(
+            obj.get("instructionSetsDir").and_then(|v| v.as_str()),
+            Some("/x"),
+            "non-session fields must survive the strip"
+        );
+        assert_eq!(
+            obj.get("configVersion").and_then(|v| v.as_u64()),
+            Some(4),
+            "configVersion must survive the strip"
+        );
+    }
+
+    /// Branch build seeded from legacy `config.json` (the upgrade
+    /// path that produced the user-reported phantom-IDs bug). Same
+    /// strip rule as the canonical-source variant above.
+    #[test]
+    fn branch_build_seeds_config_from_legacy_strips_session_fields() {
+        let app_data = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let workspace_canon = canon(workspace.path());
+
+        let root = StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
+        let layout = root.for_workspace(workspace_canon.clone());
+
+        // Legacy config from an old canonical install, with a
+        // matching workspaceRoot so the seed is allowed.
+        touch_json(
+            &root.legacy_config_path(),
+            &serde_json::json!({
+                "configVersion": 4,
+                "workspaceRoot": workspace_canon.to_string_lossy(),
+                "instructionSetsDir": "/y",
+                "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440001"],
+                "tabOrder": ["550e8400-e29b-41d4-a716-446655440001"],
+                "activeSessionId": "550e8400-e29b-41d4-a716-446655440001",
+            }),
+        );
+
+        let report = initialise_workspace_dir(&layout).unwrap();
+        assert!(report
+            .outcomes
+            .contains(&SeedOutcome::SeededConfigFromLegacy));
+        assert!(
+            !layout.sessions_path().exists(),
+            "branch build must never seed sessions"
+        );
+
+        let seeded: serde_json::Value =
+            serde_json::from_slice(&fs::read(layout.settings_path()).unwrap()).unwrap();
+        let obj = seeded.as_object().expect("seeded config is an object");
+        assert!(!obj.contains_key("lastOpenSessions"));
+        assert!(!obj.contains_key("tabOrder"));
+        assert!(!obj.contains_key("activeSessionId"));
+        assert_eq!(
+            obj.get("instructionSetsDir").and_then(|v| v.as_str()),
+            Some("/y")
+        );
+        assert_eq!(
+            obj.get("workspaceRoot").and_then(|v| v.as_str()),
+            Some(workspace_canon.to_string_lossy().as_ref()),
+            "workspaceRoot must survive the strip"
+        );
     }
 
     /// Canonical build with a matching legacy `workspaceRoot` seeds
     /// both `config.json` and `sessions.json` from the legacy paths.
+    /// Unlike branch builds, canonical builds do NOT strip session-list
+    /// fields — the paired `sessions.json` keeps the IDs valid.
     #[test]
     fn canonical_build_seeds_config_and_sessions_from_matching_legacy() {
         let app_data = TempDir::new().unwrap();
@@ -457,6 +608,9 @@ mod tests {
             &serde_json::json!({
                 "configVersion": 4,
                 "workspaceRoot": workspace_canon.to_string_lossy(),
+                "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
+                "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
+                "activeSessionId": "550e8400-e29b-41d4-a716-446655440000",
             }),
         );
         fs::write(root.legacy_sessions_path(), b"{}").unwrap();
@@ -471,6 +625,18 @@ mod tests {
             .contains(&SeedOutcome::SeededSessionsFromLegacy));
         assert!(layout.settings_path().exists());
         assert!(layout.sessions_path().exists());
+
+        // Canonical build must preserve session-list fields verbatim
+        // because it also seeded the paired sessions.json.
+        let seeded: serde_json::Value =
+            serde_json::from_slice(&fs::read(layout.settings_path()).unwrap()).unwrap();
+        let obj = seeded.as_object().unwrap();
+        assert!(
+            obj.contains_key("lastOpenSessions"),
+            "canonical seed must NOT strip lastOpenSessions"
+        );
+        assert!(obj.contains_key("tabOrder"));
+        assert!(obj.contains_key("activeSessionId"));
     }
 
     /// Legacy `workspaceRoot` set but pointing at a different
