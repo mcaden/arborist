@@ -137,3 +137,10 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 - Rust command handlers are always `async fn`, return `Result<T, AppError>` (AppError is `serde::Serialize`), and contain no business logic — delegate to `commands/session.rs`.
 - Event names use `://` namespace (e.g., `session://output`); payloads are always named-field structs.
 - Path alias `@/*` → `src/*`; no deep relative imports.
+
+## Skills (read on demand)
+
+Claude does not auto-discover skill files. When a task matches one of these, **read the linked file before acting**:
+
+- **Addressing PR review comments / responding to PR feedback** → read `.github/skills/pr-comments/SKILL.md`. Covers the exact `gh api` / GraphQL calls for listing review threads, replying in-thread (with the **mandatory `🤖 AI agent reply (acting for @<user>):` disclaimer prefix**), and the resolve-only-when-code-changed policy.
+- **Build / lint / test command lookup, Husky hooks, test architecture** → read `.github/skills/quality-workflow/SKILL.md`.
