@@ -660,7 +660,9 @@ describe('applyActivity (turnEnd)', () => {
       lastTurnEndAt: { a: 1700000000 },
       lastTurnDurationMs: { a: 500 },
     });
-    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve());
+    bridgeMock.sessionClose.mockImplementation(() =>
+      Promise.resolve({ worktreeDeleteError: null }),
+    );
     await useSessionStore.getState().actions.close('a');
     expect(useSessionStore.getState().lastTurnEndAt).toEqual({});
     expect(useSessionStore.getState().lastTurnDurationMs).toEqual({});

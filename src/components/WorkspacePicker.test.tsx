@@ -69,7 +69,7 @@ describe('WorkspacePicker — first-boot mode', () => {
   it('calls onConfirm with the trimmed path and shows submission errors', async () => {
     workspaceValidate.mockResolvedValue({ valid: true });
     const onConfirm = vi
-      .fn<[string], Promise<void>>()
+      .fn<(path: string) => Promise<void>>()
       .mockRejectedValueOnce(new Error('save failed'));
     render(<WorkspacePicker mode="first-boot" onConfirm={onConfirm} />);
 

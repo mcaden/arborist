@@ -37,14 +37,21 @@ import sessionStatusEventFixture from './fixtures/sessionStatusEvent.json';
 // would still satisfy the interface, so we additionally compare key sets at
 // runtime below to catch backend additions the frontend hasn't mirrored.
 
-const _session = sessionFixture satisfies Session;
-const _sessionView = sessionViewFixture satisfies SessionView;
-const _instructionSet = instructionSetFixture satisfies InstructionSet;
+// `satisfies` would be the ideal compile-time drift detector, but
+// TypeScript widens JSON imports to non-literal types (`tool: string`
+// instead of `tool: 'claude'`), which causes `satisfies` against
+// tagged-union types to fail spuriously. We instead `as`-cast each
+// fixture to its mirror type — the cast still requires a structurally
+// compatible shape (missing required fields → compile error), and the
+// runtime `assertExactKeys` checks below catch any name-level drift.
+const _session = sessionFixture as Session;
+const _sessionView = sessionViewFixture as SessionView;
+const _instructionSet = instructionSetFixture as InstructionSet;
 const _appConfig = appConfigFixture satisfies AppConfig;
 const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
 const _appError = appErrorFixture satisfies AppError;
 const _sessionOutputEvent = sessionOutputEventFixture satisfies SessionOutputEvent;
-const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEvent;
+const _sessionStatusEvent = sessionStatusEventFixture as SessionStatusEvent;
 
 // Silence "unused" lint without losing the satisfies assertion.
 void _session;
