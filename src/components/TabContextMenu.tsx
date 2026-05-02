@@ -175,15 +175,19 @@ export function TabContextMenu({
         defId: def.id,
       })
       .then((sub) => {
-        // For terminal kind, explicitly select the newly-created sub-tab
-        // so the MainArea viewport swaps to it when its parent is the
-        // active session. (`create` already sets activeByParent under
-        // the hood; this makes the intent explicit at the call site and
-        // survives any future store refactor that conditionalises the
-        // create-time selection.) Application kind deliberately is not
-        // selected here — launching an app is a "raise OS window"
-        // gesture, not a viewport swap.
+        // For terminal kind, make the freshly-created sub-tab the
+        // visible viewport. That requires both:
+        //   1. activating the parent session (so MainArea picks its
+        //      pane to render — without this, if no parent or another
+        //      parent is active, the new sub stays hidden); and
+        //   2. focusing the sub itself so it becomes the viewport
+        //      owner under that parent.
+        // Mirrors `SidebarSubTab.handleClick`'s pattern of "focus
+        // parent if not already active, then focus the sub".
+        // Application kind is intentionally left alone — launching an
+        // app pops its own OS window; we don't yank in-app focus.
         if (def.kind === 'terminal') {
+          void sessionActions.focus(parentSessionId);
           void subActions.focus(sub.id);
         }
       })

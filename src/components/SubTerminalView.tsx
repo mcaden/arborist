@@ -13,6 +13,9 @@
 //   * the xterm scrollback stays visible above it (we do *not* clear
 //     on the entering-exited edge — the user wants to see the final
 //     "exit" echo, error message, or whatever the shell printed last);
+//   * the still-visible scrollback dims to `opacity-50` so the pane
+//     reads as inert at a glance — preserved for read but obviously
+//     not interactive;
 //   * Relaunch / Close are inline-text buttons, not big modal buttons,
 //     and live in the same row as the status text.
 //
@@ -119,7 +122,13 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
       aria-label={sub ? `Terminal for ${sub.label}` : 'Sub-session terminal'}
       className="relative flex h-full w-full flex-col bg-black p-2"
     >
-      <div ref={containerRef} className="min-h-0 flex-1 bg-black" />
+      <div
+        ref={containerRef}
+        data-testid="sub-terminal-host"
+        className={`min-h-0 flex-1 bg-black transition-opacity duration-150 ${
+          showExitedBar ? 'opacity-50' : ''
+        }`}
+      />
       {showExitedBar && (
         <div
           role="status"

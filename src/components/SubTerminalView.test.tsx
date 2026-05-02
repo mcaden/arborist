@@ -169,4 +169,38 @@ describe('SubTerminalView', () => {
     screen.getByRole('button', { name: /^close$/i }).click();
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
   });
+
+  // --- pane content dimming on exit -------------------------------------
+  // The xterm host (terminal pane content) fades to opacity-50 when the
+  // sub has exited or errored. The scrollback stays readable but the
+  // visual treatment makes "this shell is dead" instantly apparent —
+  // paired with the slim status bar at the bottom.
+
+  it('dims the terminal pane content (opacity-50) when the sub has exited', () => {
+    const sub = makeSub({ id: id('08'), status: 'exited', pid: undefined });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    render(<SubTerminalView subSessionId={sub.id} isActive />);
+    expect(screen.getByTestId('sub-terminal-host').className).toContain('opacity-50');
+  });
+
+  it('dims the terminal pane content (opacity-50) when the sub is in error state', () => {
+    const sub = makeSub({ id: id('09'), status: 'error', pid: undefined });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    render(<SubTerminalView subSessionId={sub.id} isActive />);
+    expect(screen.getByTestId('sub-terminal-host').className).toContain('opacity-50');
+  });
+
+  it('does NOT dim the terminal pane content while the sub is running', () => {
+    const sub = makeSub({ id: id('0a'), status: 'running', pid: 100 });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    render(<SubTerminalView subSessionId={sub.id} isActive />);
+    expect(screen.getByTestId('sub-terminal-host').className).not.toContain('opacity-50');
+  });
+
+  it('does NOT dim the terminal pane content while the sub is starting', () => {
+    const sub = makeSub({ id: id('0b'), status: 'starting' });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    render(<SubTerminalView subSessionId={sub.id} isActive />);
+    expect(screen.getByTestId('sub-terminal-host').className).not.toContain('opacity-50');
+  });
 });

@@ -189,7 +189,7 @@ describe('TabContextMenu', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('launching a terminal sub explicitly focuses the new sub-tab so the viewport swaps to it', async () => {
+  it('launching a terminal sub focuses both parent (session) and the new sub-tab so the viewport swaps to it', async () => {
     seed({
       customProcesses: [
         { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh -i', enabled: true },
@@ -201,15 +201,17 @@ describe('TabContextMenu', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('tab-context-menu-launch-shell'));
     });
-    // Same sub id seeded by the default `subSessionCreate` mock above.
+    // Parent must be focused so MainArea picks its pane to render —
+    // without this, when no parent (or a different parent) is currently
+    // active the new sub stays hidden (observed by the user).
+    expect(bridgeMock.sessionFocus).toHaveBeenCalledWith({ sessionId: PARENT });
+    // And the sub itself must be focused so it owns the viewport
+    // (`activeByParent[parent] = sub.id`). Same sub id seeded by the
+    // default `subSessionCreate` mock above.
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
-    // Parent session focus is intentionally NOT called — launching a sub
-    // shouldn't yank the user away from whatever parent is currently
-    // active.
-    expect(bridgeMock.sessionFocus).not.toHaveBeenCalled();
   });
 
-  it('launching an application sub does NOT call subSessionFocus (no viewport swap, no OS-window steal)', async () => {
+  it('launching an application sub does NOT focus parent or sub (no viewport swap, no OS-window steal)', async () => {
     seed({
       customProcesses: [
         { id: 'vscode', name: 'VS Code', kind: 'application', command: 'code .', enabled: true },
@@ -236,6 +238,7 @@ describe('TabContextMenu', () => {
       defId: 'vscode',
     });
     expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+    expect(bridgeMock.sessionFocus).not.toHaveBeenCalled();
   });
 
   it('empty Launch submenu offers a Settings handoff', () => {

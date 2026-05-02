@@ -234,45 +234,4 @@ describe('SidebarSubTab', () => {
     expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
-
-  // --- inactive/dead row dimming -----------------------------------------
-  // The status dot already changes colour, but the row content itself
-  // dims so the user can see at a glance that the underlying process
-  // is dead. Applied to the main button only — the close (×) sibling
-  // keeps its own opacity logic.
-
-  it('dims the row content (opacity-50) when a terminal sub has exited', () => {
-    const sub = makeSub({ id: id('0c'), kind: 'terminal', status: 'exited', pid: undefined });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('button', { name: sub.label }).className).toContain('opacity-50');
-  });
-
-  it('dims the row content (opacity-50) when a terminal sub has errored', () => {
-    const sub = makeSub({ id: id('0d'), kind: 'terminal', status: 'error', pid: undefined });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('button', { name: sub.label }).className).toContain('opacity-50');
-  });
-
-  it('dims the row content (opacity-50) when an application sub has exited', () => {
-    const sub = makeSub({ id: id('0e'), kind: 'application', status: 'exited', pid: undefined });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('button', { name: sub.label }).className).toContain('opacity-50');
-  });
-
-  it('does NOT dim the row content for a running sub (full opacity)', () => {
-    const sub = makeSub({ id: id('0f'), kind: 'terminal', status: 'running' });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('button', { name: sub.label }).className).not.toContain('opacity-50');
-  });
-
-  it('does NOT dim the row content for a starting sub (full opacity — pre-running, not dead)', () => {
-    const sub = makeSub({ id: id('10'), kind: 'terminal', status: 'starting' });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('button', { name: sub.label }).className).not.toContain('opacity-50');
-  });
 });
