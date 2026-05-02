@@ -204,13 +204,24 @@ mod platform {
         fn GetWindowThreadProcessId(hwnd: HWND, pid_out: *mut DWORD) -> DWORD;
         fn IsWindowVisible(hwnd: HWND) -> BOOL;
         fn IsWindow(hwnd: HWND) -> BOOL;
+        fn IsIconic(hwnd: HWND) -> BOOL;
         fn SetForegroundWindow(hwnd: HWND) -> BOOL;
+        fn BringWindowToTop(hwnd: HWND) -> BOOL;
+        fn SwitchToThisWindow(hwnd: HWND, alt_tab: BOOL);
+        fn AttachThreadInput(id_attach: DWORD, id_attach_to: DWORD, attach: BOOL) -> BOOL;
+        fn GetForegroundWindow() -> HWND;
         fn AllowSetForegroundWindow(pid: DWORD) -> BOOL;
         fn ShowWindow(hwnd: HWND, cmd: i32) -> BOOL;
         fn PostMessageW(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> BOOL;
     }
 
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThreadId() -> DWORD;
+    }
+
     const SW_RESTORE: i32 = 9;
+    const SW_SHOW: i32 = 5;
     const WM_CLOSE: UINT = 0x0010;
 
     struct EnumState {
@@ -249,21 +260,81 @@ mod platform {
     /// Brings a specific HWND to the foreground without re-running
     /// `EnumWindows`. `pid` is optional; when present we feed it to
     /// `AllowSetForegroundWindow` to lift Windows' focus-stealing block.
+    ///
+    /// ## Why this is more than `SetForegroundWindow`
+    ///
+    /// Windows' focus-stealing prevention can silently no-op
+    /// `SetForegroundWindow` (the taskbar button flashes instead of the
+    /// window coming forward). The bare-minimum invocation —
+    /// `ShowWindow(SW_RESTORE)` + `SetForegroundWindow` — works only
+    /// when the target was minimised; for a window that's merely
+    /// behind ours in z-order, the foreground call is rejected and
+    /// nothing visible happens. This was reported as "clicking VS Code
+    /// doesn't focus the window".
+    ///
+    /// The reliable Win32 idiom (used by AutoHotkey, the Win32
+    /// "ForceForegroundWindow" cookbook, etc.) is the
+    /// **AttachThreadInput trick**: temporarily attach our input queue
+    /// to the current foreground window's thread input queue. While
+    /// attached, Windows treats us as part of the foreground process
+    /// for focus-rule purposes, so `SetForegroundWindow` succeeds even
+    /// when the standalone call would not. We always detach again on
+    /// exit, regardless of intermediate failures.
+    ///
+    /// We also call `BringWindowToTop` (z-order) and `SwitchToThisWindow`
+    /// (legacy Alt+Tab activator) as belt-and-suspenders for cases
+    /// where individual calls are no-ops. The combined sequence is the
+    /// most reliable cross-Windows-version recipe; spurious extra
+    /// calls are cheap and side-effect-free.
     fn focus_hwnd_raw(hwnd: HWND, pid: Option<u32>) -> Result<(), Error> {
-        // SAFETY: hwnd is non-null at this point.
         unsafe {
             if IsWindow(hwnd) == 0 {
                 return Err(Error::NotFound("window handle is no longer valid".into()));
             }
+
             if let Some(p) = pid {
                 AllowSetForegroundWindow(p);
             }
-            ShowWindow(hwnd, SW_RESTORE);
+
+            // Restore if minimised; otherwise just ensure shown so a
+            // hidden-but-not-iconic window comes back too.
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            } else {
+                ShowWindow(hwnd, SW_SHOW);
+            }
+
+            // AttachThreadInput trick. Capture the foreground thread
+            // (may be us, may be a different process), our thread, and
+            // the target thread. Attaching is a best-effort op — if it
+            // fails (returns 0) we still try the rest, since on some
+            // setups SetForegroundWindow succeeds without the trick.
+            let foreground_hwnd = GetForegroundWindow();
+            let foreground_tid = if foreground_hwnd.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(foreground_hwnd, std::ptr::null_mut())
+            };
+            let target_tid = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            let current_tid = GetCurrentThreadId();
+            let _ = target_tid; // currently unused — we attach to the foreground thread, which is sufficient
+
+            let attached_fg = foreground_tid != 0
+                && foreground_tid != current_tid
+                && AttachThreadInput(current_tid, foreground_tid, 1) != 0;
+
+            BringWindowToTop(hwnd);
             // SetForegroundWindow returns 0 on failure but doesn't set
-            // GetLastError reliably, so there's nothing useful to
-            // surface. Treat as best-effort success — the common cause
-            // is the focus-stealing rule which we can't override.
+            // GetLastError reliably; treat as best-effort.
             SetForegroundWindow(hwnd);
+            // SwitchToThisWindow with TRUE (alt-tab semantics) activates
+            // even when SetForegroundWindow's z-order/focus path is
+            // partially blocked.
+            SwitchToThisWindow(hwnd, 1);
+
+            if attached_fg {
+                AttachThreadInput(current_tid, foreground_tid, 0);
+            }
         }
         Ok(())
     }

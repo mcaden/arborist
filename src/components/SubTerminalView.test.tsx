@@ -1,17 +1,20 @@
 // Behavioural tests for `SubTerminalView`.
 //
 // Status (running / exited / error):
-//   * running / starting → no in-pane overlay; the xterm host fills the
+//   * running / starting → no exited bar; the xterm host fills the
 //     viewport.
-//   * exited / error → an in-pane "Relaunch / Close" overlay is rendered
-//     ON TOP of the still-mounted xterm host. The terminal scrollback is
-//     cleared on the entry edge so the user doesn't see a stale prompt
-//     looking suspiciously alive. Sidebar dot still goes grey.
+//   * exited / error → a slim non-modal status bar renders BELOW the
+//     still-mounted xterm host with Relaunch / Close inline buttons.
+//     Deliberately not a dialog (no modal backdrop, no role="dialog")
+//     so it reads as part of the panel chrome rather than an
+//     interruption. The terminal scrollback stays visible — the user
+//     keeps the shell's final output (exit echo, error message, …).
 //
-// The `clear()` API is exercised on TWO transitions to defend against a
-// PTY race where a stray byte from the just-killed child arrives after
-// the new spawn begins (rubber-duck critique). Once on
-// running→exited/error, once on exited/error→starting.
+// The `clear()` API fires only on the exited/error → starting edge so
+// a relaunch starts fresh, defending against a PTY race where a stray
+// byte from the just-killed child arrives after the new spawn begins
+// (rubber-duck critique). It does NOT fire on the entering-exited edge
+// because that would erase the very output the user wants to read.
 
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -91,35 +94,38 @@ afterEach(() => {
 });
 
 describe('SubTerminalView', () => {
-  it('renders no overlay while the sub-session is running', () => {
+  it('renders no exited bar while the sub-session is running', () => {
     const sub = makeSub({ id: id('01'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: /sub-session ended/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /relaunch/i })).not.toBeInTheDocument();
   });
 
-  it('shows the relaunch overlay when the sub-session has exited', () => {
+  it('shows the exited bar (non-dialog) when the sub-session has exited', () => {
     const sub = makeSub({ id: id('02'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(screen.getByRole('dialog', { name: /sub-session ended/i })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: /sub-session ended/i })).toBeInTheDocument();
+    // Deliberately not a dialog — must NOT render with role="dialog"
+    // so it doesn't read as a modal interruption.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /relaunch/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument();
   });
 
-  it('shows the relaunch overlay when the sub-session is in error state (with error-flavoured copy)', () => {
-    const sub = makeSub({ id: id('03'), status: 'error', pid: undefined });
+  it('shows error-flavoured copy when the sub-session is in error state', () => {
+    const sub = makeSub({ id: id('03'), label: 'Shell', status: 'error', pid: undefined });
     useSubSessionStore.setState({
       subSessions: [sub],
       statusMessages: { [sub.id]: 'spawn failed: ENOENT' },
     });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(screen.getByRole('dialog', { name: /sub-session ended/i })).toBeInTheDocument();
-    expect(screen.getByText(/sub-session ended with an error/i)).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: /sub-session ended/i })).toBeInTheDocument();
+    expect(screen.getByText(/ended with an error/i)).toBeInTheDocument();
   });
 
-  it('clears the terminal once on the running → exited transition', () => {
+  it('does NOT clear the terminal on the running → exited transition (preserves final scrollback)', () => {
     const sub = makeSub({ id: id('04'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
@@ -128,24 +134,26 @@ describe('SubTerminalView', () => {
       subSessions: [withStatus(sub, 'exited')],
     });
     rerender(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(clearMock).toHaveBeenCalledTimes(1);
+    // The whole point of dropping the modal overlay is to keep the
+    // shell's final output visible. clear() must NOT fire here.
+    expect(clearMock).not.toHaveBeenCalled();
   });
 
-  it('clears the terminal again on the exited → starting transition (defends against late stray bytes)', () => {
+  it('clears the terminal on the exited → starting transition (defends against late stray bytes)', () => {
     const sub = makeSub({ id: id('05'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
-    // Initial entry into exited counts as the "into-exited" edge — first
-    // mount with exited status fires the clear.
-    expect(clearMock).toHaveBeenCalledTimes(1);
+    // First mount with already-exited status must NOT fire a spurious
+    // clear (prev was undefined, not exited → starting).
+    expect(clearMock).not.toHaveBeenCalled();
     useSubSessionStore.setState({
       subSessions: [withStatus(sub, 'starting')],
     });
     rerender(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(clearMock).toHaveBeenCalledTimes(2);
+    expect(clearMock).toHaveBeenCalledTimes(1);
   });
 
-  it('clicking Relaunch in the overlay calls subSessionRelaunch with the sub id', () => {
+  it('clicking Relaunch in the bar calls subSessionRelaunch with the sub id', () => {
     const sub = makeSub({ id: id('06'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
@@ -154,7 +162,7 @@ describe('SubTerminalView', () => {
     expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
   });
 
-  it('clicking Close in the overlay calls subSessionClose with default tabOnly intent', () => {
+  it('clicking Close in the bar calls subSessionClose with default tabOnly intent', () => {
     const sub = makeSub({ id: id('07'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);

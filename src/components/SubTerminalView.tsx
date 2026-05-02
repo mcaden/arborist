@@ -5,23 +5,25 @@
 // owns DOM mount/unmount and focus on activation.
 //
 // Exit / error UX: when a terminal sub-session transitions into `exited`
-// or `error` we **clear** the xterm scrollback and overlay a "Relaunch /
-// Close" pane on top of the (still-mounted) terminal host. This:
+// or `error`, we render a slim non-modal status bar at the bottom of the
+// pane offering Relaunch / Close. This is **deliberately not a dialog**:
 //
-//   * removes any final stale prompt / "exit" echo so the user isn't
-//     looking at a frozen-but-live-looking shell;
-//   * gives an in-pane affordance to restart the same id (preserves
-//     position in sidebar, parent-session binding, label) without
-//     requiring a sidebar round-trip;
-//   * does **not** unmount the xterm Terminal — the registry instance
-//     survives so a relaunch reuses the same `cols`/`rows` measured at
-//     mount time, avoiding a flash-of-default-size on respawn.
+//   * the bar is part of the panel chrome — no backdrop, no centred
+//     card, no border — so it doesn't read as a modal interruption;
+//   * the xterm scrollback stays visible above it (we do *not* clear
+//     on the entering-exited edge — the user wants to see the final
+//     "exit" echo, error message, or whatever the shell printed last);
+//   * Relaunch / Close are inline-text buttons, not big modal buttons,
+//     and live in the same row as the status text.
 //
-// We also clear once more on the inverse transition (exited/error →
-// starting) to defend against a backend race where a stray output byte
-// from the just-killed PTY arrives after the new spawn begins (per
-// rubber-duck critique). Only one of the two clears typically observes
-// any content; the second is cheap insurance.
+// We DO clear the scrollback on the inverse transition (exited/error →
+// starting) so a relaunch starts fresh — and to defend against a backend
+// race where a stray output byte from the just-killed PTY arrives after
+// the new spawn begins (per rubber-duck critique).
+//
+// The xterm Terminal is never unmounted on status change; the registry
+// instance survives so a relaunch reuses the same `cols`/`rows` measured
+// at mount time, avoiding a flash-of-default-size on respawn.
 
 import { useEffect, useRef } from 'react';
 
@@ -50,22 +52,21 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
   const subActions = useSubSessionActions();
 
   const status = sub?.status;
-  const showRelaunchOverlay = isExitedStatus(status);
+  const showExitedBar = isExitedStatus(status);
 
-  // Track previous status so we can detect transitions and clear the
-  // scrollback exactly once per edge (avoid clearing every render). The
-  // ref starts undefined so a first-mount with status already in
-  // exited/error counts as the entering edge — handles
-  // restore-on-launch where the registry's terminal may have leftover
-  // scrollback from before a window reload.
+  // Track previous status so we can clear the scrollback on the
+  // exited/error → starting edge exactly once. Starting from
+  // `undefined` means the *first* render with an already-starting
+  // status (rare, but possible during restore-on-launch) won't fire a
+  // spurious clear. We deliberately do NOT clear on the entering-exited
+  // edge — the user wants to see the shell's final output (exit echo,
+  // error message, etc.).
   const prevStatusRef = useRef<SubSessionStatus | undefined>(undefined);
   useEffect(() => {
     const prev = prevStatusRef.current;
     prevStatusRef.current = status;
     if (status === undefined) return;
-    const enteringExited = !isExitedStatus(prev) && isExitedStatus(status);
-    const leavingExitedToStarting = isExitedStatus(prev) && status === 'starting';
-    if (enteringExited || leavingExitedToStarting) {
+    if (isExitedStatus(prev) && status === 'starting') {
       clear();
     }
   }, [status, clear]);
@@ -81,18 +82,19 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
 
   // Same rationale as TerminalView: visibility:hidden panels don't fire
   // ResizeObserver, so re-measure + steal focus on the activation edge.
-  // Skip focusing when the relaunch overlay is up so the keyboard lands
-  // on the dialog buttons, not a defunct xterm.
+  // While the exit status bar is up the underlying shell is dead, so
+  // keyboard focus stays on the bar's Relaunch button instead of the
+  // defunct xterm.
   useEffect(() => {
     if (!isActive) return;
     const handle = requestAnimationFrame(() => {
       refit();
-      if (!showRelaunchOverlay) {
+      if (!showExitedBar) {
         focus();
       }
     });
     return () => cancelAnimationFrame(handle);
-  }, [isActive, refit, focus, showRelaunchOverlay]);
+  }, [isActive, refit, focus, showExitedBar]);
 
   const handleRelaunch = (): void => {
     void subActions.relaunch(subSessionId);
@@ -102,47 +104,51 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
     void subActions.close(subSessionId);
   };
 
+  const exitedSummary = (() => {
+    if (status === 'error') {
+      return sub?.label
+        ? `“${sub.label}” ended with an error.`
+        : 'Sub-session ended with an error.';
+    }
+    return sub?.label ? `“${sub.label}” ended.` : 'Sub-session ended.';
+  })();
+
   return (
     <div
       role="tabpanel"
       aria-label={sub ? `Terminal for ${sub.label}` : 'Sub-session terminal'}
-      className="relative h-full w-full bg-black p-2"
+      className="relative flex h-full w-full flex-col bg-black p-2"
     >
-      <div ref={containerRef} className="h-full w-full bg-black" />
-      {showRelaunchOverlay && (
+      <div ref={containerRef} className="min-h-0 flex-1 bg-black" />
+      {showExitedBar && (
         <div
-          role="dialog"
+          role="status"
+          aria-live="polite"
           aria-label="Sub-session ended"
-          className="absolute inset-0 flex items-center justify-center bg-black/80 p-4"
+          className="mt-1 flex items-center gap-2 border-t border-slate-800 bg-black px-2 py-1 font-mono text-xs"
         >
-          <div className="max-w-md rounded-md border border-slate-700 bg-slate-900 p-5 text-slate-100 shadow-lg">
-            <h3 className="mb-2 text-base font-semibold">
-              {status === 'error' ? 'Sub-session ended with an error' : 'Sub-session ended'}
-            </h3>
-            <p className="mb-4 text-sm text-slate-300">
-              {sub?.label
-                ? `“${sub.label}” is no longer running.`
-                : 'This sub-session is no longer running.'}{' '}
-              Relaunch to start it again, or close to remove this tab.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={handleClose}
-                className="rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 text-sm text-slate-100 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-              >
-                Close
-              </button>
-              <button
-                type="button"
-                onClick={handleRelaunch}
-                autoFocus
-                className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-              >
-                Relaunch
-              </button>
-            </div>
-          </div>
+          <span
+            aria-hidden="true"
+            className={status === 'error' ? 'text-red-400' : 'text-slate-500'}
+          >
+            ●
+          </span>
+          <span className="min-w-0 flex-1 truncate text-slate-400">{exitedSummary}</span>
+          <button
+            type="button"
+            onClick={handleRelaunch}
+            autoFocus
+            className="rounded px-2 py-0.5 text-sky-400 transition-colors hover:bg-slate-900 hover:text-sky-300 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
+          >
+            Relaunch
+          </button>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="rounded px-2 py-0.5 text-slate-400 transition-colors hover:bg-slate-900 hover:text-slate-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
+          >
+            Close
+          </button>
         </div>
       )}
     </div>
