@@ -32,9 +32,14 @@
 //   fire). We listen for `document.visibilitychange` (visible again),
 //   `window.focus` (covers WebView2 cases where focus returns without a
 //   visibility transition) and `matchMedia('(resolution: <DPR>dppx)')`
-//   `change` (DPI change from docking/undocking), and refit every attached
-//   terminal. All triggers are coalesced through a single `rAF` so a
-//   sleep→wake that fires multiple events still only does one refit pass.
+//   `change` (DPI change from docking/undocking), and refit only the
+//   *active* terminal. Hidden terminals (kept mounted by `MainArea` with
+//   `visibility: hidden`) are deliberately skipped — `TerminalView`'s
+//   `isActive` effect already runs `refit()` on tab activation, so they
+//   self-heal when the user switches to them. This keeps the wake pass
+//   O(1) regardless of how many sessions are open. All triggers are
+//   coalesced through a single `rAF` so a sleep→wake that fires multiple
+//   events still only does one refit pass.
 
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
@@ -83,14 +88,19 @@ let wakeRefitFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let visibilityListener: (() => void) | null = null;
 let focusListener: (() => void) | null = null;
 let dpiMediaQuery: MediaQueryList | null = null;
-let dpiMediaQueryListener: ((event: MediaQueryListEvent) => void) | null = null;
+// Detach closure captured at install time — invokes either
+// `removeEventListener('change', ...)` (modern) or `removeListener(...)`
+// (legacy WebView fallback) so teardown doesn't have to know which API
+// the runtime supports.
+let dpiMediaQueryDetach: (() => void) | null = null;
 
 /**
  * Coalesce multiple wake triggers (visibility, focus, DPI) into a single
- * refit pass per animation frame. Refit is cheap on the no-op branch
- * (`fit()` short-circuits when cols/rows are unchanged), but `refit()`
- * always pokes the render service + calls `term.refresh()`, so we still
- * want to avoid doing it N times when sleep/wake fires N events back-to-back.
+ * refit pass per animation frame. Only refits the *active* session;
+ * hidden sessions (kept mounted by `MainArea` with `visibility: hidden`)
+ * are skipped because `TerminalView`'s `isActive` effect already runs
+ * `refit()` when the user switches to them — so they self-heal lazily.
+ * This keeps wake work O(1) regardless of session count.
  */
 function scheduleWakeRefit(): void {
   if (wakeRefitPending) return;
@@ -103,15 +113,14 @@ function scheduleWakeRefit(): void {
       clearTimeout(wakeRefitFallbackTimer);
       wakeRefitFallbackTimer = null;
     }
-    for (const [id, entry] of registry) {
-      if (entry.wrapper && entry.wrapper.isConnected) {
-        try {
-          refitEntry(id, entry);
-        } catch {
-          // refitEntry already swallows fit() throws; this is belt-and-suspenders
-          // so one misbehaving entry can't strand the rest.
-        }
-      }
+    const activeId = useSessionStore.getState().activeId;
+    if (!activeId) return;
+    const entry = registry.get(activeId);
+    if (!entry || !entry.wrapper || !entry.wrapper.isConnected) return;
+    try {
+      refitEntry(activeId, entry);
+    } catch {
+      // refitEntry already swallows fit() throws; this is belt-and-suspenders.
     }
   };
 
@@ -127,6 +136,10 @@ function scheduleWakeRefit(): void {
  * when it transitions (docking/undocking, monitor change during sleep) we
  * refit and re-arm against the new DPR. Idempotent w.r.t. an already-armed
  * query — the caller is expected to clear `dpiMediaQuery` before re-arming.
+ *
+ * Older WebViews only expose the legacy `addListener`/`removeListener` API
+ * on `MediaQueryList` (no `addEventListener`); we mirror the fallback used
+ * in `App.tsx` for the dark-mode media query.
  */
 function installDpiListener(): void {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -139,27 +152,45 @@ function installDpiListener(): void {
     // DPI changes are best-effort; visibility/focus still cover sleep/wake.
     return;
   }
+  let detach: (() => void) | null = null;
   const listener = (_event: MediaQueryListEvent): void => {
     scheduleWakeRefit();
     // Detach the (now-stale) query and re-arm against the new DPR.
-    try {
-      mq.removeEventListener('change', listener);
-    } catch {
-      // ignore
+    if (detach) {
+      try {
+        detach();
+      } catch {
+        // ignore
+      }
     }
     if (dpiMediaQuery === mq) {
       dpiMediaQuery = null;
-      dpiMediaQueryListener = null;
+      dpiMediaQueryDetach = null;
     }
     installDpiListener();
   };
-  try {
-    mq.addEventListener('change', listener);
-  } catch {
+  // Modern: addEventListener. Legacy WebViews: addListener.
+  if (typeof mq.addEventListener === 'function') {
+    try {
+      mq.addEventListener('change', listener);
+    } catch {
+      return;
+    }
+    detach = (): void => mq.removeEventListener('change', listener);
+  } else if (typeof mq.addListener === 'function') {
+    try {
+      mq.addListener(listener);
+    } catch {
+      return;
+    }
+    detach = (): void => mq.removeListener(listener);
+  } else {
+    // Neither API available — DPI changes will go unhandled, but
+    // visibility/focus still cover sleep/wake.
     return;
   }
   dpiMediaQuery = mq;
-  dpiMediaQueryListener = listener;
+  dpiMediaQueryDetach = detach;
 }
 
 /**
@@ -198,15 +229,15 @@ function teardownWakeListeners(): void {
     window.removeEventListener('focus', focusListener);
   }
   focusListener = null;
-  if (dpiMediaQuery && dpiMediaQueryListener) {
+  if (dpiMediaQueryDetach) {
     try {
-      dpiMediaQuery.removeEventListener('change', dpiMediaQueryListener);
+      dpiMediaQueryDetach();
     } catch {
       // ignore
     }
   }
   dpiMediaQuery = null;
-  dpiMediaQueryListener = null;
+  dpiMediaQueryDetach = null;
   if (wakeRefitFrame !== null && typeof cancelAnimationFrame === 'function') {
     cancelAnimationFrame(wakeRefitFrame);
   }

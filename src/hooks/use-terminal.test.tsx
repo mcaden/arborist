@@ -83,6 +83,7 @@ import {
   sessionInput,
   sessionResize,
 } from '@/lib/tauri-bridge.mock';
+import { useSessionStore } from '@/store/session-store';
 
 function makeHost(width = 600, height = 400): HTMLDivElement {
   const el = document.createElement('div');
@@ -105,6 +106,8 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetTerminalRegistryForTests();
+  // Reset session store activeId so wake-refit tests don't leak state.
+  useSessionStore.setState({ activeId: undefined });
   document.body.innerHTML = '';
   vi.useRealTimers();
   // Restore (or delete) ResizeObserver — several tests in this file
@@ -1111,7 +1114,8 @@ describe('wake/visibility/DPI refit', () => {
   // suspended (system sleep, monitor unplug), the host's CSS box doesn't
   // change so ResizeObserver never fires, but the renderer canvas can
   // still be stale. We listen for `visibilitychange`, `window.focus`, and
-  // DPI media-query changes and refit every attached terminal.
+  // DPI media-query changes and refit only the *active* session — hidden
+  // sessions self-heal via TerminalView's `isActive` activation refit.
 
   function dispatchVisibilityChange(hidden: boolean): void {
     Object.defineProperty(document, 'hidden', { value: hidden, configurable: true });
@@ -1122,10 +1126,17 @@ describe('wake/visibility/DPI refit', () => {
     document.dispatchEvent(new Event('visibilitychange'));
   }
 
-  it('refits attached terminals when the document becomes visible again', () => {
+  function setActive(id: string): void {
+    act(() => {
+      useSessionStore.setState({ activeId: id });
+    });
+  }
+
+  it('refits the active terminal when the document becomes visible again', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
+    setActive('s1');
     // Baseline: attach already ran one synchronous fit.
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
 
@@ -1145,6 +1156,7 @@ describe('wake/visibility/DPI refit', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
+    setActive('s1');
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
 
     act(() => {
@@ -1156,10 +1168,11 @@ describe('wake/visibility/DPI refit', () => {
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
   });
 
-  it('refits attached terminals when window receives focus', () => {
+  it('refits the active terminal when window receives focus', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
+    setActive('s1');
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
 
     act(() => {
@@ -1170,7 +1183,12 @@ describe('wake/visibility/DPI refit', () => {
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
   });
 
-  it('coalesces multiple wake events fired in the same frame into a single refit', () => {
+  it('only refits the active session — hidden sessions are skipped (O(1) wake work)', () => {
+    // MainArea keeps every TerminalView mounted with `visibility: hidden`
+    // so all wrappers are `isConnected`. The wake path must NOT iterate
+    // them all — TerminalView's isActive effect already refits when the
+    // user activates a previously-hidden tab. This test pins that O(1)
+    // contract: 1 active refit, 0 hidden refits.
     const { result: r1 } = renderHook(() => useTerminal('s1'));
     const { result: r2 } = renderHook(() => useTerminal('s2'));
     const h1 = makeHost();
@@ -1179,11 +1197,28 @@ describe('wake/visibility/DPI refit', () => {
       r1.current.attach(h1);
       r2.current.attach(h2);
     });
+    setActive('s1');
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
     expect(mockFitAddons[1]!.fit).toHaveBeenCalledTimes(1);
 
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      vi.advanceTimersByTime(20);
+    });
+
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2); // active refit
+    expect(mockFitAddons[1]!.fit).toHaveBeenCalledTimes(1); // hidden untouched
+  });
+
+  it('coalesces multiple wake events fired in the same frame into a single refit', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    setActive('s1');
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
     // Sleep/wake on Windows often fires visibility AND focus back-to-back.
-    // Both should collapse into one rAF tick → one refit pass per terminal.
+    // All three triggers must collapse into one rAF tick → one extra fit.
     act(() => {
       dispatchVisibilityChange(false);
       window.dispatchEvent(new Event('focus'));
@@ -1192,13 +1227,28 @@ describe('wake/visibility/DPI refit', () => {
     });
 
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
-    expect(mockFitAddons[1]!.fit).toHaveBeenCalledTimes(2);
   });
 
-  it('skips refit for terminals whose wrapper is no longer connected', () => {
+  it('skips refit when no session is active', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
+    // No setActive() — activeId stays undefined.
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      vi.advanceTimersByTime(20);
+    });
+
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips refit when the active terminal wrapper is no longer connected', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    setActive('s1');
     act(() => result.current.detach());
 
     act(() => {
@@ -1206,8 +1256,8 @@ describe('wake/visibility/DPI refit', () => {
       vi.advanceTimersByTime(20);
     });
 
-    // attach was the only successful fit; the wake refit saw the entry
-    // had no connected wrapper and skipped it.
+    // attach was the only successful fit; the wake refit saw the active
+    // entry had no connected wrapper and skipped it.
     expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
   });
 
@@ -1271,6 +1321,7 @@ describe('wake/visibility/DPI refit', () => {
       const { result } = renderHook(() => useTerminal('s1'));
       const host = makeHost();
       act(() => result.current.attach(host));
+      setActive('s1');
       expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
 
       // Wake listeners installed one DPI query against the current DPR.
@@ -1301,6 +1352,54 @@ describe('wake/visibility/DPI refit', () => {
         value: originalDpr,
         configurable: true,
       });
+    }
+  });
+
+  it('uses legacy addListener/removeListener when MediaQueryList lacks addEventListener', () => {
+    // Older WebViews only expose the deprecated MediaQueryList API
+    // (`addListener`/`removeListener`); App.tsx does the same fallback for
+    // its prefers-color-scheme query (App.tsx:50-57). Without this
+    // fallback the DPI listener would silently never arm on those engines.
+    const addListener = vi.fn();
+    const removeListener = vi.fn();
+    let captured: ((event: MediaQueryListEvent) => void) | null = null;
+    const fakeMatchMedia = (query: string): MediaQueryList =>
+      ({
+        media: query,
+        matches: true,
+        onchange: null,
+        // addEventListener is intentionally `undefined` to force the
+        // legacy branch — that's the runtime shape of older WebViews.
+        addEventListener: undefined,
+        removeEventListener: undefined,
+        addListener: addListener.mockImplementation((cb: (event: MediaQueryListEvent) => void) => {
+          captured = cb;
+        }),
+        removeListener,
+        dispatchEvent: vi.fn(),
+      }) as unknown as MediaQueryList;
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = fakeMatchMedia as typeof window.matchMedia;
+    try {
+      const { result } = renderHook(() => useTerminal('s1'));
+      const host = makeHost();
+      act(() => result.current.attach(host));
+      setActive('s1');
+      expect(addListener).toHaveBeenCalledTimes(1);
+      expect(captured).not.toBeNull();
+
+      // Fire the legacy listener — should refit AND detach via removeListener.
+      act(() => {
+        captured!({ matches: false } as MediaQueryListEvent);
+        vi.advanceTimersByTime(20);
+      });
+
+      expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+      expect(removeListener).toHaveBeenCalledTimes(1);
+      // Re-arm uses the legacy path again on the new MediaQueryList.
+      expect(addListener).toHaveBeenCalledTimes(2);
+    } finally {
+      window.matchMedia = originalMatchMedia;
     }
   });
 });
