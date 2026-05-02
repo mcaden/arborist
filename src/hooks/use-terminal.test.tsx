@@ -1106,6 +1106,205 @@ describe('useTerminal', () => {
   });
 });
 
+describe('wake/visibility/DPI refit', () => {
+  // These tests cover the sleep/wake recovery path: when WebView2 is
+  // suspended (system sleep, monitor unplug), the host's CSS box doesn't
+  // change so ResizeObserver never fires, but the renderer canvas can
+  // still be stale. We listen for `visibilitychange`, `window.focus`, and
+  // DPI media-query changes and refit every attached terminal.
+
+  function dispatchVisibilityChange(hidden: boolean): void {
+    Object.defineProperty(document, 'hidden', { value: hidden, configurable: true });
+    Object.defineProperty(document, 'visibilityState', {
+      value: hidden ? 'hidden' : 'visible',
+      configurable: true,
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }
+
+  it('refits attached terminals when the document becomes visible again', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    // Baseline: attach already ran one synchronous fit.
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    // Sleep → wake: dispatch visibilitychange(visible). The refit is
+    // coalesced through rAF (which vi's fake timers also drive), so we
+    // tick a frame to let it run.
+    act(() => {
+      dispatchVisibilityChange(false);
+      vi.advanceTimersByTime(20);
+    });
+
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+    expect(mockTerminals[0]!.refresh).toHaveBeenLastCalledWith(0, 23);
+  });
+
+  it('does NOT refit when the document is hidden (sleep/minimize)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      dispatchVisibilityChange(true);
+      vi.advanceTimersByTime(20);
+    });
+
+    // Refit is gated on `!document.hidden`, so a hide event is a no-op.
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it('refits attached terminals when window receives focus', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      vi.advanceTimersByTime(20);
+    });
+
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+  });
+
+  it('coalesces multiple wake events fired in the same frame into a single refit', () => {
+    const { result: r1 } = renderHook(() => useTerminal('s1'));
+    const { result: r2 } = renderHook(() => useTerminal('s2'));
+    const h1 = makeHost();
+    const h2 = makeHost();
+    act(() => {
+      r1.current.attach(h1);
+      r2.current.attach(h2);
+    });
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+    expect(mockFitAddons[1]!.fit).toHaveBeenCalledTimes(1);
+
+    // Sleep/wake on Windows often fires visibility AND focus back-to-back.
+    // Both should collapse into one rAF tick → one refit pass per terminal.
+    act(() => {
+      dispatchVisibilityChange(false);
+      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('focus'));
+      vi.advanceTimersByTime(20);
+    });
+
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+    expect(mockFitAddons[1]!.fit).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips refit for terminals whose wrapper is no longer connected', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    act(() => result.current.detach());
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      vi.advanceTimersByTime(20);
+    });
+
+    // attach was the only successful fit; the wake refit saw the entry
+    // had no connected wrapper and skipped it.
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not double-install listeners across repeated initTerminalRouter calls', () => {
+    // Direct assertion on registration, not downstream behavior: the
+    // `wakeRefitPending` flag would collapse N independent handlers into
+    // one extra fit() per frame anyway, so a fit-count canary cannot
+    // distinguish "1 listener" from "N listeners". Spy on
+    // addEventListener to count the actual registrations.
+    const docSpy = vi.spyOn(document, 'addEventListener');
+    const winSpy = vi.spyOn(window, 'addEventListener');
+    try {
+      initTerminalRouter();
+      initTerminalRouter();
+      initTerminalRouter();
+
+      const visibilityRegistrations = docSpy.mock.calls.filter(
+        (call) => call[0] === 'visibilitychange',
+      );
+      const focusRegistrations = winSpy.mock.calls.filter((call) => call[0] === 'focus');
+      expect(visibilityRegistrations).toHaveLength(1);
+      expect(focusRegistrations).toHaveLength(1);
+    } finally {
+      docSpy.mockRestore();
+      winSpy.mockRestore();
+    }
+  });
+
+  it('refits via DPI media-query change (docking/undocking)', () => {
+    // Polyfill matchMedia: capture the most-recently-attached `change`
+    // listener so the test can fire it explicitly.
+    const mqls: Array<{
+      media: string;
+      listener: ((event: MediaQueryListEvent) => void) | null;
+      removed: boolean;
+    }> = [];
+    const fakeMatchMedia = (query: string): MediaQueryList => {
+      const entry: (typeof mqls)[number] = { media: query, listener: null, removed: false };
+      mqls.push(entry);
+      return {
+        media: query,
+        matches: true,
+        onchange: null,
+        addEventListener: vi.fn((_type: string, cb: (event: MediaQueryListEvent) => void) => {
+          entry.listener = cb;
+        }),
+        removeEventListener: vi.fn(() => {
+          entry.removed = true;
+        }),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      } as unknown as MediaQueryList;
+    };
+    const originalMatchMedia = window.matchMedia;
+    const originalDpr = window.devicePixelRatio;
+    window.matchMedia = fakeMatchMedia as typeof window.matchMedia;
+    // Start at fractional DPR (Windows 150% scaling).
+    Object.defineProperty(window, 'devicePixelRatio', { value: 1.5, configurable: true });
+    try {
+      const { result } = renderHook(() => useTerminal('s1'));
+      const host = makeHost();
+      act(() => result.current.attach(host));
+      expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+      // Wake listeners installed one DPI query against the current DPR.
+      expect(mqls).toHaveLength(1);
+      const initial = mqls[0]!;
+      expect(initial.media).toBe('(resolution: 1.5dppx)');
+      expect(initial.listener).not.toBeNull();
+
+      // DPR changes (laptop docked → external monitor with different DPI).
+      // Update window.devicePixelRatio FIRST so the synchronous re-arm
+      // inside the change handler reads the new value, then fire change.
+      Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+      act(() => {
+        initial.listener!({ matches: false } as MediaQueryListEvent);
+        vi.advanceTimersByTime(20);
+      });
+
+      // Refit fired and the (now-stale) query was detached + a new one
+      // armed against the NEW DPR (not the stale 1.5).
+      expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(2);
+      expect(initial.removed).toBe(true);
+      expect(mqls).toHaveLength(2);
+      expect(mqls[1]!.media).toBe('(resolution: 2dppx)');
+      expect(mqls[1]!.listener).not.toBeNull();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'devicePixelRatio', {
+        value: originalDpr,
+        configurable: true,
+      });
+    }
+  });
+});
+
 describe('initial PTY dimension helpers', () => {
   it('getTerminalDimensions returns null for unknown sessions', () => {
     expect(getTerminalDimensions('nope')).toBeNull();

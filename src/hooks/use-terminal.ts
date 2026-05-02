@@ -26,6 +26,15 @@
 //   resolve. It runs `fit()` + `term.refresh()` to recover from any stale
 //   renderer state (e.g. measurements taken pre-font-load or while the
 //   panel was `visibility: hidden`).
+// * Wake/visibility/DPI refit: when the OS sleeps, WebView2 can suspend its
+//   renderer; on resume the canvas/inline-size state can be stale even
+//   though the host's CSS box never changed (so `ResizeObserver` doesn't
+//   fire). We listen for `document.visibilitychange` (visible again),
+//   `window.focus` (covers WebView2 cases where focus returns without a
+//   visibility transition) and `matchMedia('(resolution: <DPR>dppx)')`
+//   `change` (DPI change from docking/undocking), and refit every attached
+//   terminal. All triggers are coalesced through a single `rAF` so a
+//   sleep→wake that fires multiple events still only does one refit pass.
 
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
@@ -61,6 +70,154 @@ const registry = new Map<SessionId, RegistryEntry>();
 let outputUnlisten: Promise<() => void> | null = null;
 let storeUnsubscribe: (() => void) | null = null;
 let fontsReadyAttached = false;
+
+// Wake-refit listener state. All four are owned by `ensureWakeListeners()`
+// (install) and `teardownWakeListeners()` (test-only cleanup). The DPI media
+// query is re-attached against the new DPR after every fire because
+// `(resolution: Xdppx)` queries are pinned to a specific value — so we
+// listen for the *current* DPR transitioning false, then re-arm.
+let wakeListenersInstalled = false;
+let wakeRefitPending = false;
+let wakeRefitFrame: number | null = null;
+let wakeRefitFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+let visibilityListener: (() => void) | null = null;
+let focusListener: (() => void) | null = null;
+let dpiMediaQuery: MediaQueryList | null = null;
+let dpiMediaQueryListener: ((event: MediaQueryListEvent) => void) | null = null;
+
+/**
+ * Coalesce multiple wake triggers (visibility, focus, DPI) into a single
+ * refit pass per animation frame. Refit is cheap on the no-op branch
+ * (`fit()` short-circuits when cols/rows are unchanged), but `refit()`
+ * always pokes the render service + calls `term.refresh()`, so we still
+ * want to avoid doing it N times when sleep/wake fires N events back-to-back.
+ */
+function scheduleWakeRefit(): void {
+  if (wakeRefitPending) return;
+  wakeRefitPending = true;
+
+  const run = (): void => {
+    wakeRefitPending = false;
+    wakeRefitFrame = null;
+    if (wakeRefitFallbackTimer !== null) {
+      clearTimeout(wakeRefitFallbackTimer);
+      wakeRefitFallbackTimer = null;
+    }
+    for (const [id, entry] of registry) {
+      if (entry.wrapper && entry.wrapper.isConnected) {
+        try {
+          refitEntry(id, entry);
+        } catch {
+          // refitEntry already swallows fit() throws; this is belt-and-suspenders
+          // so one misbehaving entry can't strand the rest.
+        }
+      }
+    }
+  };
+
+  if (typeof requestAnimationFrame === 'function') {
+    wakeRefitFrame = requestAnimationFrame(run);
+  } else {
+    wakeRefitFallbackTimer = setTimeout(run, 0);
+  }
+}
+
+/**
+ * Install/refresh the DPI media-query listener. We pin to the current DPR;
+ * when it transitions (docking/undocking, monitor change during sleep) we
+ * refit and re-arm against the new DPR. Idempotent w.r.t. an already-armed
+ * query — the caller is expected to clear `dpiMediaQuery` before re-arming.
+ */
+function installDpiListener(): void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  const dpr = window.devicePixelRatio || 1;
+  let mq: MediaQueryList;
+  try {
+    mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
+  } catch {
+    // Some older WebViews don't support `resolution` in matchMedia syntax.
+    // DPI changes are best-effort; visibility/focus still cover sleep/wake.
+    return;
+  }
+  const listener = (_event: MediaQueryListEvent): void => {
+    scheduleWakeRefit();
+    // Detach the (now-stale) query and re-arm against the new DPR.
+    try {
+      mq.removeEventListener('change', listener);
+    } catch {
+      // ignore
+    }
+    if (dpiMediaQuery === mq) {
+      dpiMediaQuery = null;
+      dpiMediaQueryListener = null;
+    }
+    installDpiListener();
+  };
+  try {
+    mq.addEventListener('change', listener);
+  } catch {
+    return;
+  }
+  dpiMediaQuery = mq;
+  dpiMediaQueryListener = listener;
+}
+
+/**
+ * Wire up wake/visibility/DPI listeners that recover the renderer after
+ * the OS suspends WebView2 (system sleep, monitor unplug, etc). Idempotent;
+ * a second call is a no-op. See file header for the design rationale.
+ */
+function ensureWakeListeners(): void {
+  if (wakeListenersInstalled) return;
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+  visibilityListener = (): void => {
+    if (!document.hidden) scheduleWakeRefit();
+  };
+  document.addEventListener('visibilitychange', visibilityListener);
+
+  focusListener = (): void => {
+    scheduleWakeRefit();
+  };
+  window.addEventListener('focus', focusListener);
+
+  installDpiListener();
+  wakeListenersInstalled = true;
+}
+
+/**
+ * Test-only: tear down the wake listeners installed by `ensureWakeListeners`.
+ * Called from `__resetTerminalRegistryForTests` so each test starts clean.
+ */
+function teardownWakeListeners(): void {
+  if (typeof document !== 'undefined' && visibilityListener) {
+    document.removeEventListener('visibilitychange', visibilityListener);
+  }
+  visibilityListener = null;
+  if (typeof window !== 'undefined' && focusListener) {
+    window.removeEventListener('focus', focusListener);
+  }
+  focusListener = null;
+  if (dpiMediaQuery && dpiMediaQueryListener) {
+    try {
+      dpiMediaQuery.removeEventListener('change', dpiMediaQueryListener);
+    } catch {
+      // ignore
+    }
+  }
+  dpiMediaQuery = null;
+  dpiMediaQueryListener = null;
+  if (wakeRefitFrame !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(wakeRefitFrame);
+  }
+  wakeRefitFrame = null;
+  if (wakeRefitFallbackTimer !== null) {
+    clearTimeout(wakeRefitFallbackTimer);
+    wakeRefitFallbackTimer = null;
+  }
+  wakeRefitPending = false;
+  wakeListenersInstalled = false;
+}
 
 function ensureGlobalSubscriptions(): void {
   if (outputUnlisten === null) {
@@ -121,6 +278,8 @@ function ensureGlobalSubscriptions(): void {
         // ignore — refit is best-effort
       });
   }
+
+  ensureWakeListeners();
 }
 
 /**
@@ -784,6 +943,7 @@ export function __resetTerminalRegistryForTests(): void {
     storeUnsubscribe = null;
   }
   fontsReadyAttached = false;
+  teardownWakeListeners();
 }
 
 /** Test-only: peek at the registry. */
