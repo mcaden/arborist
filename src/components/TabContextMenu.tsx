@@ -174,6 +174,19 @@ export function TabContextMenu({
         parentSessionId,
         defId: def.id,
       })
+      .then((sub) => {
+        // For terminal kind, explicitly select the newly-created sub-tab
+        // so the MainArea viewport swaps to it when its parent is the
+        // active session. (`create` already sets activeByParent under
+        // the hood; this makes the intent explicit at the call site and
+        // survives any future store refactor that conditionalises the
+        // create-time selection.) Application kind deliberately is not
+        // selected here — launching an app is a "raise OS window"
+        // gesture, not a viewport swap.
+        if (def.kind === 'terminal') {
+          void subActions.focus(sub.id);
+        }
+      })
       .catch((err: unknown) => {
         const message = formatError(err);
         console.warn(`[TabContextMenu] subsession_create(${def.id}) failed: ${message}`);

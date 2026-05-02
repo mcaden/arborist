@@ -107,6 +107,13 @@ export function SidebarSubTab({
   const stateClasses = isViewportOwner
     ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100'
     : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
+  // Visibly fade the row when the underlying process is dead (exited or
+  // resolver-error). The status dot already changes colour, but a
+  // dimmed row is the at-a-glance signal that this tab is inactive /
+  // inert — paired with the in-pane status bar in `SubTerminalView`.
+  // Applied to the main button only; the close (×) sibling keeps its
+  // own opacity logic so the user can still readily close a dead tab.
+  const exitedClasses = isExited ? 'opacity-50' : '';
 
   return (
     <li className="group relative px-2">
@@ -114,7 +121,7 @@ export function SidebarSubTab({
         type="button"
         aria-current={isViewportOwner ? 'true' : undefined}
         onClick={handleClick}
-        className={`flex w-full items-center gap-2 rounded-md py-1 pl-7 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
+        className={`flex w-full items-center gap-2 rounded-md py-1 pl-7 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses} ${exitedClasses}`}
       >
         <SubTabIcon kind={sub.kind} iconDataUri={iconDataUri} label={sub.label} />
         <span className="min-w-0 flex-1 truncate">{sub.label}</span>

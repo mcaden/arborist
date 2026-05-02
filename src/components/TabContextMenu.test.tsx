@@ -189,6 +189,55 @@ describe('TabContextMenu', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('launching a terminal sub explicitly focuses the new sub-tab so the viewport swaps to it', async () => {
+    seed({
+      customProcesses: [
+        { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh -i', enabled: true },
+      ],
+    });
+    const onClose = vi.fn();
+    render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('menuitem', { name: /launch/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('tab-context-menu-launch-shell'));
+    });
+    // Same sub id seeded by the default `subSessionCreate` mock above.
+    expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    // Parent session focus is intentionally NOT called — launching a sub
+    // shouldn't yank the user away from whatever parent is currently
+    // active.
+    expect(bridgeMock.sessionFocus).not.toHaveBeenCalled();
+  });
+
+  it('launching an application sub does NOT call subSessionFocus (no viewport swap, no OS-window steal)', async () => {
+    seed({
+      customProcesses: [
+        { id: 'vscode', name: 'VS Code', kind: 'application', command: 'code .', enabled: true },
+      ],
+    });
+    bridgeMock.subSessionCreate.mockResolvedValueOnce({
+      id: '22222222-2222-2222-2222-222222222222',
+      parentSessionId: PARENT,
+      defId: 'vscode',
+      kind: 'application',
+      label: 'VS Code',
+      status: 'starting',
+      composedCommand: 'code .',
+      createdAt: 1_700_000_000,
+    });
+    const onClose = vi.fn();
+    render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('menuitem', { name: /launch/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('tab-context-menu-launch-vscode'));
+    });
+    expect(bridgeMock.subSessionCreate).toHaveBeenCalledWith({
+      parentSessionId: PARENT,
+      defId: 'vscode',
+    });
+    expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+  });
+
   it('empty Launch submenu offers a Settings handoff', () => {
     seed({ customProcesses: [] });
     const onClose = vi.fn();
