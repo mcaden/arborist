@@ -102,6 +102,38 @@ fn main_capability_allows_core_default_and_ping() {
         identifiers.contains(&"allow-subsession-icon"),
         "main capability must include allow-subsession-icon so subsession_icon is callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-subsession"),
+        "main capability must include allow-subsession so subsession_* commands are callable; got {identifiers:?}",
+    );
+}
+
+#[test]
+fn allow_subsession_permission_file_declares_subsession_commands() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-subsession.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-subsession\""),
+        "permission identifier must remain `allow-subsession`",
+    );
+    for cmd in [
+        "subsession_create",
+        "subsession_close",
+        "subsession_focus",
+        "subsession_list",
+        "subsession_input",
+        "subsession_resize",
+        "subsession_relaunch",
+    ] {
+        let needle = format!("\"{cmd}\"");
+        assert!(
+            raw.contains(&needle),
+            "allow-subsession must declare {cmd}; raw permission file:\n{raw}",
+        );
+    }
 }
 
 #[test]
