@@ -291,12 +291,29 @@ fn canonicalise_existing(p: &Path) -> Result<PathBuf, BootError> {
 
 /// Verify that `canon` is the root of a git repository (i.e. running
 /// `git rev-parse --show-toplevel` from inside it returns `canon`
-/// itself). Mirrors the check that
+/// itself) AND that it's a *primary* repo root, not a linked worktree.
+/// Mirrors the check that
 /// [`crate::commands::workspace_validate_impl`] applies to user-picked
 /// paths in the in-app picker, so the boot resolution chain (CLI arg,
 /// last-workspace hint, legacy migration breadcrumb, native picker)
 /// can't bind a non-repo directory and leave the user staring at
 /// confusing downstream worktree/session failures.
+///
+/// Linked worktrees are explicitly rejected because Arborist's whole
+/// model is "spawn child worktrees from a primary repo root" — you
+/// cannot create a worktree from inside another worktree (`git
+/// worktree add` against a linked worktree's `.git` *file* fails
+/// with "not a working tree"). Allowing a worktree root as the
+/// workspace would make every session-creation flow break.
+///
+/// The primary-vs-worktree distinction is encoded on disk: a primary
+/// repo has `<root>/.git` as a *directory*; a linked worktree has it
+/// as a *file* containing `gitdir: <path-into-primary>`. We check
+/// `<canon>/.git.is_dir()` after the toplevel check so both signals
+/// must agree (defense in depth — if a future git change ever made
+/// `git rev-parse --show-toplevel` behave differently from the
+/// primary-only contract we want here, the on-disk check still
+/// rejects worktrees).
 ///
 /// Errors:
 /// * [`BootError::NotARepository`] if `git_toplevel` returns `None`
@@ -304,11 +321,30 @@ fn canonicalise_existing(p: &Path) -> Result<PathBuf, BootError> {
 ///   or if the discovered toplevel differs from `canon` (the path is
 ///   *inside* a repo but not the repo root — e.g. the user picked a
 ///   subdirectory).
+/// * [`BootError::NotARepository`] if `<canon>/.git` is not a
+///   directory (the path is a linked worktree root, a submodule
+///   working tree, or otherwise non-primary).
 /// * [`BootError::NotARepository`] (with the underlying error in
 ///   `reason`) if `git_toplevel` itself errors.
 fn validate_repo_root(canon: &Path, git_runner: &dyn GitRunner) -> Result<(), BootError> {
     match git_runner.git_toplevel(canon) {
-        Ok(Some(toplevel)) if toplevel == *canon => Ok(()),
+        Ok(Some(toplevel)) if toplevel == *canon => {
+            // Reject linked worktrees / submodule working trees: their
+            // `.git` is a file (containing `gitdir: ...`), not a dir.
+            // A primary repo has `.git` as a directory at the root.
+            let dot_git = canon.join(".git");
+            if dot_git.is_dir() {
+                Ok(())
+            } else {
+                Err(BootError::NotARepository {
+                    workspace: canon.to_path_buf(),
+                    reason: "path is a linked git worktree, not a primary repository root \
+                         (Arborist cannot spawn worktrees from inside another worktree; \
+                         pick the primary clone instead)"
+                        .to_string(),
+                })
+            }
+        }
         Ok(Some(toplevel)) => Err(BootError::NotARepository {
             workspace: canon.to_path_buf(),
             reason: format!(
@@ -460,15 +496,16 @@ pub fn show_lock_contention_dialog(branch: &str, workspace: &Path) {
 /// explicitly chose it) — for `--workspace` / hint / legacy sources
 /// the boot orchestrator surfaces the error via stderr / log instead.
 pub fn show_not_a_repo_dialog(workspace: &Path, reason: &str) {
-    // `validate_repo_root` requires `git rev-parse --show-toplevel` to
-    // equal the canonicalised picked path. That accepts BOTH primary
-    // repos (which have a `.git` *directory* at the top level) and
-    // linked worktrees (which have a `.git` *file* containing
-    // `gitdir: ...`). The dialog text must not say "directory" or
-    // users will be steered away from worktree roots that Arborist
-    // can actually open.
+    // `validate_repo_root` accepts ONLY primary repository roots
+    // (where `.git` is a *directory*). Linked worktrees (where `.git`
+    // is a *file* containing `gitdir: ...`) are rejected because
+    // Arborist's whole model is "spawn child worktrees from a primary
+    // repo root" — a linked worktree cannot host its own worktrees.
+    // Steer the user toward the primary clone, and explicitly call
+    // out the worktree case so they don't pick a sibling worktree
+    // root and wonder why it was rejected.
     let body = format!(
-        "Arborist could not open this folder as a workspace because it is not a git repository root.\n\nWorkspace: {}\n\nReason: {reason}\n\nPick the top level of a git repository (a folder containing a `.git` entry — either the directory inside a primary clone or the marker file inside a linked worktree) and try again.",
+        "Arborist could not open this folder as a workspace because it is not a primary git repository root.\n\nWorkspace: {}\n\nReason: {reason}\n\nPick a folder that contains a `.git` directory at its top level (the primary clone) and try again. Linked git worktrees are not supported as workspaces — Arborist creates per-session worktrees from the primary clone.",
         workspace.display(),
     );
     let _ = rfd::MessageDialog::new()
@@ -721,6 +758,12 @@ mod tests {
         let ws_legacy = td.path().join("ws-legacy");
         for w in [&ws_cli, &ws_hint, &ws_legacy] {
             std::fs::create_dir_all(w).unwrap();
+            // YesRunner says "this is a repo root", but
+            // validate_repo_root *also* requires `.git` to be a real
+            // directory (linked-worktree rejection). Simulate a
+            // primary clone by creating an empty `.git/` next to the
+            // workspace.
+            std::fs::create_dir_all(w.join(".git")).unwrap();
         }
         write_hint(td.path(), "main", &ws_hint).unwrap();
         std::fs::write(
@@ -743,6 +786,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let ws = td.path().join("ws-hint");
         std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
         write_hint(td.path(), "main", &ws).unwrap();
         let resolved =
             resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
@@ -754,6 +798,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let ws = td.path().join("ws-legacy");
         std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
         std::fs::write(
             td.path().join("config.json"),
             format!(
@@ -867,6 +912,7 @@ mod tests {
         std::fs::create_dir_all(&app_data).unwrap();
         let ws = td.path().join("workspace");
         std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
 
         let binding = bind_workspace(&ws, &app_data, "main", &YesRunner).unwrap();
         assert_eq!(binding.workspace_root, dunce::canonicalize(&ws).unwrap());
@@ -883,6 +929,7 @@ mod tests {
         std::fs::create_dir_all(&app_data).unwrap();
         let ws = td.path().join("workspace");
         std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
 
         let _b1 = bind_workspace(&ws, &app_data, "main", &YesRunner).unwrap();
 
@@ -946,6 +993,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bind_workspace_rejects_linked_worktree() {
+        // Regression: `git rev-parse --show-toplevel` returns the path
+        // itself for BOTH primary clones and linked worktrees, so the
+        // earlier `toplevel == canon` check accepted worktree roots.
+        // But Arborist's session model requires a primary repo (you
+        // cannot `git worktree add` from inside another worktree), so
+        // `validate_repo_root` now also requires `<canon>/.git` to be
+        // a *directory*. A linked worktree has `.git` as a *file*
+        // containing `gitdir: <path-into-primary>`. Simulate that here.
+        let td = TempDir::new().unwrap();
+        let app_data = td.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let ws = td.path().join("linked-worktree");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join(".git"),
+            "gitdir: /some/primary/repo/.git/worktrees/branch\n",
+        )
+        .unwrap();
+
+        // YesRunner pretends the path IS the toplevel — same signal a
+        // real `git rev-parse` would emit inside a linked worktree.
+        let err = bind_workspace(&ws, &app_data, "main", &YesRunner).unwrap_err();
+        match err {
+            BootError::NotARepository { workspace, reason } => {
+                assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
+                assert!(
+                    reason.contains("linked git worktree"),
+                    "reason must explain the worktree-vs-primary distinction; got {reason}"
+                );
+            }
+            other => panic!("expected NotARepository, got {other:?}"),
+        }
+
+        // No side-effects: a rejected worktree path must not leave a
+        // lock or any seeded state under app_data_dir.
+        let layout =
+            StoreRoot::new(&app_data, "main").for_workspace(dunce::canonicalize(&ws).unwrap());
+        assert!(
+            !layout.lock_path().exists(),
+            "lock file must not be created when bind_workspace rejects a linked worktree"
+        );
+    }
+
     // ----- boot_select_workspace --------------------------------------
 
     #[test]
@@ -955,6 +1047,7 @@ mod tests {
         std::fs::create_dir_all(&app_data).unwrap();
         let ws = td.path().join("workspace");
         std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
 
         let args = CliArgs {
             workspace: Some(ws.clone()),

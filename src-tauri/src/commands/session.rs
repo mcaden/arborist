@@ -1482,6 +1482,21 @@ pub fn workspace_validate_impl(
             toplevel.display()
         )));
     }
+    // Reject linked git worktrees (and submodule working trees): they
+    // have `.git` as a *file* (containing `gitdir: <path-into-primary>`),
+    // whereas a primary clone has `.git` as a *directory*. Arborist's
+    // model is "spawn child worktrees from a primary repo root" — a
+    // linked worktree cannot host its own worktrees, so binding one as
+    // a workspace would make every session-creation flow break. Mirrors
+    // the parallel check in [`crate::boot::validate_repo_root`]; keep
+    // the two in sync.
+    if !canon.join(".git").is_dir() {
+        return Ok(invalid(
+            "path is a linked git worktree, not a primary repository root \
+             (Arborist cannot spawn worktrees from inside another worktree; \
+             pick the primary clone instead)",
+        ));
+    }
 
     // Phase 8 — advisory contention probe. Only meaningful for callers
     // that supplied `app_data_dir`; tests typically don't.

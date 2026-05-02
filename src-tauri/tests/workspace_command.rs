@@ -84,6 +84,17 @@ fn null_sink() -> PtySink {
     PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
+/// Make a tempdir that looks like a *primary* git clone to
+/// [`workspace_validate_impl`]: it has a `.git` *directory* at the
+/// root. (Linked worktrees, which `validate_repo_root` rejects, would
+/// have `.git` as a *file*.) Tests that pass the resulting path to
+/// validate / switch / etc. must use this helper, not `TempDir::new()`.
+fn make_repo_tempdir() -> TempDir {
+    let td = TempDir::new().unwrap();
+    std::fs::create_dir_all(td.path().join(".git")).unwrap();
+    td
+}
+
 fn build_ctx(git: Arc<dyn GitRunner>, store_dir: &TempDir) -> Arc<AppContext> {
     let store = ConfigStore::open(store_dir.path()).unwrap();
     let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner)));
@@ -147,13 +158,45 @@ fn workspace_validate_rejects_non_git_directory() {
 #[test]
 fn workspace_validate_accepts_real_git_dir() {
     let store = TempDir::new().unwrap();
-    let dir = TempDir::new().unwrap();
+    let dir = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(dir.path());
     let ctx = build_ctx(runner, &store);
     let out = workspace_validate_impl(&ctx, dir.path(), None, "").unwrap();
     assert!(out.valid, "got {:?}", out.error);
     assert!(out.error.is_none());
+}
+
+#[test]
+fn workspace_validate_rejects_linked_worktree() {
+    // Regression: the picker (and the boot resolution chain) used to
+    // accept any path whose `git rev-parse --show-toplevel` equalled
+    // itself. That signal is true for BOTH primary clones and linked
+    // worktrees, but Arborist's session model requires a primary
+    // root (you cannot `git worktree add` from inside a worktree).
+    // The fix in `validate_repo_root` / `workspace_validate_impl`
+    // additionally requires `<canon>/.git` to be a *directory*. A
+    // linked worktree has `.git` as a *file* containing `gitdir: ...`.
+    let store = TempDir::new().unwrap();
+    let dir = TempDir::new().unwrap();
+    // Simulate a linked worktree on disk: `.git` is a *file*, not a dir.
+    std::fs::write(
+        dir.path().join(".git"),
+        "gitdir: /some/primary/repo/.git/worktrees/branch\n",
+    )
+    .unwrap();
+    let runner = FakeGitRunner::new();
+    // git_toplevel still returns the path itself — the runner can't
+    // tell the difference, just like the real `git rev-parse`.
+    runner.set_repo_root(dir.path());
+    let ctx = build_ctx(runner, &store);
+    let out = workspace_validate_impl(&ctx, dir.path(), None, "").unwrap();
+    assert!(!out.valid, "linked worktree must be rejected");
+    let err = out.error.unwrap();
+    assert!(
+        err.contains("linked git worktree"),
+        "error must explain the worktree-vs-primary distinction; got {err}"
+    );
 }
 
 #[test]
@@ -179,7 +222,7 @@ fn workspace_validate_skips_lock_probe_when_app_data_dir_is_none() {
     // Sanity: passing None for app_data_dir leaves
     // already_open_in_another_instance unset (advisory signal absent).
     let store = TempDir::new().unwrap();
-    let dir = TempDir::new().unwrap();
+    let dir = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(dir.path());
     let ctx = build_ctx(runner, &store);
@@ -195,7 +238,7 @@ fn workspace_validate_reports_free_lock_as_not_already_open() {
     // anything on disk → Some(false) on the wire.
     let app_data_dir = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
-    let dir = TempDir::new().unwrap();
+    let dir = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(dir.path());
     let ctx = build_ctx(runner, &store);
@@ -212,7 +255,7 @@ fn workspace_validate_reports_held_lock_as_already_open_windows() {
     // workspace_validate_impl correctly observes contention.
     let app_data_dir = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
-    let dir = TempDir::new().unwrap();
+    let dir = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(dir.path());
     let ctx = build_ctx(runner, &store);
@@ -356,8 +399,8 @@ fn build_switch_ctx(
 #[tokio::test]
 async fn workspace_switch_happy_path_swaps_and_emits() {
     let app_data_dir = TempDir::new().unwrap();
-    let ws_a = TempDir::new().unwrap();
-    let ws_b = TempDir::new().unwrap();
+    let ws_a = make_repo_tempdir();
+    let ws_b = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     // Both workspaces look like valid git repos to the runner.
     runner.set_repo_root(ws_a.path()); // initial set; for_repo_root currently returns one value
@@ -426,7 +469,7 @@ async fn workspace_switch_happy_path_swaps_and_emits() {
 #[tokio::test]
 async fn workspace_switch_no_op_when_target_equals_current() {
     let app_data_dir = TempDir::new().unwrap();
-    let ws = TempDir::new().unwrap();
+    let ws = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(ws.path());
 
@@ -493,8 +536,8 @@ async fn workspace_switch_refuses_invalid_target() {
 #[tokio::test]
 async fn workspace_switch_returns_locked_when_target_is_held() {
     let app_data_dir = TempDir::new().unwrap();
-    let ws_a = TempDir::new().unwrap();
-    let ws_b = TempDir::new().unwrap();
+    let ws_a = make_repo_tempdir();
+    let ws_b = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(ws_a.path());
     let (ctx, _) = build_switch_ctx(
@@ -572,8 +615,8 @@ fn fake_session(worktree: &Path, label: &str) -> arborist_lib::types::Session {
 #[tokio::test]
 async fn workspace_switch_parks_old_sessions_preserving_records() {
     let app_data_dir = TempDir::new().unwrap();
-    let ws_a = TempDir::new().unwrap();
-    let ws_b = TempDir::new().unwrap();
+    let ws_a = make_repo_tempdir();
+    let ws_b = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(ws_a.path());
     let (ctx, ws_a_canon) = build_switch_ctx(
