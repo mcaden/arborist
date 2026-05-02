@@ -178,6 +178,15 @@ Frontend-specific principles (procedural detail in the `quality-workflow` skill)
 
 For exact commands, watcher setup, Husky configuration, test layout, and end-of-feature smoke tests, **invoke the `quality-workflow` skill**.
 
+## Addressing PR review comments
+
+When the user asks you to address PR review feedback, **invoke the `pr-comments` skill**. It has the exact `gh api` / GraphQL invocations for listing review threads, replying in-thread, and resolving threads.
+
+Two non-negotiable rules from that skill, restated here so they're always in context:
+
+- **Every reply the agent posts on behalf of the user must start with the disclaimer prefix `🤖 AI agent reply (acting for @<gh-user>):` followed by a blank line and the body.** Replace `<gh-user>` literally with the output of `gh api user --jq .login`. No exceptions, including for one-line "done" replies. The comment is attributed to the user's GitHub account; the disclaimer makes AI authorship unambiguous to other reviewers.
+- **Resolve a review thread only when the agent actually changed code in response to it.** Questions, declines, deferrals, and "already-done" replies are left open for the human to resolve.
+
 ### Test-first defaults
 - **Write the failing test before the fix** for every bug. The regression test is the proof the bug existed; without it you've only proven the symptom went away today.
 - **Write the test alongside the feature** for new behavior. PRs that add behavior without tests need an explicit waiver.
