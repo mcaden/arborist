@@ -30,7 +30,14 @@ vi.mock('@/lib/session-events', () => ({
 }));
 
 import { App } from './App';
-import { configGet, frontendReady, resetBridgeMocks, sessionList } from '@/lib/tauri-bridge.mock';
+import {
+  configGet,
+  frontendReady,
+  onWorkspaceChanged,
+  resetBridgeMocks,
+  sessionList,
+} from '@/lib/tauri-bridge.mock';
+import type { AppConfig, WorkspaceChangedEvent } from '@/types/arborist';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
@@ -88,6 +95,22 @@ function resetStores(): void {
     pendingClose: undefined,
     isHydrated: false,
   });
+}
+
+function defaultConfig(overrides: { workspaceRoot?: string | null } = {}): AppConfig {
+  return {
+    configVersion: 4,
+    defaultInstructionSets: { claude: '', copilot: '' },
+    instructionSetsDir: '',
+    workspaceRoot: overrides.workspaceRoot ?? '/mock/workspace',
+    worktreeRoots: [],
+    prelaunchCommands: [],
+    worktreePrelaunchCommands: {},
+    aiLaunchCommands: { claude: '', copilot: '' },
+    lastOpenSessions: [],
+    tabOrder: [],
+    activeSessionId: null,
+  };
 }
 
 beforeEach(() => {
@@ -214,6 +237,68 @@ describe('App boot sequence', () => {
       expect(screen.getByRole('heading', { name: /choose your workspace/i })).toBeInTheDocument();
     });
     expect(screen.queryByTestId('main-area')).not.toBeInTheDocument();
+  });
+
+  // Regression for PR #32 review finding: a slow `workspace://changed`
+  // rehydrate must not overwrite Zustand state after a newer event has
+  // already settled. The handler captures a generation token and bails
+  // after every await if a newer emit has superseded it.
+  it('discards a stale workspace://changed rehydrate when a newer event arrives', async () => {
+    let emit: ((payload: WorkspaceChangedEvent) => void) | null = null;
+    onWorkspaceChanged.mockImplementation((cb) => {
+      emit = cb;
+      return Promise.resolve(() => {});
+    });
+
+    // Boot: first configGet/sessionList resolves immediately so the app
+    // reaches the ready state before we start firing workspace events.
+    render(<App />);
+    await waitFor(() => expect(emit).not.toBeNull());
+    await waitFor(() => expect(frontendReady).toHaveBeenCalledTimes(1));
+
+    // First emit: configGet hangs so the rehydrate is "in flight". The
+    // sessionList call must NOT happen until this configGet resolves.
+    let resolveSlow: ((value: ReturnType<typeof defaultConfig>) => void) | null = null;
+    configGet.mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          resolveSlow = res;
+        }),
+    );
+    const sessionListBefore = sessionList.mock.calls.length;
+
+    await act(async () => {
+      emit!({ workspaceRoot: '/ws/a' });
+      await Promise.resolve();
+    });
+
+    // Second emit arrives before the first finishes — its configGet
+    // resolves immediately and its sessionList + frontendReady run.
+    configGet.mockResolvedValueOnce(defaultConfig({ workspaceRoot: '/ws/b' }));
+    sessionList.mockResolvedValueOnce([]);
+    await act(async () => {
+      emit!({ workspaceRoot: '/ws/b' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(frontendReady).toHaveBeenCalledTimes(2));
+    const sessionListAfterSecond = sessionList.mock.calls.length;
+    const frontendReadyAfterSecond = frontendReady.mock.calls.length;
+
+    // Now resolve the first (slow) configGet. The handler must observe
+    // that its generation is stale and bail BEFORE calling sessionList
+    // or frontendReady a third time.
+    await act(async () => {
+      resolveSlow!(defaultConfig({ workspaceRoot: '/ws/a' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(sessionList.mock.calls.length).toBe(sessionListAfterSecond);
+    expect(frontendReady.mock.calls.length).toBe(frontendReadyAfterSecond);
+    // Sanity: the second (winning) handler did exactly one extra
+    // sessionList/frontendReady on top of the boot baseline.
+    expect(sessionListAfterSecond).toBeGreaterThan(sessionListBefore);
   });
 });
 

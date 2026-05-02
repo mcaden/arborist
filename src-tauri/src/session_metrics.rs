@@ -349,6 +349,14 @@ impl MetricsRegistry {
             if let Some(handle) = h.join.take() {
                 let _ = handle.join();
             }
+            // Also join sibling watchers (e.g. the Copilot `events.jsonl`
+            // tailer) that share the same `running` flag — without this
+            // they'd outlive the workspace swap and could fire a discover
+            // / turn / metrics callback against the new binding using an
+            // old-workspace session id.
+            for handle in h.extra_joins.drain(..) {
+                let _ = handle.join();
+            }
         }
     }
 }
@@ -2069,5 +2077,59 @@ mod tests {
         let mut c = a.clone();
         c.input_tokens = Some(39_498);
         assert!(!a.same_payload_as(&c));
+    }
+
+    /// Regression for PR #32 review finding: `stop_all_and_join` must join
+    /// `extra_joins` (the Copilot events.jsonl tailer) in addition to the
+    /// primary watcher. If it doesn't, the sibling thread can outlive the
+    /// workspace swap and emit stale activity into the new binding.
+    #[test]
+    fn stop_all_and_join_waits_for_extra_joins() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let registry = MetricsRegistry::new();
+        let session_id = SessionId::new();
+
+        // Sentinel flipped by the sibling thread on its way out. After
+        // `stop_all_and_join` returns, this MUST be true — otherwise the
+        // sibling outlived the join.
+        let sibling_exited = Arc::new(AtomicBool::new(false));
+        let sibling_exited_for_thread = Arc::clone(&sibling_exited);
+
+        let running = Arc::new(AtomicBool::new(true));
+        let running_for_primary = Arc::clone(&running);
+        let running_for_extra = Arc::clone(&running);
+
+        let primary = thread::spawn(move || {
+            while running_for_primary.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let extra = thread::spawn(move || {
+            while running_for_extra.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(2));
+            }
+            // Sleep a touch longer than the primary so that a buggy
+            // `stop_all_and_join` that only joins the primary would
+            // observe `false` here when it returns.
+            thread::sleep(Duration::from_millis(30));
+            sibling_exited_for_thread.store(true, Ordering::SeqCst);
+        });
+
+        registry.inner.lock().expect("lock").insert(
+            session_id,
+            WatcherHandle {
+                running,
+                join: Some(primary),
+                extra_joins: vec![extra],
+            },
+        );
+
+        registry.stop_all_and_join();
+
+        assert!(
+            sibling_exited.load(Ordering::SeqCst),
+            "stop_all_and_join must join extra_joins, not just the primary thread"
+        );
     }
 }

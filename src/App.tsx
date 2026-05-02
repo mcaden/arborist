@@ -103,6 +103,13 @@ export function App(): JSX.Element {
     let unlistenActivity: (() => void) | null = null;
     let unlistenMetrics: (() => void) | null = null;
     let unlistenWorkspaceChanged: (() => void) | null = null;
+    // Monotonic generation counter for `workspace://changed` rehydrates.
+    // Bumped on every event; each handler captures its generation and
+    // bails after every await if a newer event has superseded it. This
+    // prevents an older (slow) rehydrate from overwriting Zustand state
+    // with what looks like fresh data after a faster, later switch has
+    // already settled.
+    let workspaceChangedGen = 0;
 
     const boot = async (): Promise<void> => {
       try {
@@ -122,15 +129,21 @@ export function App(): JSX.Element {
         // the active store before emitting this event — so it is safe to
         // simply re-fetch.
         //
-        // Concurrent emits cannot occur: `workspace_switch_impl_inner`
-        // holds `AppContext::switch_serialise` from start to emit, so
-        // at most one `workspace://changed` is in flight at a time.
-        // The fire-and-forget IIFE is therefore safe.
+        // Although the backend serialises switches end-to-end (only one
+        // `workspace://changed` is in flight at a time), a *handler*
+        // started by the previous emit can still be mid-`hydrate()`
+        // when the next emit arrives. We guard against that with a
+        // monotonic generation counter so a slow handler can't
+        // overwrite Zustand state after a newer switch has settled.
         unlistenWorkspaceChanged = await onWorkspaceChanged(() => {
+          workspaceChangedGen += 1;
+          const myGen = workspaceChangedGen;
           void (async () => {
             try {
               await useConfigStore.getState().hydrate();
+              if (cancelled || myGen !== workspaceChangedGen) return;
               await useSessionStore.getState().actions.hydrate();
+              if (cancelled || myGen !== workspaceChangedGen) return;
               await frontendReady();
             } catch (err) {
               // The backend swap already succeeded; rehydration failure
