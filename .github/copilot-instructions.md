@@ -202,4 +202,5 @@ A change is mergeable when **all** of these hold:
 - Forgetting to add a new command to `capabilities/main.json` — the call will be rejected at runtime with no compile-time warning.
 - Holding a `Mutex` guard across `.await` — deadlocks under load.
 - Storing credentials anywhere — auth is the CLI tool's job. (SPEC NF-05)
+- Accepting a linked git worktree as a workspace root. **Don't** — a workspace root must be a primary clone (`<root>/.git` is a *directory*). Linked worktrees have `.git` as a *file* containing `gitdir: …` and cannot host their own worktrees, so binding one breaks every session-creation flow downstream. Both `crate::boot::validate_repo_root` and `crate::commands::workspace_validate_impl` enforce this — keep the two in sync. (See `WORKTREES.md` and DESIGN §6 `workspace_validate`.)
 - Killing the host `arborist` process or its dev-server parents to "clean up" or break a target lock — see "Dogfooding safety". A previous agent crashed the user's editor doing this.

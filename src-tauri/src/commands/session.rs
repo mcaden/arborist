@@ -1435,6 +1435,17 @@ pub fn worktrees_list_impl(
 /// returns an `AppError` for the "invalid" case — the picker shows inline
 /// feedback. Real `AppError`s are reserved for unexpected backend failures.
 ///
+/// "Valid" means: an absolute, existing directory whose
+/// `git rev-parse --show-toplevel` equals itself **AND** which has
+/// `<canon>/.git` as a *directory* (i.e. a primary clone, not a linked
+/// worktree). Linked worktrees and submodule working trees have `.git`
+/// as a *file* containing `gitdir: <path-into-primary>`; both are
+/// rejected because Arborist's session model spawns child worktrees
+/// from a primary repo root and a linked worktree cannot host its own
+/// worktrees. This rejection is mirrored in
+/// [`crate::boot::validate_repo_root`] for the boot-time resolution
+/// chain (CLI / hint / legacy / native picker) — keep the two in sync.
+///
 /// `app_data_dir` + `branch` enable the optional Phase 8 advisory
 /// lock-contention probe: if both are provided, after the path passes
 /// repo-root validation we try a non-blocking acquire of the
