@@ -9,6 +9,7 @@ pub mod activity;
 pub mod commands;
 pub mod compose;
 pub mod config_store;
+pub mod copilot_events;
 pub mod git;
 pub mod pty_pool;
 pub mod session_metrics;

@@ -97,6 +97,41 @@ export interface SessionStoreState {
    * tooltips; not part of any layout-affecting state.
    */
   lastTurnDurationMs: Record<SessionId, number>;
+  /**
+   * Per-session set of currently-open tool invocations, keyed by
+   * `toolCallId`. Populated by the Copilot events.jsonl tailer
+   * (`toolStart` / `toolEnd`). Drives the `runningTool` display state and
+   * tooltip text. Frontend-only — not persisted.
+   */
+  openTools: Record<SessionId, Record<string, OpenTool>>;
+  /**
+   * Per-session set of pending permission prompts (Copilot only), keyed
+   * by `requestId`. While non-empty, the session is **blocked on the
+   * user** — promoted to the highest-priority `awaitingPermission`
+   * display state so the sidebar makes the cue impossible to miss.
+   * Frontend-only — not persisted.
+   */
+  openPermissions: Record<SessionId, Record<string, OpenPermission>>;
+  /**
+   * Per-session "agent is currently inside an assistant turn" flag, set
+   * on `turnStart` and cleared on `turnEnd`. Drives the `thinking`
+   * display state for the in-turn-with-no-open-tools case.
+   * Frontend-only — not persisted.
+   */
+  inTurn: Record<SessionId, true>;
+}
+
+/** A currently-running tool invocation as seen by the events.jsonl tailer. */
+export interface OpenTool {
+  toolName: string;
+  toolCallId: string;
+}
+
+/** A currently-pending permission prompt blocking the agent. */
+export interface OpenPermission {
+  requestId: string;
+  permissionKind: string;
+  summary: string | null;
 }
 
 export type SessionActivity = 'working' | 'idle' | 'attention';
@@ -111,7 +146,10 @@ export type DisplayStatus =
   | 'starting'
   | 'error'
   | 'exited'
+  | 'awaitingPermission'
   | 'attention'
+  | 'runningTool'
+  | 'thinking'
   | 'working'
   | 'awaiting'
   | 'idle';
@@ -171,6 +209,9 @@ const INITIAL_STATE: SessionStoreState = {
   metrics: {},
   lastTurnEndAt: {},
   lastTurnDurationMs: {},
+  openTools: {},
+  openPermissions: {},
+  inTurn: {},
 };
 
 /**
@@ -207,6 +248,9 @@ export const useSessionStore = create<Store>((set, get) => {
         metrics: {},
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
+        openTools: {},
+        openPermissions: {},
+        inTurn: {},
       });
     },
 
@@ -249,6 +293,9 @@ export const useSessionStore = create<Store>((set, get) => {
           metrics,
           lastTurnEndAt,
           lastTurnDurationMs,
+          openTools,
+          openPermissions,
+          inTurn,
         } = get();
         if (!sessions.some((s) => s.id === id)) {
           // Already pruned by some other path — nothing to do.
@@ -295,6 +342,21 @@ export const useSessionStore = create<Store>((set, get) => {
           const next = { ...lastTurnDurationMs };
           delete next[id];
           patch.lastTurnDurationMs = next;
+        }
+        if (id in openTools) {
+          const next = { ...openTools };
+          delete next[id];
+          patch.openTools = next;
+        }
+        if (id in openPermissions) {
+          const next = { ...openPermissions };
+          delete next[id];
+          patch.openPermissions = next;
+        }
+        if (id in inTurn) {
+          const next = { ...inTurn };
+          delete next[id];
+          patch.inTurn = next;
         }
         set(patch);
       };
@@ -417,6 +479,32 @@ export const useSessionStore = create<Store>((set, get) => {
           patch.lastTurnDurationMs = next;
         }
       }
+      // Phase 2.5: drop any stale events.jsonl-derived state on every
+      // status transition that ends or restarts the run. `starting`
+      // covers the restart path (backend pre-allocates a fresh
+      // ai_session_id, so prior open tools/permissions/in-turn flags are
+      // by definition stale). `exited` and `error` cover terminal
+      // transitions — `selectDisplayStatus` already short-circuits on
+      // those, but leaving the maps populated is a hygiene gap for
+      // tooltips and any future consumer that reads them directly.
+      if (evt.status === 'starting' || evt.status === 'exited' || evt.status === 'error') {
+        const { openTools, openPermissions, inTurn } = get();
+        if (evt.sessionId in openTools) {
+          const next = { ...openTools };
+          delete next[evt.sessionId];
+          patch.openTools = next;
+        }
+        if (evt.sessionId in openPermissions) {
+          const next = { ...openPermissions };
+          delete next[evt.sessionId];
+          patch.openPermissions = next;
+        }
+        if (evt.sessionId in inTurn) {
+          const next = { ...inTurn };
+          delete next[evt.sessionId];
+          patch.inTurn = next;
+        }
+      }
       set(patch);
     },
 
@@ -430,9 +518,97 @@ export const useSessionStore = create<Store>((set, get) => {
     },
 
     applyActivity: (evt) => {
-      const { sessions, activity, activeId, lastTurnEndAt, lastTurnDurationMs } = get();
+      const {
+        sessions,
+        activity,
+        activeId,
+        lastTurnEndAt,
+        lastTurnDurationMs,
+        openTools,
+        openPermissions,
+        inTurn,
+      } = get();
       // Defensive: drop events for unknown sessions (race with close).
       if (!sessions.some((s) => s.id === evt.sessionId)) return;
+
+      // ---- Copilot events.jsonl variants (Phase 2.5) -----------------
+      // These maintain auxiliary state that drives the new
+      // `awaitingPermission` / `runningTool` / `thinking` display states
+      // without competing with the legacy PTY-byte working/idle/attention
+      // axis. They are idempotent for matching ids and defensive against
+      // unmatched ends (e.g. tailer started mid-file).
+      if (evt.kind === 'turnStart') {
+        if (inTurn[evt.sessionId]) return;
+        set({ inTurn: { ...inTurn, [evt.sessionId]: true } });
+        return;
+      }
+      if (evt.kind === 'toolStart') {
+        const prev = openTools[evt.sessionId] ?? {};
+        if (prev[evt.toolCallId]?.toolName === evt.toolName) return;
+        set({
+          openTools: {
+            ...openTools,
+            [evt.sessionId]: {
+              ...prev,
+              [evt.toolCallId]: { toolName: evt.toolName, toolCallId: evt.toolCallId },
+            },
+          },
+        });
+        return;
+      }
+      if (evt.kind === 'toolEnd') {
+        const prev = openTools[evt.sessionId];
+        if (!prev || !(evt.toolCallId in prev)) return;
+        const nextForSession = { ...prev };
+        delete nextForSession[evt.toolCallId];
+        const nextOpenTools = { ...openTools };
+        if (Object.keys(nextForSession).length === 0) {
+          delete nextOpenTools[evt.sessionId];
+        } else {
+          nextOpenTools[evt.sessionId] = nextForSession;
+        }
+        set({ openTools: nextOpenTools });
+        return;
+      }
+      if (evt.kind === 'awaitingPermission') {
+        const prev = openPermissions[evt.sessionId] ?? {};
+        const existing = prev[evt.requestId];
+        if (
+          existing &&
+          existing.permissionKind === evt.permissionKind &&
+          existing.summary === evt.summary
+        ) {
+          return;
+        }
+        set({
+          openPermissions: {
+            ...openPermissions,
+            [evt.sessionId]: {
+              ...prev,
+              [evt.requestId]: {
+                requestId: evt.requestId,
+                permissionKind: evt.permissionKind,
+                summary: evt.summary,
+              },
+            },
+          },
+        });
+        return;
+      }
+      if (evt.kind === 'permissionResolved') {
+        const prev = openPermissions[evt.sessionId];
+        if (!prev || !(evt.requestId in prev)) return;
+        const nextForSession = { ...prev };
+        delete nextForSession[evt.requestId];
+        const nextOpenPermissions = { ...openPermissions };
+        if (Object.keys(nextForSession).length === 0) {
+          delete nextOpenPermissions[evt.sessionId];
+        } else {
+          nextOpenPermissions[evt.sessionId] = nextForSession;
+        }
+        set({ openPermissions: nextOpenPermissions });
+        return;
+      }
 
       // Turn-end is a fire-and-forget marker — it doesn't compete with the
       // PTY-driven working/idle/attention state machine, so handle it
@@ -465,6 +641,14 @@ export const useSessionStore = create<Store>((set, get) => {
           const nextActivity = { ...activity };
           delete nextActivity[evt.sessionId];
           patch.activity = nextActivity;
+        }
+        // Also clear the in-turn flag so `thinking` releases promptly
+        // (events.jsonl `turn_end` and OTel `invoke_agent` close races
+        // — whichever lands first wins).
+        if (inTurn[evt.sessionId]) {
+          const nextInTurn = { ...inTurn };
+          delete nextInTurn[evt.sessionId];
+          patch.inTurn = nextInTurn;
         }
         set(patch);
         return;
@@ -546,6 +730,14 @@ export const selectLastTurnDurationMs =
   (id: SessionId | undefined) =>
   (s: Store): number | undefined =>
     id === undefined ? undefined : s.lastTurnDurationMs[id];
+export const selectOpenTools =
+  (id: SessionId | undefined) =>
+  (s: Store): Record<string, OpenTool> | undefined =>
+    id === undefined ? undefined : s.openTools[id];
+export const selectOpenPermissions =
+  (id: SessionId | undefined) =>
+  (s: Store): Record<string, OpenPermission> | undefined =>
+    id === undefined ? undefined : s.openPermissions[id];
 
 /**
  * Derive the single icon-state the sidebar should render for `id`. The
@@ -556,15 +748,28 @@ export const selectLastTurnDurationMs =
  *  2. `starting` — the spinner; nothing else is meaningful yet.
  *  3. `exited` — the session has terminated and won't make progress
  *     until the user restarts or recreates it.
- *  4. `attention` — the agent (or the OS) explicitly asked the user to
- *     look here.
- *  5. `working` — the PTY is streaming output, i.e. the agent is
- *     producing tokens.
- *  6. `awaiting` — the agent finished a turn and is parked at its
+ *  4. `awaitingPermission` — the agent is **blocked on the user**
+ *     (Copilot permission prompt). Highest signal-to-noise of all the
+ *     post-boot states; shown ahead of `attention` because a missed
+ *     permission prompt is worse than a missed bell.
+ *  5. `attention` — the agent (or the OS) explicitly asked the user to
+ *     look here (BEL / OSC 9 / OSC 777).
+ *  6. `runningTool` — Copilot is currently executing a tool (events.jsonl
+ *     `tool.execution_start` without matching complete). Distinct from
+ *     `thinking` because the user can sometimes anticipate what the tool
+ *     will do (e.g. "running shell").
+ *  7. `thinking` — Copilot is inside an assistant turn (events.jsonl
+ *     `turn_start` without matching `turn_end`) but no tool is open.
+ *     Distinguishes "model is generating tokens" from the legacy
+ *     PTY-byte-fuzzy `working` state.
+ *  8. `working` — the PTY is streaming output, i.e. the agent is
+ *     producing tokens (legacy fallback for sessions without an
+ *     events.jsonl signal — Claude, or Copilot before bootstrap).
+ *  9. `awaiting` — the agent finished a turn and is parked at its
  *     prompt, OR the session has booted but never produced a turn and
  *     the [`AWAITING_GRACE_SECONDS`] window has elapsed (a CLI typically
  *     drops to its REPL prompt by then).
- *  7. `idle` — fallback for the brief boot window before
+ * 10. `idle` — fallback for the brief boot window before
  *     [`AWAITING_GRACE_SECONDS`] expires.
  *
  * `nowSec` is injected so tests can pin time deterministically.
@@ -580,8 +785,15 @@ export function selectDisplayStatus(
     if (session.status === 'error') return 'error';
     if (session.status === 'starting') return 'starting';
     if (session.status === 'exited') return 'exited';
+    if (s.openPermissions[id] && Object.keys(s.openPermissions[id]!).length > 0) {
+      return 'awaitingPermission';
+    }
     const activity = s.activity[id];
     if (activity === 'attention') return 'attention';
+    if (s.openTools[id] && Object.keys(s.openTools[id]!).length > 0) {
+      return 'runningTool';
+    }
+    if (s.inTurn[id]) return 'thinking';
     if (activity === 'working') return 'working';
     if (s.lastTurnEndAt[id] !== undefined) return 'awaiting';
     if (nowSec - session.createdAt >= AWAITING_GRACE_SECONDS) return 'awaiting';
@@ -605,6 +817,11 @@ export const useLastTurnEndAt = (id: SessionId | undefined): number | undefined 
   useSessionStore(selectLastTurnEndAt(id));
 export const useLastTurnDurationMs = (id: SessionId | undefined): number | undefined =>
   useSessionStore(selectLastTurnDurationMs(id));
+export const useOpenTools = (id: SessionId | undefined): Record<string, OpenTool> | undefined =>
+  useSessionStore(selectOpenTools(id));
+export const useOpenPermissions = (
+  id: SessionId | undefined,
+): Record<string, OpenPermission> | undefined => useSessionStore(selectOpenPermissions(id));
 
 /**
  * Subscribe to the derived `DisplayStatus` for `id`. Recomputes (and

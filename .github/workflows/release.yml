@@ -72,6 +72,11 @@ jobs:
     needs: verify
     permissions:
       contents: write
+      # Required by actions/attest-build-provenance to mint a short-lived
+      # OIDC token and to write the resulting Sigstore-signed attestation
+      # back to the repository's attestations store.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -127,6 +132,7 @@ jobs:
       - run: npm ci
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -135,9 +141,40 @@ jobs:
           releaseBody: |
             See the assets below to download installers for your platform.
 
-            **Note:** these builds are unsigned. See the
+            **Note:** these builds are not OS code-signed (no Apple
+            notarization or Authenticode signature), so each OS will show a
+            one-time warning on first launch. See the
             [README](https://github.com/${{ github.repository }}#install) for
             first-run instructions on macOS, Windows, and Linux.
+
+            Every published asset has a Sigstore-signed
+            [GitHub build attestation](https://github.com/${{ github.repository }}/attestations).
+            Verify a downloaded file with the GitHub CLI:
+
+            ```sh
+            gh attestation verify <file> --repo ${{ github.repository }}
+            ```
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.platform.args }}
+
+      # Generate a Sigstore-signed SLSA build provenance attestation for
+      # every artifact tauri-action produced. Each matrix job attests only
+      # the artifacts it built; together the three jobs cover every
+      # platform's installers (msi/exe/dmg/deb/AppImage). The attestation is
+      # uploaded to GitHub's attestations API and can be verified by users
+      # with `gh attestation verify <file> --repo ${{ github.repository }}`.
+      #
+      # tauri-action's `artifactPaths` output is a JSON array of file paths;
+      # we expand it into the comma-separated form `subject-path` accepts
+      # (see actions/attest-build-provenance@v2 README — comma and newline
+      # delimited lists are both supported and each entry is trimmed). Tauri
+      # bundle filenames never contain commas, so this is unambiguous.
+      #
+      # No explicit `if:` guard is needed: tauri-action throws when no
+      # artifacts are produced (because we set `tagName`), which fails the
+      # job and causes this step to be skipped automatically.
+      - name: Attest build provenance for release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ join(fromJSON(steps.tauri.outputs.artifactPaths), ',') }}
