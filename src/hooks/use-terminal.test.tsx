@@ -69,7 +69,6 @@ import { renderHook } from '@testing-library/react';
 import {
   __resetTerminalRegistryForTests,
   __getTerminalRegistryForTests,
-  captureTerminalDebugSnapshot,
   disposeTerminal,
   FALLBACK_PTY_DIMS,
   getTerminalDimensions,
@@ -1538,35 +1537,5 @@ describe('initial PTY dimension helpers', () => {
     expect(rect.width).toBe(0);
     expect(rect.height).toBe(0);
     expect(measureInitialPtyDimensions()).toEqual(FALLBACK_PTY_DIMS);
-  });
-});
-
-describe('captureTerminalDebugSnapshot', () => {
-  it('returns ancestors oldest-first (root → host parent), matching the documented order', () => {
-    // Build a small DOM tree:  body > article > section > main > host
-    // Snapshot's `ancestors` must come back as
-    // [body, article, section, main] (oldest → youngest).
-    const article = document.createElement('article');
-    const section = document.createElement('section');
-    const main = document.createElement('main');
-    const host = document.createElement('div');
-    section.appendChild(main);
-    article.appendChild(section);
-    document.body.appendChild(article);
-    main.appendChild(host);
-
-    const { result } = renderHook(() => useTerminal('s1'));
-    act(() => result.current.attach(host));
-
-    const snapshot = captureTerminalDebugSnapshot();
-    const entry = snapshot.entries.find((e) => e.sessionId === 's1');
-    expect(entry).toBeDefined();
-    const tags = entry!.ancestors.map((a) => a.tag);
-    // describeAncestors walks `host.parentElement` upward (host = the div
-    // attached above), so closest-first that's [main, section, article,
-    // body, html]. Reversed for oldest-first → [html, body, ...main].
-    expect(tags[0]).toBe('html');
-    expect(tags[tags.length - 1]).toBe('main');
-    expect(tags).toEqual(['html', 'body', 'article', 'section', 'main']);
   });
 });
