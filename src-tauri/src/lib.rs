@@ -171,8 +171,31 @@ pub fn run() {
                     drop(log_guard);
                     std::process::exit(1);
                 }
-                Err(boot::BootError::NotARepository { workspace, reason }) => {
-                    boot::show_not_a_repo_dialog(&workspace, &reason);
+                Err(boot::BootError::NotARepository {
+                    workspace,
+                    reason,
+                    origin,
+                }) => {
+                    // Only the user-driven picker arm justifies a native
+                    // dialog. CLI / hint / legacy failures are surfaced
+                    // via stderr + tracing::error so headless or
+                    // scripted launches don't pop a modal that nobody
+                    // is sitting in front of (matches the doc comment
+                    // on `show_not_a_repo_dialog`).
+                    if matches!(origin, boot::BootSource::Picker) {
+                        boot::show_not_a_repo_dialog(&workspace, &reason);
+                    } else {
+                        tracing::error!(
+                            ?origin,
+                            workspace = %workspace.display(),
+                            reason = %reason,
+                            "workspace is not a git repository root",
+                        );
+                        eprintln!(
+                            "Arborist failed to open workspace ({origin:?}): {reason}\n  workspace: {}",
+                            workspace.display()
+                        );
+                    }
                     drop(log_guard);
                     std::process::exit(1);
                 }

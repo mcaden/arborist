@@ -1556,7 +1556,16 @@ pub fn workspace_validate_impl(
 //    new lock (inside `WorkspaceBinding`). On
 //    [`crate::boot::BootError::Contention`] we abort the switch with
 //    `WorkspaceLocked` — the user stays on the current workspace.
-// 6. Stop and join all metrics watchers
+// 6. Persist `workspace_root` into the *new* store's `config.json`
+//    BEFORE the scope swap. If this write fails, abort cleanly:
+//    drop `binding` (releases the new OS lock), `gate`'s Drop
+//    clears `switch_in_progress`, and the old workspace remains
+//    bound. Doing this BEFORE the swap (rather than after) prevents
+//    the failure mode where the swap commits but the new store
+//    lacks `workspace_root`, which would make the post-switch
+//    rehydrate read `workspaceRoot: null` and pop the first-boot
+//    picker on top of an already-bound workspace.
+// 7. Stop and join all metrics watchers
 //    ([`MetricsRegistry::stop_all_and_join`]) BEFORE closing the
 //    sessions. `session_close_impl` calls `metrics.stop()` per
 //    session which **removes** the handle from the registry — if we
@@ -1566,26 +1575,27 @@ pub fn workspace_validate_impl(
 //    id into the new store. Stopping first while the PTYs are still
 //    alive is harmless: workers observe `running = false` on their
 //    next poll and exit.
-// 7. Quiesce the old workspace's sessions: enumerate from the *old*
-//    store, then [`session_close_impl`] each. **Hard-fail** on the
-//    first close error — partial close + swap would leave mixed
-//    state. The new binding (and its lock) is dropped on failure so
-//    the old workspace remains the only bound one.
-// 8. Clear `pending_spawn` (any restored-but-not-yet-spawned ids from
+// 8. Quiesce the old workspace's sessions: enumerate from the *old*
+//    store, then [`park_session_for_switch_impl`] each. Park is
+//    best-effort (kills PTY, preserves the persisted record so a
+//    later switch-back can resurrect with `--resume`); failures are
+//    logged and swallowed.
+// 9. Clear `pending_spawn` (any restored-but-not-yet-spawned ids from
 //    the old workspace) and reset `restored = false` so the new
 //    workspace's restore-on-launch can fire when the frontend
 //    re-issues `frontend_ready`.
-// 9. Swap [`AppContext::workspace`] under `RwLock` write — the old
-//    `WorkspaceLockGuard` inside the old scope is dropped here, in
-//    one atomic moment, releasing the OS lock on the old workspace.
-//    Other readers were unblocked from step 4 onward only in the no-
-//    op gate — during the swap itself, the very brief write lock
-//    blocks them.
-// 10. Persist `workspace_root` into the *new* store's `config.json`
-//     (so the React picker UI doesn't fire on top of the swap), and
-//     update the per-branch `last-workspace.json` hint so the next
-//     launch resumes the new workspace by default.
-// 11. Clear `switch_in_progress = false` and emit
+// 10. Swap [`AppContext::workspace`] under `RwLock` write — the old
+//     `WorkspaceLockGuard` inside the old scope is dropped here, in
+//     one atomic moment, releasing the OS lock on the old workspace.
+//     Other readers were unblocked from step 4 onward only in the no-
+//     op gate — during the swap itself, the very brief write lock
+//     blocks them.
+// 11. Best-effort: update the per-branch `last-workspace.json` hint
+//     so the next launch resumes the new workspace by default.
+//     `workspace_root` was already persisted at step 6, so the
+//     post-swap frontend rehydrate is correct regardless of whether
+//     this succeeds.
+// 12. Clear `switch_in_progress = false` and emit
 //     `workspace://changed`. The frontend reacts by re-fetching
 //     config + sessions and re-issuing `frontend_ready` for the new
 //     workspace's restore.
@@ -1712,6 +1722,7 @@ pub async fn workspace_switch_impl_inner(
         app_data_dir,
         branch,
         ctx.git_runner.as_ref(),
+        crate::boot::BootSource::Picker,
     ) {
         Ok(b) => b,
         Err(crate::boot::BootError::Contention { branch, workspace }) => {
@@ -1728,7 +1739,11 @@ pub async fn workspace_switch_impl_inner(
                 ),
             ));
         }
-        Err(crate::boot::BootError::NotARepository { workspace, reason }) => {
+        Err(crate::boot::BootError::NotARepository {
+            workspace,
+            reason,
+            origin: _,
+        }) => {
             // Defensively unreachable: step 2 above already ran
             // `workspace_validate_impl` which performs the same
             // git-toplevel check. Surface as InvalidPath so the
@@ -1751,7 +1766,35 @@ pub async fn workspace_switch_impl_inner(
         }
     };
 
-    // Step 6 — quiesce metrics watchers. We do this BEFORE
+    // Step 6 — persist `workspace_root` into the NEW workspace's
+    // `config.json` BEFORE we commit the scope swap. If this write
+    // fails, the post-switch frontend rehydrate would otherwise read
+    // `workspaceRoot: null` from the new store and fall back to the
+    // first-boot picker even though the backend had already swapped
+    // — a self-contradictory state that's hard for the user to
+    // recover from. By writing first, we can abort cleanly:
+    //
+    // * Drop `binding` on the early-return path → releases the new
+    //   OS lock, reverting any state we may have started to
+    //   materialise on the new workspace.
+    // * Old `WorkspaceScope` is still bound (we have not yet
+    //   modified `ctx.workspace`).
+    // * `gate`'s Drop clears `switch_in_progress` so subsequent
+    //   commands resume against the still-bound old workspace.
+    //
+    // This is the asymmetric counterpart to `boot_select_workspace`,
+    // which tolerates the same failure (boot is one-shot; the user
+    // can restart). See `ensure_workspace_root_in_config` docs.
+    if let Err(e) = crate::boot::ensure_workspace_root_in_config(&binding.store, &canonical) {
+        return Err(AppError::new(
+            "Internal",
+            format!(
+                "failed to persist workspace_root into new workspace's config.json before switch commit: {e}"
+            ),
+        ));
+    }
+
+    // Step 7 — quiesce metrics watchers. We do this BEFORE
     // session_close so that the per-session `metrics.stop()` calls
     // inside session_close_impl don't drain the registry first
     // (`stop()` removes the handle), leaving stop_all_and_join with
@@ -1763,11 +1806,11 @@ pub async fn workspace_switch_impl_inner(
     // write an old session id into the new store.
     ctx.metrics.stop_all_and_join();
 
-    // Step 7 — quiesce old workspace sessions. Enumerate from the
-    // *current* store (still the old one until the swap in step 9).
+    // Step 8 — quiesce old workspace sessions. Enumerate from the
+    // *current* store (still the old one until the swap in step 10).
     // session_close_impl uses ctx.store() which clones from the old
     // scope; safe.
-    // Step 7 — **park** old workspace sessions. We kill the PTYs but
+    // Step 8 — **park** old workspace sessions. We kill the PTYs but
     // **preserve** every session record (sessions.json, lastOpenSessions,
     // tabOrder, activeSessionId untouched). When the user switches back
     // to this workspace, restore_all_sessions will re-spawn the PTYs
@@ -1785,14 +1828,14 @@ pub async fn workspace_switch_impl_inner(
     // park, neither happens, so neither does the recovery.
     //
     // Enumerate from the *current* store (still the old one until the
-    // swap in step 9). park_session_for_switch_impl uses ctx.store()
+    // swap in step 10). park_session_for_switch_impl uses ctx.store()
     // which clones from the old scope; safe.
     let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
     for id in old_session_ids {
         park_session_for_switch_impl(ctx, id).await;
     }
 
-    // Step 8 — drop pending_spawn entries from the old workspace and
+    // Step 9 — drop pending_spawn entries from the old workspace and
     // reset the restore gate so the new workspace's
     // restore_all_sessions can fire when the frontend re-issues
     // frontend_ready.
@@ -1801,7 +1844,7 @@ pub async fn workspace_switch_impl_inner(
     }
     ctx.restored.store(false, Ordering::SeqCst);
 
-    // Step 9 — swap WorkspaceScope. The OLD WorkspaceLockGuard inside
+    // Step 10 — swap WorkspaceScope. The OLD WorkspaceLockGuard inside
     // the old scope is dropped at this assignment, releasing the OS
     // lock on the old workspace.
     let new_scope = crate::boot::into_scope(binding);
@@ -1810,16 +1853,15 @@ pub async fn workspace_switch_impl_inner(
         *w = new_scope;
     }
 
-    // Step 10 — persist single-source-of-truth markers for the new
-    // workspace. Both are best-effort: their failure does not undo the
-    // swap.
-    let new_store = ctx.store();
-    crate::boot::ensure_workspace_root_in_config(&new_store, &canonical);
+    // Step 11 — best-effort hint. `workspace_root` was already
+    // persisted at step 6, so the frontend rehydrate is correct
+    // regardless of whether this succeeds; the hint is only used at
+    // the *next* process boot to skip the picker.
     if let Err(e) = crate::boot::write_hint(app_data_dir, branch, &canonical) {
         warn!(error = %e, "failed to persist last-workspace hint after switch; non-fatal");
     }
 
-    // Step 11 — open the gate and notify the frontend. `disarm()`
+    // Step 12 — open the gate and notify the frontend. `disarm()`
     // explicitly clears the gate on the success path; if we panicked
     // anywhere above, the GateGuard's Drop would have cleared it on
     // unwind instead.

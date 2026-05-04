@@ -65,7 +65,23 @@ pub enum BootError {
     #[error("workspace path does not exist or is not a directory: {0}")]
     InvalidWorkspace(PathBuf),
     #[error("workspace path is not a git repository root ({workspace}): {reason}")]
-    NotARepository { workspace: PathBuf, reason: String },
+    NotARepository {
+        workspace: PathBuf,
+        reason: String,
+        /// Where the path came from in the boot resolution chain.
+        /// Drives the lib.rs presentation: `Picker` errors trigger
+        /// a native dialog (the user *clicked* a folder and deserves
+        /// visible feedback); `Cli` / `Hint` / `Legacy` errors log to
+        /// stderr only so non-interactive launches don't pop a GUI
+        /// prompt and so `--workspace` failures match the documented
+        /// stderr-reporting behavior. (`Hint` and `Legacy` are
+        /// internally demoted to warnings inside
+        /// [`resolve_boot_workspace`] today and so never propagate
+        /// out as `NotARepository`, but the variants are kept for
+        /// completeness in case a future change starts surfacing
+        /// them.)
+        origin: BootSource,
+    },
     #[error("failed to canonicalise workspace path {path}: {source}")]
     Canonicalise {
         path: PathBuf,
@@ -90,6 +106,27 @@ pub enum BootError {
     },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Where in the boot resolution chain a workspace path came from.
+/// Threaded through [`validate_repo_root`] / [`bind_workspace`] so
+/// [`BootError::NotARepository`] carries enough context for the
+/// caller in `lib::run()` to decide between popping a native dialog
+/// (picker) and logging to stderr (CLI / hint / legacy /
+/// non-interactive launch).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BootSource {
+    /// `--workspace <path>` (or `--workspace=<path>`) CLI argument.
+    Cli,
+    /// The branch-specific `last-workspace.json` hint file.
+    Hint,
+    /// Legacy `<app_data_dir>/config.json::workspace_root` (one-time
+    /// migration breadcrumb).
+    Legacy,
+    /// Native folder-picker dialog ([`prompt_for_workspace_native`])
+    /// or any other interactive user-driven path (e.g. the in-app
+    /// switch command, which functionally mirrors the picker).
+    Picker,
 }
 
 /// Parsed CLI arguments. Today only `--workspace <path>` /
@@ -245,16 +282,16 @@ pub fn resolve_boot_workspace(
     app_data_dir: &Path,
     branch: &str,
     git_runner: &dyn GitRunner,
-) -> Result<Option<PathBuf>, BootError> {
+) -> Result<Option<(PathBuf, BootSource)>, BootError> {
     if let Some(p) = &args.workspace {
         let canon = canonicalise_existing(p)?;
-        validate_repo_root(&canon, git_runner)?;
-        return Ok(Some(canon));
+        validate_repo_root(&canon, git_runner, BootSource::Cli)?;
+        return Ok(Some((canon, BootSource::Cli)));
     }
     if let Some(p) = read_hint(app_data_dir, branch) {
         match canonicalise_existing(&p) {
-            Ok(canon) => match validate_repo_root(&canon, git_runner) {
-                Ok(()) => return Ok(Some(canon)),
+            Ok(canon) => match validate_repo_root(&canon, git_runner, BootSource::Hint) {
+                Ok(()) => return Ok(Some((canon, BootSource::Hint))),
                 Err(e) => warn!(
                     path = ?canon, error = %e,
                     "hint workspace is no longer a git repository; ignoring"
@@ -265,8 +302,8 @@ pub fn resolve_boot_workspace(
     }
     if let Some(p) = read_legacy_workspace_root(app_data_dir) {
         match canonicalise_existing(&p) {
-            Ok(canon) => match validate_repo_root(&canon, git_runner) {
-                Ok(()) => return Ok(Some(canon)),
+            Ok(canon) => match validate_repo_root(&canon, git_runner, BootSource::Legacy) {
+                Ok(()) => return Ok(Some((canon, BootSource::Legacy))),
                 Err(e) => warn!(
                     path = ?canon, error = %e,
                     "legacy workspace_root is no longer a git repository; ignoring"
@@ -326,7 +363,11 @@ fn canonicalise_existing(p: &Path) -> Result<PathBuf, BootError> {
 ///   working tree, or otherwise non-primary).
 /// * [`BootError::NotARepository`] (with the underlying error in
 ///   `reason`) if `git_toplevel` itself errors.
-fn validate_repo_root(canon: &Path, git_runner: &dyn GitRunner) -> Result<(), BootError> {
+fn validate_repo_root(
+    canon: &Path,
+    git_runner: &dyn GitRunner,
+    origin: BootSource,
+) -> Result<(), BootError> {
     match git_runner.git_toplevel(canon) {
         Ok(Some(toplevel)) if toplevel == *canon => {
             // Reject linked worktrees / submodule working trees: their
@@ -342,6 +383,7 @@ fn validate_repo_root(canon: &Path, git_runner: &dyn GitRunner) -> Result<(), Bo
                          (Arborist cannot spawn worktrees from inside another worktree; \
                          pick the primary clone instead)"
                         .to_string(),
+                    origin,
                 })
             }
         }
@@ -352,14 +394,17 @@ fn validate_repo_root(canon: &Path, git_runner: &dyn GitRunner) -> Result<(), Bo
                  (root is {})",
                 toplevel.display()
             ),
+            origin,
         }),
         Ok(None) => Err(BootError::NotARepository {
             workspace: canon.to_path_buf(),
             reason: "directory is not a git repository (no .git found)".to_string(),
+            origin,
         }),
         Err(e) => Err(BootError::NotARepository {
             workspace: canon.to_path_buf(),
             reason: format!("git probe failed: {e}"),
+            origin,
         }),
     }
 }
@@ -389,9 +434,10 @@ pub fn bind_workspace(
     app_data_dir: &Path,
     branch: &str,
     git_runner: &dyn GitRunner,
+    origin: BootSource,
 ) -> Result<WorkspaceBinding, BootError> {
     let canon = canonicalise_existing(workspace_root)?;
-    validate_repo_root(&canon, git_runner)?;
+    validate_repo_root(&canon, git_runner, origin)?;
     let root = StoreRoot::new(app_data_dir, branch);
     let layout = root.for_workspace(canon.clone());
 
@@ -446,18 +492,40 @@ pub fn into_scope(binding: WorkspaceBinding) -> WorkspaceScope {
 /// already-bound workspace. Failures are logged but non-fatal: a
 /// transient IO error here just means the user re-picks on next
 /// launch.
-pub fn ensure_workspace_root_in_config(store: &ConfigStore, canonical: &Path) {
+/// Ensure `store`'s `config.json` records `canonical` as its
+/// `workspace_root` (the single source of truth the frontend reads
+/// during rehydrate). No-op if the value already matches.
+///
+/// Returns the underlying [`crate::types::Error`] if the save fails.
+/// Callers must decide whether to propagate or tolerate:
+///
+/// * **Boot path** ([`boot_select_workspace`]) tolerates the failure
+///   with a `warn!` and continues — boot is one-shot, the user can
+///   restart, and a missing `workspace_root` field at next launch
+///   re-prompts the picker. Logging is sufficient.
+/// * **Switch path** ([`crate::commands::session::workspace_switch_impl_inner`])
+///   MUST propagate. If the swap is committed but this write fails,
+///   the frontend rehydrates from the new store, sees
+///   `workspaceRoot: null`, and falls back to the first-boot picker
+///   while the backend is already bound to the new workspace —
+///   self-contradictory state. The switch must call this BEFORE the
+///   `WorkspaceScope` swap so a failure can abort cleanly with the
+///   old workspace still bound (drop the new binding → release the
+///   new OS lock).
+pub fn ensure_workspace_root_in_config(
+    store: &ConfigStore,
+    canonical: &Path,
+) -> Result<(), crate::types::Error> {
     let cfg = store.load_config();
     if cfg.workspace_root.as_deref() == Some(canonical) {
-        return;
+        return Ok(());
     }
     let patch = crate::types::PartialAppConfig {
         workspace_root: Some(Some(canonical.to_path_buf())),
         ..Default::default()
     };
-    if let Err(e) = store.save_config(patch) {
-        warn!(error = ?e, "failed to persist bound workspace_root into config.json; non-fatal");
-    }
+    store.save_config(patch)?;
+    Ok(())
 }
 
 /// Native folder-picker dialog. Returns the user's chosen path, or
@@ -536,17 +604,23 @@ pub fn boot_select_workspace(
     git_runner: &dyn GitRunner,
 ) -> Result<Option<WorkspaceBinding>, BootError> {
     let resolved = match resolve_boot_workspace(args, app_data_dir, branch, git_runner)? {
-        Some(p) => Some(p),
-        None => prompt_for_workspace_native(branch),
+        Some(pair) => Some(pair),
+        None => prompt_for_workspace_native(branch).map(|p| (p, BootSource::Picker)),
     };
-    let Some(workspace_root) = resolved else {
+    let Some((workspace_root, source)) = resolved else {
         return Ok(None); // user cancelled
     };
-    let binding = bind_workspace(&workspace_root, app_data_dir, branch, git_runner)?;
+    let binding = bind_workspace(&workspace_root, app_data_dir, branch, git_runner, source)?;
 
     // Ensure the bound workspace's config.json reflects the canonical
     // workspace_root (single source of truth — see helper docs).
-    ensure_workspace_root_in_config(&binding.store, &binding.workspace_root);
+    // Boot tolerates a save failure with a `warn!` and continues;
+    // the user can restart, and a missing field at next launch
+    // re-prompts the picker (the switch path, by contrast, MUST
+    // propagate — see ensure_workspace_root_in_config docs).
+    if let Err(e) = ensure_workspace_root_in_config(&binding.store, &binding.workspace_root) {
+        warn!(error = ?e, "failed to persist bound workspace_root into config.json at boot; non-fatal");
+    }
 
     if let Err(e) = write_hint(app_data_dir, branch, &binding.workspace_root) {
         warn!(error = %e, "failed to persist last-workspace hint; non-fatal");
@@ -778,7 +852,10 @@ mod tests {
             workspace: Some(ws_cli.clone()),
         };
         let resolved = resolve_boot_workspace(&args, td.path(), "main", &YesRunner).unwrap();
-        assert_eq!(resolved, Some(dunce::canonicalize(&ws_cli).unwrap()));
+        assert_eq!(
+            resolved,
+            Some((dunce::canonicalize(&ws_cli).unwrap(), BootSource::Cli))
+        );
     }
 
     #[test]
@@ -790,7 +867,10 @@ mod tests {
         write_hint(td.path(), "main", &ws).unwrap();
         let resolved =
             resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
-        assert_eq!(resolved, Some(dunce::canonicalize(&ws).unwrap()));
+        assert_eq!(
+            resolved,
+            Some((dunce::canonicalize(&ws).unwrap(), BootSource::Hint))
+        );
     }
 
     #[test]
@@ -809,7 +889,10 @@ mod tests {
         .unwrap();
         let resolved =
             resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
-        assert_eq!(resolved, Some(dunce::canonicalize(&ws).unwrap()));
+        assert_eq!(
+            resolved,
+            Some((dunce::canonicalize(&ws).unwrap(), BootSource::Legacy))
+        );
     }
 
     #[test]
@@ -855,8 +938,37 @@ mod tests {
         };
         let err = resolve_boot_workspace(&args, td.path(), "main", &NoRunner).unwrap_err();
         match err {
-            BootError::NotARepository { workspace, .. } => {
+            BootError::NotARepository {
+                workspace, origin, ..
+            } => {
                 assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
+                // CLI-sourced rejections must be tagged so lib.rs can
+                // route to stderr/log instead of a native dialog
+                // (see boot::BootSource docs).
+                assert_eq!(origin, BootSource::Cli);
+            }
+            other => panic!("expected NotARepository, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bind_picker_with_non_repo_path_carries_picker_origin() {
+        // Picker-sourced rejections must be tagged BootSource::Picker so
+        // the lib.rs caller pops a native dialog (the user is sitting in
+        // front of one). This mirrors the CLI test above for the
+        // opposite arm of the lib.rs dispatch.
+        let td = TempDir::new().unwrap();
+        let ws = td.path().join("not-a-repo");
+        std::fs::create_dir_all(&ws).unwrap();
+        let app_data = td.path().join("app-data");
+        let err =
+            bind_workspace(&ws, &app_data, "main", &NoRunner, BootSource::Picker).unwrap_err();
+        match err {
+            BootError::NotARepository {
+                workspace, origin, ..
+            } => {
+                assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
+                assert_eq!(origin, BootSource::Picker);
             }
             other => panic!("expected NotARepository, got {other:?}"),
         }
@@ -914,7 +1026,8 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::create_dir_all(ws.join(".git")).unwrap();
 
-        let binding = bind_workspace(&ws, &app_data, "main", &YesRunner).unwrap();
+        let binding =
+            bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap();
         assert_eq!(binding.workspace_root, dunce::canonicalize(&ws).unwrap());
         // Seeded marker should exist.
         assert!(binding.layout.workspace_meta_path().exists());
@@ -931,7 +1044,7 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::create_dir_all(ws.join(".git")).unwrap();
 
-        let _b1 = bind_workspace(&ws, &app_data, "main", &YesRunner).unwrap();
+        let _b1 = bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap();
 
         // Same-process re-acquire is only a reliable contention signal
         // on Windows (per phase 2 findings); cross-process contention is
@@ -939,7 +1052,8 @@ mod tests {
         // assertion to Windows.
         #[cfg(target_os = "windows")]
         {
-            let err = bind_workspace(&ws, &app_data, "main", &YesRunner).unwrap_err();
+            let err =
+                bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap_err();
             match err {
                 BootError::Contention { .. } => {}
                 other => panic!("expected Contention, got {other:?}"),
@@ -952,8 +1066,14 @@ mod tests {
         let td = TempDir::new().unwrap();
         let app_data = td.path().join("app-data");
         std::fs::create_dir_all(&app_data).unwrap();
-        let err =
-            bind_workspace(&td.path().join("missing"), &app_data, "main", &YesRunner).unwrap_err();
+        let err = bind_workspace(
+            &td.path().join("missing"),
+            &app_data,
+            "main",
+            &YesRunner,
+            BootSource::Picker,
+        )
+        .unwrap_err();
         match err {
             BootError::Canonicalise { .. } => {}
             other => panic!("expected Canonicalise, got {other:?}"),
@@ -974,7 +1094,8 @@ mod tests {
         let ws = td.path().join("not-a-repo");
         std::fs::create_dir_all(&ws).unwrap();
 
-        let err = bind_workspace(&ws, &app_data, "main", &NoRunner).unwrap_err();
+        let err =
+            bind_workspace(&ws, &app_data, "main", &NoRunner, BootSource::Picker).unwrap_err();
         match err {
             BootError::NotARepository { workspace, .. } => {
                 assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
@@ -1016,9 +1137,12 @@ mod tests {
 
         // YesRunner pretends the path IS the toplevel — same signal a
         // real `git rev-parse` would emit inside a linked worktree.
-        let err = bind_workspace(&ws, &app_data, "main", &YesRunner).unwrap_err();
+        let err =
+            bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap_err();
         match err {
-            BootError::NotARepository { workspace, reason } => {
+            BootError::NotARepository {
+                workspace, reason, ..
+            } => {
                 assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
                 assert!(
                     reason.contains("linked git worktree"),
