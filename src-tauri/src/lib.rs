@@ -199,6 +199,11 @@ pub fn run() {
                     drop(log_guard);
                     std::process::exit(1);
                 }
+                Err(boot::BootError::WorkspaceRootPersist { dir, source }) => {
+                    boot::show_workspace_root_persist_dialog(&dir, &source.to_string());
+                    drop(log_guard);
+                    std::process::exit(1);
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "workspace boot bind failed");
                     eprintln!("Arborist failed to open workspace: {e}");

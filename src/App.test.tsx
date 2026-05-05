@@ -286,6 +286,60 @@ describe('App boot sequence', () => {
     expect(frontendReady.mock.calls.length - frontendReadyBefore).toBe(1);
     expect(sessionList.mock.calls.length - sessionListBefore).toBe(1);
   });
+  // Regression for PR #32 round-9 review finding: when the cleanup of
+  // App's boot effect runs BEFORE `await onWorkspaceChanged()`
+  // resolves, the listener registration is in flight in the backend
+  // but the local `unlisten` is still null. The OLD code's cleanup
+  // checked `unlistenWorkspaceChanged` synchronously, found null, and
+  // dropped the listener on the floor — every subsequent mount
+  // registered a duplicate handler that fired on every workspace
+  // switch. The fix holds the in-flight `Promise<Unlisten>` and
+  // chains the unlisten call off it in cleanup so the listener is
+  // detached as soon as registration resolves, regardless of when
+  // cleanup ran.
+  //
+  // We simulate the race by deferring the registration promise. The
+  // listener call itself happens synchronously when boot reaches that
+  // line, so we can wait for `onWorkspaceChanged` to have been called
+  // and then unmount before fulfilling its promise.
+  it('detaches a workspace://changed listener even when the effect cleanup runs before registration resolves', async () => {
+    let unlistenCalled = false;
+    let resolveRegistration: (() => void) | null = null;
+    onWorkspaceChanged.mockImplementation(
+      () =>
+        new Promise<() => void>((resolve) => {
+          resolveRegistration = () => {
+            resolve(() => {
+              unlistenCalled = true;
+            });
+          };
+        }),
+    );
+
+    const { unmount } = render(<App />);
+
+    // Wait until boot reaches the listener registration. The call is
+    // synchronous; only its promise is deferred.
+    await waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledTimes(1));
+    expect(resolveRegistration).not.toBeNull();
+    expect(unlistenCalled).toBe(false);
+
+    // Tear down the effect BEFORE the registration promise resolves.
+    // With the old code, cleanup would see `unlistenWorkspaceChanged ===
+    // null` and bail — leaking the listener.
+    unmount();
+    expect(unlistenCalled).toBe(false);
+
+    // Now resolve the registration. Cleanup chained off the promise,
+    // so the unlisten must fire as soon as the promise settles.
+    await act(async () => {
+      resolveRegistration!();
+      // Yield to flush the microtask queue (Promise.then callbacks).
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    });
+
+    expect(unlistenCalled).toBe(true);
+  });
 });
 
 describe('App dark mode', () => {

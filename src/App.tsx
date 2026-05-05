@@ -103,14 +103,23 @@ export function App(): JSX.Element {
     let unlistenStatus: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
     let unlistenMetrics: (() => void) | null = null;
-    let unlistenWorkspaceChanged: (() => void) | null = null;
+    // `onWorkspaceChanged` is async, so we hold its in-flight promise
+    // synchronously. Cleanup must be able to detach the listener even
+    // if the effect is torn down before the registration resolves —
+    // notably under React 18 StrictMode, which mounts → unmounts →
+    // remounts every effect on dev. If we held only the resolved
+    // unlisten (`(() => void) | null`), an early teardown would see
+    // `null`, leak the listener, and the second mount would register a
+    // duplicate — every `workspace://changed` event would then fire
+    // twice. The promise lets cleanup chain `then(unlisten => ...)`
+    // and reliably tear down whether or not registration has resolved.
+    let workspaceChangedUnlistenPromise: Promise<() => void> | null = null;
     // `rehydrateActiveWorkspace` (in `lib/rehydrate-workspace.ts`)
-    // owns the monotonic generation counter — it is shared between
-    // this listener and the `changeWorkspace` fallback path so a
-    // duplicate rehydrate (one from the event, one from the
-    // post-`workspaceSwitch` fallback) is race-safe: whichever call
-    // bumps the counter last wins, the other bails after its first
-    // await.
+    // serialises calls on a Promise chain and elides any submission
+    // that has been superseded by a newer one — shared between this
+    // listener and the `changeWorkspace` fallback path so a duplicate
+    // rehydrate (one from the event, one from the post-
+    // `workspaceSwitch` fallback) is race-safe.
 
     const boot = async (): Promise<void> => {
       try {
@@ -131,7 +140,11 @@ export function App(): JSX.Element {
         // them — (b) bound the new (branch, workspace) lock, and (c)
         // persisted the new workspace_root into the active store before
         // emitting this event — so it is safe to simply re-fetch.
-        unlistenWorkspaceChanged = await onWorkspaceChanged(() => {
+        //
+        // Assign the in-flight registration promise *before* awaiting it
+        // so cleanup can chain off it (StrictMode double-mount safety —
+        // see the declaration above).
+        workspaceChangedUnlistenPromise = onWorkspaceChanged(() => {
           void rehydrateActiveWorkspace().catch((err) => {
             // The backend swap already succeeded; rehydration failure
             // here is a frontend-only inconsistency and shouldn't
@@ -140,6 +153,7 @@ export function App(): JSX.Element {
             console.error('workspace://changed re-hydrate failed', err);
           });
         });
+        await workspaceChangedUnlistenPromise;
         await frontendReady();
         if (cancelled) return;
         setStatus('ready');
@@ -176,12 +190,22 @@ export function App(): JSX.Element {
           // ignore
         }
       }
-      if (unlistenWorkspaceChanged) {
-        try {
-          unlistenWorkspaceChanged();
-        } catch {
-          // ignore
-        }
+      if (workspaceChangedUnlistenPromise) {
+        // Snapshot the promise then null it out so a late `boot()`
+        // resolution after teardown sees nothing to clean up.
+        const pending = workspaceChangedUnlistenPromise;
+        workspaceChangedUnlistenPromise = null;
+        pending
+          .then((unlisten) => {
+            try {
+              unlisten();
+            } catch {
+              // ignore
+            }
+          })
+          .catch(() => {
+            // Registration itself failed — nothing to detach.
+          });
       }
     };
   }, []);

@@ -106,6 +106,19 @@ pub enum BootError {
     },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// `bind_workspace` succeeded (lock + store open) but the
+    /// follow-on `ensure_workspace_root_in_config` write failed. We
+    /// must abort boot on this — see the doc on
+    /// [`ensure_workspace_root_in_config`] for the why (the frontend
+    /// would otherwise see `workspaceRoot: null` and fall back to the
+    /// first-boot picker on top of an already-bound backend, with no
+    /// way to repair the misalignment).
+    #[error("failed to persist bound workspace_root into config.json at {dir}: {source}")]
+    WorkspaceRootPersist {
+        dir: PathBuf,
+        #[source]
+        source: crate::types::Error,
+    },
 }
 
 /// Where in the boot resolution chain a workspace path came from.
@@ -505,26 +518,31 @@ pub fn into_scope(binding: WorkspaceBinding) -> WorkspaceScope {
 /// `workspace_switch` command (Phase 7) — without this, a freshly-
 /// seeded or brand-new workspace would have `workspace_root: None`
 /// and the React frontend's picker UI would fire on top of an
-/// already-bound workspace. Failures are logged but non-fatal: a
-/// transient IO error here just means the user re-picks on next
-/// launch.
+/// already-bound workspace.
+///
 /// Ensure `store`'s `config.json` records `canonical` as its
 /// `workspace_root` (the single source of truth the frontend reads
 /// during rehydrate). No-op if the value already matches.
 ///
 /// Returns the underlying [`crate::types::Error`] if the save fails.
-/// Callers must decide whether to propagate or tolerate:
+/// **Both callers must propagate the error** — neither boot nor the
+/// switch command can leave the system in a state where the backend
+/// is bound to a workspace but the frontend's `workspaceRoot` is
+/// `None`:
 ///
-/// * **Boot path** ([`boot_select_workspace`]) tolerates the failure
-///   with a `warn!` and continues — boot is one-shot, the user can
-///   restart, and a missing `workspace_root` field at next launch
-///   re-prompts the picker. Logging is sufficient.
+/// * **Boot path** ([`boot_select_workspace`]) aborts with
+///   [`BootError::WorkspaceRootPersist`]. The lock + store binding
+///   are dropped on the way out, the user gets a launch failure,
+///   and the next launch starts from a clean slate. Tolerating the
+///   failure (the previous behaviour) was unsafe: the frontend would
+///   read `workspaceRoot: null`, show the first-boot
+///   [`crate::commands::session::workspace_validate_impl`] picker,
+///   and the picker's `onConfirm` only calls `config_set` on the
+///   already-bound store — so the user would believe they picked a
+///   new workspace while the backend continued to hold the original
+///   one's lock and the new path was written into the wrong store.
 /// * **Switch path** ([`crate::commands::session::workspace_switch_impl_inner`])
-///   MUST propagate. If the swap is committed but this write fails,
-///   the frontend rehydrates from the new store, sees
-///   `workspaceRoot: null`, and falls back to the first-boot picker
-///   while the backend is already bound to the new workspace —
-///   self-contradictory state. The switch must call this BEFORE the
+///   MUST also propagate. The switch must call this BEFORE the
 ///   `WorkspaceScope` swap so a failure can abort cleanly with the
 ///   old workspace still bound (drop the new binding → release the
 ///   new OS lock).
@@ -601,6 +619,29 @@ pub fn show_not_a_repo_dialog(workspace: &Path, reason: &str) {
     info!(?workspace, reason, "boot refused: not a git repository");
 }
 
+/// Native message-dialog informing the user that the chosen workspace
+/// was bound but the canonical `workspace_root` couldn't be persisted
+/// into the workspace's `config.json`. Boot aborts in that case (see
+/// [`ensure_workspace_root_in_config`] doc) — a partial bind would
+/// leave the frontend showing the first-boot picker on top of a
+/// locked backend with no way to repair the misalignment.
+pub fn show_workspace_root_persist_dialog(workspace_dir: &Path, reason: &str) {
+    let body = format!(
+        "Arborist opened the workspace but could not persist its location into the workspace's config.json. Boot was aborted to avoid a state where the app holds the workspace lock but its UI shows the first-boot picker.\n\nWorkspace config: {}\n\nReason: {reason}\n\nCheck filesystem permissions on the workspace folder and try again.",
+        workspace_dir.display(),
+    );
+    let _ = rfd::MessageDialog::new()
+        .set_title("Failed to save workspace location")
+        .set_description(&body)
+        .set_level(rfd::MessageLevel::Error)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+    info!(
+        ?workspace_dir,
+        reason, "boot refused: failed to persist workspace_root into config.json"
+    );
+}
+
 /// Boot-time workspace resolution + binding orchestration. This is the
 /// single entry point `lib::run()`'s setup hook calls.
 ///
@@ -630,12 +671,19 @@ pub fn boot_select_workspace(
 
     // Ensure the bound workspace's config.json reflects the canonical
     // workspace_root (single source of truth — see helper docs).
-    // Boot tolerates a save failure with a `warn!` and continues;
-    // the user can restart, and a missing field at next launch
-    // re-prompts the picker (the switch path, by contrast, MUST
-    // propagate — see ensure_workspace_root_in_config docs).
-    if let Err(e) = ensure_workspace_root_in_config(&binding.store, &binding.workspace_root) {
-        warn!(error = ?e, "failed to persist bound workspace_root into config.json at boot; non-fatal");
+    // Boot must propagate a save failure here: if we let the bind
+    // stand with workspace_root=None on disk, the frontend would
+    // rehydrate, see `workspaceRoot: null`, fall back to the first-
+    // boot picker, and the picker's confirm path (`config_set`) would
+    // write to the already-bound store while the backend remained
+    // locked on the original workspace. Aborting drops `binding`,
+    // which releases the OS lock — caller (`lib::run`) surfaces a
+    // dialog and exits non-zero, and the next launch starts clean.
+    if let Err(source) = ensure_workspace_root_in_config(&binding.store, &binding.workspace_root) {
+        return Err(BootError::WorkspaceRootPersist {
+            dir: binding.layout.workspace_dir().to_path_buf(),
+            source,
+        });
     }
 
     if let Err(e) = write_hint(app_data_dir, branch, &binding.workspace_root) {
@@ -1248,6 +1296,61 @@ mod tests {
         assert_eq!(
             cfg.workspace_root.as_deref(),
             Some(dunce::canonicalize(&ws).unwrap().as_path())
+        );
+    }
+
+    /// Regression for round-9 review feedback (PR #32): if
+    /// `ensure_workspace_root_in_config` fails after `bind_workspace`
+    /// succeeds, boot must abort with [`BootError::WorkspaceRootPersist`]
+    /// instead of warning and continuing. A continued boot would leave
+    /// the backend bound (lock held, store open) while the frontend
+    /// rehydrates, sees `workspaceRoot: null`, and falls back to the
+    /// first-boot picker on top of an already-bound workspace —
+    /// self-contradictory state with no recovery path (the picker's
+    /// confirm only calls `config_set`, not `workspace_switch`).
+    ///
+    /// We engineer the save failure by pre-creating the eventual
+    /// `<workspace_dir>/config.json` path *as a directory*. Seed
+    /// (`initialise_workspace_dir`) skips the seeded-config branch
+    /// because `dest_config.exists()` returns true for directories,
+    /// `load_config` yields defaults (read fails non-fatally), and the
+    /// `save_config` write fails when `tempfile::persist` tries to
+    /// rename over a directory.
+    #[test]
+    fn boot_aborts_when_workspace_root_persist_fails() {
+        let td = TempDir::new().unwrap();
+        let app_data = td.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let ws = td.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+
+        // Pre-create the storage layout's config.json as a directory so
+        // the post-bind save fails.
+        let canon_ws = dunce::canonicalize(&ws).unwrap();
+        let layout = StoreRoot::new(&app_data, "main").for_workspace(canon_ws);
+        std::fs::create_dir_all(layout.workspace_dir()).unwrap();
+        std::fs::create_dir_all(layout.settings_path()).unwrap();
+
+        let args = CliArgs {
+            workspace: Some(ws.clone()),
+        };
+        let err = boot_select_workspace(&args, &app_data, "main", &YesRunner)
+            .expect_err("boot must abort on persist failure");
+
+        match err {
+            BootError::WorkspaceRootPersist { dir, source: _ } => {
+                assert_eq!(dir, layout.workspace_dir());
+            }
+            other => panic!("expected WorkspaceRootPersist, got {other:?}"),
+        }
+
+        // Hint file must NOT have been written — boot aborted before
+        // `write_hint`. Otherwise the next launch would silently re-use
+        // a workspace whose canonical location was never persisted.
+        assert!(
+            read_hint(&app_data, "main").is_none(),
+            "hint must not be written when boot aborts on persist failure",
         );
     }
 }

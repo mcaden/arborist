@@ -17,6 +17,9 @@ import type {
   SessionOutputEvent,
   SessionStatusEvent,
   SessionView,
+  WorkspaceChangedEvent,
+  WorkspaceSwitchArgs,
+  WorkspaceSwitchResult,
 } from './arborist';
 
 import { sessionFixture } from './fixtures/session';
@@ -27,6 +30,9 @@ import partialAppConfigFixture from './fixtures/partialAppConfig.json';
 import appErrorFixture from './fixtures/appError.json';
 import sessionOutputEventFixture from './fixtures/sessionOutputEvent.json';
 import { sessionStatusEventFixture } from './fixtures/sessionStatusEvent';
+import workspaceSwitchArgsFixture from './fixtures/workspaceSwitchArgs.json';
+import workspaceSwitchResultFixture from './fixtures/workspaceSwitchResult.json';
+import workspaceChangedEventFixture from './fixtures/workspaceChangedEvent.json';
 
 // --- Compile-time assertions ------------------------------------------------
 //
@@ -61,6 +67,9 @@ const _appConfig = appConfigFixture satisfies AppConfig;
 const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
 const _appError = appErrorFixture satisfies AppError;
 const _sessionOutputEvent = sessionOutputEventFixture satisfies SessionOutputEvent;
+const _workspaceSwitchArgs = workspaceSwitchArgsFixture satisfies WorkspaceSwitchArgs;
+const _workspaceSwitchResult = workspaceSwitchResultFixture satisfies WorkspaceSwitchResult;
+const _workspaceChangedEvent = workspaceChangedEventFixture satisfies WorkspaceChangedEvent;
 
 // Silence "unused" lint on the locally-bound aliases. The `satisfies`
 // check above is what enforces drift — these voids carry no contract.
@@ -72,6 +81,9 @@ void _appConfig;
 void _partialAppConfig;
 void _appError;
 void _sessionOutputEvent;
+void _workspaceSwitchArgs;
+void _workspaceSwitchResult;
+void _workspaceChangedEvent;
 
 // --- Runtime key-set assertions --------------------------------------------
 
@@ -201,6 +213,33 @@ describe('arborist type mirrors', () => {
       ['sessionId', 'status'],
       ['message'],
       'SessionStatusEvent',
+    );
+  });
+
+  it('WorkspaceSwitchArgs fixture matches TS interface key set', () => {
+    assertExactKeys(
+      workspaceSwitchArgsFixture as unknown as Record<string, unknown>,
+      ['path'],
+      [],
+      'WorkspaceSwitchArgs',
+    );
+  });
+
+  it('WorkspaceSwitchResult fixture matches TS interface key set', () => {
+    assertExactKeys(
+      workspaceSwitchResultFixture as unknown as Record<string, unknown>,
+      ['workspaceRoot', 'noOp'],
+      [],
+      'WorkspaceSwitchResult',
+    );
+  });
+
+  it('WorkspaceChangedEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      workspaceChangedEventFixture as unknown as Record<string, unknown>,
+      ['workspaceRoot'],
+      [],
+      'WorkspaceChangedEvent',
     );
   });
 
