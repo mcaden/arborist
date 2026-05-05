@@ -9,14 +9,23 @@
 // UI pointed at the old workspace even though the backend has swapped.
 // Both call sites must drive the same rehydrate to converge.
 //
-// Concurrency: a monotonic generation counter lives at module scope
-// (so both call sites share it). Each invocation bumps the gen, copies
-// it locally, and bails after every `await` if a newer rehydrate has
-// superseded it. This prevents a slow rehydrate (e.g. backend hung on
-// the first `configGet`) from overwriting Zustand state with stale
-// data after a faster, later rehydrate has already settled — which
-// would silently leave the UI showing one workspace's sessions while
-// the backend was bound to another.
+// Concurrency: a previous post-await generation guard was insufficient
+// because both `configStore.hydrate()` and `sessionStore.hydrate()`
+// `set(...)` their Zustand stores **as part of resolving** their
+// promises. The guard ran *after* the await and so could not prevent
+// an older (slower) rehydrate from overwriting the store with stale
+// data after a newer rehydrate had already settled — two rapid
+// workspace switches could leave the UI pointed at the previous
+// workspace's config/sessions even though both rehydrates "completed
+// successfully".
+//
+// We instead **serialize** rehydrate calls on a Promise chain and
+// **coalesce** any calls that arrive while one is in flight. Each
+// caller atomically claims a monotonic position; when its turn comes,
+// it checks whether a newer caller has been submitted in the meantime
+// and skips its own work if so (the newer caller's results would
+// overwrite ours anyway, so the intermediate hydrate is pure waste +
+// UI flicker). The newest submission always runs.
 //
 // Step ordering — IMPORTANT (regression: parked sessions never
 // resumed after switch-back):
@@ -47,28 +56,46 @@ import { frontendReady } from '@/lib/tauri-bridge';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
-let rehydrateGen = 0;
+// Serial chain of rehydrate work. Every call appends to it so at most
+// one rehydrate's `set(...)` calls land in the stores at a time.
+let chain: Promise<void> = Promise.resolve();
+
+// Monotonic submission counter. A queued rehydrate compares its own
+// position against this when it gets dequeued: if a newer one has
+// been submitted, the current run skips entirely (its data would be
+// immediately overwritten by the newer run, and skipping avoids the
+// intermediate `set` storm + UI flicker).
+let submitted = 0;
 
 /**
  * Re-fetch config + sessions from the backend and re-issue
  * `frontend_ready`. Safe to call concurrently from multiple sources:
- * a stale (slower) call bails after each await once a newer call has
- * bumped the generation counter, leaving only the freshest result in
- * the Zustand stores.
+ * calls are serialized, and any call superseded by a newer one before
+ * its turn comes up is skipped. The returned promise still resolves
+ * (or rejects with the running call's error) when the call's "slot"
+ * in the chain settles — coalesced callers never see a result older
+ * than what they would have produced by running themselves.
  *
- * Awaits to completion. Errors from any stage propagate to the
- * caller — neither call site treats rehydrate failure as fatal, but
- * each handles logging on its own terms.
+ * Errors from any stage propagate to the caller — neither call site
+ * treats rehydrate failure as fatal, but each handles logging on its
+ * own terms. A failing run does not break the chain: subsequent runs
+ * still execute.
  */
 export async function rehydrateActiveWorkspace(): Promise<void> {
-  rehydrateGen += 1;
-  const myGen = rehydrateGen;
-  await useConfigStore.getState().hydrate();
-  if (myGen !== rehydrateGen) return;
-  // Drive `restore_all_sessions` BEFORE updating the session-store so
-  // `pending_spawn` is populated before React mounts any new
-  // TerminalView. See the step-ordering note in the module header.
-  await frontendReady();
-  if (myGen !== rehydrateGen) return;
-  await useSessionStore.getState().actions.hydrate();
+  submitted += 1;
+  const myGen = submitted;
+  const next = chain.then(async () => {
+    // A newer rehydrate has been submitted while we were queued. Skip
+    // ours — running it would just be undone by the newer one and
+    // briefly flash the wrong workspace in the UI on the way through.
+    if (myGen < submitted) return;
+    await useConfigStore.getState().hydrate();
+    await frontendReady();
+    await useSessionStore.getState().actions.hydrate();
+  });
+  // Swallow errors when extending the chain so a failing run does not
+  // leave the chain in a permanently-rejected state. Callers still
+  // receive the original `next` promise (with its error) for logging.
+  chain = next.catch(() => {});
+  return next;
 }

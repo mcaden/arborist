@@ -20,6 +20,15 @@
 // The fix flips the order so `frontendReady` (which awaits
 // `restore_all_sessions` to completion server-side) settles BEFORE
 // the session-store update that drives the React mount → resize.
+//
+// The later "coalesces a superseded rehydrate" / "serialises calls"
+// tests cover a separate concurrency regression: the original
+// post-await generation guard let an older rehydrate's `set(...)`
+// calls inside `hydrate()` land in the store before its gen check
+// ran. Two rapid switches could leave the UI showing stale workspace
+// data even though both rehydrates "completed successfully". The fix
+// serialises rehydrate calls on a Promise chain and skips any call
+// that has been superseded by a newer submission before its turn.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -91,7 +100,13 @@ describe('rehydrateActiveWorkspace', () => {
     expect(sessionHydrate).toHaveBeenCalledTimes(1);
   });
 
-  it('bails after the configStore.hydrate await when a newer rehydrate has superseded it', async () => {
+  it('coalesces a superseded rehydrate so its hydrate calls do not run', async () => {
+    // Regression: the previous post-await generation guard let an older
+    // rehydrate's `set(...)` calls inside `hydrate()` land in the store
+    // before the gen check ran, so two rapid switches could leave the
+    // UI showing stale workspace data. Serialise + skip-when-superseded
+    // ensures the older call's hydrate never runs at all when a newer
+    // one is queued behind it.
     let resolveFirstConfig: (() => void) | undefined;
     const firstConfig = new Promise<void>((resolve) => {
       resolveFirstConfig = resolve;
@@ -99,18 +114,59 @@ describe('rehydrateActiveWorkspace', () => {
     configHydrate.mockImplementationOnce(() => firstConfig);
 
     const firstCall = rehydrateActiveWorkspace();
-    // Second call bumps the generation counter while the first is
-    // still awaiting configStore.hydrate. The second resolves
-    // immediately (default mock).
-    await rehydrateActiveWorkspace();
+    // Second call queues behind the first while it is still awaiting
+    // `configStore.hydrate`. Its mere submission must cause the first
+    // call to skip its work entirely.
+    const secondCall = rehydrateActiveWorkspace();
 
     resolveFirstConfig?.();
     await firstCall;
+    await secondCall;
 
-    // Both calls hydrate config, but only the second (winner) drives
-    // frontendReady + sessionStore.hydrate to completion.
-    expect(configHydrate).toHaveBeenCalledTimes(2);
+    // Only the winner (second submission) drives all three stages.
+    // The first call returns without touching any of them.
+    expect(configHydrate).toHaveBeenCalledTimes(1);
     expect(frontendReady).toHaveBeenCalledTimes(1);
+    expect(sessionHydrate).toHaveBeenCalledTimes(1);
+  });
+
+  it('serialises calls so an older rehydrate cannot overwrite a newer one', async () => {
+    // Regression for the race the round-9 reviewer flagged: even if
+    // both `hydrate()` calls `set(...)` synchronously inside their
+    // bodies, the chain ensures call A runs to completion before
+    // call B starts, and the skip-when-superseded check ensures only
+    // the newest run actually mutates the stores. Final order seen
+    // by the stores must be the newest workspace's data.
+    const order: string[] = [];
+    configHydrate.mockImplementation(async () => {
+      order.push(`config@${configHydrate.mock.calls.length}`);
+    });
+    frontendReady.mockImplementation(async () => {
+      order.push(`ready@${frontendReady.mock.calls.length}`);
+    });
+    sessionHydrate.mockImplementation(async () => {
+      order.push(`session@${sessionHydrate.mock.calls.length}`);
+    });
+
+    const a = rehydrateActiveWorkspace();
+    const b = rehydrateActiveWorkspace();
+    await Promise.all([a, b]);
+
+    // Older call (A) is superseded and skipped; only B's stages run,
+    // and they run in the canonical order.
+    expect(order).toEqual(['config@1', 'ready@1', 'session@1']);
+  });
+
+  it('keeps the chain alive across a failing rehydrate', async () => {
+    // A failing run must not poison the chain — a subsequent rehydrate
+    // submitted after the failure has settled still has to execute.
+    configHydrate.mockImplementationOnce(async () => {
+      throw new Error('boom');
+    });
+
+    await expect(rehydrateActiveWorkspace()).rejects.toThrow('boom');
+
+    await rehydrateActiveWorkspace();
     expect(sessionHydrate).toHaveBeenCalledTimes(1);
   });
 });

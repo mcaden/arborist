@@ -241,8 +241,10 @@ describe('App boot sequence', () => {
 
   // Regression for PR #32 review finding: a slow `workspace://changed`
   // rehydrate must not overwrite Zustand state after a newer event has
-  // already settled. The handler captures a generation token and bails
-  // after every await if a newer emit has superseded it.
+  // already settled. With `rehydrateActiveWorkspace`'s serialise +
+  // skip-when-superseded helper, the *older* emit's body is skipped
+  // entirely before any IPC fires — so its slow `configGet` mock is
+  // never consumed.
   it('discards a stale workspace://changed rehydrate when a newer event arrives', async () => {
     let emit: ((payload: WorkspaceChangedEvent) => void) | null = null;
     onWorkspaceChanged.mockImplementation((cb) => {
@@ -256,49 +258,33 @@ describe('App boot sequence', () => {
     await waitFor(() => expect(emit).not.toBeNull());
     await waitFor(() => expect(frontendReady).toHaveBeenCalledTimes(1));
 
-    // First emit: configGet hangs so the rehydrate is "in flight". The
-    // sessionList call must NOT happen until this configGet resolves.
-    let resolveSlow: ((value: ReturnType<typeof defaultConfig>) => void) | null = null;
-    configGet.mockImplementationOnce(
-      () =>
-        new Promise((res) => {
-          resolveSlow = res;
-        }),
-    );
     const sessionListBefore = sessionList.mock.calls.length;
+    const configGetBefore = configGet.mock.calls.length;
+    const frontendReadyBefore = frontendReady.mock.calls.length;
 
-    await act(async () => {
-      emit!({ workspaceRoot: '/ws/a' });
-      await Promise.resolve();
-    });
-
-    // Second emit arrives before the first finishes — its configGet
-    // resolves immediately and its sessionList + frontendReady run.
+    // Queue the newer emit's mocks first so they are consumed by the
+    // *winning* (second) submission. The older (skipped) submission
+    // never invokes any of these mocks.
     configGet.mockResolvedValueOnce(defaultConfig({ workspaceRoot: '/ws/b' }));
     sessionList.mockResolvedValueOnce([]);
+
     await act(async () => {
+      // Fire two emits back-to-back, synchronously. The first is queued
+      // on `rehydrateActiveWorkspace`'s serial chain; the second's
+      // mere submission supersedes it. By the time the chain reaches
+      // the first slot, it sees `myGen < submitted` and skips.
+      emit!({ workspaceRoot: '/ws/a' });
       emit!({ workspaceRoot: '/ws/b' });
-      await Promise.resolve();
-      await Promise.resolve();
+      // Yield repeatedly so every queued microtask completes.
+      for (let i = 0; i < 6; i++) await Promise.resolve();
     });
     await waitFor(() => expect(frontendReady).toHaveBeenCalledTimes(2));
-    const sessionListAfterSecond = sessionList.mock.calls.length;
-    const frontendReadyAfterSecond = frontendReady.mock.calls.length;
 
-    // Now resolve the first (slow) configGet. The handler must observe
-    // that its generation is stale and bail BEFORE calling sessionList
-    // or frontendReady a third time.
-    await act(async () => {
-      resolveSlow!(defaultConfig({ workspaceRoot: '/ws/a' }));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(sessionList.mock.calls.length).toBe(sessionListAfterSecond);
-    expect(frontendReady.mock.calls.length).toBe(frontendReadyAfterSecond);
-    // Sanity: the second (winning) handler did exactly one extra
-    // sessionList/frontendReady on top of the boot baseline.
-    expect(sessionListAfterSecond).toBeGreaterThan(sessionListBefore);
+    // Exactly one extra hydrate executed (the winner). The superseded
+    // call did not call configGet, frontendReady, or sessionList.
+    expect(configGet.mock.calls.length - configGetBefore).toBe(1);
+    expect(frontendReady.mock.calls.length - frontendReadyBefore).toBe(1);
+    expect(sessionList.mock.calls.length - sessionListBefore).toBe(1);
   });
 });
 
