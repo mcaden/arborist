@@ -1,11 +1,16 @@
 # Arborist configuration
 
 Arborist keeps all persistent state in JSON files inside the OS-specific
-**app data directory** that Tauri provides. There is no in-app settings UI in
-v1 — settings are edited by hand (with the **specific Arborist instance you
-care about** shut down) and reloaded on next launch. This document describes
-the per-(branch, workspace) layout, the minimum valid `config.json`, and what
-to do when Arborist quarantines a corrupt file.
+**app data directory** that Tauri provides. Most workspace-level knobs
+(workspace root, instruction-sets directory, pre-launch commands, per-agent
+CLI launch overrides) are editable in the in-app **Settings** dialog
+(reachable from the sidebar footer), and the active workspace can be
+swapped at runtime from the same dialog without restarting. This document
+is the reference for the on-disk layout, the minimum valid `config.json`,
+hand-editing knobs that don't yet have a UI (per-worktree pre-launch
+overrides), and what to do when Arborist quarantines a corrupt file. If
+you do hand-edit, shut down the **specific Arborist instance** bound to
+that `(branch, workspace)` pair first and reload by relaunching it.
 
 ## On-disk layout
 

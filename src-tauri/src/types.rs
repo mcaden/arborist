@@ -681,8 +681,13 @@ pub struct WorkspaceValidateArgs {
 /// confirm; the actual lock is acquired transactionally by
 /// `workspace_switch` (or boot), which will fail with
 /// `WorkspaceLocked` if the contention is still present.
-/// Absent for the legacy / canonical layout when no `.lock` file
-/// exists yet — that case reads as "no contention" (false).
+/// The probe treats a missing `.lock` file as "no contention" (it
+/// short-circuits and returns `Ok(true)` without creating the file),
+/// so the missing file alone never produces an absent value — it
+/// serialises as `Some(false)` ("probed, no contention"). The field
+/// is `None` only when the path failed earlier validation (no probe
+/// attempted), the caller passed `app_data_dir = None`, or the probe
+/// itself hit an I/O error.
 ///
 /// MIRROR: `src/types/arborist.ts::WorkspaceValidateResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

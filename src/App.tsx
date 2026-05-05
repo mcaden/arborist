@@ -124,11 +124,13 @@ export function App(): JSX.Element {
         unlistenMetrics = subscribeToMetrics();
         // Re-hydrate config + sessions and re-issue frontend_ready when the
         // backend swaps to a different workspace at runtime (Phase 7
-        // in-app workspace switch). The backend has already (a) closed
-        // every old-workspace session, (b) bound the new (branch,
-        // workspace) lock, and (c) persisted the new workspace_root into
-        // the active store before emitting this event — so it is safe to
-        // simply re-fetch.
+        // in-app workspace switch). The backend has already (a) **parked**
+        // every old-workspace session — PTYs killed but the persisted
+        // session records (sessions.json, lastOpenSessions, tabOrder)
+        // are intentionally retained so a later switch-back can restore
+        // them — (b) bound the new (branch, workspace) lock, and (c)
+        // persisted the new workspace_root into the active store before
+        // emitting this event — so it is safe to simply re-fetch.
         unlistenWorkspaceChanged = await onWorkspaceChanged(() => {
           void rehydrateActiveWorkspace().catch((err) => {
             // The backend swap already succeeded; rehydration failure

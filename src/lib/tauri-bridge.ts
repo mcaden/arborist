@@ -266,10 +266,16 @@ export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
  * Switch the active workspace at runtime without restarting the process.
  *
  * Backend pipeline (see `commands/session.rs::workspace_switch_impl_inner`):
- * validate the new path → fast-path no-op if unchanged → close every
- * open session → swap the workspace binding (with its `.lock` file) →
- * persist `workspace_root` + `last-workspace.json` hint → emit
- * `workspace://changed` so this frontend can re-fetch.
+ * validate the new path → fast-path no-op if unchanged → **park** every
+ * open session (kill the PTYs but **preserve** the session records in
+ * `sessions.json` so a later switch-back can restore them via
+ * `--resume`-spliced re-spawn) → swap the workspace binding (with its
+ * `.lock` file) → persist `workspace_root` + `last-workspace.json` hint →
+ * emit `workspace://changed` so this frontend can re-fetch.
+ *
+ * Note: park is **not** close — the old workspace's `sessions.json` is
+ * intentionally retained. Tests / future callers must not assume the
+ * old workspace's persisted sessions are deleted by this command.
  *
  * Rejects with `AppError`. Notable codes:
  *  - `WorkspaceLocked` — the target is open in another Arborist window.

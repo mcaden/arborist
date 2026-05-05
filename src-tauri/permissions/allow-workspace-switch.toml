@@ -2,7 +2,7 @@
 
 [[permission]]
 identifier = "allow-workspace-switch"
-description = "Allows the frontend to swap the active workspace at runtime via the `workspace_switch` command (Phase 7). Closes every open session in the current workspace, releases its OS lock, then binds the new workspace's lock and `ConfigStore`."
+description = "Allows the frontend to swap the active workspace at runtime via the `workspace_switch` command (Phase 7). Parks every open session in the current workspace (PTYs killed, but the persisted session records are retained so a later switch-back can restore them), releases its OS lock, then binds the new workspace's lock and `ConfigStore`."
 commands.allow = [
     "workspace_switch",
 ]
