@@ -112,6 +112,22 @@ pub struct AppContext {
     /// must succeed during teardown so the close-all loop in the
     /// switch can complete, and they cannot create *new* orphan state.
     pub switch_in_progress: AtomicBool,
+    /// Quiesce barrier for [`session_resize_impl`]'s deferred-spawn
+    /// branch. Held as a **read** guard for the duration of the claim,
+    /// `pool.spawn`, and `metrics.start` block; held as a **write**
+    /// guard by [`workspace_switch_impl_inner`] across the
+    /// `pending_spawn` drain and `metrics.stop_all_and_join` so the
+    /// switch can be sure no in-flight deferred spawn will register a
+    /// new metrics watcher *after* it has joined the registry. Without
+    /// this barrier, a `session_resize` that claimed a pending entry
+    /// just before the gate flipped (`switch_in_progress = true`)
+    /// could finish its `metrics.start(...)` *after* the switch's
+    /// `stop_all_and_join`, leaking a watcher past the workspace swap
+    /// (see the residual #2 mitigation on [`Self::store`]). The
+    /// [`RwLock`] lets multiple concurrent deferred spawns proceed in
+    /// parallel; only the switch (rare) waits for all of them to
+    /// complete before draining.
+    pub deferred_spawn_quiesce: Arc<RwLock<()>>,
 }
 
 impl AppContext {
@@ -190,6 +206,7 @@ impl AppContext {
             pending_spawn: Arc::new(Mutex::new(HashMap::new())),
             switch_serialise: tokio::sync::Mutex::new(()),
             switch_in_progress: AtomicBool::new(false),
+            deferred_spawn_quiesce: Arc::new(RwLock::new(())),
         }
     }
 
@@ -242,15 +259,29 @@ impl AppContext {
     /// is the file I/O between snapshot and persist (microseconds
     /// to milliseconds).
     ///
-    /// **Known residual #2 — `session_resize` deferred-spawn failure
-    /// path.** `session_resize_impl` is intentionally *not* gated:
-    /// it fires on every UI resize and a hard refusal would noisily
-    /// break legitimate resizes during a switch. Its only store
-    /// mutation is the `update_session_status(..., Error, ...)` call
-    /// on deferred-spawn-failure (rare), which can land in the old
-    /// store if a switch is racing. Mitigated by step 8 of the
-    /// switch clearing `pending_spawn` (no further deferred spawns
-    /// can fire after step 8).
+    /// **Known residual #2 — `session_resize` deferred-spawn race.**
+    /// `session_resize_impl` is intentionally *not* gated on
+    /// `switch_in_progress`: it fires on every UI resize and a hard
+    /// refusal would noisily break legitimate resizes during a switch.
+    /// Both arms of its deferred-spawn branch race the swap:
+    ///
+    ///   * The **failure** arm calls `update_session_status(..., Error,
+    ///     ...)` (rare; only when `pool.spawn` itself errors), which can
+    ///     land in the old store if the snapshot was taken before the
+    ///     gate flip. Mitigated by step 7 of the switch draining
+    ///     `pending_spawn` (no further deferred spawns can fire after
+    ///     the drain).
+    ///   * The **success** arm calls `metrics.start(...)` to register a
+    ///     new watcher. Without coordination, that registration could
+    ///     land *after* the switch's `metrics.stop_all_and_join`,
+    ///     leaking a watcher tied to the old workspace scope past the
+    ///     swap. Closed by [`Self::deferred_spawn_quiesce`]: resize
+    ///     holds a read guard across the entire spawn + `metrics.start`
+    ///     block; the switch holds a write guard across the drain +
+    ///     `stop_all_and_join`. The write guard cannot be acquired
+    ///     while any deferred spawn is in flight, so by the time
+    ///     `stop_all_and_join` runs every started watcher is in the
+    ///     registry and gets joined.
     ///
     /// A truly air-tight fix for both residuals is a workspace-wide
     /// write barrier (e.g. an `Arc<RwLock<()>>` separate from the
@@ -840,6 +871,21 @@ pub fn session_resize_impl(ctx: &AppContext, args: SessionResizeArgs) -> Result<
     };
 
     if let Some(session) = pending {
+        // Quiesce barrier — see `AppContext::deferred_spawn_quiesce`.
+        // Held across the entire `pool.spawn` + `metrics.start` block
+        // so the workspace switch (which acquires the matching write
+        // guard) cannot run `stop_all_and_join` between our spawn and
+        // metrics.start, which would leak the watcher past the swap.
+        // Multiple concurrent deferred spawns hold read guards in
+        // parallel — the lock is contention-free for the common case.
+        // Forbidden re-entrant calls *inside* this block: anything that
+        // takes a write guard on `deferred_spawn_quiesce` (only
+        // workspace_switch_impl_inner does today) — if a future change
+        // adds one, this `read()` deadlocks.
+        let _quiesce = ctx
+            .deferred_spawn_quiesce
+            .read()
+            .map_err(|_| AppError::new("Internal", "deferred_spawn_quiesce poisoned"))?;
         let size = PtySize {
             cols,
             rows,
@@ -1145,11 +1191,11 @@ fn ai_session_transcript_exists(
 ///
 /// No-op when nothing needs trimming, so the common path doesn't
 /// rewrite `config.json` on every launch.
-fn trim_unknown_session_refs(
-    ctx: &AppContext,
+fn trim_unknown_session_refs_with_store(
+    store: &ConfigStore,
     known: &std::collections::HashSet<SessionId>,
 ) -> Result<(), Error> {
-    let cfg = ctx.store().load_config();
+    let cfg = store.load_config();
     let mut patch = PartialAppConfig::default();
     let mut dirty = false;
 
@@ -1183,7 +1229,7 @@ fn trim_unknown_session_refs(
     }
 
     if dirty {
-        ctx.store().save_config(patch)?;
+        store.save_config(patch)?;
     }
     Ok(())
 }
@@ -1199,8 +1245,25 @@ fn trim_unknown_session_refs(
 /// restore for the new workspace — but if the user races a manual
 /// session_create against that, restore must not double-spawn or
 /// overwrite the live record.
+///
+/// **Workspace-binding stability.** The store is snapshotted ONCE at
+/// the top of this function and re-used for every per-session read /
+/// write. Calling `ctx.store()` per iteration would re-read the
+/// `WorkspaceScope` on each call — and a workspace switch that lands
+/// mid-loop would silently re-target subsequent writes to the new
+/// (post-swap) store, with the OLD session ids of the workspace we
+/// were restoring. The pinned snapshot keeps every write in this
+/// invocation aimed at the workspace whose `sessions` we loaded.
+/// Additionally, each iteration checks `switch_in_progress` and
+/// bails early so the new workspace's own `restore_all_sessions`
+/// (kicked off by the frontend re-issuing `frontend_ready` after
+/// the `workspace://changed` event) doesn't have to dodge stale
+/// `pending_spawn` inserts from this loop.
 pub fn restore_all_sessions(ctx: &AppContext) {
-    let sessions = ctx.store().load_sessions();
+    // Pin the store for the lifetime of this invocation — see fn doc
+    // comment on workspace-binding stability.
+    let store = ctx.store();
+    let sessions = store.load_sessions();
     let ids: Vec<SessionId> = sessions.keys().copied().collect();
 
     // Sweep stale temp dirs whose UUIDs no longer correspond to any
@@ -1221,7 +1284,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
     // `seed.rs` prevents new instances of this; this trim cleans up
     // existing ones on first restore after the upgrade.
     let known: std::collections::HashSet<SessionId> = ids.iter().copied().collect();
-    if let Err(e) = trim_unknown_session_refs(ctx, &known) {
+    if let Err(e) = trim_unknown_session_refs_with_store(&store, &known) {
         warn!(error = ?e, "restore: trim_unknown_session_refs failed");
     }
 
@@ -1245,6 +1308,21 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         .unwrap_or_default();
 
     for (id, session) in sessions {
+        // Bail if a workspace switch landed mid-loop — the new
+        // workspace's own restore will run when the frontend re-issues
+        // `frontend_ready` after the `workspace://changed` event, and
+        // any further work here would either silently no-op against
+        // the new store (since `id` won't exist there) or, worse, leak
+        // an old-workspace `pending_spawn` entry into the new binding
+        // (orphan map entry; self-healing on next switch but wasteful).
+        if ctx.switch_in_progress.load(Ordering::SeqCst) {
+            debug!(
+                session_id = %id,
+                "restore: workspace switch in progress; bailing out of restore loop",
+            );
+            return;
+        }
+
         if ctx.pool.contains(&id) || pending_ids.contains(&id) {
             debug!(session_id = %id, "restore: skipping already-live or already-pending session");
             continue;
@@ -1267,11 +1345,11 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 path = %session.worktree_path.display(),
                 "restore: worktree missing; dropping persisted session record"
             );
-            if let Err(e) = ctx.store().remove_session(&id) {
+            if let Err(e) = store.remove_session(&id) {
                 warn!(session_id = %id, error = ?e, "restore: remove_session failed for stale-worktree drop");
                 continue;
             }
-            let cfg = ctx.store().load_config();
+            let cfg = store.load_config();
             let new_last: Vec<SessionId> = cfg
                 .last_open_sessions
                 .iter()
@@ -1284,7 +1362,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 Some(active) if active == id => Some(new_order.first().copied()),
                 _ => None,
             };
-            if let Err(e) = ctx.store().save_config(PartialAppConfig {
+            if let Err(e) = store.save_config(PartialAppConfig {
                 last_open_sessions: Some(new_last),
                 tab_order: Some(new_order),
                 active_session_id: active_patch,
@@ -1300,17 +1378,12 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         if let Err(e) = materialise_temp_files(&session.temp_files) {
             warn!(session_id = %id, error = ?e, "restore: temp-file materialise failed");
             let msg = format!("Failed to restore session temp files: {e}");
-            let _ = ctx
-                .store()
-                .update_session_status(&id, SessionStatus::Error, None);
+            let _ = store.update_session_status(&id, SessionStatus::Error, None);
             (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
             continue;
         }
 
-        if let Err(e) = ctx
-            .store()
-            .update_session_status(&id, SessionStatus::Starting, None)
-        {
+        if let Err(e) = store.update_session_status(&id, SessionStatus::Starting, None) {
             warn!(session_id = %id, error = ?e, "restore: status update failed");
             continue;
         }
@@ -1364,7 +1437,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                             ai_session_id = %aid,
                             "restore: Claude transcript missing on disk; starting fresh conversation",
                         );
-                        let _ = ctx.store().update_session_ai_session_id(&id, None);
+                        let _ = store.update_session_ai_session_id(&id, None);
                     }
                     exists
                 }
@@ -1388,9 +1461,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             }
             Err(_) => {
                 warn!(session_id = %id, "restore: pending_spawn mutex poisoned; skipping deferred registration");
-                let _ = ctx
-                    .store()
-                    .update_session_status(&id, SessionStatus::Error, None);
+                let _ = store.update_session_status(&id, SessionStatus::Error, None);
                 (ctx.sink.status)(
                     &id,
                     SessionStatus::Error,
@@ -1565,25 +1636,26 @@ pub fn workspace_validate_impl(
 //    lacks `workspace_root`, which would make the post-switch
 //    rehydrate read `workspaceRoot: null` and pop the first-boot
 //    picker on top of an already-bound workspace.
-// 7. Stop and join all metrics watchers
-//    ([`MetricsRegistry::stop_all_and_join`]) BEFORE closing the
-//    sessions. `session_close_impl` calls `metrics.stop()` per
-//    session which **removes** the handle from the registry — if we
-//    closed first, `stop_all_and_join` would find nothing to join
-//    and worker threads could still fire one final
-//    discover/turn callback after the swap, writing an old session
-//    id into the new store. Stopping first while the PTYs are still
-//    alive is harmless: workers observe `running = false` on their
-//    next poll and exit.
+// 7. Quiesce concurrent `session_resize_impl` deferred-spawn blocks
+//    by acquiring the write guard on
+//    [`AppContext::deferred_spawn_quiesce`]; under that guard, drain
+//    `pending_spawn` (so future resizes can't claim) and call
+//    [`MetricsRegistry::stop_all_and_join`] (so every started watcher
+//    is in the registry and gets joined). This is BEFORE the
+//    per-session park in step 8 because `park_session_for_switch_impl`
+//    calls `metrics.stop()` per session, which **removes** the handle
+//    from the registry — if we joined first, the per-session stop
+//    would find nothing left and worker threads could outlive the
+//    swap.
 // 8. Quiesce the old workspace's sessions: enumerate from the *old*
 //    store, then [`park_session_for_switch_impl`] each. Park is
 //    best-effort (kills PTY, preserves the persisted record so a
 //    later switch-back can resurrect with `--resume`); failures are
 //    logged and swallowed.
-// 9. Clear `pending_spawn` (any restored-but-not-yet-spawned ids from
-//    the old workspace) and reset `restored = false` so the new
-//    workspace's restore-on-launch can fire when the frontend
-//    re-issues `frontend_ready`.
+// 9. Defense-in-depth re-clear of `pending_spawn` (already drained in
+//    step 7) and reset `restored = false` so the new workspace's
+//    restore-on-launch can fire when the frontend re-issues
+//    `frontend_ready`.
 // 10. Swap [`AppContext::workspace`] under `RwLock` write — the old
 //     `WorkspaceLockGuard` inside the old scope is dropped here, in
 //     one atomic moment, releasing the OS lock on the old workspace.
@@ -1794,17 +1866,35 @@ pub async fn workspace_switch_impl_inner(
         ));
     }
 
-    // Step 7 — quiesce metrics watchers. We do this BEFORE
-    // session_close so that the per-session `metrics.stop()` calls
-    // inside session_close_impl don't drain the registry first
-    // (`stop()` removes the handle), leaving stop_all_and_join with
-    // nothing to join. Stopping watchers here while the old PTYs are
-    // still alive is harmless: the worker's next poll iteration sees
-    // `running = false` and exits cleanly. The join barrier is the
-    // actual "no callback after the swap" guarantee — without it,
-    // an in-flight discover/turn callback could race the swap and
-    // write an old session id into the new store.
-    ctx.metrics.stop_all_and_join();
+    // Step 7 — quiesce metrics watchers and serialise against any
+    // in-flight `session_resize_impl` deferred-spawn block. The write
+    // guard on `deferred_spawn_quiesce` waits until every concurrent
+    // deferred spawn (read guard) has released, after which we know
+    // every started watcher is in the metrics registry and will be
+    // joined by `stop_all_and_join`. We hold the write guard across
+    // BOTH the `pending_spawn` drain and `stop_all_and_join` so any
+    // resize that arrives during the join either:
+    //   * (entered before us) has already registered + we'll join it; OR
+    //   * (entered after us) sees an empty `pending_spawn` and falls
+    //     through to `pool.resize` (which fails benignly with
+    //     `NotFound` once park has killed the PTY).
+    //
+    // We do this BEFORE `session_close` (in step 8 / park) so that the
+    // per-session `metrics.stop()` calls inside `park_session_for_switch_impl`
+    // don't drain the registry first (`stop()` removes the handle),
+    // leaving stop_all_and_join with nothing to join. Stopping watchers
+    // here while the old PTYs are still alive is harmless: the worker's
+    // next poll iteration sees `running = false` and exits cleanly.
+    {
+        let _quiesce = ctx
+            .deferred_spawn_quiesce
+            .write()
+            .map_err(|_| AppError::new("Internal", "deferred_spawn_quiesce poisoned"))?;
+        if let Ok(mut g) = ctx.pending_spawn.lock() {
+            g.clear();
+        }
+        ctx.metrics.stop_all_and_join();
+    }
 
     // Step 8 — quiesce old workspace sessions. Enumerate from the
     // *current* store (still the old one until the swap in step 10).
@@ -1835,10 +1925,12 @@ pub async fn workspace_switch_impl_inner(
         park_session_for_switch_impl(ctx, id).await;
     }
 
-    // Step 9 — drop pending_spawn entries from the old workspace and
-    // reset the restore gate so the new workspace's
+    // Step 9 — reset the restore gate so the new workspace's
     // restore_all_sessions can fire when the frontend re-issues
-    // frontend_ready.
+    // frontend_ready. `pending_spawn` was already drained under the
+    // quiesce write guard in step 7; this `clear()` is defense-in-depth
+    // against any code path that might insert into pending_spawn
+    // between step 7 and now (none today; park doesn't insert).
     if let Ok(mut g) = ctx.pending_spawn.lock() {
         g.clear();
     }

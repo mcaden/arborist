@@ -156,7 +156,23 @@ where
     while let Some(arg) = args.next() {
         let s = match arg.to_str() {
             Some(s) => s.to_string(),
-            None => continue, // non-UTF-8 args are ignored (forward-compat)
+            None => {
+                // Symmetry with the space-separated form below: if the
+                // arg *looks* like `--workspace=<bytes>` (or bare
+                // `--workspace`) but the value isn't valid UTF-8,
+                // surface a clean error rather than silently dropping
+                // the flag and falling back to the picker. We use
+                // `to_string_lossy` for the prefix probe — `\u{FFFD}`
+                // can't appear inside a literal `--workspace` token,
+                // so the lossy form is safe to inspect.
+                let lossy = arg.to_string_lossy();
+                if lossy == "--workspace" || lossy.starts_with("--workspace=") {
+                    return Err(BootError::Cli(
+                        "--workspace value is not valid UTF-8".into(),
+                    ));
+                }
+                continue;
+            }
         };
         if let Some(value) = s.strip_prefix("--workspace=") {
             if value.is_empty() {
@@ -738,6 +754,49 @@ mod tests {
     fn parse_cli_args_ignores_unknown_flags() {
         let args = parse_cli_args(["arborist", "--unknown", "value", "--workspace=/ws"]).unwrap();
         assert_eq!(args.workspace.as_deref(), Some(Path::new("/ws")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_cli_args_non_utf8_workspace_equals_value_errors() {
+        // Symmetric with the space-separated form: an invalid-UTF-8
+        // value after `--workspace=` must surface a clean CLI error
+        // rather than being silently dropped (which previously caused
+        // the boot to fall through to the picker without telling the
+        // user their flag was rejected).
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let mut bytes: Vec<u8> = b"--workspace=".to_vec();
+        bytes.extend_from_slice(&[0xFF, 0xFE, 0xFD]); // invalid UTF-8
+        let arg = OsString::from_vec(bytes);
+        let err = parse_cli_args::<_, OsString>([OsString::from("arborist"), arg]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--workspace value is not valid UTF-8")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_cli_args_non_utf8_bare_workspace_value_errors() {
+        // The space-separated form was already strict; this test pins
+        // the existing behaviour so a future refactor doesn't regress
+        // both forms together.
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let value = OsString::from_vec(vec![0xFF, 0xFE, 0xFD]);
+        let err = parse_cli_args::<_, OsString>([
+            OsString::from("arborist"),
+            OsString::from("--workspace"),
+            value,
+        ])
+        .unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--workspace value is not valid UTF-8")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
     }
 
     // ----- hint_file_path ----------------------------------------------
