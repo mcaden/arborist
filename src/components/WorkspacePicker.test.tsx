@@ -155,4 +155,38 @@ describe('WorkspacePicker — change mode', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalled();
   });
+
+  it('suppresses the "already open" warning when the candidate equals the current bound workspace', async () => {
+    // Regression: workspace_validate's lock probe targets the same .lock
+    // file this process already holds. On Windows LockFileEx is per-handle,
+    // so the probe always reports contention for the currently bound
+    // workspace — the picker would otherwise flash a misleading
+    // "open in another instance" warning the moment the change-mode
+    // dialog opens (since initialPath seeds the input with that path).
+    workspaceValidate.mockResolvedValue({
+      valid: true,
+      alreadyOpenInAnotherInstance: true,
+    });
+    render(<WorkspacePicker mode="change" initialPath="/current" onConfirm={vi.fn()} />);
+    await flushDebounce();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /switch workspace/i })).not.toBeDisabled(),
+    );
+    expect(screen.queryByTestId('picker-already-open-warning')).not.toBeInTheDocument();
+  });
+
+  it('still shows the "already open" warning after the user edits to a different path', async () => {
+    workspaceValidate.mockResolvedValue({
+      valid: true,
+      alreadyOpenInAnotherInstance: true,
+    });
+    render(<WorkspacePicker mode="change" initialPath="/current" onConfirm={vi.fn()} />);
+    await flushDebounce();
+    fireEvent.change(screen.getByLabelText(/workspace path/i), {
+      target: { value: '/other-workspace' },
+    });
+    await flushDebounce();
+    const warning = await screen.findByTestId('picker-already-open-warning');
+    expect(warning).toHaveTextContent(/already be open in another arborist window/i);
+  });
 });

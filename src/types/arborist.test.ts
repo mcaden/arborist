@@ -11,9 +11,12 @@ import { expectTypeOf } from 'vitest';
 import type {
   AppConfig,
   AppError,
+  InstructionSet,
   PartialAppConfig,
   Session,
   SessionOutputEvent,
+  SessionStatusEvent,
+  SessionView,
 } from './arborist';
 
 import { sessionFixture } from './fixtures/session';
@@ -35,30 +38,40 @@ import { sessionStatusEventFixture } from './fixtures/sessionStatusEvent';
 //
 // `as const satisfies T` inside each fixture file is the primary
 // drift detector: missing required field, renamed field, or wrong
-// literal value all surface as compile errors there. We re-affirm
-// the assignability to the mirror types here so this test file
-// itself fails to typecheck if anyone deletes the `satisfies` from
-// the fixture or breaks the mirror import.
+// literal value all surface as compile errors there. We **also**
+// re-assert assignability here with explicit `satisfies` clauses so
+// this test file itself fails to typecheck if anyone deletes the
+// `satisfies` from the fixture or breaks the mirror import. The
+// previous `void <fixture>` form only consumed the value to silence
+// the unused-import lint and did **not** re-check assignability —
+// the drift detector was effectively defenseless against fixture-
+// side weakening. Use `<fixture> satisfies T` (an expression-level
+// operator) which preserves the fixture's narrowed `as const` type
+// while enforcing the contract.
 //
-// JSON-backed fixtures (no tagged-union fields) keep their existing
-// `satisfies` checks below. Runtime key-set assertions further down
-// catch *extra* keys (which TS's structural typing would otherwise
-// allow).
+// JSON-backed fixtures get the same treatment. Runtime key-set
+// assertions further down catch *extra* keys (which TS's structural
+// typing would otherwise allow).
 
+const _session = sessionFixture satisfies Session;
+const _sessionView = sessionViewFixture satisfies SessionView;
+const _instructionSet = instructionSetFixture satisfies InstructionSet;
+const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEvent;
 const _appConfig = appConfigFixture satisfies AppConfig;
 const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
 const _appError = appErrorFixture satisfies AppError;
 const _sessionOutputEvent = sessionOutputEventFixture satisfies SessionOutputEvent;
 
-// Silence "unused" lint without losing the satisfies assertion.
-void sessionFixture;
-void sessionViewFixture;
-void instructionSetFixture;
+// Silence "unused" lint on the locally-bound aliases. The `satisfies`
+// check above is what enforces drift — these voids carry no contract.
+void _session;
+void _sessionView;
+void _instructionSet;
+void _sessionStatusEvent;
 void _appConfig;
 void _partialAppConfig;
 void _appError;
 void _sessionOutputEvent;
-void sessionStatusEventFixture;
 
 // --- Runtime key-set assertions --------------------------------------------
 
