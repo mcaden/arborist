@@ -1,14 +1,18 @@
 //! `WorkspaceScope` — the per-(branch, workspace) binding owned by a
 //! running Arborist instance.
 //!
-//! At boot time (phase 6 — not yet wired) the app resolves the user's
-//! chosen workspace, builds a [`StoreLayout`](crate::store_layout) for
-//! it, acquires the matching [`WorkspaceLockGuard`](crate::workspace_lock),
-//! opens a [`ConfigStore`](crate::config_store) at the layout's
-//! workspace dir, and bundles all three into a `WorkspaceScope`. The
-//! scope is then stored inside [`AppContext`](crate::commands::AppContext)
-//! behind an `Arc<RwLock<…>>` so that the in-app workspace switch (phase
-//! 7) can transactionally swap the entire scope — releasing the old
+//! At boot time [`crate::boot::boot_select_workspace`] resolves the
+//! user's chosen workspace (CLI / hint / legacy / native picker),
+//! [`crate::boot::bind_workspace`] builds a
+//! [`StoreLayout`](crate::store_layout) for it, acquires the matching
+//! [`WorkspaceLockGuard`](crate::workspace_lock), and opens a
+//! [`ConfigStore`](crate::config_store) at the layout's workspace dir.
+//! `lib::run` then folds all three into a `WorkspaceScope` via
+//! [`crate::boot::into_scope`] and hands it to
+//! [`AppContext::with_workspace`](crate::commands::AppContext) where
+//! it lives behind an `Arc<RwLock<…>>` so that the in-app workspace
+//! switch ([`crate::commands::session::workspace_switch_impl_inner`])
+//! can transactionally swap the entire scope — releasing the old
 //! lock and adopting the new one — under a write lock without any
 //! caller seeing a torn intermediate state.
 //!

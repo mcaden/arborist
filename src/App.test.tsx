@@ -340,6 +340,45 @@ describe('App boot sequence', () => {
 
     expect(unlistenCalled).toBe(true);
   });
+
+  // Regression for PR #32 round-10 review finding (round-9 round-2):
+  // even with the in-flight `Promise<Unlisten>` fix, a cancel that
+  // landed BETWEEN `await onWorkspaceChanged()` resolving and
+  // `frontendReady()` being called would still consume the backend's
+  // one-shot restore-sessions gate from a torn-down tree. The live
+  // remount would then see `frontend_ready` as a no-op and never
+  // restore sessions with its own listeners attached. Fix: check
+  // `cancelled` between the two awaits.
+  it('does not consume the frontendReady gate when boot is cancelled before reaching it', async () => {
+    let resolveRegistration: (() => void) | null = null;
+    onWorkspaceChanged.mockImplementation(
+      () =>
+        new Promise<() => void>((resolve) => {
+          resolveRegistration = () => resolve(() => {});
+        }),
+    );
+
+    const frontendReadyBefore = frontendReady.mock.calls.length;
+    const { unmount } = render(<App />);
+    await waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledTimes(1));
+    expect(resolveRegistration).not.toBeNull();
+    // Boot is parked at `await workspaceChangedUnlistenPromise`.
+    // frontendReady has not yet been called.
+    expect(frontendReady.mock.calls.length - frontendReadyBefore).toBe(0);
+
+    unmount();
+
+    await act(async () => {
+      resolveRegistration!();
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    });
+
+    // The in-flight registration has resolved AFTER cleanup. Boot's
+    // post-await `if (cancelled) return` must short-circuit before
+    // `frontendReady()` runs — otherwise the live remount would see
+    // the backend gate already consumed.
+    expect(frontendReady.mock.calls.length - frontendReadyBefore).toBe(0);
+  });
 });
 
 describe('App dark mode', () => {

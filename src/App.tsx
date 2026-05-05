@@ -154,6 +154,15 @@ export function App(): JSX.Element {
           });
         });
         await workspaceChangedUnlistenPromise;
+        // Cleanup may have run while we were awaiting the listener
+        // registration. We must NOT call `frontendReady()` from a
+        // torn-down tree — it is the backend's one-shot
+        // restore-sessions gate, and consuming it from a dead mount
+        // means the live remount sees a no-op and never restores
+        // sessions with its own listeners attached. Cleanup has
+        // already chained off `workspaceChangedUnlistenPromise` to
+        // detach the just-registered listener.
+        if (cancelled) return;
         await frontendReady();
         if (cancelled) return;
         setStatus('ready');
