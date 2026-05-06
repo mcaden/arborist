@@ -30,14 +30,7 @@ vi.mock('@/lib/session-events', () => ({
 }));
 
 import { App } from './App';
-import {
-  configGet,
-  frontendReady,
-  onWorkspaceChanged,
-  resetBridgeMocks,
-  sessionList,
-} from '@/lib/tauri-bridge.mock';
-import type { AppConfig, WorkspaceChangedEvent } from '@/types/arborist';
+import { configGet, frontendReady, resetBridgeMocks, sessionList } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
@@ -95,22 +88,6 @@ function resetStores(): void {
     pendingClose: undefined,
     isHydrated: false,
   });
-}
-
-function defaultConfig(overrides: { workspaceRoot?: string | null } = {}): AppConfig {
-  return {
-    configVersion: 4,
-    defaultInstructionSets: { claude: '', copilot: '' },
-    instructionSetsDir: '',
-    workspaceRoot: overrides.workspaceRoot ?? '/mock/workspace',
-    worktreeRoots: [],
-    prelaunchCommands: [],
-    worktreePrelaunchCommands: {},
-    aiLaunchCommands: { claude: '', copilot: '' },
-    lastOpenSessions: [],
-    tabOrder: [],
-    activeSessionId: null,
-  };
 }
 
 beforeEach(() => {
@@ -237,147 +214,6 @@ describe('App boot sequence', () => {
       expect(screen.getByRole('heading', { name: /choose your workspace/i })).toBeInTheDocument();
     });
     expect(screen.queryByTestId('main-area')).not.toBeInTheDocument();
-  });
-
-  // Regression for PR #32 review finding: a slow `workspace://changed`
-  // rehydrate must not overwrite Zustand state after a newer event has
-  // already settled. With `rehydrateActiveWorkspace`'s serialise +
-  // skip-when-superseded helper, the *older* emit's body is skipped
-  // entirely before any IPC fires — so its slow `configGet` mock is
-  // never consumed.
-  it('discards a stale workspace://changed rehydrate when a newer event arrives', async () => {
-    let emit: ((payload: WorkspaceChangedEvent) => void) | null = null;
-    onWorkspaceChanged.mockImplementation((cb) => {
-      emit = cb;
-      return Promise.resolve(() => {});
-    });
-
-    // Boot: first configGet/sessionList resolves immediately so the app
-    // reaches the ready state before we start firing workspace events.
-    render(<App />);
-    await waitFor(() => expect(emit).not.toBeNull());
-    await waitFor(() => expect(frontendReady).toHaveBeenCalledTimes(1));
-
-    const sessionListBefore = sessionList.mock.calls.length;
-    const configGetBefore = configGet.mock.calls.length;
-    const frontendReadyBefore = frontendReady.mock.calls.length;
-
-    // Queue the newer emit's mocks first so they are consumed by the
-    // *winning* (second) submission. The older (skipped) submission
-    // never invokes any of these mocks.
-    configGet.mockResolvedValueOnce(defaultConfig({ workspaceRoot: '/ws/b' }));
-    sessionList.mockResolvedValueOnce([]);
-
-    await act(async () => {
-      // Fire two emits back-to-back, synchronously. The first is queued
-      // on `rehydrateActiveWorkspace`'s serial chain; the second's
-      // mere submission supersedes it. By the time the chain reaches
-      // the first slot, it sees `myGen < submitted` and skips.
-      emit!({ workspaceRoot: '/ws/a' });
-      emit!({ workspaceRoot: '/ws/b' });
-      // Yield repeatedly so every queued microtask completes.
-      for (let i = 0; i < 6; i++) await Promise.resolve();
-    });
-    await waitFor(() => expect(frontendReady).toHaveBeenCalledTimes(2));
-
-    // Exactly one extra hydrate executed (the winner). The superseded
-    // call did not call configGet, frontendReady, or sessionList.
-    expect(configGet.mock.calls.length - configGetBefore).toBe(1);
-    expect(frontendReady.mock.calls.length - frontendReadyBefore).toBe(1);
-    expect(sessionList.mock.calls.length - sessionListBefore).toBe(1);
-  });
-  // Regression for PR #32 round-9 review finding: when the cleanup of
-  // App's boot effect runs BEFORE `await onWorkspaceChanged()`
-  // resolves, the listener registration is in flight in the backend
-  // but the local `unlisten` is still null. The OLD code's cleanup
-  // checked `unlistenWorkspaceChanged` synchronously, found null, and
-  // dropped the listener on the floor — every subsequent mount
-  // registered a duplicate handler that fired on every workspace
-  // switch. The fix holds the in-flight `Promise<Unlisten>` and
-  // chains the unlisten call off it in cleanup so the listener is
-  // detached as soon as registration resolves, regardless of when
-  // cleanup ran.
-  //
-  // We simulate the race by deferring the registration promise. The
-  // listener call itself happens synchronously when boot reaches that
-  // line, so we can wait for `onWorkspaceChanged` to have been called
-  // and then unmount before fulfilling its promise.
-  it('detaches a workspace://changed listener even when the effect cleanup runs before registration resolves', async () => {
-    let unlistenCalled = false;
-    let resolveRegistration: (() => void) | null = null;
-    onWorkspaceChanged.mockImplementation(
-      () =>
-        new Promise<() => void>((resolve) => {
-          resolveRegistration = () => {
-            resolve(() => {
-              unlistenCalled = true;
-            });
-          };
-        }),
-    );
-
-    const { unmount } = render(<App />);
-
-    // Wait until boot reaches the listener registration. The call is
-    // synchronous; only its promise is deferred.
-    await waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledTimes(1));
-    expect(resolveRegistration).not.toBeNull();
-    expect(unlistenCalled).toBe(false);
-
-    // Tear down the effect BEFORE the registration promise resolves.
-    // With the old code, cleanup would see `unlistenWorkspaceChanged ===
-    // null` and bail — leaking the listener.
-    unmount();
-    expect(unlistenCalled).toBe(false);
-
-    // Now resolve the registration. Cleanup chained off the promise,
-    // so the unlisten must fire as soon as the promise settles.
-    await act(async () => {
-      resolveRegistration!();
-      // Yield to flush the microtask queue (Promise.then callbacks).
-      for (let i = 0; i < 6; i++) await Promise.resolve();
-    });
-
-    expect(unlistenCalled).toBe(true);
-  });
-
-  // Regression for PR #32 round-10 review finding (round-9 round-2):
-  // even with the in-flight `Promise<Unlisten>` fix, a cancel that
-  // landed BETWEEN `await onWorkspaceChanged()` resolving and
-  // `frontendReady()` being called would still consume the backend's
-  // one-shot restore-sessions gate from a torn-down tree. The live
-  // remount would then see `frontend_ready` as a no-op and never
-  // restore sessions with its own listeners attached. Fix: check
-  // `cancelled` between the two awaits.
-  it('does not consume the frontendReady gate when boot is cancelled before reaching it', async () => {
-    let resolveRegistration: (() => void) | null = null;
-    onWorkspaceChanged.mockImplementation(
-      () =>
-        new Promise<() => void>((resolve) => {
-          resolveRegistration = () => resolve(() => {});
-        }),
-    );
-
-    const frontendReadyBefore = frontendReady.mock.calls.length;
-    const { unmount } = render(<App />);
-    await waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledTimes(1));
-    expect(resolveRegistration).not.toBeNull();
-    // Boot is parked at `await workspaceChangedUnlistenPromise`.
-    // frontendReady has not yet been called.
-    expect(frontendReady.mock.calls.length - frontendReadyBefore).toBe(0);
-
-    unmount();
-
-    await act(async () => {
-      resolveRegistration!();
-      for (let i = 0; i < 6; i++) await Promise.resolve();
-    });
-
-    // The in-flight registration has resolved AFTER cleanup. Boot's
-    // post-await `if (cancelled) return` must short-circuit before
-    // `frontendReady()` runs — otherwise the live remount would see
-    // the backend gate already consumed.
-    expect(frontendReady.mock.calls.length - frontendReadyBefore).toBe(0);
   });
 });
 

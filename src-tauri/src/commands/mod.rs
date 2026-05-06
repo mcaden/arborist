@@ -185,8 +185,10 @@ pub async fn session_restart(
 /// because tokio's `try_read_owned` is permit-based and does NOT
 /// reject when a writer is queued behind active readers — the counter
 /// is what closes that gap. On a negative outcome we silently
-/// `Ok(())` so the frontend can re-issue after the
-/// `workspace://changed` event.
+/// `Ok(())`. (As of PR5, in-app workspace switches run their own
+/// inline restore under the write guard and no longer rely on a
+/// follow-up `frontend_ready`; this command remains for the boot-time
+/// initial restore.)
 #[tauri::command]
 pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
@@ -275,10 +277,11 @@ pub async fn worktree_create(
 
 /// Switch the active workspace in-place (Phase 7). Closes every open
 /// session in the current workspace, releases its OS lock, acquires the
-/// new workspace's lock, opens the new ConfigStore, and emits
-/// `workspace://changed` on success. Returns
-/// `AppError::WorkspaceLocked` if another Arborist instance holds the
-/// new workspace's lock.
+/// new workspace's lock, opens the new ConfigStore, runs
+/// `restore_all_sessions` for the new workspace inline, and returns the
+/// post-switch `{ config, sessions }` so the frontend can adopt
+/// everything in one render. Returns `AppError::WorkspaceLocked` if
+/// another Arborist instance holds the new workspace's lock.
 #[tauri::command]
 pub async fn workspace_switch(
     app: tauri::AppHandle,

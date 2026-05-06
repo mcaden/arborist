@@ -76,7 +76,24 @@ describe('WorkspaceIndicator', () => {
       actions: { ...s.actions, close: closeMock },
     }));
     workspaceValidate.mockResolvedValue({ valid: true });
-    workspaceSwitch.mockResolvedValue({ workspaceRoot: '/new', noOp: false });
+    workspaceSwitch.mockResolvedValue({
+      workspaceRoot: '/new',
+      noOp: false,
+      config: {
+        configVersion: 4,
+        defaultInstructionSets: { claude: '', copilot: '' },
+        instructionSetsDir: '',
+        workspaceRoot: '/new',
+        worktreeRoots: [],
+        prelaunchCommands: [],
+        worktreePrelaunchCommands: {},
+        aiLaunchCommands: { claude: '', copilot: '' },
+        lastOpenSessions: [],
+        tabOrder: [],
+        activeSessionId: null,
+      },
+      sessions: [],
+    });
 
     render(<WorkspaceIndicator />);
     fireEvent.click(screen.getByRole('button', { name: /change/i }));

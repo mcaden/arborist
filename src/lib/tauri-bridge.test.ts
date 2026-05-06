@@ -22,7 +22,6 @@ import type {
   PartialAppConfig,
   SessionOutputEvent,
   SessionStatusEvent,
-  WorkspaceChangedEvent,
 } from '@/types/arborist';
 
 beforeEach(() => {
@@ -312,30 +311,6 @@ describe('workspaceSwitch', () => {
     await expect(bridge.workspaceSwitch('/locked')).rejects.toMatchObject({
       code: 'WorkspaceLocked',
     });
-  });
-});
-
-describe('onWorkspaceChanged', () => {
-  it('subscribes to workspace://changed, forwards the payload, and returns the unlisten fn', async () => {
-    const unlisten = vi.fn();
-    let captured: ((event: { payload: WorkspaceChangedEvent }) => void) | null = null;
-    listenMock.mockImplementation(
-      (_event: string, cb: (event: { payload: WorkspaceChangedEvent }) => void) => {
-        captured = cb;
-        return Promise.resolve(unlisten);
-      },
-    );
-
-    const cb = vi.fn();
-    const returned = await bridge.onWorkspaceChanged(cb);
-
-    expect(listenMock).toHaveBeenCalledWith('workspace://changed', expect.any(Function));
-    expect(returned).toBe(unlisten);
-
-    const payload: WorkspaceChangedEvent = { workspaceRoot: '/new/ws' };
-    expect(captured).not.toBeNull();
-    captured!({ payload });
-    expect(cb).toHaveBeenCalledWith(payload);
   });
 });
 

@@ -1,31 +1,56 @@
-// Regression for PR #32 review finding: when `workspaceSwitch`
-// resolves Ok the backend's `workspace://changed` emit is
-// best-effort (Rust side only `warn!`s on failure and the command
-// still resolves Ok). Without a frontend-driven fallback an emit
-// failure would leave the UI pointed at the old workspace. This
-// test pins that `changeWorkspace` always re-hydrates on a real
-// switch (so the fallback fires even if the listener never does)
-// and *skips* rehydrate on a no-op switch (cheap fast path).
+// PR5: `workspaceSwitch` is now atomic — the backend runs restore for
+// the new workspace under its own write guard and returns the
+// post-restore `{ config, sessions }` inline. `changeWorkspace` adopts
+// the result into both stores in a single render. These tests pin
+// that behaviour and the lock-contention error translation.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { changeWorkspace } from './workspace-switch';
-import { frontendReady, resetBridgeMocks, workspaceSwitch } from '@/lib/tauri-bridge.mock';
+import { resetBridgeMocks, workspaceSwitch } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import type { AppConfig, SessionView, WorkspaceSwitchResult } from '@/types/arborist';
 
 vi.mock('@/lib/tauri-bridge', () => import('@/lib/tauri-bridge.mock'));
 
-let configHydrate: ReturnType<typeof vi.fn>;
-let sessionHydrate: ReturnType<typeof vi.fn>;
+let configAdopt: ReturnType<typeof vi.fn>;
+let sessionAdopt: ReturnType<typeof vi.fn>;
+
+function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  return {
+    configVersion: 4,
+    defaultInstructionSets: { claude: '', copilot: '' },
+    instructionSetsDir: '',
+    workspaceRoot: '/new',
+    worktreeRoots: [],
+    prelaunchCommands: [],
+    worktreePrelaunchCommands: {},
+    aiLaunchCommands: { claude: '', copilot: '' },
+    lastOpenSessions: [],
+    tabOrder: [],
+    activeSessionId: null,
+    ...overrides,
+  };
+}
+
+function makeResult(overrides: Partial<WorkspaceSwitchResult> = {}): WorkspaceSwitchResult {
+  return {
+    workspaceRoot: '/new',
+    noOp: false,
+    config: makeConfig(),
+    sessions: [],
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   resetBridgeMocks();
-  configHydrate = vi.fn().mockResolvedValue(undefined);
-  sessionHydrate = vi.fn().mockResolvedValue(undefined);
-  useConfigStore.setState({ hydrate: configHydrate } as never);
+  configAdopt = vi.fn();
+  sessionAdopt = vi.fn();
+  useConfigStore.setState({ adoptWorkspace: configAdopt } as never);
   useSessionStore.setState((s) => ({
-    actions: { ...s.actions, hydrate: sessionHydrate },
+    actions: { ...s.actions, adoptWorkspace: sessionAdopt },
   }));
 });
 
@@ -34,56 +59,62 @@ afterEach(() => {
 });
 
 describe('changeWorkspace', () => {
-  it('drives a frontend rehydrate on success so the UI converges even if the backend emit is dropped', async () => {
-    workspaceSwitch.mockResolvedValue({ workspaceRoot: '/new', noOp: false });
+  it('atomically adopts the backend-returned config and sessions on a successful switch', async () => {
+    const sessions: SessionView[] = [];
+    const config = makeConfig({ activeSessionId: null });
+    workspaceSwitch.mockResolvedValue(makeResult({ config, sessions }));
 
     await changeWorkspace('/new');
 
     expect(workspaceSwitch).toHaveBeenCalledWith('/new');
-    expect(configHydrate).toHaveBeenCalledTimes(1);
-    expect(sessionHydrate).toHaveBeenCalledTimes(1);
-    expect(frontendReady).toHaveBeenCalledTimes(1);
+    expect(configAdopt).toHaveBeenCalledTimes(1);
+    expect(configAdopt).toHaveBeenCalledWith(config);
+    expect(sessionAdopt).toHaveBeenCalledTimes(1);
+    expect(sessionAdopt).toHaveBeenCalledWith(sessions, null);
+    // Order matters — config-store must adopt first so workspaceRoot
+    // selectors observe the new value before the session list shifts.
+    const configOrder = configAdopt.mock.invocationCallOrder[0];
+    const sessionOrder = sessionAdopt.mock.invocationCallOrder[0];
+    expect(configOrder).toBeDefined();
+    expect(sessionOrder).toBeDefined();
+    expect(configOrder!).toBeLessThan(sessionOrder!);
   });
 
-  it('skips the rehydrate on a no-op switch (already on requested workspace)', async () => {
-    workspaceSwitch.mockResolvedValue({ workspaceRoot: '/cur', noOp: true });
+  it('forwards the activeSessionId from the result so the session-store can reconcile activeId', async () => {
+    const config = makeConfig({ activeSessionId: 'sess-1' });
+    workspaceSwitch.mockResolvedValue(makeResult({ config }));
+
+    await changeWorkspace('/new');
+
+    expect(sessionAdopt).toHaveBeenCalledWith(expect.any(Array), 'sess-1');
+  });
+
+  it('skips both adoptions on a no-op switch (already on the requested workspace)', async () => {
+    workspaceSwitch.mockResolvedValue(makeResult({ workspaceRoot: '/cur', noOp: true }));
 
     await changeWorkspace('/cur');
 
-    expect(configHydrate).not.toHaveBeenCalled();
-    expect(sessionHydrate).not.toHaveBeenCalled();
-    expect(frontendReady).not.toHaveBeenCalled();
+    expect(configAdopt).not.toHaveBeenCalled();
+    expect(sessionAdopt).not.toHaveBeenCalled();
   });
 
-  it('translates WorkspaceLocked into a user-facing error and skips rehydrate', async () => {
+  it('translates WorkspaceLocked into a user-facing error and skips adoption', async () => {
     workspaceSwitch.mockRejectedValue({
       code: 'WorkspaceLocked',
       message: 'busy',
     });
 
     await expect(changeWorkspace('/locked')).rejects.toThrow(/already open in another/i);
-    expect(configHydrate).not.toHaveBeenCalled();
+    expect(configAdopt).not.toHaveBeenCalled();
+    expect(sessionAdopt).not.toHaveBeenCalled();
   });
 
-  it('does not surface a post-switch rehydrate failure as a switch failure', async () => {
-    // Regression for PR #32 review: if the backend swap succeeds but
-    // the fallback rehydrate throws, callers (picker / settings
-    // dialog) used to see the error and keep the modal open showing
-    // "switch failed" — even though the backend had already rebound.
-    // The rehydrate failure must be swallowed (and logged) so the
-    // promise resolves cleanly; the App-level `workspace://changed`
-    // listener is the recovery path.
-    workspaceSwitch.mockResolvedValue({ workspaceRoot: '/new', noOp: false });
-    configHydrate.mockRejectedValue(new Error('hydrate failed'));
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('propagates unrelated errors verbatim and skips adoption', async () => {
+    const err = new Error('random failure');
+    workspaceSwitch.mockRejectedValue(err);
 
-    await expect(changeWorkspace('/new')).resolves.toBeUndefined();
-
-    expect(workspaceSwitch).toHaveBeenCalledWith('/new');
-    expect(configHydrate).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('rehydrate failed'),
-      expect.any(Error),
-    );
+    await expect(changeWorkspace('/x')).rejects.toBe(err);
+    expect(configAdopt).not.toHaveBeenCalled();
+    expect(sessionAdopt).not.toHaveBeenCalled();
   });
 });

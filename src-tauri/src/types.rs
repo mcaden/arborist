@@ -734,28 +734,26 @@ pub struct WorkspaceSwitchArgs {
 /// Result of `workspace_switch`. `workspaceRoot` is the **canonical** path
 /// the backend bound to (which may differ in casing / separators from the
 /// path the frontend submitted). `noOp` is `true` if the requested path
-/// resolved to the workspace already in use, in which case no teardown
-/// happened and no `workspace://changed` event was emitted.
+/// resolved to the workspace already in use; in that case `config` and
+/// `sessions` mirror the *current* (unchanged) workspace's state so the
+/// wire payload is non-nullable but the frontend can short-circuit
+/// adoption on the flag.
+///
+/// On a real swap, `config` and `sessions` reflect the **new** workspace's
+/// state *after* the inline restore loop has run — sessions are already
+/// in `Starting` (or `Error` if the restore preflight failed), so the
+/// frontend can adopt everything in one render with no flicker. The
+/// `workspace://changed` event was deleted in PR5; this result is now
+/// the sole authoritative state-transfer channel for in-app switches.
 ///
 /// MIRROR: `src/types/arborist.ts::WorkspaceSwitchResult`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSwitchResult {
     pub workspace_root: PathBuf,
     pub no_op: bool,
-}
-
-/// Payload for the `workspace://changed` event, fired after a successful
-/// in-app workspace switch (or on the initial bind if a future phase adds
-/// "open another window" semantics). The frontend reacts by reloading
-/// `config.get`, `session.list`, and re-issuing `frontend_ready` so the
-/// backend's restore-on-launch can fire for the new workspace.
-///
-/// MIRROR: `src/types/arborist.ts::WorkspaceChangedEvent`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceChangedEvent {
-    pub workspace_root: PathBuf,
+    pub config: AppConfig,
+    pub sessions: Vec<SessionView>,
 }
 
 /// Crate-wide error type. Internal Rust code consumes this via `?`; at the

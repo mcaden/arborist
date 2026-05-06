@@ -33,7 +33,6 @@ import type {
   SessionView,
   Tool,
   WorktreeInfo,
-  WorkspaceChangedEvent,
   WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
@@ -274,7 +273,11 @@ export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
  * session records in `sessions.json` so a later switch-back can restore
  * them via `--resume`-spliced re-spawn) → swap the active `WorkspaceScope`
  * (releases the old workspace's `.lock`) → write `last-workspace.json`
- * boot hint → emit `workspace://changed` so this frontend can re-fetch.
+ * boot hint → run `restore_all_sessions` for the new workspace inline →
+ * return the post-switch `{ config, sessions }` so the frontend can
+ * adopt all state in one render. (PR5: the previous
+ * `workspace://changed` event has been removed; the result IS the
+ * state-transfer channel.)
  *
  * Note: park is **not** close — the old workspace's `sessions.json` is
  * intentionally retained. Tests / future callers must not assume the
@@ -287,8 +290,9 @@ export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
  *
  * On success, callers should NOT manually patch the config store; the
  * backend has already done so against the *new* workspace and the
- * `workspace://changed` listener (registered in `App.tsx`) drives the
- * re-fetch.
+ * resolved result carries the post-switch `config` + `sessions`
+ * payloads that the frontend adopts atomically (see
+ * `lib/workspace-switch.ts`).
  */
 export function workspaceSwitch(path: string): Promise<WorkspaceSwitchResult> {
   return invoke<WorkspaceSwitchResult>('workspace_switch', {
@@ -335,16 +339,4 @@ export function onSessionActivity(
 
 export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Promise<UnlistenFn> {
   return listen<SessionMetricsEvent>('session://metrics', (event) => cb(event.payload));
-}
-
-/**
- * Subscribe to in-app workspace switches initiated by `workspaceSwitch`.
- * The payload carries the canonical new workspace root. Subscribers
- * should drop any in-memory state derived from the old workspace
- * (sessions, config) and re-fetch from the backend.
- */
-export function onWorkspaceChanged(
-  cb: (payload: WorkspaceChangedEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<WorkspaceChangedEvent>('workspace://changed', (event) => cb(event.payload));
 }
