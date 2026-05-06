@@ -379,6 +379,15 @@ pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
     Some(candidate)
 }
 
+/// Hard cap on how many entries [`unwrap_bin_launcher_for_icon`] will
+/// scan in the parent directory before giving up. Realistic app dirs
+/// have well under 100 top-level entries; the cap keeps a pathological
+/// case (a launcher installed under, say, a network share with
+/// thousands of sibling files) from blocking the icon resolution
+/// thread for seconds. 4096 is large enough that no legitimate vendor
+/// install layout will hit it.
+const MAX_APP_DIR_SCAN_ENTRIES: usize = 4096;
+
 /// If `path` looks like `<root>/bin/<stem>.exe` (a CLI launcher under
 /// a `bin/` subdirectory), look for a sibling `<root>/<stem>.exe` and
 /// return it. This is the "VS Code launcher" pattern: `bin/code.exe`
@@ -399,7 +408,8 @@ pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
 ///   exist as `<root>/code.exe`).
 ///
 /// Returns `None` when the heuristic does not apply or the parent dir
-/// is unreadable / contains no matching exe.
+/// is unreadable / contains no matching exe within
+/// [`MAX_APP_DIR_SCAN_ENTRIES`] entries.
 #[must_use]
 fn unwrap_bin_launcher_for_icon(path: &Path) -> Option<PathBuf> {
     let bin_dir = path.parent()?;
@@ -414,7 +424,10 @@ fn unwrap_bin_launcher_for_icon(path: &Path) -> Option<PathBuf> {
         .to_ascii_lowercase();
     let launcher_canonical = path.canonicalize().ok();
 
-    for entry in std::fs::read_dir(app_dir).ok()? {
+    for entry in std::fs::read_dir(app_dir)
+        .ok()?
+        .take(MAX_APP_DIR_SCAN_ENTRIES)
+    {
         let entry = entry.ok()?;
         let entry_path = entry.path();
         let is_exe = entry_path

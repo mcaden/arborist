@@ -43,8 +43,9 @@
 //!
 //! - It does not invalidate cache entries. Exe paths don't recycle
 //!   (VS Code self-update writes to a new versioned dir → new key).
-//!   Cache size is bounded by the number of distinct apps the user
-//!   ever launches per session — small.
+//!   Cache size is bounded **at runtime** by [`MAX_CACHED_ICONS`] as a
+//!   safety net against a runaway caller; the natural bound (distinct
+//!   apps the user ever launches per session) is far smaller (~10).
 //! - It does not return errors for the "no icon found" case, only
 //!   `None`. The UI is supposed to fall back gracefully.
 //! - It is NOT involved in the VS Code retarget flow itself; the hook
@@ -57,6 +58,15 @@ use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+
+/// Hard cap on the number of `(exe path → data URI)` entries the cache
+/// holds. The realistic working set is tiny (5–20 distinct apps per
+/// session), but a fuzz / malformed PID stream could otherwise grow
+/// the map unboundedly. At 64 entries × ~50 KB per data URI that's
+/// well under 4 MB — comfortably within steady-state. No eviction:
+/// once the cap is reached we simply skip caching new exes (they're
+/// still served live on each call).
+const MAX_CACHED_ICONS: usize = 64;
 
 /// Trait seam for testability. Production uses [`RealIconExtractor`].
 pub trait IconExtractor: Send + Sync {
@@ -115,7 +125,19 @@ impl IconCache {
         let png = self.extractor.extract_png(exe)?;
         let data_uri = format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&png));
         if let Ok(mut m) = self.by_exe.lock() {
-            m.insert(key, data_uri.clone());
+            // Refresh existing entries unconditionally; cap only
+            // applies to *new* keys so a steady-state set keeps
+            // working forever and a runaway caller stops growing
+            // the map past `MAX_CACHED_ICONS`.
+            if m.contains_key(&key) || m.len() < MAX_CACHED_ICONS {
+                m.insert(key, data_uri.clone());
+            } else {
+                tracing::warn!(
+                    cached = m.len(),
+                    cap = MAX_CACHED_ICONS,
+                    "icon cache at cap; serving live (not caching new entry)"
+                );
+            }
         }
         Some(data_uri)
     }
@@ -542,16 +564,81 @@ mod platform {
     pub(super) fn extract_png(exe_path: &Path) -> Option<Vec<u8>> {
         let exe_basename = exe_path.file_name()?.to_str()?.to_owned();
         let icon_name = find_icon_name_for_exe(&exe_basename)?;
-        // Absolute path? Use directly if it's a PNG.
         let candidate = Path::new(&icon_name);
         if candidate.is_absolute() {
-            if candidate.extension().and_then(|s| s.to_str()) == Some("png") && candidate.exists() {
-                return fs::read(candidate).ok();
+            // Absolute `Icon=` path. The `.desktop` file is potentially
+            // attacker-controlled (anyone who can write under
+            // ~/.local/share/applications could otherwise make us read
+            // /etc/shadow or block on /dev/zero). Require a real `.png`
+            // file inside one of the standard XDG icon roots after
+            // symlink resolution.
+            if candidate.extension().and_then(|s| s.to_str()) != Some("png") {
+                return None;
             }
+            if !candidate.is_file() {
+                return None;
+            }
+            if !is_within_allowed_root(candidate) {
+                return None;
+            }
+            return fs::read(candidate).ok();
+        }
+        // Relative name. Reject path-traversal characters BEFORE feeding
+        // to `Path::join`, which does not normalise `..` components and
+        // would otherwise let `Icon=../../tmp/evil` escape the XDG roots.
+        if !is_safe_relative_icon_name(&icon_name) {
             return None;
         }
         // Conservative XDG search. No theme resolution; PNG only.
         find_icon_in_xdg_paths(&icon_name)
+    }
+
+    /// True when `name` is a relative icon basename free of path
+    /// separators and traversal components. Empty / `.` / `..` /
+    /// anything containing `/` or `\` is rejected.
+    fn is_safe_relative_icon_name(name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        if name.contains('/') || name.contains('\\') {
+            return false;
+        }
+        // `name` is a single path component at this point; reject the
+        // self / parent specials defensively.
+        !matches!(name, "." | "..")
+    }
+
+    /// True when `candidate` (assumed to exist) canonicalises inside one
+    /// of the allowed XDG icon roots. Roots that don't exist on disk are
+    /// silently skipped — this isn't a hard list, just the boundary we
+    /// refuse to read outside of.
+    fn is_within_allowed_root(candidate: &Path) -> bool {
+        let Ok(canon_candidate) = candidate.canonicalize() else {
+            return false;
+        };
+        for root in allowed_icon_roots() {
+            let Ok(canon_root) = root.canonicalize() else {
+                continue;
+            };
+            if canon_candidate.starts_with(&canon_root) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Allow-list of XDG roots an absolute `Icon=` value may resolve
+    /// inside. Mirrors `icon_search_bases()` plus the sibling `pixmaps`
+    /// directories used by `find_icon_in_xdg_paths`.
+    fn allowed_icon_roots() -> Vec<PathBuf> {
+        let mut v = Vec::new();
+        for icon_base in icon_search_bases() {
+            if let Some(parent) = icon_base.parent() {
+                v.push(parent.join("pixmaps"));
+            }
+            v.push(icon_base);
+        }
+        v
     }
 
     /// Return the `Icon=` value for a `.desktop` file whose `Exec=`
@@ -650,7 +737,7 @@ mod platform {
                     .join(size)
                     .join("apps")
                     .join(format!("{name}.png"));
-                if p.exists() {
+                if p.is_file() {
                     if let Ok(b) = fs::read(&p) {
                         return Some(b);
                     }
@@ -660,7 +747,7 @@ mod platform {
             let p = base.parent().map(|p| p.join("pixmaps"));
             if let Some(pix) = p {
                 let candidate = pix.join(format!("{name}.png"));
-                if candidate.exists() {
+                if candidate.is_file() {
                     if let Ok(b) = fs::read(&candidate) {
                         return Some(b);
                     }
@@ -720,6 +807,58 @@ mod platform {
         fn read_key_returns_none_when_missing() {
             let raw = "[Desktop Entry]\nName=Code\n";
             assert!(read_key(raw, "Icon").is_none());
+        }
+
+        #[test]
+        fn is_safe_relative_icon_name_accepts_simple_names() {
+            assert!(is_safe_relative_icon_name("firefox"));
+            assert!(is_safe_relative_icon_name("visual-studio-code"));
+            assert!(is_safe_relative_icon_name("app_icon"));
+            assert!(is_safe_relative_icon_name("a.b"));
+        }
+
+        #[test]
+        fn is_safe_relative_icon_name_rejects_path_traversal() {
+            assert!(!is_safe_relative_icon_name(""));
+            assert!(!is_safe_relative_icon_name("."));
+            assert!(!is_safe_relative_icon_name(".."));
+            assert!(!is_safe_relative_icon_name("../etc/passwd"));
+            assert!(!is_safe_relative_icon_name("../../tmp/evil"));
+            assert!(!is_safe_relative_icon_name("foo/bar"));
+            assert!(!is_safe_relative_icon_name("foo\\bar"));
+            assert!(!is_safe_relative_icon_name("/etc/passwd"));
+        }
+
+        #[test]
+        fn is_within_allowed_root_rejects_outside_paths() {
+            // /etc/shadow obviously isn't an icon root. The check
+            // should reject it whether it exists or not — `canonicalize`
+            // returns Err for paths the test process can't read, which
+            // also resolves to false. Either way: rejected.
+            assert!(!is_within_allowed_root(Path::new("/etc/shadow")));
+            assert!(!is_within_allowed_root(Path::new("/dev/zero")));
+            assert!(!is_within_allowed_root(Path::new(
+                "/tmp/arborist-test-not-an-icon-root"
+            )));
+        }
+
+        #[test]
+        fn is_within_allowed_root_accepts_real_icon_root_when_present() {
+            // Skip on hosts where no standard icon root exists (CI
+            // containers, minimal images). We can only positively
+            // assert acceptance when the OS actually has an XDG icon
+            // tree to canonicalise against.
+            let real_root = allowed_icon_roots()
+                .into_iter()
+                .find(|r| r.is_dir() && r.canonicalize().is_ok());
+            let Some(root) = real_root else {
+                eprintln!("skipping: no XDG icon root present on this host");
+                return;
+            };
+            // The root itself must be considered "within" itself
+            // (`starts_with(canon_root)` is reflexive on canonicalised
+            // paths).
+            assert!(is_within_allowed_root(&root));
         }
     }
 }
@@ -849,5 +988,36 @@ mod tests {
         let _ = cache.data_uri_for(1).unwrap();
         let _ = cache.data_uri_for(2).unwrap();
         assert_eq!(cache.cached_count(), 2);
+    }
+
+    #[test]
+    fn cache_caps_growth_at_max_cached_icons() {
+        // Hammer a unique exe per call — without the cap, the map would
+        // grow unboundedly. With the cap, it must stop at
+        // MAX_CACHED_ICONS even though every call still returns a
+        // valid live URI.
+        struct UniqueExtractor {
+            counter: AtomicUsize,
+        }
+        impl IconExtractor for UniqueExtractor {
+            fn exe_path(&self, _pid: u32) -> Option<PathBuf> {
+                let n = self.counter.fetch_add(1, Ordering::SeqCst);
+                Some(PathBuf::from(format!("/tmp/arborist-icon-cap-app-{n}.exe")))
+            }
+            fn extract_png(&self, _exe_path: &Path) -> Option<Vec<u8>> {
+                Some(vec![0u8])
+            }
+        }
+        let cache = IconCache::new(Arc::new(UniqueExtractor {
+            counter: AtomicUsize::new(0),
+        }));
+        for pid in 0..(MAX_CACHED_ICONS as u32 + 8) {
+            assert!(cache.data_uri_for(pid).is_some());
+        }
+        assert_eq!(
+            cache.cached_count(),
+            MAX_CACHED_ICONS,
+            "cache must stop growing at the configured cap"
+        );
     }
 }

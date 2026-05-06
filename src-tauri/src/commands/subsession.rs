@@ -311,11 +311,18 @@ pub fn subsession_input_impl(
 }
 
 /// Resize a PTY. Application sub-sessions have no PTY — return
-/// `NotApplicable`.
+/// `NotApplicable`. Mirrors `subsession_input_impl`'s switch-read
+/// guard so that a resize aimed at a PTY about to be drained for a
+/// workspace swap is rejected with `WorkspaceSwitchInProgress`
+/// rather than silently lost — keeps the UI's reconciliation logic
+/// in sync with input/relaunch.
 pub fn subsession_resize_impl(
+    ctx: &AppContext,
     sub_ctx: &SubAppContext,
     args: crate::types::SubSessionResizeArgs,
 ) -> Result<(), AppError> {
+    let _switch = acquire_switch_read(ctx)?;
+
     if let Some(sub) = sub_ctx.store.get(&args.id) {
         if matches!(sub.kind, CustomProcessKind::Application) {
             return Err(AppError::from(Error::NotApplicable(

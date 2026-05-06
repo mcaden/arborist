@@ -592,8 +592,9 @@ pub async fn subsession_resize(
     app: tauri::AppHandle,
     args: SubSessionResizeArgs,
 ) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
-    subsession::subsession_resize_impl(&sub_ctx, args)
+    subsession::subsession_resize_impl(&ctx, &sub_ctx, args)
 }
 
 /// Phase 7: relaunch a sub-session under the **same id**. For a greyed

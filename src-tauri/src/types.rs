@@ -806,8 +806,12 @@ pub struct SubSessionIdArg {
 /// user the choice between detaching the tab while leaving the
 /// editor open, asking the editor to close itself, or force-killing
 /// the underlying process (escape hatch when the editor refuses).
+// `rename_all_fields` is inert today (all variants are unit-only) but
+// guards against a future struct variant — without it, named fields in a
+// future variant would serialise snake_case and silently desync from the
+// TS mirror. Same defensive pattern as `activity::ActivityEvent`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SubSessionCloseIntent {
     /// Detach the sub-tab from Arborist; leave any external app
     /// window running. Default — preserves prior behaviour.

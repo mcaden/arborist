@@ -241,41 +241,53 @@ mod platform {
     }
 
     extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        // SAFETY: lparam is a `&mut EnumState` we set in `find_vscode_window`.
-        let state = unsafe { &mut *(lparam as *mut EnumState) };
-        // SAFETY: hwnd comes from EnumWindows and is valid.
-        let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-        if !visible {
-            return 1;
-        }
-        // SAFETY: see above.
-        let len = unsafe { GetWindowTextLengthW(hwnd) };
-        if len <= 0 {
-            return 1;
-        }
-        let cap = (len as usize) + 1;
-        let mut buf: Vec<u16> = vec![0u16; cap];
-        // SAFETY: buf has space for `cap` u16s. Returned `n` is the
-        // number of code units written (excluding the null terminator).
-        let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), cap as i32) };
-        if n <= 0 {
-            return 1;
-        }
-        let title = String::from_utf16_lossy(&buf[..n as usize]);
-        if !title.ends_with(TITLE_SUFFIX) {
-            return 1;
-        }
-        if !title.to_lowercase().contains(&state.needle) {
-            return 1;
-        }
-        let mut pid: DWORD = 0;
-        // SAFETY: pid is a valid &mut DWORD; hwnd is valid.
-        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-        if pid != 0 {
-            state.found = Some((pid, hwnd as usize));
-            return 0; // stop enumeration
-        }
-        1
+        // Win32 callback panic safety: this body allocates
+        // (`vec![0u16; cap]`, `String::from_utf16_lossy`, `to_lowercase`),
+        // so an OOM panic could unwind across the EnumWindows FFI
+        // boundary. Modern Rust converts cross-FFI panics into a process
+        // abort, which under our dogfooding rules would crash the host
+        // (the user's editor). Catch any panic and return 1 (continue
+        // enumeration); the worst observable effect is that re-discovery
+        // misses a window and surfaces NotFound, which the user can retry
+        // via relaunch.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> BOOL {
+            // SAFETY: lparam is a `&mut EnumState` we set in `find_vscode_window`.
+            let state = unsafe { &mut *(lparam as *mut EnumState) };
+            // SAFETY: hwnd comes from EnumWindows and is valid.
+            let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+            if !visible {
+                return 1;
+            }
+            // SAFETY: see above.
+            let len = unsafe { GetWindowTextLengthW(hwnd) };
+            if len <= 0 {
+                return 1;
+            }
+            let cap = (len as usize) + 1;
+            let mut buf: Vec<u16> = vec![0u16; cap];
+            // SAFETY: buf has space for `cap` u16s. Returned `n` is the
+            // number of code units written (excluding the null terminator).
+            let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), cap as i32) };
+            if n <= 0 {
+                return 1;
+            }
+            let title = String::from_utf16_lossy(&buf[..n as usize]);
+            if !title.ends_with(TITLE_SUFFIX) {
+                return 1;
+            }
+            if !title.to_lowercase().contains(&state.needle) {
+                return 1;
+            }
+            let mut pid: DWORD = 0;
+            // SAFETY: pid is a valid &mut DWORD; hwnd is valid.
+            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+            if pid != 0 {
+                state.found = Some((pid, hwnd as usize));
+                return 0; // stop enumeration
+            }
+            1
+        }))
+        .unwrap_or(1)
     }
 
     /// Returns `(pid, hwnd_as_usize)` for the first visible top-level

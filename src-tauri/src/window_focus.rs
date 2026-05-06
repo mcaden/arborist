@@ -230,17 +230,26 @@ mod platform {
     }
 
     extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        // SAFETY: lparam was set by us to a `&mut EnumState`.
-        let state = unsafe { &mut *(lparam as *mut EnumState) };
-        let mut pid: DWORD = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == state.target_pid && IsWindowVisible(hwnd) != 0 {
-                state.found = hwnd;
-                return 0; // stop enumeration
+        // Win32 callback panic safety: this body has no allocations
+        // today, but the same defensive guard as `vscode_owner::enum_proc`
+        // applies — any future refactor that introduces a fallible Rust
+        // operation would risk unwinding across the EnumWindows FFI
+        // boundary, which Rust converts to a process abort and crashes
+        // the host (the user's editor under our dogfooding rules).
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> BOOL {
+            // SAFETY: lparam was set by us to a `&mut EnumState`.
+            let state = unsafe { &mut *(lparam as *mut EnumState) };
+            let mut pid: DWORD = 0;
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                if pid == state.target_pid && IsWindowVisible(hwnd) != 0 {
+                    state.found = hwnd;
+                    return 0; // stop enumeration
+                }
             }
-        }
-        1 // continue
+            1 // continue
+        }))
+        .unwrap_or(1)
     }
 
     pub(super) fn focus_pid(pid: u32) -> Result<(), Error> {

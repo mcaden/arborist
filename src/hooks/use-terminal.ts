@@ -719,7 +719,7 @@ function attachToHost(id: string, entry: RegistryEntry, host: HTMLDivElement): v
           ? sessionInput({ sessionId: id as SessionId, data: '\x1b\r' })
           : subSessionInput({ id: id as SubSessionId, data: '\x1b\r' });
       void inputPromise.catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         console.warn(`[use-terminal] ${entry.ioKind} input(${id}) failed: ${message}`);
       });
       return;
