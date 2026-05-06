@@ -646,15 +646,25 @@ pub async fn session_close_impl(
 }
 
 /// **Park** an old-workspace session in preparation for a workspace
-/// switch. Tears down the live PTY (and ancillary metrics watcher,
-/// pending-spawn registration, temp-dir on disk) but **preserves
-/// every persisted record**: the entry in `sessions.json` stays put,
-/// `last_open_sessions` / `tab_order` / `active_session_id` are not
-/// touched. When the user switches back to this workspace,
-/// [`restore_all_sessions`] re-spawns the PTY from the unchanged
-/// `Session` record using `composed_command` verbatim — Claude /
-/// Copilot `--resume` splicing (see [`compose::with_resume`]) keeps
-/// the AI conversation context alive across the round-trip.
+/// switch. Tears down the live PTY (and pending-spawn registration,
+/// temp-dir on disk) but **preserves every persisted record**: the
+/// entry in `sessions.json` stays put, `last_open_sessions` /
+/// `tab_order` / `active_session_id` are not touched. When the user
+/// switches back to this workspace, [`restore_all_sessions`] re-spawns
+/// the PTY from the unchanged `Session` record using `composed_command`
+/// verbatim — Claude / Copilot `--resume` splicing (see
+/// [`compose::with_resume`]) keeps the AI conversation context alive
+/// across the round-trip.
+///
+/// **Caller contract**: the caller is responsible for shutting down
+/// metrics watchers *before* invoking this function.
+/// [`workspace_switch_impl_inner`] does this in step 7 via
+/// `metrics.stop_all_and_join()` under the `deferred_spawn_quiesce`
+/// write guard, draining the entire registry in one shot. There is no
+/// `.await` between that drain and the park loop in step 8 (and
+/// `switch_in_progress` is set throughout) so no path can re-arm a
+/// watcher in the window between them — park therefore does not
+/// re-call `metrics.stop` per session.
 ///
 /// Best-effort by design: `pool.kill` may fail (rare; e.g. the child
 /// has already exited and the wait thread is mid-cleanup). We log
@@ -665,20 +675,18 @@ pub async fn session_close_impl(
 /// destroys persisted state and therefore historically had to
 /// hard-fail the switch on partial close.
 async fn park_session_for_switch_impl(ctx: &AppContext, id: SessionId) {
-    // 1. Stop the metrics watcher (mirrors session_close_impl step 0
-    //    and step 6 of workspace_switch which already drained all
-    //    watchers up front; this is belt-and-braces for any watcher
-    //    that may have been re-armed between then and now).
-    ctx.metrics.stop(&id);
-
-    // 2. Drop any deferred-spawn registration so a stale resize for
+    // 1. Drop any deferred-spawn registration so a stale resize for
     //    this id can't trigger a phantom spawn against the new
-    //    (post-swap) workspace.
+    //    (post-swap) workspace. (Step 7 of the switch already
+    //    `clear()`ed the whole map under the quiesce write guard,
+    //    so this `remove()` is normally a no-op; kept as a guard
+    //    against any future code path that might insert between
+    //    step 7 and here.)
     if let Ok(mut g) = ctx.pending_spawn.lock() {
         g.remove(&id);
     }
 
-    // 3. Best-effort kill. Temp dir is removed by pool.kill itself
+    // 2. Best-effort kill. Temp dir is removed by pool.kill itself
     //    (step 6 inside pool::kill); restore re-materialises temp
     //    files from the persisted `Session.temp_files` so this is
     //    safe.
@@ -693,7 +701,7 @@ async fn park_session_for_switch_impl(ctx: &AppContext, id: SessionId) {
     //    hot path). We still continue with the swap because rolling
     //    back the workspace switch on a single park's reap timeout
     //    would block the user on a problem they can't see; the swap
-    //    contract is "park is best-effort" (DESIGN §5.5c step 7).
+    //    contract is "park is best-effort" (DESIGN §5.5c step 8).
     if ctx.pool.contains(&id) {
         match ctx.pool.kill(&id).await {
             Ok(crate::pty_pool::KillOutcome::Reaped) => {}
@@ -1903,12 +1911,14 @@ pub async fn workspace_switch_impl_inner(
     //     through to `pool.resize` (which fails benignly with
     //     `NotFound` once park has killed the PTY).
     //
-    // We do this BEFORE `session_close` (in step 8 / park) so that the
-    // per-session `metrics.stop()` calls inside `park_session_for_switch_impl`
-    // don't drain the registry first (`stop()` removes the handle),
-    // leaving stop_all_and_join with nothing to join. Stopping watchers
-    // here while the old PTYs are still alive is harmless: the worker's
-    // next poll iteration sees `running = false` and exits cleanly.
+    // This drain is the **single point** of metrics shutdown for the
+    // switch — `park_session_for_switch_impl` (step 8) does NOT
+    // re-call `metrics.stop` per session, because there is no `.await`
+    // between this drain and the park loop and `switch_in_progress`
+    // is set throughout, so no path can re-arm a watcher in the
+    // window between them. Stopping watchers here while the old
+    // PTYs are still alive is harmless: the worker's next poll
+    // iteration sees `running = false` and exits cleanly.
     {
         let _quiesce = ctx
             .deferred_spawn_quiesce
