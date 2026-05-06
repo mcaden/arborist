@@ -54,16 +54,16 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   // covers the terminal, and stealing focus into a now-`inert` subtree
   // both fights the overlay (which should hold focus for a11y) and
   // can race with the imminent terminal teardown when the new
-  // workspace's session list lands.
+  // workspace's session list lands. `refit()` still runs inside the
+  // same rAF for consistent measurement timing — we only suppress the
+  // `focus()` call, not the renderer recovery.
   useEffect(() => {
     if (!isActive) return;
-    if (isSwitching) {
-      refit();
-      return;
-    }
     const handle = requestAnimationFrame(() => {
       refit();
-      focus();
+      if (!isSwitching) {
+        focus();
+      }
     });
     return () => cancelAnimationFrame(handle);
   }, [isActive, isSwitching, refit, focus]);
