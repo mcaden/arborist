@@ -325,6 +325,40 @@ impl MetricsRegistry {
             h.running.store(false, Ordering::SeqCst);
         }
     }
+
+    /// Stop every active watcher and block until each worker thread has
+    /// fully exited. Used by the Phase 7 workspace-switch path so the
+    /// in-flight discover/turn callbacks (which read the workspace
+    /// scope) cannot fire after the new workspace has been bound and
+    /// inadvertently write into the *new* store with old workspace
+    /// session ids.
+    ///
+    /// Worst-case wait is one `POLL_INTERVAL` per active watcher (joins
+    /// are sequential — fine in practice given the small N of concurrent
+    /// sessions).
+    pub fn stop_all_and_join(&self) {
+        let drained: Vec<WatcherHandle> = self
+            .inner
+            .lock()
+            .expect("metrics registry lock")
+            .drain()
+            .map(|(_, h)| h)
+            .collect();
+        for mut h in drained {
+            h.running.store(false, Ordering::SeqCst);
+            if let Some(handle) = h.join.take() {
+                let _ = handle.join();
+            }
+            // Also join sibling watchers (e.g. the Copilot `events.jsonl`
+            // tailer) that share the same `running` flag — without this
+            // they'd outlive the workspace swap and could fire a discover
+            // / turn / metrics callback against the new binding using an
+            // old-workspace session id.
+            for handle in h.extra_joins.drain(..) {
+                let _ = handle.join();
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -583,7 +617,12 @@ fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
 /// surface area honest — this is a sibling-module helper, not a
 /// public API.
 #[doc(hidden)]
-pub(crate) fn tail_lines_pub<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, consume: F) -> u64 {
+pub(crate) fn tail_lines_pub<F: FnMut(&[u8])>(
+    path: &Path,
+    cursor: u64,
+    end: u64,
+    consume: F,
+) -> u64 {
     tail_lines(path, cursor, end, consume)
 }
 
@@ -2038,5 +2077,59 @@ mod tests {
         let mut c = a.clone();
         c.input_tokens = Some(39_498);
         assert!(!a.same_payload_as(&c));
+    }
+
+    /// Regression for PR #32 review finding: `stop_all_and_join` must join
+    /// `extra_joins` (the Copilot events.jsonl tailer) in addition to the
+    /// primary watcher. If it doesn't, the sibling thread can outlive the
+    /// workspace swap and emit stale activity into the new binding.
+    #[test]
+    fn stop_all_and_join_waits_for_extra_joins() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let registry = MetricsRegistry::new();
+        let session_id = SessionId::new();
+
+        // Sentinel flipped by the sibling thread on its way out. After
+        // `stop_all_and_join` returns, this MUST be true — otherwise the
+        // sibling outlived the join.
+        let sibling_exited = Arc::new(AtomicBool::new(false));
+        let sibling_exited_for_thread = Arc::clone(&sibling_exited);
+
+        let running = Arc::new(AtomicBool::new(true));
+        let running_for_primary = Arc::clone(&running);
+        let running_for_extra = Arc::clone(&running);
+
+        let primary = thread::spawn(move || {
+            while running_for_primary.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let extra = thread::spawn(move || {
+            while running_for_extra.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(2));
+            }
+            // Sleep a touch longer than the primary so that a buggy
+            // `stop_all_and_join` that only joins the primary would
+            // observe `false` here when it returns.
+            thread::sleep(Duration::from_millis(30));
+            sibling_exited_for_thread.store(true, Ordering::SeqCst);
+        });
+
+        registry.inner.lock().expect("lock").insert(
+            session_id,
+            WatcherHandle {
+                running,
+                join: Some(primary),
+                extra_joins: vec![extra],
+            },
+        );
+
+        registry.stop_all_and_join();
+
+        assert!(
+            sibling_exited.load(Ordering::SeqCst),
+            "stop_all_and_join must join extra_joins, not just the primary thread"
+        );
     }
 }

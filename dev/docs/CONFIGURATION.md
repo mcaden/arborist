@@ -1,10 +1,16 @@
 # Arborist configuration
 
-Arborist keeps all persistent state in two JSON files inside the OS-specific
-**app data directory** that Tauri provides. There is no in-app settings UI in
-v1 — settings are edited by hand (with the app shut down) and reloaded on
-next launch. This document describes the file layout, the minimum valid
-`config.json`, and what to do when Arborist quarantines a corrupt file.
+Arborist keeps all persistent state in JSON files inside the OS-specific
+**app data directory** that Tauri provides. Most workspace-level knobs
+(workspace root, instruction-sets directory, pre-launch commands, per-agent
+CLI launch overrides) are editable in the in-app **Settings** dialog
+(reachable from the sidebar footer), and the active workspace can be
+swapped at runtime from the same dialog without restarting. This document
+is the reference for the on-disk layout, the minimum valid `config.json`,
+hand-editing knobs that don't yet have a UI (per-worktree pre-launch
+overrides), and what to do when Arborist quarantines a corrupt file. If
+you do hand-edit, shut down the **specific Arborist instance** bound to
+that `(branch, workspace)` pair first and reload by relaunching it.
 
 ## On-disk layout
 
@@ -18,21 +24,67 @@ next launch. This document describes the file layout, the minimum valid
 > `src-tauri/tauri.conf.json`. If that value changes the directory changes
 > with it.
 
-Inside that directory:
+Inside that directory, every running Arborist process binds to **one
+(branch, workspace) pair** and writes its `config.json`/`sessions.json` under
+a per-pair subdirectory:
 
-| File            | Purpose                                                                                |
-| --------------- | -------------------------------------------------------------------------------------- |
-| `config.json`   | The user-editable [`AppConfig`](../../src-tauri/src/types.rs).                          |
-| `sessions.json` | Backend-only mirror of every persisted [`Session`](../../src-tauri/src/types.rs).       |
+```mermaid
+graph TD
+    ROOT["&lt;app_data_dir&gt;/"]
+    ROOT --> LEG_CFG["config.json<br/><i>legacy — first-launch seed source only</i>"]
+    ROOT --> LEG_SES["sessions.json<br/><i>legacy — first-launch seed source only</i>"]
+    ROOT --> CANON_HINT["last-workspace.json<br/><i>picker default (collapsed-branch builds: BUILD_BRANCH empty or 'main')</i>"]
+    ROOT --> CANON_WS["workspaces/&lt;workspace-key&gt;/<br/><i>canonical layout (main / production builds)</i>"]
+    ROOT --> BRANCHES["branches/&lt;branch&gt;/<br/><i>collapsed when BUILD_BRANCH is empty or 'main'</i>"]
+
+    CANON_WS --> CW_CFG[config.json]
+    CANON_WS --> CW_SES[sessions.json]
+    CANON_WS --> CW_META[workspace-meta.json]
+    CANON_WS --> CW_LOCK[".lock<br/><i>fs2 advisory exclusive lock</i>"]
+    CANON_WS --> CW_SEED[".config-seed.lock<br/><i>serialises first-launch seed</i>"]
+
+    BRANCHES --> BR_HINT["last-workspace.json<br/><i>picker default for the next launch</i>"]
+    BRANCHES --> BR_WS["workspaces/&lt;workspace-key&gt;/"]
+
+    BR_WS --> BW_CFG[config.json]
+    BR_WS --> BW_SES[sessions.json]
+    BR_WS --> BW_META[workspace-meta.json]
+    BR_WS --> BW_LOCK[.lock]
+    BR_WS --> BW_SEED[.config-seed.lock]
+```
+
+The **branch axis** is keyed off the build-time `BUILD_BRANCH` (see
+`build.rs`); for a `main` (or untagged) build the `branches/<…>/` segment
+collapses, mirroring the title-bar's `window_title_for_branch` rule. The
+**workspace axis** is keyed off a deterministic hash of the canonicalised
+workspace root path. Two parallel Arborist instances bound to different
+pairs therefore touch disjoint files, and the `.lock` file inside each
+pair's directory guarantees only one process can bind that pair at a time.
+
+The legacy `config.json` / `sessions.json` directly under `<app_data_dir>`
+are still read as a one-time fallback when no per-pair file exists yet
+(seed-on-first-launch); after the first save the per-pair files are
+authoritative and the legacy files are ignored.
+
+| File                  | Purpose                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| `config.json`         | The user-editable [`AppConfig`](../../src-tauri/src/types.rs).                          |
+| `sessions.json`       | Backend-only mirror of every persisted [`Session`](../../src-tauri/src/types.rs).       |
+| `workspace-meta.json` | The canonical workspace root path that this directory was seeded for (used by tooling and tests). |
+| `.lock`               | `fs2` advisory exclusive lock held for the process lifetime. Empty file. |
+| `.config-seed.lock`   | Short-lived lock held only during first-launch seeding. Empty file. |
+| `last-workspace.json` | Hint file under `branches/<branch>/` (or top level for `main` builds) recording the most-recently-bound workspace; consulted at boot before the picker. |
 
 You almost never need to touch `sessions.json` by hand — Arborist rewrites it on
-every session create/close/restart. If you do, shut Arborist down first.
+every session create/close/restart. If you do, shut down the Arborist instance
+that is bound to that (branch, workspace) pair first; sibling instances bound
+to other pairs can keep running.
 
 ## Minimum valid `config.json`
 
 ```json
 {
-  "configVersion": 2,
+  "configVersion": 4,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -42,6 +94,7 @@ every session create/close/restart. If you do, shut Arborist down first.
   "worktreeRoots": ["/absolute/path/to/repo"],
   "prelaunchCommands": [],
   "worktreePrelaunchCommands": {},
+  "aiLaunchCommands": { "claude": "", "copilot": "" },
   "lastOpenSessions": [],
   "tabOrder": []
 }
@@ -49,7 +102,7 @@ every session create/close/restart. If you do, shut Arborist down first.
 
 Field notes:
 
-- `configVersion` — schema version of the file. Currently `2` (see
+- `configVersion` — schema version of the file. Currently `4` (see
   `CONFIG_VERSION_CURRENT` in `src-tauri/src/types.rs`). Bumped only when
   the on-disk shape changes; older versions are quarantined (see below).
 - `instructionSetsDir` — must be an **absolute** path that points at an
@@ -76,6 +129,11 @@ Field notes:
   set per tool. The ID is the filename (without the `.md` extension) of the
   file inside `instructionSetsDir`. If the configured ID isn't present, the
   loader falls back to the discovered default for that tool (see below).
+- `aiLaunchCommands.{claude,copilot}` — per-tool CLI launcher override.
+  Empty string (the default) means "use the bare tool name" (`claude` /
+  `copilot` resolved via `PATH`). A non-empty value replaces the program
+  token at compose time and is **not** shell-quoted, so use a quoted
+  absolute path if the value contains spaces. Added in `configVersion = 4`.
 - `lastOpenSessions` / `tabOrder` — managed by Arborist; you can leave them
   empty when bootstrapping.
 

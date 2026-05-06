@@ -3,7 +3,7 @@
 // Reachable from the sidebar footer. Exposes the workspace-level
 // configuration knobs that users would otherwise have to edit by hand:
 //   * workspace root (delegates to the existing WorkspacePicker so the
-//     close-all-sessions invariant lives in one place — see
+//     park-old-sessions invariant lives in one place — see
 //     `lib/workspace-switch.ts`),
 //   * instruction sets directory (path picker),
 //   * pre-launch commands (one shell command per line),

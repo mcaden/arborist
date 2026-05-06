@@ -101,6 +101,7 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 | NF-07  | File paths from user input or config MUST be canonicalized before use. Instruction file paths MUST be confirmed to lie within `instructionSetsDir`; worktree paths MUST be confirmed to exist as directories. |
 | NF-08  | Shell commands MUST be constructed from validated config values only. Dynamic values inserted into shell command strings (paths, context strings) MUST be properly shell-quoted to handle spaces and special characters correctly. |
 | NF-09  | Temporary files created by the app MUST be deleted when the associated session closes, and orphaned temp files from a previous crash MUST be cleaned up on next app startup. |
+| NF-10  | Each running Arborist process MUST hold an exclusive advisory lock on its bound (branch, workspace) pair for the lifetime of the process, so concurrent instances cannot silently clobber each other's `config.json` or `sessions.json`. The lock failing to acquire at boot MUST cause a non-zero exit with a user-visible diagnostic; an in-app workspace switch MUST surface lock-contention as a hard error and leave the previously-bound workspace intact (DESIGN §5.5c). |
 
 ## 7. Out of Scope (v1)
 

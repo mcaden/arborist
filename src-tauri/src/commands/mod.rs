@@ -20,7 +20,7 @@
 pub mod session;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use tauri::{Emitter, Manager};
 
@@ -29,8 +29,10 @@ use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult,
     SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionOutputEvent,
     SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView,
-    WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    WorkspaceSwitchArgs, WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult,
+    WorktreeCreateArgs, WorktreeCreateResult,
 };
+use crate::workspace_scope::WorkspaceScope;
 
 pub use session::AppContext;
 
@@ -43,12 +45,12 @@ pub async fn ping() -> Result<String, AppError> {
 
 /// Resolve the [`ConfigStore`] for the current Tauri app instance.
 ///
-/// **Avoid in command handlers** — prefer `ctx_of(&app)?.store.clone()`
-/// so all writes share the managed `AppContext`'s mutex (otherwise each
-/// fresh `ConfigStore::open` gets its own mutex and load-modify-write
-/// races between command threads silently lose updates). This helper
-/// remains for boot-time wiring in `lib.rs`, before `AppContext` is
-/// constructed.
+/// **Legacy, no longer used in production boot.** Phase 6 replaced the
+/// boot path with [`crate::boot::bind_workspace`], which opens a
+/// per-(branch, workspace) store under the OS lock. This helper
+/// remains as a diagnostic / fallback that opens a `ConfigStore`
+/// rooted at the legacy `<app_data_dir>` (no isolation, no lock).
+/// Do not use from new code — call `AppContext::store()` instead.
 pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
     let dir: PathBuf = app
         .path()
@@ -61,14 +63,23 @@ pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
 #[tauri::command]
 pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
     let ctx = ctx_of(&app)?;
-    Ok(ctx.store.load_config())
+    Ok(ctx.store().load_config())
 }
 
 /// Deep-merges `partial` into the persisted [`AppConfig`].
+///
+/// Refused while a workspace switch is in progress — the swap relies on
+/// no new writes landing in the *old* store between the
+/// `switch_pending` bump and the actual `WorkspaceScope` swap. See
+/// [`AppContext::switch_lock`] for the full barrier protocol.
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    ctx.store.save_config(partial).map_err(AppError::from)?;
+    // Take-then-check; matches `acquire_switch_read`. The guard is
+    // held across `save_config` so the switch's `write().await` waits
+    // for the persist to commit before swapping the workspace scope.
+    let _switch = session::acquire_switch_read(&ctx)?;
+    ctx.store().save_config(partial).map_err(AppError::from)?;
     Ok(())
 }
 
@@ -77,7 +88,7 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
 #[tauri::command]
 pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionSet>, AppError> {
     let ctx = ctx_of(&app)?;
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     list_instructions_for(&cfg)
 }
 
@@ -114,6 +125,10 @@ pub async fn session_close(
     args: SessionCloseArgs,
 ) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
+    // Workspace-switch rejection lives inside `session_close_impl` (it
+    // takes a `try_read()` on `AppContext::switch_lock` for the full
+    // body, including across `pool.kill().await`). Kept thin here so
+    // the impl is the single source of truth for the gating policy.
     session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
 }
 
@@ -158,28 +173,64 @@ pub async fn session_restart(
 /// resize-arrives-before-restore race would silently drop the deferred
 /// spawn (`pool.resize` → `NotFound`), leaving the session stuck in
 /// `Starting` with no PTY child.
+///
+/// **Workspace-switch coordination.** We acquire an
+/// `OwnedRwLockReadGuard` on [`AppContext::switch_lock`] and move it
+/// into the `spawn_blocking` task that runs `restore_all_sessions`.
+/// This bounds the entire restore loop by the same barrier that gates
+/// every other workspace-mutating handler: a switch's `write().await`
+/// cannot proceed until restore returns. We additionally check
+/// [`AppContext::switch_pending`] both before and after taking the
+/// owned guard (matching [`session::acquire_switch_read`]'s ordering)
+/// because tokio's `try_read_owned` is permit-based and does NOT
+/// reject when a writer is queued behind active readers — the counter
+/// is what closes that gap. On a negative outcome we silently
+/// `Ok(())`. (As of PR5, in-app workspace switches run their own
+/// inline restore under the write guard and no longer rely on a
+/// follow-up `frontend_ready`; this command remains for the boot-time
+/// initial restore.)
 #[tauri::command]
 pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    if session::frontend_ready_impl(&ctx) {
-        let ctx_for_task = Arc::clone(&ctx);
-        // `restore_all_sessions` no longer spawns PTYs (it only does
-        // disk IO + HashMap inserts), so the work is bounded — but we
-        // still run it on a blocking thread because materialise_temp_files
-        // / cleanup_orphans / store IO can block. We *await* completion
-        // here so the resolution of `frontend_ready` becomes a
-        // happens-before edge for the frontend's first `session_resize`.
-        tauri::async_runtime::spawn_blocking(move || {
-            session::restore_all_sessions(&ctx_for_task);
-        })
-        .await
-        .map_err(|join_err| {
-            AppError::new(
-                "Internal",
-                format!("restore_all_sessions task panicked: {join_err}"),
-            )
-        })?;
+    // Pre-check: cheap atomic load avoids touching the lock during a
+    // switch.
+    if ctx.switch_pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        return Ok(());
     }
+    let switch_guard = match Arc::clone(&ctx.switch_lock).try_read_owned() {
+        Ok(g) => g,
+        Err(_) => return Ok(()),
+    };
+    // Post-check: closes the take-then-set race the same way
+    // `acquire_switch_read` does. See [`AppContext::switch_lock`].
+    if ctx.switch_pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        return Ok(());
+    }
+    if !session::frontend_ready_impl(&ctx) {
+        // Already restored — drop guard and return.
+        return Ok(());
+    }
+    let ctx_for_task = Arc::clone(&ctx);
+    // `restore_all_sessions` no longer spawns PTYs (it only does
+    // disk IO + HashMap inserts), so the work is bounded — but we
+    // still run it on a blocking thread because materialise_temp_files
+    // / cleanup_orphans / store IO can block. We *await* completion
+    // here so the resolution of `frontend_ready` becomes a
+    // happens-before edge for the frontend's first `session_resize`.
+    tauri::async_runtime::spawn_blocking(move || {
+        // Move the owned switch read guard into the closure so it
+        // stays held for the full restore loop. Dropped when the
+        // closure returns.
+        let _switch = switch_guard;
+        session::restore_all_sessions(&ctx_for_task);
+    })
+    .await
+    .map_err(|join_err| {
+        AppError::new(
+            "Internal",
+            format!("restore_all_sessions task panicked: {join_err}"),
+        )
+    })?;
     Ok(())
 }
 
@@ -203,9 +254,14 @@ pub async fn workspace_validate(
     app: tauri::AppHandle,
     args: WorkspaceValidateArgs,
 ) -> Result<WorkspaceValidateResult, AppError> {
+    use tauri::Manager as _;
     let ctx = ctx_of(&app)?;
     let path = PathBuf::from(args.path);
-    session::workspace_validate_impl(&ctx, &path)
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
+    session::workspace_validate_impl(&ctx, &path, Some(&app_data_dir), crate::BUILD_BRANCH)
 }
 
 /// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>`
@@ -219,6 +275,23 @@ pub async fn worktree_create(
     session::worktree_create_impl(&ctx, &args.name)
 }
 
+/// Switch the active workspace in-place (Phase 7). Closes every open
+/// session in the current workspace, releases its OS lock, acquires the
+/// new workspace's lock, opens the new ConfigStore, runs
+/// `restore_all_sessions` for the new workspace inline, and returns the
+/// post-switch `{ config, sessions }` so the frontend can adopt
+/// everything in one render. Returns `AppError::WorkspaceLocked` if
+/// another Arborist instance holds the new workspace's lock.
+#[tauri::command]
+pub async fn workspace_switch(
+    app: tauri::AppHandle,
+    args: WorkspaceSwitchArgs,
+) -> Result<WorkspaceSwitchResult, AppError> {
+    let ctx = ctx_of(&app)?;
+    let path = PathBuf::from(args.path);
+    session::workspace_switch_impl(&ctx, &app, &path).await
+}
+
 // ---------------------------------------------------------------------------
 // Production PtySink builder.
 // ---------------------------------------------------------------------------
@@ -230,10 +303,31 @@ pub async fn worktree_create(
 /// any subsequent `session_list` observes the new value. NotFound errors
 /// are intentionally swallowed: the wait thread can race `session_close`
 /// and report `Exited` against an already-removed record.
+/// Build a [`PtySink`](crate::pty_pool::PtySink) that bridges PTY events
+/// from the [`PtyPool`](crate::pty_pool::PtyPool) into Tauri events
+/// and the persisted session record.
+///
+/// Output / activity callbacks: pure event-emit, no store touch — the
+/// closure only borrows `app: AppHandle`.
+///
+/// Status callback: persists `SessionStatus` and `pid` via
+/// `ConfigStore::update_session_status`. Phase 7 (in-app workspace
+/// switch): the closure resolves the *current* store via
+/// `workspace.read()` on every invocation rather than capturing a
+/// snapshot — so a status update that arrives after a workspace swap
+/// writes into the new workspace's store. (This is generally a no-op
+/// because the new store does not contain the old workspace's session
+/// id, and `update_session_status` returns `NotFound` which is
+/// intentionally swallowed below — but it is the right semantics:
+/// never write into the abandoned old store.)
+///
+/// `update_session_status` may return `NotFound` if the wait thread
+/// races `session_close` (or, post-switch, if the session belongs to
+/// the old workspace). NotFound errors are intentionally swallowed.
 #[must_use]
 pub fn build_production_sink(
     app: tauri::AppHandle,
-    store: ConfigStore,
+    workspace: Arc<RwLock<WorkspaceScope>>,
 ) -> crate::pty_pool::PtySink {
     let app_for_output = app.clone();
     let output = Arc::new(move |session_id: &SessionId, data: String| {
@@ -247,13 +341,21 @@ pub fn build_production_sink(
     });
 
     let app_for_status = app.clone();
-    let store_for_status = store;
+    let workspace_for_status = workspace;
     let status = Arc::new(
         move |session_id: &SessionId,
               status: SessionStatus,
               pid: Option<u32>,
               message: Option<String>| {
-            if let Err(e) = store_for_status.update_session_status(session_id, status, pid) {
+            // Re-resolve the current store on every callback so a
+            // workspace switch in flight cannot cause a stale write
+            // into the previously-bound store.
+            let store = workspace_for_status
+                .read()
+                .expect("workspace lock poisoned")
+                .store
+                .clone();
+            if let Err(e) = store.update_session_status(session_id, status, pid) {
                 use crate::types::Error as E;
                 if !matches!(e, E::NotFound(_)) {
                     tracing::warn!(session_id = %session_id, error = ?e, "persist status failed");
@@ -302,24 +404,38 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_me
 /// session id on the matching `Session` record so the next app-restart
 /// restore can `--resume <id>` and continue the conversation.
 ///
+/// Phase 7 (in-app workspace switch): the closure resolves the
+/// *current* store via `workspace.read()` on every invocation rather
+/// than capturing a snapshot. After a switch, callbacks from
+/// not-yet-joined watchers will write into the new store; the matching
+/// session id will not be present there and the resulting `NotFound`
+/// is swallowed below. The Phase 7 switch path also calls
+/// `metrics.stop_all_and_join()` before the swap to make this race
+/// vanishingly small in practice.
+///
 /// Errors are intentionally swallowed (with a debug log) — discovery is
 /// a best-effort signal that fires every metrics-watcher poll, and a
 /// transient store error must not crash the watcher thread or surface
 /// to the UI.
 #[must_use]
 pub fn build_production_ai_session_discover(
-    store: crate::config_store::ConfigStore,
+    workspace: Arc<RwLock<WorkspaceScope>>,
 ) -> crate::session_metrics::AiSessionDiscoveryCb {
     Arc::new(
-        move |session_id: crate::types::SessionId, ai_session_id: String| match store
-            .update_session_ai_session_id(&session_id, Some(ai_session_id.clone()))
-        {
-            Ok(true) => {
-                tracing::debug!(%session_id, %ai_session_id, "ai session id discovered");
-            }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::debug!(%session_id, error = ?e, "failed to persist ai session id");
+        move |session_id: crate::types::SessionId, ai_session_id: String| {
+            let store = workspace
+                .read()
+                .expect("workspace lock poisoned")
+                .store
+                .clone();
+            match store.update_session_ai_session_id(&session_id, Some(ai_session_id.clone())) {
+                Ok(true) => {
+                    tracing::debug!(%session_id, %ai_session_id, "ai session id discovered");
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::debug!(%session_id, error = ?e, "failed to persist ai session id");
+                }
             }
         },
     )

@@ -1,11 +1,11 @@
 ---
 name: quality-workflow
-description: Arborist's procedural quality reference — exact build/lint/test commands, inner-loop watcher setup, Husky pre-commit/pre-push configuration, test architecture rules, and end-of-feature performance/memory smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `npm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill is the procedural lookup that complements them.
+description: Arborist's procedural quality reference. Use it as a lookup for one task at a time: command reference, watcher setup, Husky hooks, test architecture, or end-of-feature smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `npm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill provides the concrete commands and setup details.
 ---
 
 # Quality workflow — procedural reference
 
-Companion to the **Shift-left quality** principles in `.github/copilot-instructions.md`. Those principles are always loaded; this file holds the commands and configuration detail you only need when actively setting things up or looking something up.
+Companion to the **Shift-left quality** principles in `.github/copilot-instructions.md`. Those principles are always loaded; this file is a lookup. Read only the section needed for the current task instead of processing the whole document.
 
 ## 1. Build, run, lint, test — command reference
 
@@ -47,7 +47,7 @@ cargo watch -x 'test --workspace'         # tests
 
 ## 3. Pre-commit / pre-push hooks (Husky + lint-staged)
 
-Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for WIP branches that won't be merged; never on `main`.
+Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for branches explicitly marked as WIP and not intended for merging into `main`.
 
 - **pre-commit**:
   - `lint-staged` runs `eslint --fix` + Prettier on staged JS/TS

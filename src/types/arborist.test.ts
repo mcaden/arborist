@@ -1,8 +1,9 @@
-// Cross-boundary contract test: each JSON fixture under `./fixtures/` is
-// produced by the matching Rust serde round-trip in
-// `src-tauri/src/types.rs`. If a Rust field is renamed, added, or removed
-// without updating the TypeScript mirror in `./arborist.ts`, this file will
-// fail to typecheck (or fail the runtime key-set assertions below).
+// Cross-boundary contract test: each fixture under `./fixtures/` is the
+// frontend's record of the wire shape produced by the matching Rust
+// serde round-trip in `src-tauri/src/types.rs`. If a Rust field is
+// renamed, added, or removed without updating the TypeScript mirror in
+// `./arborist.ts`, this file will fail to typecheck (or fail the
+// runtime key-set assertions below).
 
 import { describe, expect, it } from 'vitest';
 import { expectTypeOf } from 'vitest';
@@ -16,45 +17,69 @@ import type {
   SessionOutputEvent,
   SessionStatusEvent,
   SessionView,
+  WorkspaceSwitchArgs,
+  WorkspaceSwitchResult,
 } from './arborist';
 
-import sessionFixture from './fixtures/session.json';
-import sessionViewFixture from './fixtures/sessionView.json';
-import instructionSetFixture from './fixtures/instructionSet.json';
+import { sessionFixture } from './fixtures/session';
+import { sessionViewFixture } from './fixtures/sessionView';
+import { instructionSetFixture } from './fixtures/instructionSet';
 import appConfigFixture from './fixtures/appConfig.json';
 import partialAppConfigFixture from './fixtures/partialAppConfig.json';
 import appErrorFixture from './fixtures/appError.json';
 import sessionOutputEventFixture from './fixtures/sessionOutputEvent.json';
-import sessionStatusEventFixture from './fixtures/sessionStatusEvent.json';
+import { sessionStatusEventFixture } from './fixtures/sessionStatusEvent';
+import workspaceSwitchArgsFixture from './fixtures/workspaceSwitchArgs.json';
+import { workspaceSwitchResultFixture } from './fixtures/workspaceSwitchResult';
 
 // --- Compile-time assertions ------------------------------------------------
 //
-// `satisfies` checks that the imported (literal-typed) fixture is assignable
-// to the mirror interface. Missing required fields → compile error.
-// Renamed fields → compile error. This is the primary drift detector.
+// The four fixtures with discriminated-union fields (`tool`, `status`)
+// live in `.ts` modules so their literal types are preserved — TS
+// widens JSON imports (`tool: "claude"` → `tool: string`) which would
+// make `satisfies` against tagged unions fail spuriously and force an
+// `as`-cast escape hatch that silently swallows real drift.
 //
-// Note: TypeScript's structural typing means a fixture with *extra* keys
-// would still satisfy the interface, so we additionally compare key sets at
-// runtime below to catch backend additions the frontend hasn't mirrored.
+// `as const satisfies T` inside each fixture file is the primary
+// drift detector: missing required field, renamed field, or wrong
+// literal value all surface as compile errors there. We **also**
+// re-assert assignability here with explicit `satisfies` clauses so
+// this test file itself fails to typecheck if anyone deletes the
+// `satisfies` from the fixture or breaks the mirror import. The
+// previous `void <fixture>` form only consumed the value to silence
+// the unused-import lint and did **not** re-check assignability —
+// the drift detector was effectively defenseless against fixture-
+// side weakening. Use `<fixture> satisfies T` (an expression-level
+// operator) which preserves the fixture's narrowed `as const` type
+// while enforcing the contract.
+//
+// JSON-backed fixtures get the same treatment. Runtime key-set
+// assertions further down catch *extra* keys (which TS's structural
+// typing would otherwise allow).
 
 const _session = sessionFixture satisfies Session;
 const _sessionView = sessionViewFixture satisfies SessionView;
 const _instructionSet = instructionSetFixture satisfies InstructionSet;
+const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEvent;
 const _appConfig = appConfigFixture satisfies AppConfig;
 const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
 const _appError = appErrorFixture satisfies AppError;
 const _sessionOutputEvent = sessionOutputEventFixture satisfies SessionOutputEvent;
-const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEvent;
+const _workspaceSwitchArgs = workspaceSwitchArgsFixture satisfies WorkspaceSwitchArgs;
+const _workspaceSwitchResult = workspaceSwitchResultFixture satisfies WorkspaceSwitchResult;
 
-// Silence "unused" lint without losing the satisfies assertion.
+// Silence "unused" lint on the locally-bound aliases. The `satisfies`
+// check above is what enforces drift — these voids carry no contract.
 void _session;
 void _sessionView;
 void _instructionSet;
+void _sessionStatusEvent;
 void _appConfig;
 void _partialAppConfig;
 void _appError;
 void _sessionOutputEvent;
-void _sessionStatusEvent;
+void _workspaceSwitchArgs;
+void _workspaceSwitchResult;
 
 // --- Runtime key-set assertions --------------------------------------------
 
@@ -184,6 +209,24 @@ describe('arborist type mirrors', () => {
       ['sessionId', 'status'],
       ['message'],
       'SessionStatusEvent',
+    );
+  });
+
+  it('WorkspaceSwitchArgs fixture matches TS interface key set', () => {
+    assertExactKeys(
+      workspaceSwitchArgsFixture as unknown as Record<string, unknown>,
+      ['path'],
+      [],
+      'WorkspaceSwitchArgs',
+    );
+  });
+
+  it('WorkspaceSwitchResult fixture matches TS interface key set', () => {
+    assertExactKeys(
+      workspaceSwitchResultFixture as unknown as Record<string, unknown>,
+      ['workspaceRoot', 'noOp', 'config', 'sessions'],
+      [],
+      'WorkspaceSwitchResult',
     );
   });
 
