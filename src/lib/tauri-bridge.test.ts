@@ -291,19 +291,74 @@ describe('workspaceValidate', () => {
 });
 
 describe('workspaceSwitch', () => {
-  it("calls invoke('workspace_switch', { args: { path } }) and forwards the result", async () => {
-    invokeMock.mockResolvedValueOnce({ workspaceRoot: '/new/ws', noOp: false });
+  // Minimal but type-complete `AppConfig` + `SessionView` fixtures that
+  // exercise the post-PR5 wire shape. Constructed `as const`-typed so a
+  // type drift in `AppConfig` / `SessionView` (e.g. a new required
+  // field) breaks these tests at compile time, not at runtime.
+  const cfg: AppConfig = {
+    configVersion: 3,
+    defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
+    instructionSetsDir: '/cfg/instr',
+    workspaceRoot: '/new/ws',
+    worktreeRoots: [],
+    prelaunchCommands: [],
+    worktreePrelaunchCommands: {},
+    aiLaunchCommands: { claude: '', copilot: '' },
+    lastOpenSessions: ['sid-restored'],
+    tabOrder: ['sid-restored'],
+    activeSessionId: 'sid-restored',
+  };
+  const restoredSession = {
+    id: 'sid-restored',
+    tool: 'claude' as const,
+    worktreePath: '/new/ws/.worktrees/feat',
+    worktreeName: 'feat',
+    label: 'feat',
+    instructionSetId: 'claude-default',
+    status: 'starting' as const,
+    createdAt: 1_700_000_000,
+    tabIndex: 0,
+  };
+
+  it("calls invoke('workspace_switch', { args: { path } }) and forwards the full WorkspaceSwitchResult", async () => {
+    const result = {
+      workspaceRoot: '/new/ws',
+      noOp: false,
+      config: { ...cfg, workspaceRoot: '/new/ws' },
+      sessions: [restoredSession],
+    };
+    invokeMock.mockResolvedValueOnce(result);
     const out = await bridge.workspaceSwitch('/new/ws');
     expect(invokeMock).toHaveBeenCalledWith('workspace_switch', {
       args: { path: '/new/ws' },
     });
-    expect(out).toEqual({ workspaceRoot: '/new/ws', noOp: false });
+    // Asserting deep equality (rather than only `workspaceRoot` /
+    // `noOp`) ensures the wrapper would fail if it ever stripped
+    // `config` or `sessions` from the result on the way through —
+    // those two fields are the entire reason PR5 collapsed the old
+    // multi-round-trip rehydrate.
+    expect(out).toEqual(result);
+    expect(out.config).toEqual(result.config);
+    expect(out.sessions).toEqual(result.sessions);
   });
 
-  it('forwards the no-op shape when the target equals the current workspace', async () => {
-    invokeMock.mockResolvedValueOnce({ workspaceRoot: '/cur/ws', noOp: true });
+  it('forwards the no-op shape (config + sessions still populated from the unchanged store)', async () => {
+    // Per DESIGN §5.5c step 3, even on the no-op fast path the backend
+    // returns the *current* (unchanged) `config` + `sessions` so the
+    // wire payload is non-nullable and the frontend can short-circuit
+    // adoption purely on the `noOp` flag — no branchy "field-missing"
+    // handling on the JS side.
+    const result = {
+      workspaceRoot: '/cur/ws',
+      noOp: true,
+      config: { ...cfg, workspaceRoot: '/cur/ws' },
+      sessions: [restoredSession],
+    };
+    invokeMock.mockResolvedValueOnce(result);
     const out = await bridge.workspaceSwitch('/cur/ws');
-    expect(out).toEqual({ workspaceRoot: '/cur/ws', noOp: true });
+    expect(out).toEqual(result);
+    expect(out.config.workspaceRoot).toBe('/cur/ws');
+    expect(out.sessions).toHaveLength(1);
   });
 
   it('propagates a backend rejection (e.g. WorkspaceLocked)', async () => {
