@@ -63,7 +63,18 @@ import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
  * step 7.)
  */
 export async function changeWorkspace(path: string): Promise<void> {
-  const { setSwitching } = useWorkspaceSwitchUiStore.getState();
+  const { isSwitching, setSwitching } = useWorkspaceSwitchUiStore.getState();
+  // Reentrancy guard: if a switch is already in flight, drop this call.
+  // The other call owns the flag and will clear it in its own `finally`;
+  // clearing here would lower the overlay while the in-flight invoke is
+  // still pending, exposing stale tabs to input. Other UI layers (the
+  // overlay's `inert` root, the picker's `submitting` state, the
+  // backend's `switch_lock`) already make double-fires unlikely, but
+  // making this function reentrant-safe in isolation removes the last
+  // race window.
+  if (isSwitching) {
+    return;
+  }
   setSwitching(true);
   try {
     let result;

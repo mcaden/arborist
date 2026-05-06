@@ -91,6 +91,12 @@ function resetStores(): void {
   });
 }
 
+// `window.location` is replaced by the reload-button test below; capture
+// the original descriptor in `beforeEach` and restore it in `afterEach`
+// so subsequent tests (in this file or any test that imports App) get a
+// pristine `location`.
+let originalLocationDescriptor: PropertyDescriptor | undefined;
+
 beforeEach(() => {
   resetBridgeMocks();
   initTerminalRouterMock.mockClear();
@@ -101,10 +107,14 @@ beforeEach(() => {
   useWorkspaceSwitchUiStore.setState({ isSwitching: false });
   document.documentElement.classList.remove('dark');
   installMatchMedia();
+  originalLocationDescriptor = Object.getOwnPropertyDescriptor(window, 'location');
 });
 
 afterEach(() => {
   document.documentElement.classList.remove('dark');
+  if (originalLocationDescriptor) {
+    Object.defineProperty(window, 'location', originalLocationDescriptor);
+  }
 });
 
 describe('App boot sequence', () => {

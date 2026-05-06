@@ -174,7 +174,6 @@ export function App(): JSX.Element {
 function ReadyApp(): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const setConfig = useConfigStore((s) => s.set);
-  const isSwitching = useWorkspaceSwitchUiStore(selectIsSwitching);
 
   if (workspaceRoot === null || workspaceRoot.length === 0) {
     return (
@@ -187,7 +186,12 @@ function ReadyApp(): JSX.Element {
     );
   }
 
-  return <ReadyAppShell isSwitching={isSwitching} />;
+  // The `isSwitching` subscription lives inside `ReadyAppShell` (not
+  // here) so the first-boot picker branch above doesn't re-render on
+  // flag flips. In practice the picker only mounts when no workspace
+  // is bound and `changeWorkspace` (the only writer) is unreachable
+  // from there, so this is hygiene rather than a live bug.
+  return <ReadyAppShell />;
 }
 
 // Split out so the focus-management `useEffect` only mounts under the
@@ -217,7 +221,8 @@ function ReadyApp(): JSX.Element {
 // The `isSwitching` flag flips off in the same render that adopts
 // the new workspace's data, so users never see a "no workspace"
 // flash between hide-overlay and tabs-populated.
-function ReadyAppShell({ isSwitching }: { isSwitching: boolean }): JSX.Element {
+function ReadyAppShell(): JSX.Element {
+  const isSwitching = useWorkspaceSwitchUiStore(selectIsSwitching);
   const overlayRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {

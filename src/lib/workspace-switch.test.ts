@@ -164,4 +164,28 @@ describe('changeWorkspace isSwitching flag', () => {
 
     expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
   });
+
+  it('drops a reentrant call while a switch is already in flight without clearing the flag', async () => {
+    // Simulate "first call already in flight" by setting the flag
+    // ourselves. The reentrancy guard must observe that and short-circuit
+    // before invoking the bridge or touching the stores; crucially, it
+    // must NOT clear the flag in `finally` — the in-flight call owns it
+    // and clearing here would expose stale tabs to input by lowering
+    // the overlay before the real switch completes.
+    useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+
+    await changeWorkspace('/new');
+
+    expect(workspaceSwitch).not.toHaveBeenCalled();
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(true);
+  });
+
+  it('reentrant guard does not adopt config or sessions', async () => {
+    useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+
+    await changeWorkspace('/new');
+
+    expect(configAdopt).not.toHaveBeenCalled();
+    expect(sessionAdopt).not.toHaveBeenCalled();
+  });
 });
