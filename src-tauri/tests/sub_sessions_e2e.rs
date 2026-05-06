@@ -45,8 +45,18 @@ struct SpawnerState {
     next_pid: u32,
 }
 
+/// Failure-injection knobs for [`FakeSpawner`]. Tests flip these to
+/// exercise spawn/kill failure paths (see CP-07 cascade orphan branch
+/// and the restore spawn-failure path).
+#[derive(Default, Clone)]
+struct SpawnerFlags {
+    fail_spawn: Arc<AtomicBool>,
+    kill_fails: Arc<AtomicBool>,
+}
+
 struct FakeSpawner {
     state: Mutex<SpawnerState>,
+    flags: SpawnerFlags,
 }
 
 impl FakeSpawner {
@@ -56,7 +66,12 @@ impl FakeSpawner {
                 next_pid: 9000,
                 ..SpawnerState::default()
             }),
+            flags: SpawnerFlags::default(),
         }
+    }
+
+    fn flags(&self) -> SpawnerFlags {
+        self.flags.clone()
     }
 }
 
@@ -67,6 +82,11 @@ impl PtySpawner for FakeSpawner {
         _cwd: &Path,
         _size: PtySize,
     ) -> Result<SpawnedChild, arborist_lib::types::Error> {
+        if self.flags.fail_spawn.load(Ordering::SeqCst) {
+            return Err(arborist_lib::types::Error::PtySpawnFailed(
+                "injected spawn failure".into(),
+            ));
+        }
         let mut s = self.state.lock().unwrap();
         s.spawn_count += 1;
         let pid = s.next_pid;
@@ -84,7 +104,10 @@ impl PtySpawner for FakeSpawner {
             waiter: Box::new(BlockingWaiter {
                 eof: Arc::clone(&eof),
             }),
-            killer: Arc::new(EofKiller { eof }),
+            killer: Arc::new(EofKiller {
+                eof,
+                fails: Arc::clone(&self.flags.kill_fails),
+            }),
         })
     }
 }
@@ -117,10 +140,21 @@ impl PtyResize for NoopResize {
 }
 struct EofKiller {
     eof: Arc<AtomicBool>,
+    fails: Arc<AtomicBool>,
 }
 impl PtyKiller for EofKiller {
     fn kill(&self) -> Result<(), arborist_lib::types::Error> {
+        // Always EOF so the reader/waiter threads can exit cleanly even
+        // on the failure path — otherwise leaked threads would block
+        // the test runner on process exit. The pool only reads the
+        // killer's `Result` to decide Reaped vs Unconfirmed; the EOF
+        // signal is independent.
         self.eof.store(true, Ordering::Relaxed);
+        if self.fails.load(Ordering::SeqCst) {
+            return Err(arborist_lib::types::Error::Internal(
+                "injected killer failure".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -192,8 +226,9 @@ struct Harness {
     ctx: Arc<AppContext>,
     sub_ctx: Arc<arborist_lib::sub_sessions::SubAppContext>,
     sub_pool: Arc<SubPtyPool>,
+    sub_spawner_flags: SpawnerFlags,
     sub_events: Arc<CapturedSubEvents>,
-    _config_dir: TempDir,
+    config_dir: TempDir,
     _instructions_dir: TempDir,
     worktree: TempDir,
     instruction_id: InstructionSetId,
@@ -250,6 +285,7 @@ fn build_harness() -> Harness {
     ));
 
     let sub_spawner = Arc::new(FakeSpawner::new());
+    let sub_spawner_flags = sub_spawner.flags();
     let sub_pool = Arc::new(SubPtyPool::new(sub_spawner.clone() as Arc<dyn PtySpawner>));
     let sub_store = Arc::new(SubSessionStore::new());
     let sub_events = Arc::new(CapturedSubEvents::default());
@@ -275,8 +311,9 @@ fn build_harness() -> Harness {
         ctx,
         sub_ctx,
         sub_pool,
+        sub_spawner_flags,
         sub_events,
-        _config_dir: config_dir,
+        config_dir,
         _instructions_dir: instructions_dir,
         worktree,
         instruction_id,
@@ -582,4 +619,232 @@ async fn create_under_closing_parent_is_rejected() {
     let result = create_sub(&h, parent);
     assert!(result.is_err());
     assert_eq!(result.err().unwrap().code, "InvalidArgument");
+}
+
+// ---------------------------------------------------------------------------
+// Failure-path tests (CP-07: orphans must stay visible, never silently leak)
+// ---------------------------------------------------------------------------
+
+/// On `subsession_create_impl` persistence failure (e.g. config dir
+/// vanished) the in-memory store row must be rolled back AND the runtime
+/// PTY must be torn down so the user retains a consistent view + can
+/// retry without leaking a child PTY. Mirrors the relaunch rollback
+/// path above (see `subsession_relaunch_impl` in commands/subsession.rs).
+#[tokio::test]
+async fn create_rolls_back_inmemory_on_persist_failure() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+
+    // Force every subsequent `write_atomic` to fail by replacing the
+    // config file with a directory of the same name. `tmp.persist()`
+    // can't rename a NamedTempFile over a directory on either OS, so
+    // `append_last_open_sub_session` will return Err and trip the
+    // create-path rollback.
+    let cfg_path = h.config_dir.path().join("config.json");
+    std::fs::remove_file(&cfg_path).ok();
+    std::fs::create_dir(&cfg_path).expect("replace config.json with dir");
+
+    let result = create_sub(&h, parent);
+    assert!(
+        result.is_err(),
+        "subsession_create must surface persist failure to caller"
+    );
+
+    assert!(
+        h.sub_ctx.store.list_for(&parent).is_empty(),
+        "in-memory store must be rolled back on persist failure"
+    );
+    // Pool entry rolled back too (otherwise the PTY child is leaked).
+    let live_ids: Vec<_> = h
+        .sub_ctx
+        .store
+        .list_for(&parent)
+        .into_iter()
+        .filter(|s| h.sub_pool.contains(&s.id))
+        .collect();
+    assert!(
+        live_ids.is_empty(),
+        "no PTY child should remain in the pool after rollback"
+    );
+}
+
+/// CP-07 cascade orphan branch: when `pool.kill` returns
+/// `KillOutcome::Unconfirmed` the cascade must keep the sub-session
+/// row visible (in-memory + persisted) and emit a status=Error event
+/// so the user can see and clean it up — never silently prune.
+#[tokio::test]
+async fn cascade_kill_failure_leaves_orphan_visible() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+    let sub = create_sub(&h, parent).expect("sub created");
+    assert!(wait_until(
+        || h.sub_pool.contains(&sub.id),
+        Duration::from_secs(2)
+    ));
+
+    // Flip the killer to fail. Cascade hits this branch on the next
+    // pool.kill call.
+    h.sub_spawner_flags.kill_fails.store(true, Ordering::SeqCst);
+
+    close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
+
+    // Orphan record kept in the in-memory store and on disk so the user
+    // can see the runaway PID.
+    assert_eq!(
+        h.sub_ctx.store.list_for(&parent).len(),
+        1,
+        "in-memory store must keep the orphan visible"
+    );
+    let persisted = h.ctx.store().load_config().last_open_sub_sessions;
+    assert_eq!(
+        persisted.len(),
+        1,
+        "persisted slot must keep the orphan visible"
+    );
+    assert_eq!(persisted[0].id, sub.id);
+
+    // Cascade emitted a status=Error event with the recorded PID so the
+    // frontend can surface the orphan to the user.
+    let statuses = h.sub_events.statuses.lock().unwrap().clone();
+    let error_evs: Vec<_> = statuses
+        .iter()
+        .filter(|(id, st, ..)| *id == sub.id && matches!(st, SubSessionStatus::Error))
+        .collect();
+    assert!(
+        !error_evs.is_empty(),
+        "cascade must emit at least one status=Error event for the orphan"
+    );
+}
+
+/// On restore-on-launch the second pass re-spawns terminal subs. If the
+/// spawner fails (e.g. ConPTY exhaustion), the persisted record must
+/// stay so the user can retry — never silently dropped from disk. The
+/// sub-session row should also surface in the in-memory store with
+/// status=Error so the UI can show the failure rather than a missing
+/// tab.
+#[tokio::test]
+async fn restore_spawn_failure_keeps_record() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+    let sub = create_sub(&h, parent).expect("sub created");
+    assert!(wait_until(
+        || h.sub_pool.contains(&sub.id),
+        Duration::from_secs(2)
+    ));
+
+    // Simulate fresh app launch: drop in-memory + pool, keep persistence.
+    h.sub_ctx.store.remove(&sub.id);
+    h.sub_pool.kill(&sub.id).await.ok();
+
+    // Sanity: persistence still has the row.
+    let persisted_before = h.ctx.store().load_config().last_open_sub_sessions;
+    assert_eq!(persisted_before.len(), 1);
+    assert_eq!(persisted_before[0].id, sub.id);
+
+    // Force the next spawn to fail.
+    h.sub_spawner_flags.fail_spawn.store(true, Ordering::SeqCst);
+
+    restore_all_sub_sessions_impl(&h.ctx, &h.sub_ctx);
+
+    // Persistence must NOT be pruned — the user can retry by re-running
+    // restore (or by relaunch from the UI). Silently dropping persisted
+    // rows on a transient spawn failure would erase legitimate user
+    // work.
+    let persisted_after = h.ctx.store().load_config().last_open_sub_sessions;
+    assert_eq!(
+        persisted_after.len(),
+        1,
+        "persisted row must survive a restore-time spawn failure"
+    );
+    assert_eq!(persisted_after[0].id, sub.id);
+
+    // In-memory row was inserted *before* the spawn attempt and stays
+    // visible so the UI can render the failed tab. The pool has no
+    // entry because spawn never succeeded.
+    assert!(
+        h.sub_ctx.store.get(&sub.id).is_some(),
+        "in-memory sub row must remain visible after restore spawn failure"
+    );
+    assert!(
+        !h.sub_pool.contains(&sub.id),
+        "no pool entry should exist after restore spawn failure"
+    );
+
+    // restored event fired (with status=Starting), then a status=Error
+    // event flips the row to the visible failure state. Both must fire
+    // in that order so the frontend store has the row before the error
+    // arrives.
+    let restored_evs = h.sub_events.restored.lock().unwrap().clone();
+    assert_eq!(restored_evs.len(), 1, "expected one restored event");
+    assert_eq!(restored_evs[0].id, sub.id);
+    let statuses = h.sub_events.statuses.lock().unwrap().clone();
+    let error_evs: Vec<_> = statuses
+        .iter()
+        .filter(|(id, st, ..)| *id == sub.id && matches!(st, SubSessionStatus::Error))
+        .collect();
+    assert!(
+        !error_evs.is_empty(),
+        "restore must emit status=Error after spawn failure"
+    );
+}
+
+/// `subsession_relaunch_impl` must refresh `composed_command` from the
+/// current def — DESIGN §5.7 explicitly carves this out as the one
+/// place we re-derive the command (everywhere else the compose-once
+/// invariant holds). User-facing impact: editing a Custom Process def's
+/// `command` field must take effect on the next relaunch of any
+/// existing sub-session bound to that def.
+#[tokio::test]
+async fn relaunch_refreshes_composed_command_from_current_def() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+    let sub = create_sub(&h, parent).expect("sub created");
+    assert!(wait_until(
+        || h.sub_pool.contains(&sub.id),
+        Duration::from_secs(2)
+    ));
+
+    // Sanity: original composed_command matches the original def.
+    assert_eq!(sub.composed_command, "sh -i");
+
+    // User edits the def via Settings: command changes from "sh -i" to
+    // "bash -i". The persisted sub record still references the same
+    // def_id ("shell").
+    let edited_def = CustomProcessDef {
+        id: h.shell_def_id.clone(),
+        name: "Bash".into(),
+        kind: CustomProcessKind::Terminal,
+        command: "bash -i".into(),
+        enabled: true,
+        icon: None,
+        icon_data_uri: None,
+    };
+    h.ctx
+        .store()
+        .save_config(PartialAppConfig {
+            custom_processes: Some(vec![edited_def]),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let returned = subsession_relaunch_impl(&h.ctx, &h.sub_ctx, sub.id)
+        .await
+        .expect("relaunch ok");
+
+    // Returned snapshot reflects the refreshed command + label.
+    assert_eq!(
+        returned.composed_command, "bash -i",
+        "relaunch must use the current def's command, not the persisted one"
+    );
+    assert_eq!(
+        returned.label, "Bash",
+        "relaunch must refresh the label too"
+    );
+
+    // Persistence reflects the refreshed command.
+    let persisted = h.ctx.store().load_config().last_open_sub_sessions;
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0].id, sub.id);
+    assert_eq!(persisted[0].composed_command, "bash -i");
+    assert_eq!(persisted[0].label, "Bash");
 }

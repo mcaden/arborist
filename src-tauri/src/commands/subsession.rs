@@ -191,7 +191,23 @@ pub async fn subsession_close_impl(
     match snapshot.kind {
         CustomProcessKind::Terminal => {
             if sub_ctx.pool.contains(&id) {
-                sub_ctx.pool.kill(&id).await.map_err(AppError::from)?;
+                match sub_ctx.pool.kill(&id).await {
+                    Ok(crate::pty_pool::KillOutcome::Reaped) => {}
+                    Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
+                        // User clicked close — proceed with prune. Log
+                        // loudly so a human can find and clean up the
+                        // orphan PID. Mirrors the session-park policy:
+                        // an Unconfirmed kill still issued the signal,
+                        // so the failure mode is "child may linger",
+                        // not "child is definitely alive".
+                        tracing::warn!(
+                            sub_session_id = %id,
+                            pid,
+                            "subsession_close: PTY kill issued but reap unconfirmed; pruning record anyway (orphan PID may need manual cleanup)"
+                        );
+                    }
+                    Err(e) => return Err(AppError::from(e)),
+                }
             }
         }
         CustomProcessKind::Application => match intent {
@@ -377,9 +393,28 @@ pub async fn close_for_parent_impl(
             CustomProcessKind::Terminal => {
                 if sub_ctx.pool.contains(&sub.id) {
                     match sub_ctx.pool.kill(&sub.id).await {
-                        Ok(()) => {}
+                        Ok(crate::pty_pool::KillOutcome::Reaped) => {}
                         Err(Error::NotFound(_)) => {
                             // already exited — drop through to prune
+                        }
+                        Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
+                            warn!(
+                                parent_session_id = %parent_id,
+                                sub_session_id = %sub.id,
+                                pid,
+                                "cascade: PTY kill issued but reap unconfirmed within grace; \
+                                 keeping orphan record visible (CP-07)"
+                            );
+                            (sub_ctx.sink.status)(
+                                &sub.id,
+                                SubSessionStatus::Error,
+                                Some(pid),
+                                Some(format!(
+                                    "PTY kill unconfirmed during parent close (pid {pid} may still be alive)"
+                                )),
+                            );
+                            // Skip the prune — leave the orphan visible.
+                            continue;
                         }
                         Err(e) => {
                             warn!(
@@ -633,8 +668,18 @@ pub async fn subsession_relaunch_impl(
     match existing.kind {
         CustomProcessKind::Terminal => {
             if sub_ctx.pool.contains(&id) {
-                if let Err(e) = sub_ctx.pool.kill(&id).await {
-                    warn!(sub_session_id = %id, error = ?e, "relaunch: pre-kill failed (continuing)");
+                match sub_ctx.pool.kill(&id).await {
+                    Ok(crate::pty_pool::KillOutcome::Reaped) | Err(Error::NotFound(_)) => {}
+                    Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
+                        warn!(
+                            sub_session_id = %id,
+                            pid,
+                            "relaunch: pre-kill issued but reap unconfirmed; continuing (orphan PID may need manual cleanup)"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(sub_session_id = %id, error = ?e, "relaunch: pre-kill failed (continuing)");
+                    }
                 }
             }
         }
@@ -668,7 +713,25 @@ pub async fn subsession_relaunch_impl(
         composed_command: refreshed.composed_command.clone(),
     };
     if let Err(e) = ctx.store().append_last_open_sub_session(updated_record) {
-        warn!(sub_session_id = %id, error = ?e, "relaunch: persistence refresh failed");
+        // The on-disk record is unchanged (write_atomic is atomic), but
+        // we already tore down the prior child above. Roll the in-memory
+        // entry back to `existing` with status=Error so the row stays
+        // visible (CP-07 spirit: a visible orphan beats a silent leak)
+        // and the user can retry via relaunch. Mirrors the create-path
+        // rollback at `subsession_create_impl`.
+        warn!(sub_session_id = %id, error = ?e, "relaunch: persistence refresh failed; rolling back in-memory state");
+        sub_ctx.store.remove(&id);
+        let mut rollback = existing.clone();
+        rollback.status = SubSessionStatus::Error;
+        rollback.pid = None;
+        let _ = sub_ctx.store.insert(rollback);
+        (sub_ctx.sink.status)(
+            &id,
+            SubSessionStatus::Error,
+            None,
+            Some(format!("relaunch persistence failed: {e}")),
+        );
+        return Err(AppError::from(e));
     }
     (sub_ctx.sink.status)(&id, SubSessionStatus::Starting, None, None);
 

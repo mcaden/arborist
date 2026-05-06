@@ -626,6 +626,18 @@ impl AppPool {
         // Spawn the wait thread. If creation fails we must roll back
         // the inserted runtime AND kill the spawned child so we don't
         // leak an untracked GUI process.
+        //
+        // Cleanup-ordering invariant: the `kill` below is a real kill
+        // *only* because the wait thread never started — therefore
+        // `RealWaiter::wait()` was never invoked, and the `Child`
+        // remains in the shared `Arc<Mutex<Option<Child>>>` slot for
+        // `RealKiller` to take and terminate. The doc comment on
+        // `RealKiller` (above) describes how `kill` becomes a no-op
+        // after `wait` takes the slot — but at this point in `spawn`
+        // that race window has not yet opened. If a future refactor
+        // starts the waiter eagerly (e.g. via a runtime executor) or
+        // moves the `Child` out of the shared slot before this branch,
+        // this rollback silently leaks a GUI process.
         let wait_id = id;
         let wait_killed = Arc::clone(&killed);
         let wait_resolver_done = Arc::clone(&resolver_done);

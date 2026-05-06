@@ -51,8 +51,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 use crate::pty_pool::{
-    ChildCommand, PtyKiller, PtyResize, PtySpawner, PtyWaiter, SpawnedChild, Utf8Stream,
-    DROP_LOG_EVERY, KILL_GRACE, OUTPUT_CHANNEL_CAPACITY,
+    ChildCommand, KillOutcome, PtyKiller, PtyResize, PtySpawner, PtyWaiter, SpawnedChild,
+    Utf8Stream, DROP_LOG_EVERY, KILL_GRACE, OUTPUT_CHANNEL_CAPACITY,
 };
 use crate::types::{Error, SessionId, SubSession, SubSessionId, SubSessionStatus};
 
@@ -375,7 +375,17 @@ impl SubPtyPool {
     /// Kill the child, tear down its read/wait threads + drain task,
     /// remove the entry. Mirrors [`PtyPool::kill`] (sans temp-dir cleanup
     /// since sub-sessions don't own one).
-    pub async fn kill(&self, id: &SubSessionId) -> Result<(), Error> {
+    ///
+    /// Returns [`KillOutcome::Reaped`] when both `killer.kill()` and the
+    /// wait-thread join succeeded within [`KILL_GRACE`]; returns
+    /// [`KillOutcome::Unconfirmed`] when either signalled failure (the
+    /// underlying OS process **may** still be alive at the recorded PID).
+    /// The pool entry has been removed in either case so callers can
+    /// safely re-spawn the same id; `Unconfirmed` is an advisory signal
+    /// for cascade callers to keep an orphan record visible per CP-07
+    /// rather than silently leak a runaway process. `NotFound` is
+    /// returned only when the id was already absent from the pool.
+    pub async fn kill(&self, id: &SubSessionId) -> Result<KillOutcome, Error> {
         let rt = {
             let mut guard = self
                 .inner
@@ -386,8 +396,14 @@ impl SubPtyPool {
         let Some(rt) = rt else {
             return Err(Error::NotFound(format!("sub session {id} not in pool")));
         };
+        let pid = rt.pid;
         rt.killed.store(true, Ordering::SeqCst);
-        let _ = rt.killer.kill();
+        // Capture the killer result instead of swallowing it. SIGKILL /
+        // TerminateProcess rarely fail in practice, but when they do the
+        // OS process can outlive the pool entry; cascade callers need
+        // this signal to keep the orphan visible per CP-07. Mirrors the
+        // change applied to `PtyPool::kill` (see pty_pool.rs §"step 3").
+        let killer_result = rt.killer.kill();
         drop(rt.sender);
         rt.cancel.cancel();
         match timeout(DRAIN_JOIN_TIMEOUT, rt.drain).await {
@@ -395,14 +411,41 @@ impl SubPtyPool {
             Ok(Err(e)) => error!(sub_session_id = %id, error = ?e, "sub drain join failed"),
             Err(_) => error!(sub_session_id = %id, "sub drain did not exit within timeout"),
         }
-        if let Some(handle) = rt.wait_thread {
-            let _ = timeout(
-                KILL_GRACE,
-                tokio::task::spawn_blocking(move || handle.join()),
+        let wait_joined = if let Some(handle) = rt.wait_thread {
+            matches!(
+                timeout(
+                    KILL_GRACE,
+                    tokio::task::spawn_blocking(move || handle.join()),
+                )
+                .await,
+                Ok(Ok(Ok(()))),
             )
-            .await;
+        } else {
+            // No wait thread (some test paths). Treat as confirmed since
+            // there is nothing left to verify.
+            true
+        };
+        if killer_result.is_err() || !wait_joined {
+            if let Err(e) = killer_result {
+                warn!(
+                    sub_session_id = %id,
+                    pid,
+                    error = ?e,
+                    "sub kill: killer.kill() returned error; process may still be alive at this PID",
+                );
+            }
+            if !wait_joined {
+                warn!(
+                    sub_session_id = %id,
+                    pid,
+                    grace_secs = KILL_GRACE.as_secs(),
+                    "sub kill: wait thread did not join within grace period; process may still be alive at this PID",
+                );
+            }
+            Ok(KillOutcome::Unconfirmed { pid })
+        } else {
+            Ok(KillOutcome::Reaped)
         }
-        Ok(())
     }
 
     fn kill_blocking(&self, id: &SubSessionId) {

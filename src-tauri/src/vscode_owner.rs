@@ -275,7 +275,34 @@ mod platform {
             if !title.ends_with(TITLE_SUFFIX) {
                 return 1;
             }
-            if !title.to_lowercase().contains(&state.needle) {
+            // Match the workspace folder against an explicit segment of
+            // the VS Code title (`<file> - <folder> - Visual Studio
+            // Code`), not a substring of the whole title. The previous
+            // `title.contains(needle)` check matched any title where
+            // the basename appeared as a substring — a workspace named
+            // "code" would steal the wrong window from any other VS
+            // Code workspace whose open file happened to contain the
+            // word "code" (`code.js - other-project - Visual Studio
+            // Code`).
+            let remainder_lower = match title.strip_suffix(TITLE_SUFFIX) {
+                Some(r) => r.to_lowercase(),
+                None => return 1,
+            };
+            let needle = state.needle.as_str();
+            let segment_match = remainder_lower.split(" - ").any(|seg| {
+                // Strip trailing " [Workspace]" / " [Folder]" /
+                // " (Restricted Mode)" markers VS Code appends when
+                // window.title-related settings are non-default.
+                let mut cleaned = seg;
+                if let Some(idx) = cleaned.find(" [") {
+                    cleaned = &cleaned[..idx];
+                }
+                if let Some(idx) = cleaned.find(" (") {
+                    cleaned = &cleaned[..idx];
+                }
+                cleaned.trim() == needle
+            });
+            if !segment_match {
                 return 1;
             }
             let mut pid: DWORD = 0;

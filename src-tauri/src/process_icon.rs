@@ -506,15 +506,16 @@ mod platform {
             .suffix(".png")
             .tempfile()
             .ok()?;
+        // Pass paths as `OsStr` so we don't silently fail on bundles
+        // whose names aren't valid UTF-8. `Command::arg` accepts
+        // `AsRef<OsStr>`, so the OS path is forwarded verbatim.
         let status = Command::new("sips")
-            .args([
-                "-s",
-                "format",
-                "png",
-                icns.to_str()?,
-                "--out",
-                tmp.path().to_str()?,
-            ])
+            .arg("-s")
+            .arg("format")
+            .arg("png")
+            .arg(icns.as_os_str())
+            .arg("--out")
+            .arg(tmp.path().as_os_str())
             .status()
             .ok()?;
         if !status.success() {

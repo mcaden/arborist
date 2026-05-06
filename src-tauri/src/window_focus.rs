@@ -398,6 +398,14 @@ mod platform {
     pub(super) fn focus_pid(pid: u32) -> Result<(), Error> {
         // Use System Events to flip frontmost on the target process by
         // its Unix PID. Requires Accessibility permission for Arborist.
+        //
+        // Safe-by-typing: `pid` is `u32`, so it can only stringify as
+        // ASCII digits — there is no character `format!` could emit
+        // here that AppleScript or any downstream shell would parse as
+        // a metacharacter. Defense-in-depth note for future readers:
+        // if this signature ever widens (e.g. a label or process name),
+        // route the value through a separate `-e "set p to <…>"` line
+        // and reference it by variable instead of interpolating.
         let script = format!(
             "tell application \"System Events\" to set frontmost of (first process whose unix id is {pid}) to true"
         );
@@ -460,15 +468,34 @@ mod platform {
             )));
         }
         let text = String::from_utf8_lossy(&listing.stdout);
-        // wmctrl -lp output: "<id> <desktop> <pid> <host> <title>"
+        // wmctrl -lp output: "<id> <desktop> <pid> <host> <title>".
+        // Anchor each line strictly: id must start with `0x` followed
+        // by hex; desktop must be a decimal integer; pid must be a
+        // decimal integer. This rejects forged second lines that an
+        // attacker could splice in via a window title containing an
+        // embedded newline (X11 lets clients set arbitrary _NET_WM_NAME
+        // strings, so the wmctrl output is not a trustworthy line-
+        // delimited table without explicit anchoring).
         let pid_str = pid.to_string();
         let target_id = text
             .lines()
             .find_map(|line| {
                 let mut parts = line.split_whitespace();
                 let id = parts.next()?;
-                let _desktop = parts.next()?;
+                if !id.starts_with("0x")
+                    || id.len() < 3
+                    || !id[2..].chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    return None;
+                }
+                let desktop = parts.next()?;
+                if !desktop.chars().all(|c| c.is_ascii_digit() || c == '-') {
+                    return None;
+                }
                 let p = parts.next()?;
+                if !p.chars().all(|c| c.is_ascii_digit()) {
+                    return None;
+                }
                 if p == pid_str {
                     Some(id.to_owned())
                 } else {

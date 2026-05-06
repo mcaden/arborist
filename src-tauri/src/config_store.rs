@@ -2194,6 +2194,70 @@ mod tests {
     // ----- v3 → v4 migration: built-in custom-process seeding ----------
 
     #[test]
+    fn load_config_migrates_v3_with_user_edited_shell_preserved() {
+        // The v3 user has already customised the built-in `shell` (renamed
+        // it, swapped to fish, disabled it). The v3→v4 seed pass must
+        // NOT clobber the user's edits — only append the missing
+        // built-ins (open-folder, vscode). This covers the `load_config`
+        // integration path, complementing the
+        // `seeding_is_additive_and_does_not_overwrite_user_edits` unit
+        // test on the seeding helper itself.
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": 3,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [
+                {
+                    "id": BUILTIN_DEF_ID_SHELL,
+                    "name": "My Fish",
+                    "kind": "terminal",
+                    "command": "fish -i",
+                    "enabled": false
+                }
+            ]
+        });
+        fs::write(
+            store.config_path(),
+            serde_json::to_vec_pretty(&raw).expect("ser"),
+        )
+        .expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        // Shell preserved verbatim.
+        let shell = cfg
+            .custom_processes
+            .iter()
+            .find(|d| d.id.as_str() == BUILTIN_DEF_ID_SHELL)
+            .expect("shell def must remain");
+        assert_eq!(shell.name, "My Fish");
+        assert_eq!(shell.command, "fish -i");
+        assert!(!shell.enabled, "user's enabled=false must survive seeding");
+        // Other built-ins appended.
+        let ids: Vec<_> = cfg
+            .custom_processes
+            .iter()
+            .map(|d| d.id.as_str().to_owned())
+            .collect();
+        assert!(
+            ids.contains(&BUILTIN_DEF_ID_OPEN_FOLDER.to_owned()),
+            "open-folder must be appended by v3→v4 migration"
+        );
+        assert!(
+            ids.contains(&BUILTIN_DEF_ID_VSCODE.to_owned()),
+            "vscode must be appended by v3→v4 migration"
+        );
+    }
+
+    #[test]
     fn load_config_migrates_v3_and_seeds_default_custom_processes() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
