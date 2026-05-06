@@ -1,6 +1,6 @@
 ---
 name: pr-comments
-description: Procedural reference for addressing GitHub PR review comments end-to-end — discover open review threads, triage each one, implement accepted changes, push, reply in-thread with the required AI-agent disclaimer, and resolve only the threads where code actually changed. Invoke when the user asks to "address PR comments", "respond to review", "handle PR feedback", or names a specific PR/comment to act on. Covers exact `gh api` / `gh api graphql` invocations for listing threads, posting replies, and resolving threads, plus the rules for what *not* to auto-resolve. The load-bearing *principles* (always disclose AI authorship, never resolve threads the agent didn't act on, never push to `main`, never `--no-verify`) are restated here so the skill is self-contained.
+description: Procedural reference for addressing GitHub PR review comments end-to-end — discover open review threads, triage each one, implement accepted changes, push, reply in-thread with the required AI-agent disclaimer, and resolve only the threads where code actually changed. Invoke when the user asks to "address PR comments", "respond to review", "handle PR feedback", or names a specific PR/comment to act on. Covers exact `gh api` / `gh api graphql` invocations for listing threads, posting replies, and resolving threads, plus the rules for what *not* to auto-resolve. The load-bearing *principles* (always disclose AI authorship, never resolve threads the agent didn't act on, never push to `main`, never force-push a branch with commits from multiple contributors, never `--no-verify`) are restated here so the skill is self-contained.
 ---
 
 # Address PR review comments — procedural reference
@@ -46,6 +46,15 @@ gh api user --jq .login                       # current login (used in disclaime
 
 If `gh auth status` shows logged out, stop and ask the user to run
 `gh auth login` — do not try to authenticate on their behalf.
+
+### Guardrails by category
+
+- Branch safety: never push to `main`; never force-push a branch with
+  commits from multiple contributors.
+- Quality gate: never bypass hooks with `--no-verify`; run the required
+  lint/test/format checks before finalizing.
+- Thread hygiene: always reply in-thread with the required disclaimer;
+  resolve only `accept` threads where code changed.
 
 > **Shell note**: examples below use POSIX shell syntax (`VAR=$(...)`,
 > single-quoted multi-line `-f query='...'` blocks). On Windows
@@ -162,17 +171,27 @@ For each unresolved thread, classify it before touching code:
 | **already-done** | Code already does what's asked (e.g. on a different line) | Reply pointing to current code → **do not resolve** |
 | **outdated** | Thread was *already* `isOutdated: true` at triage time and the concern no longer applies | Reply explaining what changed → **do not resolve** (always leave for the human; the agent has no reliable way to attest *why* the line went stale before the agent ran) |
 
-**Never silently change the classification mid-flow.** If you start
-implementing an `accept` and discover the suggestion is wrong, stop,
-revert, and reclassify as `decline` with a reply explaining what you
-found.
+Decision flow (use this order each time):
 
-### Timing rule: classifications are sticky from triage
+1. If you agree and can implement now, choose `accept`.
+2. Otherwise choose one reply-only class:
+  `decline`, `question`, `defer`, `already-done`, or `outdated`.
+3. Apply the action rule:
+  `accept` => implement + reply + resolve.
+  reply-only class => reply only, leave open.
+
+**Do not silently change a classification within the same run.** If you
+start implementing an `accept` and discover the suggestion is wrong,
+stop, revert, and explicitly reclassify as `decline` with a reply
+explaining what you found.
+
+### Timing rule: classifications are sticky from triage (single run)
 
 Classify each thread **once**, at triage time (step §4), using the
 discovery snapshot from §3. Carry that classification — and the
 captured `thread.id` — through implement → push → reply → resolve.
-**Do not re-fetch and re-classify** between push and resolve.
+**Do not re-fetch and re-classify** between push and resolve in the
+same run.
 
 This matters because GitHub flips `isOutdated` to `true` as soon as
 your push moves the line a thread anchors to — which is exactly what
@@ -216,8 +235,8 @@ outdated.
 - Include the standard Copilot trailer if the agent posting is Copilot
   CLI; Claude has its own trailer convention.
 
-Push to the PR branch (never to `main`, never force-push a shared
-branch):
+Push to the PR branch (never to `main`, never force-push a branch with
+commits from multiple contributors):
 
 ```sh
 git push origin "$(git branch --show-current)"

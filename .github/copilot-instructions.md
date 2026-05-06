@@ -17,11 +17,11 @@ This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or 
 
 Hard rules:
 
-- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `npm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
+- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `npm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session.
 - **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host. Do not use or work around these commands.
 - **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
 - If your `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
-- Do not run `npm run tauri:dev` or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `npm run build`, or `npm test -- --run` for verification instead.
+- Do not run `npm run tauri:dev` or `cargo run -p arborist` unless the user explicitly asks during the current session. Use `cargo build`, `cargo test`, `npm run build`, or `npm test -- --run` for verification instead.
 
 If a task genuinely requires restarting the host, ask the user to do it — never do it yourself.
 
@@ -80,6 +80,12 @@ These are the patterns to follow when writing code in this repo. They are opinio
 - **Single source of truth for the API surface.** The command/event tables in DESIGN.md §6 are authoritative. When you add, rename, or change a command/event: (1) update DESIGN.md §6, (2) update the Rust `#[tauri::command]` handler, (3) update `src-tauri/capabilities/main.json`, (4) update the typed wrapper in `src/lib/tauri-bridge.ts`, (5) update mirrored TS types. All five in the same PR.
 - **No `any`, no `unwrap()` on the happy path.** TS `any` and Rust `.unwrap()`/`.expect()` are code smells outside of tests and truly-infallible invariants. Prefer `Result`/typed errors and exhaustive matching.
 - **Fail loud at boundaries, recover gracefully inside.** Validate inputs at the Tauri command boundary; once past it, types should make invalid states unrepresentable.
+
+### Code Comments
+
+- Focus comments on **why**, not **what**. The code already says what it does; comments should explain intent, constraints, trade-offs, or non-obvious design decisions.
+- Do not document changes to the spec in code comments — update the spec instead. The spec is the source of truth for design decisions; code comments are secondary annotations.
+- Inline comments inside method bodies are appropriate only when the logic would otherwise be opaque — link to tickets, specs, or external constraints when relevant.
 
 ## Rust (src-tauri/)
 
@@ -198,9 +204,8 @@ Two non-negotiable rules from that skill, restated here so they're always in con
 A change is mergeable when **all** of these hold:
 1. New/changed behavior has direct test coverage that fails without the change.
 2. `npm run lint`, `npm test`, `cargo clippy -D warnings`, `cargo test` all pass locally.
-3. The app launches via `npm run tauri dev` (run by the **user**, not the agent — see "Dogfooding safety") and the touched flow works end-to-end manually at least once.
-4. No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()`, `console.log`, or `dbg!()` added without justification in a code comment.
-5. If a Rust struct in `types.rs` changed, its TS mirror changed in the same commit.
+3. No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()`, `console.log`, or `dbg!()` added without justification in a code comment.
+4. If a Rust struct in `types.rs` changed, its TS mirror changed in the same commit.
 
 ## Common pitfalls (learned from the spec — don't repeat)
 
