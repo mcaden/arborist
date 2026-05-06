@@ -695,9 +695,9 @@ pub async fn session_close_impl(
 }
 
 /// **Park** an old-workspace session in preparation for a workspace
-/// switch. Tears down the live PTY (and ancillary metrics watcher,
-/// pending-spawn registration, temp-dir on disk) but **preserves
-/// every persisted record**: the entry in `sessions.json` stays put,
+/// switch. Tears down the live PTY (and the session's pending-spawn
+/// registration and temp-dir on disk) but **preserves every persisted
+/// record**: the entry in `sessions.json` stays put,
 /// `last_open_sessions` / `tab_order` / `active_session_id` are not
 /// touched. When the user switches back to this workspace,
 /// [`restore_all_sessions`] re-spawns the PTY from the unchanged
@@ -714,14 +714,16 @@ pub async fn session_close_impl(
 /// destroys persisted state and therefore historically had to
 /// hard-fail the switch on partial close.
 ///
-/// **Metrics watchers are stopped by the caller**, not here. By the
-/// time this runs, the switch has already acquired
+/// **Metrics watchers are NOT touched here — the caller has already
+/// stopped them.** By the time this runs, the switch has acquired
 /// [`AppContext::switch_lock`] for write and called
-/// [`MetricsRegistry::stop_all_and_join`]. The write guard prevents
-/// any new watchers from being armed (every lifecycle handler / resize
+/// [`MetricsRegistry::stop_all_and_join`] (step 6 of the pipeline,
+/// see `workspace_switch_impl_inner`). The write guard prevents any
+/// new watchers from being armed (every lifecycle handler / resize
 /// deferred-spawn has either drained their read guard before the
 /// switch acquired write, or is rejected outright by `try_read`), so
-/// a per-session `metrics.stop` here would be unconditionally a no-op.
+/// a per-session `metrics.stop` here would be unconditionally a no-op
+/// and is intentionally omitted.
 async fn park_session_for_switch_impl(ctx: &AppContext, id: SessionId) {
     // 1. Drop any deferred-spawn registration so a stale resize for
     //    this id can't trigger a phantom spawn against the new

@@ -690,13 +690,17 @@ async fn resize_silently_skips_while_switch_write_held() {
     );
 }
 
-/// Regression for the rubber-duck's "queued-writer" finding: PR4's
-/// rejection semantics depend on tokio's writer-preferring `RwLock`
-/// fairness — once a writer is queued behind active readers, subsequent
-/// `try_read()` calls must fail. Simulate that exact scenario by
-/// holding a read guard, queueing a writer task, then asserting that
-/// gated handlers reject (or, for resize, silent-Ok) before letting the
-/// writer drain.
+/// Regression for the rubber-duck's "queued-writer" finding. The
+/// rejection contract here is the **`switch_pending` counter**, not
+/// tokio `RwLock` fairness alone: a queued writer does NOT bump out
+/// new `try_read()` calls (the lock is permit-based and `try_read`
+/// consults only the current permit count, not the wait queue), so
+/// the switch increments `switch_pending` *before* awaiting the write
+/// lock, and handlers detect the queued switch by loading the counter
+/// after taking their read guard (see `acquire_switch_read`). This
+/// test simulates that exact prologue: hold a read guard, spawn a
+/// task that bumps `switch_pending` and queues for write, then assert
+/// that gated handlers reject (and resize is silent-Ok).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
     let h = build_harness();
@@ -711,13 +715,12 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
 
     // Spawn a task that mimics the *prologue* of
     // `workspace_switch_impl_inner`: bump `switch_pending` BEFORE
-    // awaiting the write lock, decrement on drop. This is the
-    // contract handlers actually rely on for rejection — tokio's
-    // `try_read` is permit-based and does NOT honour writer-preferring
-    // fairness for non-awaiting callers, so the counter is what closes
-    // the gap (see `AppContext::switch_lock` rustdoc).
+    // awaiting the write lock, decrement on drop. The task signals on
+    // `bumped_tx` immediately after the increment so the test can
+    // proceed deterministically — no sleeps, no fixed yield counts.
     let lock_for_writer = Arc::clone(&h.ctx.switch_lock);
     let pending_for_writer = Arc::clone(&h.ctx.switch_pending);
+    let (bumped_tx, bumped_rx) = tokio::sync::oneshot::channel::<()>();
     let (writer_done_tx, writer_done_rx) = tokio::sync::oneshot::channel::<()>();
     let writer_task = tokio::spawn(async move {
         pending_for_writer.fetch_add(1, Ordering::SeqCst);
@@ -728,18 +731,21 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
             }
         }
         let _decr = Decr(pending_for_writer);
+        // Signal AFTER incrementing the counter but BEFORE awaiting
+        // the write lock. The send is synchronous, so by the time the
+        // test's `bumped_rx.await` resolves the counter is bumped and
+        // this task immediately suspends on `write().await` — the
+        // exact state the take-then-check contract is designed for.
+        let _ = bumped_tx.send(());
         let _w = lock_for_writer.write().await;
         let _ = writer_done_tx.send(());
     });
 
-    // Yield repeatedly so the writer task is polled on the other
-    // worker thread, bumps the pending counter, and registers itself
-    // as a queued waiter on the lock. We also sleep briefly to allow
-    // cross-thread scheduling on slower CI hardware.
-    for _ in 0..32 {
-        tokio::task::yield_now().await;
-    }
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Deterministic synchronisation point: writer task has bumped the
+    // counter and is now queued for write.
+    bumped_rx
+        .await
+        .expect("writer task signals after bumping switch_pending");
     assert_eq!(
         h.ctx.switch_pending.load(Ordering::SeqCst),
         1,
