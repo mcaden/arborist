@@ -9,9 +9,15 @@
 // has been replaced with a single atomic adoption of the result the
 // backend now returns inline. The backend runs `restore_all_sessions`
 // for the new workspace under the write guard before resolving, so by
-// the time `result` lands, the new workspace's config + sessions
-// (with status already advanced past `Starting`) are ready to install
-// in one render — no flicker, no event round-trip.
+// the time `result` lands, the new workspace's config + sessions are
+// ready to install in one render — no flicker, no event round-trip.
+// Note that restored sessions arrive in `Starting` (PTY spawn is
+// deferred until the frontend's first `session_resize` measures the
+// host — see `restore_all_sessions` in `commands/session.rs`); a few
+// may also arrive as `Error` if their previous spawn failed. The
+// status events that flip them to `Running` are emitted by the
+// pty-pool wait threads after spawn fires, which happens AFTER this
+// adoption.
 //
 // Behaviour: delegate the entire transactional swap (validate → park
 // every open session of the old workspace (PTYs killed, persisted

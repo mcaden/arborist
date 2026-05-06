@@ -291,6 +291,12 @@ export const useSessionStore = create<Store>((set, get) => {
       set({
         sessions,
         activeId,
+        // Drop any in-flight close-confirm modal state. It was scoped
+        // to a session in the OLD workspace, and surviving across the
+        // swap would either dangle (the id no longer matches anything
+        // we render) or — worse, if a new-workspace session happens to
+        // share the id — auto-target the wrong session for close.
+        pendingClose: undefined,
         isHydrated: true,
         statusMessages: {},
         hasUnread: {},

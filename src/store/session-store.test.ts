@@ -271,6 +271,70 @@ describe('requestClose / cancelClose', () => {
   });
 });
 
+describe('adoptWorkspace', () => {
+  it('replaces sessions and reconciles activeId from the supplied activeSessionId', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      activeId: 'old',
+    });
+    const incoming = [makeView({ id: 'new1' }), makeView({ id: 'new2' })];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, 'new2');
+
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['new1', 'new2']);
+    expect(useSessionStore.getState().activeId).toBe('new2');
+  });
+
+  it('falls back to sessions[0] when activeSessionId is null', () => {
+    const incoming = [makeView({ id: 'first' }), makeView({ id: 'second' })];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, null);
+
+    expect(useSessionStore.getState().activeId).toBe('first');
+  });
+
+  it('falls back to sessions[0] when activeSessionId points at a missing session', () => {
+    const incoming = [makeView({ id: 'first' })];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, 'ghost');
+
+    expect(useSessionStore.getState().activeId).toBe('first');
+  });
+
+  it('clears pendingClose so a stale close-confirm modal cannot leak across the workspace switch', () => {
+    // Regression: without this reset, an open close-confirm dialog
+    // for a session in the OLD workspace would either dangle (id no
+    // longer renders) or — worse, on id collision — auto-target the
+    // wrong session for close in the NEW workspace.
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      pendingClose: 'old',
+    });
+
+    useSessionStore.getState().actions.adoptWorkspace([makeView({ id: 'new' })], null);
+
+    expect(useSessionStore.getState().pendingClose).toBeUndefined();
+  });
+
+  it('resets every per-session derived cache to avoid stale entries leaking', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      statusMessages: { old: 'boom' },
+      hasUnread: { old: true },
+      activity: { old: 'working' },
+      lastTurnEndAt: { old: 123 },
+    });
+
+    useSessionStore.getState().actions.adoptWorkspace([makeView({ id: 'new' })], null);
+
+    const s = useSessionStore.getState();
+    expect(s.statusMessages).toEqual({});
+    expect(s.hasUnread).toEqual({});
+    expect(s.activity).toEqual({});
+    expect(s.lastTurnEndAt).toEqual({});
+  });
+});
+
 describe('applyStatus', () => {
   it('updates the matching session status', () => {
     useSessionStore.setState({
