@@ -40,6 +40,30 @@
 //   O(1) regardless of how many sessions are open. All triggers are
 //   coalesced through a single `rAF` so a sleep→wake that fires multiple
 //   events still only does one refit pass.
+//
+//   Workspace-switch safety (DESIGN.md §5.5c — `workspace_switch`):
+//   `workspace_switch` parks every session in the outgoing workspace
+//   (PTY killed, persisted record preserved) and inline-restores the new
+//   workspace's sessions under a write barrier. The session-store
+//   subscription disposes each terminal entry as its id leaves the
+//   store, then `adoptWorkspace` atomically swaps in the new session
+//   list + reconciled `activeId`. Wake-refit must remain safe across
+//   that transition without any explicit teardown of the install-once
+//   wake listeners. Three guards make this true:
+//     1. `scheduleWakeRefit` reads `useSessionStore.getState().activeId`
+//        *inside* its `rAF` callback (not at install time), so it sees
+//        the post-`adoptWorkspace` value.
+//     2. Before calling `refitEntry` it checks
+//        `entry.wrapper.isConnected`; parked / disposed entries either
+//        return `undefined` from `registry.get` (no entry) or fail the
+//        `isConnected` check, and the callback no-ops.
+//     3. `refitEntry` itself re-checks `entry.wrapper.isConnected` and
+//        the surrounding call site is wrapped in `try/catch`.
+//   A wake event firing in the orphan window between disposal and
+//   adopt is therefore a benign no-op; the next wake event after
+//   `adoptWorkspace` refits the new active session. Pinned by the
+//   "survives a workspace-switch orphan window" test in
+//   `use-terminal.test.tsx`.
 
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';

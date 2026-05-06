@@ -1401,6 +1401,75 @@ describe('wake/visibility/DPI refit', () => {
       window.matchMedia = originalMatchMedia;
     }
   });
+
+  it('survives a workspace-switch orphan window: parked active session, then new active', () => {
+    // Pins the workspace-switch-safety contract for wake-refit.
+    //
+    // During `workspace_switch` (DESIGN.md §5.5c) the backend parks every
+    // session in the outgoing workspace (kills the PTY, preserves the
+    // record), and the frontend's session-store subscription disposes
+    // each terminal entry as its session id leaves the store.
+    // `useSessionStore.activeId` is reconciled atomically by
+    // `adoptWorkspace` once the new workspace's session list lands.
+    //
+    // There is a brief orphan window where:
+    //   (a) the entry the wake listener might target has been disposed
+    //       (registry.get(activeId) returns undefined), or
+    //   (b) the entry is gone AND `activeId` still points at the old
+    //       session id for one render before adopt runs.
+    //
+    // A wake event (visibility/focus/DPI) firing in that window must not
+    // throw and must not invoke fit on a disposed addon. Once the new
+    // workspace's active session is mounted, wake-refit must pick it up
+    // on the *next* event without any teardown of the install-once
+    // listeners (they live for app lifetime — see `wakeListenersInstalled`).
+
+    const { result: r1 } = renderHook(() => useTerminal('s1'));
+    const host1 = makeHost();
+    act(() => r1.current.attach(host1));
+    setActive('s1');
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    // Simulate park: the session-store subscription disposes the entry
+    // when the id leaves the store. Crucially we do NOT clear activeId
+    // here — `adoptWorkspace` reconciles it in the same render that
+    // installs the new workspace's sessions, but a wake event between
+    // the two reads can still see a stale activeId.
+    act(() => {
+      disposeTerminal('s1');
+    });
+
+    // Wake event in the orphan window: the active id resolves to no
+    // entry. Must not throw, must not call any disposed addon's fit().
+    // (The disposed FitAddon is `mockFitAddons[0]`; we check its call
+    // count is unchanged from baseline.)
+    expect(() => {
+      act(() => {
+        dispatchVisibilityChange(false);
+        vi.advanceTimersByTime(20);
+      });
+    }).not.toThrow();
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+
+    // New workspace's active session arrives: mount + activate.
+    const { result: r2 } = renderHook(() => useTerminal('s2'));
+    const host2 = makeHost();
+    act(() => r2.current.attach(host2));
+    setActive('s2');
+    // attach() always runs one synchronous fit on the new entry.
+    expect(mockFitAddons[1]!.fit).toHaveBeenCalledTimes(1);
+
+    // Subsequent wake event refits the new active (proves the
+    // install-once listeners survived the orphan window — no teardown
+    // is required across workspace switch).
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      vi.advanceTimersByTime(20);
+    });
+    expect(mockFitAddons[1]!.fit).toHaveBeenCalledTimes(2);
+    // The disposed entry stays untouched — no resurrection path.
+    expect(mockFitAddons[0]!.fit).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('initial PTY dimension helpers', () => {
