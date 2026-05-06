@@ -69,21 +69,16 @@ pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
 /// Deep-merges `partial` into the persisted [`AppConfig`].
 ///
 /// Refused while a workspace switch is in progress — the swap relies on
-/// no new writes landing in the *old* store between the gate flip and
-/// the actual `WorkspaceScope` swap. See `AppContext::store` for the
-/// residual snapshot race that the gate alone cannot close.
+/// no new writes landing in the *old* store between the
+/// `switch_pending` bump and the actual `WorkspaceScope` swap. See
+/// [`AppContext::switch_lock`] for the full barrier protocol.
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    if ctx
-        .switch_in_progress
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        return Err(AppError::new(
-            "WorkspaceSwitchInProgress",
-            "A workspace switch is in progress; retry once it completes.",
-        ));
-    }
+    // Take-then-check; matches `acquire_switch_read`. The guard is
+    // held across `save_config` so the switch's `write().await` waits
+    // for the persist to commit before swapping the workspace scope.
+    let _switch = session::acquire_switch_read(&ctx)?;
     ctx.store().save_config(partial).map_err(AppError::from)?;
     Ok(())
 }
@@ -130,25 +125,10 @@ pub async fn session_close(
     args: SessionCloseArgs,
 ) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
-    // Refuse user-initiated close while a workspace switch is in
-    // progress. Without this gate, a frontend-issued close can run
-    // concurrently with the switch's own step-7 close loop; the two
-    // load-then-mutate sequences against the old store can lose
-    // updates to `tab_order` / `active_session_id` (the per-store
-    // write-mutex serialises file writes, but not the read-modify-
-    // write computation each `_impl` does between snapshot and
-    // save). Gated at the wrapper so the switch's *internal* calls
-    // to `session::session_close_impl` are not blocked by their own
-    // gate.
-    if ctx
-        .switch_in_progress
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        return Err(AppError::new(
-            "WorkspaceSwitchInProgress",
-            "A workspace switch is in progress; retry once it completes.",
-        ));
-    }
+    // Workspace-switch rejection lives inside `session_close_impl` (it
+    // takes a `try_read()` on `AppContext::switch_lock` for the full
+    // body, including across `pool.kill().await`). Kept thin here so
+    // the impl is the single source of truth for the gating policy.
     session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
 }
 
@@ -193,28 +173,62 @@ pub async fn session_restart(
 /// resize-arrives-before-restore race would silently drop the deferred
 /// spawn (`pool.resize` → `NotFound`), leaving the session stuck in
 /// `Starting` with no PTY child.
+///
+/// **Workspace-switch coordination.** We acquire an
+/// `OwnedRwLockReadGuard` on [`AppContext::switch_lock`] and move it
+/// into the `spawn_blocking` task that runs `restore_all_sessions`.
+/// This bounds the entire restore loop by the same barrier that gates
+/// every other workspace-mutating handler: a switch's `write().await`
+/// cannot proceed until restore returns. We additionally check
+/// [`AppContext::switch_pending`] both before and after taking the
+/// owned guard (matching [`session::acquire_switch_read`]'s ordering)
+/// because tokio's `try_read_owned` is permit-based and does NOT
+/// reject when a writer is queued behind active readers — the counter
+/// is what closes that gap. On a negative outcome we silently
+/// `Ok(())` so the frontend can re-issue after the
+/// `workspace://changed` event.
 #[tauri::command]
 pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    if session::frontend_ready_impl(&ctx) {
-        let ctx_for_task = Arc::clone(&ctx);
-        // `restore_all_sessions` no longer spawns PTYs (it only does
-        // disk IO + HashMap inserts), so the work is bounded — but we
-        // still run it on a blocking thread because materialise_temp_files
-        // / cleanup_orphans / store IO can block. We *await* completion
-        // here so the resolution of `frontend_ready` becomes a
-        // happens-before edge for the frontend's first `session_resize`.
-        tauri::async_runtime::spawn_blocking(move || {
-            session::restore_all_sessions(&ctx_for_task);
-        })
-        .await
-        .map_err(|join_err| {
-            AppError::new(
-                "Internal",
-                format!("restore_all_sessions task panicked: {join_err}"),
-            )
-        })?;
+    // Pre-check: cheap atomic load avoids touching the lock during a
+    // switch.
+    if ctx.switch_pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        return Ok(());
     }
+    let switch_guard = match Arc::clone(&ctx.switch_lock).try_read_owned() {
+        Ok(g) => g,
+        Err(_) => return Ok(()),
+    };
+    // Post-check: closes the take-then-set race the same way
+    // `acquire_switch_read` does. See [`AppContext::switch_lock`].
+    if ctx.switch_pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        return Ok(());
+    }
+    if !session::frontend_ready_impl(&ctx) {
+        // Already restored — drop guard and return.
+        return Ok(());
+    }
+    let ctx_for_task = Arc::clone(&ctx);
+    // `restore_all_sessions` no longer spawns PTYs (it only does
+    // disk IO + HashMap inserts), so the work is bounded — but we
+    // still run it on a blocking thread because materialise_temp_files
+    // / cleanup_orphans / store IO can block. We *await* completion
+    // here so the resolution of `frontend_ready` becomes a
+    // happens-before edge for the frontend's first `session_resize`.
+    tauri::async_runtime::spawn_blocking(move || {
+        // Move the owned switch read guard into the closure so it
+        // stays held for the full restore loop. Dropped when the
+        // closure returns.
+        let _switch = switch_guard;
+        session::restore_all_sessions(&ctx_for_task);
+    })
+    .await
+    .map_err(|join_err| {
+        AppError::new(
+            "Internal",
+            format!("restore_all_sessions task panicked: {join_err}"),
+        )
+    })?;
     Ok(())
 }
 

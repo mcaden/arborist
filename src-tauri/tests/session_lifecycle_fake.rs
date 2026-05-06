@@ -592,15 +592,202 @@ async fn focus_updates_active_session_id_and_rejects_unknown() {
 async fn focus_refuses_while_workspace_switch_in_progress() {
     let h = build_harness();
     let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
-    h.ctx
-        .switch_in_progress
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let err = session_focus_impl(&h.ctx, v.id).expect_err("must refuse mid-switch");
-    assert_eq!(err.code, "WorkspaceSwitchInProgress");
-    h.ctx
-        .switch_in_progress
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+    {
+        // Simulate a queued/active workspace switch by holding the
+        // write guard on the unified switch barrier. Lifecycle
+        // handlers' `try_read()` then fails with TryLockError →
+        // `WorkspaceSwitchInProgress`.
+        let _w = h
+            .ctx
+            .switch_lock
+            .try_write()
+            .expect("switch_lock should be free in test");
+        let err = session_focus_impl(&h.ctx, v.id).expect_err("must refuse mid-switch");
+        assert_eq!(err.code, "WorkspaceSwitchInProgress");
+    }
     session_focus_impl(&h.ctx, v.id).expect("succeeds once gate clears");
+}
+
+/// Companion to `focus_refuses_…`. Each gated lifecycle handler must
+/// return `WorkspaceSwitchInProgress` while the unified switch barrier is
+/// write-held, then succeed once it drops. Covers the active-writer arm
+/// of the gate; the queued-writer arm is exercised separately below.
+#[tokio::test]
+async fn lifecycle_handlers_refuse_while_switch_write_held() {
+    let h = build_harness();
+    let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    {
+        let _w = h
+            .ctx
+            .switch_lock
+            .try_write()
+            .expect("switch_lock should be free in test");
+
+        // session_create
+        let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("create must refuse");
+        assert_eq!(err.code, "WorkspaceSwitchInProgress");
+
+        // session_close (async; the impl takes the read guard internally)
+        let err = session_close_impl(&h.ctx, v.id, false)
+            .await
+            .expect_err("close must refuse");
+        assert_eq!(err.code, "WorkspaceSwitchInProgress");
+
+        // session_restart
+        let err = session_restart_impl(
+            &h.ctx,
+            SessionRestartArgs {
+                session_id: v.id,
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .expect_err("restart must refuse");
+        assert_eq!(err.code, "WorkspaceSwitchInProgress");
+    }
+
+    // Once the switch guard drops, normal operation resumes.
+    session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: v.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect("restart succeeds once gate clears");
+}
+
+/// `session_resize_impl` is the one gated handler that does **not**
+/// surface `WorkspaceSwitchInProgress` to the UI — it returns `Ok(())`
+/// silently and lets the next `ResizeObserver` event correct dimensions
+/// after the switch completes. Without this contract a flurry of
+/// resizes during a switch would spam error toasts (see PR4 design
+/// note in DESIGN §5.5c).
+#[tokio::test]
+async fn resize_silently_skips_while_switch_write_held() {
+    let h = build_harness();
+    let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    let _w = h
+        .ctx
+        .switch_lock
+        .try_write()
+        .expect("switch_lock should be free in test");
+
+    let res = session_resize_impl(
+        &h.ctx,
+        SessionResizeArgs {
+            session_id: v.id,
+            cols: 100,
+            rows: 30,
+        },
+    );
+    assert!(
+        res.is_ok(),
+        "resize during switch must return Ok(()) silently, got {res:?}",
+    );
+}
+
+/// Regression for the rubber-duck's "queued-writer" finding. The
+/// rejection contract here is the **`switch_pending` counter**, not
+/// tokio `RwLock` fairness alone: a queued writer does NOT bump out
+/// new `try_read()` calls (the lock is permit-based and `try_read`
+/// consults only the current permit count, not the wait queue), so
+/// the switch increments `switch_pending` *before* awaiting the write
+/// lock, and handlers detect the queued switch by loading the counter
+/// after taking their read guard (see `acquire_switch_read`). This
+/// test simulates that exact prologue: hold a read guard, spawn a
+/// task that bumps `switch_pending` and queues for write, then assert
+/// that gated handlers reject (and resize is silent-Ok).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
+    let h = build_harness();
+    let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    // Take a read guard so writers must queue.
+    let read_guard = h
+        .ctx
+        .switch_lock
+        .try_read()
+        .expect("read guard available initially");
+
+    // Spawn a task that mimics the *prologue* of
+    // `workspace_switch_impl_inner`: bump `switch_pending` BEFORE
+    // awaiting the write lock, decrement on drop. The task signals on
+    // `bumped_tx` immediately after the increment so the test can
+    // proceed deterministically — no sleeps, no fixed yield counts.
+    let lock_for_writer = Arc::clone(&h.ctx.switch_lock);
+    let pending_for_writer = Arc::clone(&h.ctx.switch_pending);
+    let (bumped_tx, bumped_rx) = tokio::sync::oneshot::channel::<()>();
+    let (writer_done_tx, writer_done_rx) = tokio::sync::oneshot::channel::<()>();
+    let writer_task = tokio::spawn(async move {
+        pending_for_writer.fetch_add(1, Ordering::SeqCst);
+        struct Decr(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Decr {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let _decr = Decr(pending_for_writer);
+        // Signal AFTER incrementing the counter but BEFORE awaiting
+        // the write lock. The send is synchronous, so by the time the
+        // test's `bumped_rx.await` resolves the counter is bumped and
+        // this task immediately suspends on `write().await` — the
+        // exact state the take-then-check contract is designed for.
+        let _ = bumped_tx.send(());
+        let _w = lock_for_writer.write().await;
+        let _ = writer_done_tx.send(());
+    });
+
+    // Deterministic synchronisation point: writer task has bumped the
+    // counter and is now queued for write.
+    bumped_rx
+        .await
+        .expect("writer task signals after bumping switch_pending");
+    assert_eq!(
+        h.ctx.switch_pending.load(Ordering::SeqCst),
+        1,
+        "writer task must have bumped switch_pending before we proceed",
+    );
+
+    // With a queued writer (and a non-zero `switch_pending`),
+    // lifecycle handlers must reject.
+    let err = session_focus_impl(&h.ctx, v.id).expect_err("queued writer must block focus");
+    assert_eq!(err.code, "WorkspaceSwitchInProgress");
+
+    let err =
+        session_create_impl(&h.ctx, create_args(&h)).expect_err("queued writer blocks create");
+    assert_eq!(err.code, "WorkspaceSwitchInProgress");
+
+    // …and resize is silently `Ok`.
+    let res = session_resize_impl(
+        &h.ctx,
+        SessionResizeArgs {
+            session_id: v.id,
+            cols: 90,
+            rows: 25,
+        },
+    );
+    assert!(
+        res.is_ok(),
+        "resize while writer queued must return Ok(()) silently, got {res:?}",
+    );
+
+    // Release the read guard and let the queued writer drain.
+    drop(read_guard);
+    tokio::time::timeout(Duration::from_secs(2), writer_done_rx)
+        .await
+        .expect("writer must acquire and release after readers drain")
+        .expect("writer task must signal completion");
+    writer_task.await.expect("writer task must complete");
+
+    // `switch_pending` is back to zero (the writer's `Decr` guard
+    // dropped). After the switch's writer finishes, lifecycle
+    // handlers succeed again.
+    assert_eq!(h.ctx.switch_pending.load(Ordering::SeqCst), 0);
+    session_focus_impl(&h.ctx, v.id).expect("focus succeeds once writer drains");
 }
 
 #[tokio::test]
