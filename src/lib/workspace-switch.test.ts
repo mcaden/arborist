@@ -165,27 +165,46 @@ describe('changeWorkspace isSwitching flag', () => {
     expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
   });
 
-  it('drops a reentrant call while a switch is already in flight without clearing the flag', async () => {
-    // Simulate "first call already in flight" by setting the flag
-    // ourselves. The reentrancy guard must observe that and short-circuit
-    // before invoking the bridge or touching the stores; crucially, it
-    // must NOT clear the flag in `finally` — the in-flight call owns it
-    // and clearing here would expose stale tabs to input by lowering
-    // the overlay before the real switch completes.
-    useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+  it('drops a concurrent second call while the first is still pending and clears the flag when the first resolves', async () => {
+    // Hold the first invoke in-flight via a deferred promise so we can
+    // observe what happens when a second `changeWorkspace` call lands
+    // during the wait. This exercises the actual race the reentrancy
+    // guard was added to defend against — two real concurrent calls,
+    // not a simulated `setState({ isSwitching: true })` precondition.
+    let resolveFirst!: (v: WorkspaceSwitchResult) => void;
+    workspaceSwitch.mockImplementationOnce(
+      () =>
+        new Promise<WorkspaceSwitchResult>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
 
-    await changeWorkspace('/new');
-
-    expect(workspaceSwitch).not.toHaveBeenCalled();
+    // Kick off the first call. Yield once so its synchronous prelude
+    // (`setSwitching(true)` + `await workspaceSwitch(path)`) runs and
+    // the promise is parked on its await.
+    const first = changeWorkspace('/a');
+    await Promise.resolve();
     expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(true);
-  });
+    expect(workspaceSwitch).toHaveBeenCalledTimes(1);
+    expect(workspaceSwitch).toHaveBeenLastCalledWith('/a');
 
-  it('reentrant guard does not adopt config or sessions', async () => {
-    useWorkspaceSwitchUiStore.setState({ isSwitching: true });
-
-    await changeWorkspace('/new');
-
+    // Second concurrent call: must observe the flag and short-circuit
+    // without invoking the bridge or touching the stores. The
+    // returned promise resolves immediately (silent-drop contract —
+    // see JSDoc on `changeWorkspace`).
+    await changeWorkspace('/b');
+    expect(workspaceSwitch).toHaveBeenCalledTimes(1);
     expect(configAdopt).not.toHaveBeenCalled();
     expect(sessionAdopt).not.toHaveBeenCalled();
+    // Flag is still owned by the first (in-flight) call.
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(true);
+
+    // Resolve the first call and let it complete; flag must clear and
+    // adoption must fire exactly once (for the first call's result).
+    resolveFirst(makeResult({ workspaceRoot: '/a' }));
+    await first;
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
+    expect(configAdopt).toHaveBeenCalledTimes(1);
+    expect(sessionAdopt).toHaveBeenCalledTimes(1);
   });
 });
