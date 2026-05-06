@@ -33,6 +33,7 @@ import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/li
 import { frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { selectIsSwitching, useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 
 type BootStatus = 'booting' | 'ready' | 'error';
 
@@ -173,6 +174,7 @@ export function App(): JSX.Element {
 function ReadyApp(): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const setConfig = useConfigStore((s) => s.set);
+  const isSwitching = useWorkspaceSwitchUiStore(selectIsSwitching);
 
   if (workspaceRoot === null || workspaceRoot.length === 0) {
     return (
@@ -185,11 +187,40 @@ function ReadyApp(): JSX.Element {
     );
   }
 
+  // While the backend's transactional switch is in flight, mark the
+  // root inert + aria-busy so click / keyboard input can't reach stale
+  // tabs (see DESIGN §5.5c — switches are transactional and inputs
+  // received during the switch would be against ambiguous state). The
+  // overlay's `pointer-events-auto` is the failsafe even on platforms
+  // where `inert` is unavailable. The flag flips off in the same
+  // render that adopts the new workspace's data, so users never see a
+  // "no workspace" flash between hide-overlay and tabs-populated.
   return (
-    <div className="flex h-full w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100">
-      <Sidebar />
-      <MainArea />
-      <NewSessionDialog />
+    <div className="relative h-full w-full">
+      <div
+        className="flex h-full w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100"
+        aria-busy={isSwitching || undefined}
+        // `inert` is a boolean attribute; React passes it through when
+        // truthy. Cast to `unknown` because the global JSX intrinsics
+        // for `<div>` only added `inert` typing in newer React types.
+        {...(isSwitching ? ({ inert: '' } as unknown as { inert: string }) : {})}
+      >
+        <Sidebar />
+        <MainArea />
+        <NewSessionDialog />
+      </div>
+      {isSwitching && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="workspace-switch-overlay"
+          className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-white/70 backdrop-blur-sm dark:bg-slate-900/70"
+        >
+          <div className="flex flex-col items-center gap-2 rounded border border-slate-300 bg-white px-6 py-4 text-sm text-slate-700 shadow dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            <p>Switching workspace…</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

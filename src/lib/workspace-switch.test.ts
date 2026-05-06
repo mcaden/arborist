@@ -3,6 +3,11 @@
 // post-restore `{ config, sessions }` inline. `changeWorkspace` adopts
 // the result into both stores in a single render. These tests pin
 // that behaviour and the lock-contention error translation.
+//
+// PR6: `changeWorkspace` also flips a `workspaceSwitchUiStore`
+// `isSwitching` flag synchronously before the invoke and clears it in
+// `finally` — even on throw — so `App.tsx` can show an overlay and
+// gate input while the backend's transactional switch runs.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +15,7 @@ import { changeWorkspace } from './workspace-switch';
 import { resetBridgeMocks, workspaceSwitch } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 import type { AppConfig, SessionView, WorkspaceSwitchResult } from '@/types/arborist';
 
 vi.mock('@/lib/tauri-bridge', () => import('@/lib/tauri-bridge.mock'));
@@ -52,6 +58,7 @@ beforeEach(() => {
   useSessionStore.setState((s) => ({
     actions: { ...s.actions, adoptWorkspace: sessionAdopt },
   }));
+  useWorkspaceSwitchUiStore.setState({ isSwitching: false });
 });
 
 afterEach(() => {
@@ -116,5 +123,45 @@ describe('changeWorkspace', () => {
     await expect(changeWorkspace('/x')).rejects.toBe(err);
     expect(configAdopt).not.toHaveBeenCalled();
     expect(sessionAdopt).not.toHaveBeenCalled();
+  });
+});
+
+describe('changeWorkspace isSwitching flag', () => {
+  it('flips isSwitching true before invoke and clears it in finally on success', async () => {
+    let isSwitchingDuringInvoke: boolean | undefined;
+    workspaceSwitch.mockImplementation(async () => {
+      isSwitchingDuringInvoke = useWorkspaceSwitchUiStore.getState().isSwitching;
+      return makeResult();
+    });
+
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
+    await changeWorkspace('/new');
+
+    expect(isSwitchingDuringInvoke).toBe(true);
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
+  });
+
+  it('clears isSwitching in finally even when the bridge throws', async () => {
+    workspaceSwitch.mockRejectedValue(new Error('boom'));
+
+    await expect(changeWorkspace('/new')).rejects.toThrow(/boom/);
+
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
+  });
+
+  it('clears isSwitching in finally even when WorkspaceLocked is thrown', async () => {
+    workspaceSwitch.mockRejectedValue({ code: 'WorkspaceLocked', message: 'busy' });
+
+    await expect(changeWorkspace('/locked')).rejects.toThrow(/already open in another/i);
+
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
+  });
+
+  it('clears isSwitching in finally on a no-op switch', async () => {
+    workspaceSwitch.mockResolvedValue(makeResult({ noOp: true }));
+
+    await changeWorkspace('/cur');
+
+    expect(useWorkspaceSwitchUiStore.getState().isSwitching).toBe(false);
   });
 });

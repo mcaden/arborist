@@ -31,6 +31,7 @@
 import { isAppErrorLike, workspaceSwitch } from '@/lib/tauri-bridge';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 
 /**
  * Switch the active workspace to `path`. On success the backend has
@@ -44,6 +45,16 @@ import { useSessionStore } from '@/store/session-store';
  * No-op switches short-circuit adoption: the result still carries the
  * (unchanged) state, but the caller has nothing to do.
  *
+ * The `isSwitching` UI flag is set synchronously **before** the invoke
+ * and cleared in `finally` after adoption lands. Pairing the flag-off
+ * with adoption in a single React render means the user never sees a
+ * "no workspace" flash. While `isSwitching` is true, `App.tsx`
+ * overlays the UI with a "Switching workspace…" panel and sets
+ * `aria-busy` + `inert` on the root so click / keyboard input can't
+ * reach stale tabs (see DESIGN §5.5c — switches are transactional and
+ * inputs received during the switch would be against ambiguous
+ * state).
+ *
  * Throws on validation or lock-contention. The caller (picker /
  * settings dialog) keeps the user on the previous workspace because
  * the backend is fully transactional: on failure no swap occurs, so
@@ -52,27 +63,40 @@ import { useSessionStore } from '@/store/session-store';
  * step 7.)
  */
 export async function changeWorkspace(path: string): Promise<void> {
-  let result;
+  const { setSwitching } = useWorkspaceSwitchUiStore.getState();
+  setSwitching(true);
   try {
-    result = await workspaceSwitch(path);
-  } catch (err) {
-    if (isAppErrorLike(err) && err.code === 'WorkspaceLocked') {
-      throw new Error(
-        'That workspace is already open in another Arborist window. Close it there and try again.',
-      );
+    let result;
+    try {
+      result = await workspaceSwitch(path);
+    } catch (err) {
+      if (isAppErrorLike(err) && err.code === 'WorkspaceLocked') {
+        throw new Error(
+          'That workspace is already open in another Arborist window. Close it there and try again.',
+        );
+      }
+      throw err;
     }
-    throw err;
+    if (result.noOp) {
+      return;
+    }
+    // Atomic adoption: install the new workspace's config + sessions in
+    // one render. Order matters — config-store goes first so any
+    // selectors keyed on `workspaceRoot` observe the new value before
+    // the session list shifts under them. The session-store action also
+    // reconciles `activeId` from the new config's `activeSessionId`,
+    // closing the pre-existing UX gap where post-switch `MainArea`
+    // would show a blank pane.
+    useConfigStore.getState().adoptWorkspace(result.config);
+    useSessionStore
+      .getState()
+      .actions.adoptWorkspace(result.sessions, result.config.activeSessionId);
+  } finally {
+    // Cleared even on throw / WorkspaceLocked so the picker / settings
+    // dialog isn't permanently locked behind a stuck overlay. Adoption
+    // (above) and the flag-off coalesce into a single React render in
+    // the success path, so the new workspace's tabs become interactive
+    // in the same paint that hides the overlay.
+    setSwitching(false);
   }
-  if (result.noOp) {
-    return;
-  }
-  // Atomic adoption: install the new workspace's config + sessions in
-  // one render. Order matters — config-store goes first so any
-  // selectors keyed on `workspaceRoot` observe the new value before
-  // the session list shifts under them. The session-store action also
-  // reconciles `activeId` from the new config's `activeSessionId`,
-  // closing the pre-existing UX gap where post-switch `MainArea`
-  // would show a blank pane.
-  useConfigStore.getState().adoptWorkspace(result.config);
-  useSessionStore.getState().actions.adoptWorkspace(result.sessions, result.config.activeSessionId);
 }

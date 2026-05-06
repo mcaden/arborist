@@ -33,6 +33,7 @@ import { App } from './App';
 import { configGet, frontendReady, resetBridgeMocks, sessionList } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 
 interface MediaQueryListLike {
   matches: boolean;
@@ -97,6 +98,7 @@ beforeEach(() => {
   subscribeToActivityMock.mockClear();
   subscribeToMetricsMock.mockClear();
   resetStores();
+  useWorkspaceSwitchUiStore.setState({ isSwitching: false });
   document.documentElement.classList.remove('dark');
   installMatchMedia();
 });
@@ -214,6 +216,62 @@ describe('App boot sequence', () => {
       expect(screen.getByRole('heading', { name: /choose your workspace/i })).toBeInTheDocument();
     });
     expect(screen.queryByTestId('main-area')).not.toBeInTheDocument();
+  });
+});
+
+describe('App workspace-switch overlay', () => {
+  // PR6: while the backend's transactional workspace switch is in
+  // flight, App must overlay a "Switching workspace…" panel and gate
+  // input so a user can't click on stale tabs that are about to be
+  // replaced.
+  it('does not render the overlay when isSwitching is false', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('workspace-switch-overlay')).not.toBeInTheDocument();
+  });
+
+  it('renders the overlay and marks the underlying root inert + aria-busy when isSwitching flips true', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+
+    const overlay = screen.getByTestId('workspace-switch-overlay');
+    expect(overlay).toBeInTheDocument();
+    expect(overlay).toHaveAttribute('role', 'status');
+    // The MainArea + Sidebar wrapper must be inert + aria-busy so
+    // input can't reach stale tabs during the switch.
+    const root = screen.getByTestId('main-area').parentElement;
+    expect(root).not.toBeNull();
+    expect(root!.getAttribute('aria-busy')).toBe('true');
+    expect(root!.hasAttribute('inert')).toBe(true);
+  });
+
+  it('removes the overlay and clears inert/aria-busy when isSwitching flips back to false', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+    expect(screen.queryByTestId('workspace-switch-overlay')).toBeInTheDocument();
+
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: false });
+    });
+
+    expect(screen.queryByTestId('workspace-switch-overlay')).not.toBeInTheDocument();
+    const root = screen.getByTestId('main-area').parentElement;
+    expect(root).not.toBeNull();
+    expect(root!.getAttribute('aria-busy')).toBeNull();
+    expect(root!.hasAttribute('inert')).toBe(false);
   });
 });
 
