@@ -458,10 +458,14 @@ async fn workspace_switch_happy_path_swaps_and_emits() {
     let _re = WorkspaceLockGuard::acquire(old_layout.lock_path())
         .expect("old workspace lock must be free after switch");
 
-    // Switch gate is open again so subsequent commands are not blocked.
-    assert!(!ctx
-        .switch_in_progress
-        .load(std::sync::atomic::Ordering::SeqCst));
+    // Switch barrier is releasable again so subsequent commands are not
+    // blocked. After the switch returns, the write guard is dropped and
+    // `try_write` succeeds (no lifecycle handlers in flight in this
+    // test).
+    assert!(
+        ctx.switch_lock.try_write().is_ok(),
+        "switch_lock should be free after a completed switch",
+    );
 
     // Restored gate was reset so the new workspace's restore_all_sessions
     // can fire when frontend_ready re-issues.
@@ -529,10 +533,12 @@ async fn workspace_switch_refuses_invalid_target() {
     assert_eq!(err.code, "InvalidPath");
     assert!(captured.lock().unwrap().is_empty());
 
-    // Gate restored on failure.
-    assert!(!ctx
-        .switch_in_progress
-        .load(std::sync::atomic::Ordering::SeqCst));
+    // Barrier is releasable again on failure (write guard dropped on
+    // function return regardless of error path).
+    assert!(
+        ctx.switch_lock.try_write().is_ok(),
+        "switch_lock should be free after a failed switch",
+    );
 }
 
 #[tokio::test]
@@ -579,10 +585,11 @@ async fn workspace_switch_returns_locked_when_target_is_held() {
         .expect_err("must report contention");
         assert_eq!(err.code, "WorkspaceLocked");
         assert!(captured.lock().unwrap().is_empty());
-        // Gate restored on contention failure.
-        assert!(!ctx
-            .switch_in_progress
-            .load(std::sync::atomic::Ordering::SeqCst));
+        // Barrier is releasable again on contention failure.
+        assert!(
+            ctx.switch_lock.try_write().is_ok(),
+            "switch_lock should be free after a contention failure",
+        );
     }
 }
 
