@@ -244,13 +244,67 @@ describe('App workspace-switch overlay', () => {
 
     const overlay = screen.getByTestId('workspace-switch-overlay');
     expect(overlay).toBeInTheDocument();
-    expect(overlay).toHaveAttribute('role', 'status');
+    // Modal semantics — `alertdialog` + `aria-modal` so AT users
+    // perceive the boundary; `aria-labelledby` points at the
+    // visible "Switching workspace…" copy.
+    expect(overlay).toHaveAttribute('role', 'alertdialog');
+    expect(overlay).toHaveAttribute('aria-modal', 'true');
+    expect(overlay).toHaveAttribute('aria-labelledby', 'workspace-switch-overlay-label');
     // The MainArea + Sidebar wrapper must be inert + aria-busy so
     // input can't reach stale tabs during the switch.
     const root = screen.getByTestId('main-area').parentElement;
     expect(root).not.toBeNull();
     expect(root!.getAttribute('aria-busy')).toBe('true');
     expect(root!.hasAttribute('inert')).toBe(true);
+  });
+
+  it('moves focus into the overlay when isSwitching becomes true', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    // Park focus on a focusable element outside the overlay first.
+    const probe = document.createElement('button');
+    probe.textContent = 'probe';
+    document.body.appendChild(probe);
+    probe.focus();
+    expect(document.activeElement).toBe(probe);
+
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+
+    const overlay = screen.getByTestId('workspace-switch-overlay');
+    // The overlay itself becomes the focused element so the
+    // previously-focused element no longer receives keyboard input
+    // (defence-in-depth on top of `inert` on the underlying root).
+    expect(document.activeElement).toBe(overlay);
+    document.body.removeChild(probe);
+  });
+
+  it('bounces focus back into the overlay if focus escapes while isSwitching is true', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+    const overlay = screen.getByTestId('workspace-switch-overlay');
+    expect(document.activeElement).toBe(overlay);
+
+    // Simulate focus escaping to an outside element (the underlying
+    // root being `inert` should normally prevent this; this asserts
+    // the document-level focus trap as a backstop).
+    const escapee = document.createElement('button');
+    escapee.textContent = 'escapee';
+    document.body.appendChild(escapee);
+    act(() => {
+      escapee.focus();
+    });
+
+    expect(document.activeElement).toBe(overlay);
+    document.body.removeChild(escapee);
   });
 
   it('removes the overlay and clears inert/aria-busy when isSwitching flips back to false', async () => {

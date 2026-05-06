@@ -22,7 +22,7 @@
 // error from the hydrate steps, an error overlay with a Reload button is
 // shown instead.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
@@ -187,14 +187,69 @@ function ReadyApp(): JSX.Element {
     );
   }
 
-  // While the backend's transactional switch is in flight, mark the
-  // root inert + aria-busy so click / keyboard input can't reach stale
-  // tabs (see DESIGN §5.5c — switches are transactional and inputs
-  // received during the switch would be against ambiguous state). The
-  // overlay's `pointer-events-auto` is the failsafe even on platforms
-  // where `inert` is unavailable. The flag flips off in the same
-  // render that adopts the new workspace's data, so users never see a
-  // "no workspace" flash between hide-overlay and tabs-populated.
+  return <ReadyAppShell isSwitching={isSwitching} />;
+}
+
+// Split out so the focus-management `useEffect` only mounts under the
+// `workspaceRoot` branch (the picker branch returns early above and
+// must not register the trap). Two layers gate input while a
+// transactional workspace switch is in flight (see DESIGN §5.5c —
+// inputs received mid-switch would land against ambiguous state):
+//
+// 1. The underlying app root gets `aria-busy` and `inert`. `inert`
+//    is the authoritative gate: it removes the subtree from the
+//    sequential focus order AND blocks click / keyboard / AT
+//    interactions. All Tauri-supported WebViews ship with `inert`
+//    today (WebView2 ≥109, WKWebView ≥15.5, WebKitGTK ≥2.40), so
+//    the previous claim that `pointer-events-auto` was a "failsafe
+//    even on platforms where `inert` is unavailable" was misleading
+//    — `pointer-events-auto` only addresses pointer events, not
+//    keyboard.
+// 2. The overlay itself is a modal: `role="alertdialog"`,
+//    `aria-modal="true"`, `tabIndex={-1}`, and an effect moves
+//    focus into it on mount (so any element previously focused in
+//    the now-inert subtree loses focus) and restores focus on
+//    unmount. A document-level `focusin` listener bounces escapes
+//    back into the overlay as a defence-in-depth in the (currently
+//    hypothetical) case where a future WebView regression lets
+//    focus escape `inert`.
+//
+// The `isSwitching` flag flips off in the same render that adopts
+// the new workspace's data, so users never see a "no workspace"
+// flash between hide-overlay and tabs-populated.
+function ReadyAppShell({ isSwitching }: { isSwitching: boolean }): JSX.Element {
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isSwitching) return;
+    const previouslyFocused =
+      typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+    overlayRef.current?.focus();
+    const trapFocus = (e: FocusEvent): void => {
+      const overlay = overlayRef.current;
+      if (!overlay) return;
+      const target = e.target as Node | null;
+      if (target && !overlay.contains(target)) {
+        overlay.focus();
+      }
+    };
+    document.addEventListener('focusin', trapFocus);
+    return () => {
+      document.removeEventListener('focusin', trapFocus);
+      // Only restore focus if the previously-focused element is still
+      // attached and focusable. After a successful switch the old
+      // session's tab is gone from the DOM, so there's nothing to
+      // restore — let the browser pick the next focus target.
+      if (
+        previouslyFocused &&
+        typeof previouslyFocused.focus === 'function' &&
+        document.contains(previouslyFocused)
+      ) {
+        previouslyFocused.focus();
+      }
+    };
+  }, [isSwitching]);
+
   return (
     <div className="relative h-full w-full">
       <div
@@ -211,13 +266,17 @@ function ReadyApp(): JSX.Element {
       </div>
       {isSwitching && (
         <div
-          role="status"
+          ref={overlayRef}
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="workspace-switch-overlay-label"
           aria-live="polite"
+          tabIndex={-1}
           data-testid="workspace-switch-overlay"
-          className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-white/70 backdrop-blur-sm dark:bg-slate-900/70"
+          className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-white/70 outline-none backdrop-blur-sm dark:bg-slate-900/70"
         >
           <div className="flex flex-col items-center gap-2 rounded border border-slate-300 bg-white px-6 py-4 text-sm text-slate-700 shadow dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-            <p>Switching workspace…</p>
+            <p id="workspace-switch-overlay-label">Switching workspace…</p>
           </div>
         </div>
       )}
