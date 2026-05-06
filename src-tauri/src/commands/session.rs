@@ -149,10 +149,13 @@ pub struct AppContext {
     /// * **`session_resize` and `frontend_ready`** apply the same
     ///   take-then-check pattern but return `Ok(())` silently on a
     ///   negative outcome. There is no useful error to surface — the
-    ///   next `ResizeObserver` fire (resize) or `workspace://changed`
-    ///   round-trip (frontend_ready) re-issues the call against the
-    ///   new scope, and a "switch in progress" toast for an
-    ///   automatically-issued background command would be noise.
+    ///   next `ResizeObserver` fire (resize) re-issues the call
+    ///   against the new scope, and `frontend_ready` is fire-once at
+    ///   app boot (post-PR5 the workspace switch handles its own
+    ///   inline restore + `restored=true` latch, so a defensive
+    ///   `frontend_ready` re-fire after a switch is itself a no-op
+    ///   CAS). A "switch in progress" toast for either of these
+    ///   automatically-issued background commands would be noise.
     /// * **`restore_all_sessions`** (called from `frontend_ready`'s
     ///   wrapper inside `spawn_blocking`) inherits an
     ///   `OwnedRwLockReadGuard` moved into the task, so the entire
@@ -1360,11 +1363,16 @@ fn trim_unknown_session_refs_with_store(
 ///
 /// Idempotent on a per-session basis: any session already live in the
 /// PTY pool *or* already registered in `pending_spawn` is skipped. This
-/// matters for the Phase 7 in-app workspace switch, which resets
-/// `restored = false` so a subsequent `frontend_ready` fires the
-/// restore for the new workspace — but if the user races a manual
-/// session_create against that, restore must not double-spawn or
-/// overwrite the live record.
+/// matters for the Phase 7 in-app workspace switch, which calls this
+/// function inline (under the switch's exclusive `switch_lock.write()`
+/// guard) after the scope swap and then latches `ctx.restored = true`.
+/// The `restored` atomic is **never reset to `false`** — once a binding
+/// has had its restore fired (either by `frontend_ready` at boot or by
+/// the inline restore inside `workspace_switch_impl_inner`) any
+/// subsequent `frontend_ready` becomes a no-op CAS. Idempotency here
+/// guards against the user racing a manual `session_create` against
+/// the inline restore: restore must not double-spawn or overwrite the
+/// live record.
 ///
 /// **Workspace-binding stability.** The store is snapshotted ONCE at
 /// the top of this function and re-used for every per-session read /

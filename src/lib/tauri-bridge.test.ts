@@ -22,6 +22,8 @@ import type {
   PartialAppConfig,
   SessionOutputEvent,
   SessionStatusEvent,
+  SessionView,
+  WorkspaceSwitchResult,
 } from '@/types/arborist';
 
 beforeEach(() => {
@@ -291,10 +293,13 @@ describe('workspaceValidate', () => {
 });
 
 describe('workspaceSwitch', () => {
-  // Minimal but type-complete `AppConfig` + `SessionView` fixtures that
-  // exercise the post-PR5 wire shape. Constructed `as const`-typed so a
-  // type drift in `AppConfig` / `SessionView` (e.g. a new required
-  // field) breaks these tests at compile time, not at runtime.
+  // Minimal but type-complete fixtures for the post-PR5 wire shape.
+  // Every fixture carries an explicit type annotation against the
+  // canonical TS mirror (`AppConfig` / `SessionView` /
+  // `WorkspaceSwitchResult`) so that a future required-field addition
+  // to any of those interfaces breaks these tests at *compile* time,
+  // not at runtime — which is the entire point of having the fixtures
+  // hoisted to describe scope rather than inlined inside `it` blocks.
   const cfg: AppConfig = {
     configVersion: 3,
     defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
@@ -308,20 +313,20 @@ describe('workspaceSwitch', () => {
     tabOrder: ['sid-restored'],
     activeSessionId: 'sid-restored',
   };
-  const restoredSession = {
+  const restoredSession: SessionView = {
     id: 'sid-restored',
-    tool: 'claude' as const,
+    tool: 'claude',
     worktreePath: '/new/ws/.worktrees/feat',
     worktreeName: 'feat',
     label: 'feat',
     instructionSetId: 'claude-default',
-    status: 'starting' as const,
+    status: 'starting',
     createdAt: 1_700_000_000,
     tabIndex: 0,
   };
 
   it("calls invoke('workspace_switch', { args: { path } }) and forwards the full WorkspaceSwitchResult", async () => {
-    const result = {
+    const result: WorkspaceSwitchResult = {
       workspaceRoot: '/new/ws',
       noOp: false,
       config: { ...cfg, workspaceRoot: '/new/ws' },
@@ -348,7 +353,7 @@ describe('workspaceSwitch', () => {
     // wire payload is non-nullable and the frontend can short-circuit
     // adoption purely on the `noOp` flag — no branchy "field-missing"
     // handling on the JS side.
-    const result = {
+    const result: WorkspaceSwitchResult = {
       workspaceRoot: '/cur/ws',
       noOp: true,
       config: { ...cfg, workspaceRoot: '/cur/ws' },
