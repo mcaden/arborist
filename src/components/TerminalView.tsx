@@ -11,6 +11,7 @@ import { useEffect, useRef } from 'react';
 import { sessionRestart } from '@/lib/tauri-bridge';
 import { measureInitialPtyDimensions, useTerminal } from '@/hooks/use-terminal';
 import { useSessionById, useStatusMessage } from '@/store/session-store';
+import { selectIsSwitching, useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 import type { SessionId } from '@/types/arborist';
 
 interface TerminalViewProps {
@@ -29,6 +30,7 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   const session = useSessionById(sessionId);
   const statusMessage = useStatusMessage(sessionId);
   const { attach, detach, focus, refit, getDimensions } = useTerminal(sessionId);
+  const isSwitching = useWorkspaceSwitchUiStore(selectIsSwitching);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -47,14 +49,24 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   // before we measure / focus the textarea (visibility:hidden elements
   // are unfocusable). The cleanup cancels the frame so a rapid tab
   // switch can't focus a now-inactive terminal.
+  //
+  // Skip focus while a workspace switch is in flight: the overlay
+  // covers the terminal, and stealing focus into a now-`inert` subtree
+  // both fights the overlay (which should hold focus for a11y) and
+  // can race with the imminent terminal teardown when the new
+  // workspace's session list lands. `refit()` still runs inside the
+  // same rAF for consistent measurement timing — we only suppress the
+  // `focus()` call, not the renderer recovery.
   useEffect(() => {
     if (!isActive) return;
     const handle = requestAnimationFrame(() => {
       refit();
-      focus();
+      if (!isSwitching) {
+        focus();
+      }
     });
     return () => cancelAnimationFrame(handle);
-  }, [isActive, refit, focus]);
+  }, [isActive, isSwitching, refit, focus]);
 
   const status = session?.status;
   const showOverlay = status === 'error' || status === 'exited';

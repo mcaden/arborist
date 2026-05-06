@@ -33,6 +33,7 @@ import { App } from './App';
 import { configGet, frontendReady, resetBridgeMocks, sessionList } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 
 interface MediaQueryListLike {
   matches: boolean;
@@ -90,6 +91,12 @@ function resetStores(): void {
   });
 }
 
+// `window.location` is replaced by the reload-button test below; capture
+// the original descriptor in `beforeEach` and restore it in `afterEach`
+// so subsequent tests (in this file or any test that imports App) get a
+// pristine `location`.
+let originalLocationDescriptor: PropertyDescriptor | undefined;
+
 beforeEach(() => {
   resetBridgeMocks();
   initTerminalRouterMock.mockClear();
@@ -97,12 +104,17 @@ beforeEach(() => {
   subscribeToActivityMock.mockClear();
   subscribeToMetricsMock.mockClear();
   resetStores();
+  useWorkspaceSwitchUiStore.setState({ isSwitching: false });
   document.documentElement.classList.remove('dark');
   installMatchMedia();
+  originalLocationDescriptor = Object.getOwnPropertyDescriptor(window, 'location');
 });
 
 afterEach(() => {
   document.documentElement.classList.remove('dark');
+  if (originalLocationDescriptor) {
+    Object.defineProperty(window, 'location', originalLocationDescriptor);
+  }
 });
 
 describe('App boot sequence', () => {
@@ -214,6 +226,116 @@ describe('App boot sequence', () => {
       expect(screen.getByRole('heading', { name: /choose your workspace/i })).toBeInTheDocument();
     });
     expect(screen.queryByTestId('main-area')).not.toBeInTheDocument();
+  });
+});
+
+describe('App workspace-switch overlay', () => {
+  // PR6: while the backend's transactional workspace switch is in
+  // flight, App must overlay a "Switching workspace…" panel and gate
+  // input so a user can't click on stale tabs that are about to be
+  // replaced.
+  it('does not render the overlay when isSwitching is false', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('workspace-switch-overlay')).not.toBeInTheDocument();
+  });
+
+  it('renders the overlay and marks the underlying root inert + aria-busy when isSwitching flips true', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+
+    const overlay = screen.getByTestId('workspace-switch-overlay');
+    expect(overlay).toBeInTheDocument();
+    // Modal semantics — `alertdialog` + `aria-modal` so AT users
+    // perceive the boundary; `aria-labelledby` points at the
+    // visible "Switching workspace…" copy.
+    expect(overlay).toHaveAttribute('role', 'alertdialog');
+    expect(overlay).toHaveAttribute('aria-modal', 'true');
+    expect(overlay).toHaveAttribute('aria-labelledby', 'workspace-switch-overlay-label');
+    // The MainArea + Sidebar wrapper must be inert + aria-busy so
+    // input can't reach stale tabs during the switch.
+    const root = screen.getByTestId('main-area').parentElement;
+    expect(root).not.toBeNull();
+    expect(root!.getAttribute('aria-busy')).toBe('true');
+    expect(root!.hasAttribute('inert')).toBe(true);
+  });
+
+  it('moves focus into the overlay when isSwitching becomes true', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    // Park focus on a focusable element outside the overlay first.
+    const probe = document.createElement('button');
+    probe.textContent = 'probe';
+    document.body.appendChild(probe);
+    probe.focus();
+    expect(document.activeElement).toBe(probe);
+
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+
+    const overlay = screen.getByTestId('workspace-switch-overlay');
+    // The overlay itself becomes the focused element so the
+    // previously-focused element no longer receives keyboard input
+    // (defence-in-depth on top of `inert` on the underlying root).
+    expect(document.activeElement).toBe(overlay);
+    document.body.removeChild(probe);
+  });
+
+  it('bounces focus back into the overlay if focus escapes while isSwitching is true', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+    const overlay = screen.getByTestId('workspace-switch-overlay');
+    expect(document.activeElement).toBe(overlay);
+
+    // Simulate focus escaping to an outside element (the underlying
+    // root being `inert` should normally prevent this; this asserts
+    // the document-level focus trap as a backstop).
+    const escapee = document.createElement('button');
+    escapee.textContent = 'escapee';
+    document.body.appendChild(escapee);
+    act(() => {
+      escapee.focus();
+    });
+
+    expect(document.activeElement).toBe(overlay);
+    document.body.removeChild(escapee);
+  });
+
+  it('removes the overlay and clears inert/aria-busy when isSwitching flips back to false', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('main-area')).toBeInTheDocument();
+    });
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: true });
+    });
+    expect(screen.queryByTestId('workspace-switch-overlay')).toBeInTheDocument();
+
+    act(() => {
+      useWorkspaceSwitchUiStore.setState({ isSwitching: false });
+    });
+
+    expect(screen.queryByTestId('workspace-switch-overlay')).not.toBeInTheDocument();
+    const root = screen.getByTestId('main-area').parentElement;
+    expect(root).not.toBeNull();
+    expect(root!.getAttribute('aria-busy')).toBeNull();
+    expect(root!.hasAttribute('inert')).toBe(false);
   });
 });
 
