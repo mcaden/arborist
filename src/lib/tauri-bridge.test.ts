@@ -22,7 +22,8 @@ import type {
   PartialAppConfig,
   SessionOutputEvent,
   SessionStatusEvent,
-  WorkspaceChangedEvent,
+  SessionView,
+  WorkspaceSwitchResult,
 } from '@/types/arborist';
 
 beforeEach(() => {
@@ -292,19 +293,77 @@ describe('workspaceValidate', () => {
 });
 
 describe('workspaceSwitch', () => {
-  it("calls invoke('workspace_switch', { args: { path } }) and forwards the result", async () => {
-    invokeMock.mockResolvedValueOnce({ workspaceRoot: '/new/ws', noOp: false });
+  // Minimal but type-complete fixtures for the post-PR5 wire shape.
+  // Every fixture carries an explicit type annotation against the
+  // canonical TS mirror (`AppConfig` / `SessionView` /
+  // `WorkspaceSwitchResult`) so that a future required-field addition
+  // to any of those interfaces breaks these tests at *compile* time,
+  // not at runtime — which is the entire point of having the fixtures
+  // hoisted to describe scope rather than inlined inside `it` blocks.
+  const cfg: AppConfig = {
+    configVersion: 3,
+    defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
+    instructionSetsDir: '/cfg/instr',
+    workspaceRoot: '/new/ws',
+    worktreeRoots: [],
+    prelaunchCommands: [],
+    worktreePrelaunchCommands: {},
+    aiLaunchCommands: { claude: '', copilot: '' },
+    lastOpenSessions: ['sid-restored'],
+    tabOrder: ['sid-restored'],
+    activeSessionId: 'sid-restored',
+  };
+  const restoredSession: SessionView = {
+    id: 'sid-restored',
+    tool: 'claude',
+    worktreePath: '/new/ws/.worktrees/feat',
+    worktreeName: 'feat',
+    label: 'feat',
+    instructionSetId: 'claude-default',
+    status: 'starting',
+    createdAt: 1_700_000_000,
+    tabIndex: 0,
+  };
+
+  it("calls invoke('workspace_switch', { args: { path } }) and forwards the full WorkspaceSwitchResult", async () => {
+    const result: WorkspaceSwitchResult = {
+      workspaceRoot: '/new/ws',
+      noOp: false,
+      config: { ...cfg, workspaceRoot: '/new/ws' },
+      sessions: [restoredSession],
+    };
+    invokeMock.mockResolvedValueOnce(result);
     const out = await bridge.workspaceSwitch('/new/ws');
     expect(invokeMock).toHaveBeenCalledWith('workspace_switch', {
       args: { path: '/new/ws' },
     });
-    expect(out).toEqual({ workspaceRoot: '/new/ws', noOp: false });
+    // Asserting deep equality (rather than only `workspaceRoot` /
+    // `noOp`) ensures the wrapper would fail if it ever stripped
+    // `config` or `sessions` from the result on the way through —
+    // those two fields are the entire reason PR5 collapsed the old
+    // multi-round-trip rehydrate.
+    expect(out).toEqual(result);
+    expect(out.config).toEqual(result.config);
+    expect(out.sessions).toEqual(result.sessions);
   });
 
-  it('forwards the no-op shape when the target equals the current workspace', async () => {
-    invokeMock.mockResolvedValueOnce({ workspaceRoot: '/cur/ws', noOp: true });
+  it('forwards the no-op shape (config + sessions still populated from the unchanged store)', async () => {
+    // Per DESIGN §5.5c step 3, even on the no-op fast path the backend
+    // returns the *current* (unchanged) `config` + `sessions` so the
+    // wire payload is non-nullable and the frontend can short-circuit
+    // adoption purely on the `noOp` flag — no branchy "field-missing"
+    // handling on the JS side.
+    const result: WorkspaceSwitchResult = {
+      workspaceRoot: '/cur/ws',
+      noOp: true,
+      config: { ...cfg, workspaceRoot: '/cur/ws' },
+      sessions: [restoredSession],
+    };
+    invokeMock.mockResolvedValueOnce(result);
     const out = await bridge.workspaceSwitch('/cur/ws');
-    expect(out).toEqual({ workspaceRoot: '/cur/ws', noOp: true });
+    expect(out).toEqual(result);
+    expect(out.config.workspaceRoot).toBe('/cur/ws');
+    expect(out.sessions).toHaveLength(1);
   });
 
   it('propagates a backend rejection (e.g. WorkspaceLocked)', async () => {
@@ -312,30 +371,6 @@ describe('workspaceSwitch', () => {
     await expect(bridge.workspaceSwitch('/locked')).rejects.toMatchObject({
       code: 'WorkspaceLocked',
     });
-  });
-});
-
-describe('onWorkspaceChanged', () => {
-  it('subscribes to workspace://changed, forwards the payload, and returns the unlisten fn', async () => {
-    const unlisten = vi.fn();
-    let captured: ((event: { payload: WorkspaceChangedEvent }) => void) | null = null;
-    listenMock.mockImplementation(
-      (_event: string, cb: (event: { payload: WorkspaceChangedEvent }) => void) => {
-        captured = cb;
-        return Promise.resolve(unlisten);
-      },
-    );
-
-    const cb = vi.fn();
-    const returned = await bridge.onWorkspaceChanged(cb);
-
-    expect(listenMock).toHaveBeenCalledWith('workspace://changed', expect.any(Function));
-    expect(returned).toBe(unlisten);
-
-    const payload: WorkspaceChangedEvent = { workspaceRoot: '/new/ws' };
-    expect(captured).not.toBeNull();
-    captured!({ payload });
-    expect(cb).toHaveBeenCalledWith(payload);
   });
 });
 

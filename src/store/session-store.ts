@@ -165,6 +165,28 @@ export const AWAITING_GRACE_SECONDS = 5;
 
 export interface SessionStoreActions {
   hydrate: () => Promise<void>;
+  /**
+   * Atomically replace the cached session list with a server-truth
+   * snapshot AND reconcile `activeId` from the supplied
+   * `activeSessionId` (mirrors what the backend persists in
+   * `AppConfig.activeSessionId`). Reset all derived per-session caches
+   * (mirrors `hydrate`'s reset block) so stale entries from the
+   * previous workspace can't leak.
+   *
+   * Used by `lib/workspace-switch.ts` after a successful
+   * `workspaceSwitch` so the new workspace's sessions + active
+   * selection are installed in one render — paired with
+   * `configStore.adoptWorkspace`, this collapses the old multi-stage
+   * rehydrate chain.
+   *
+   * `activeId` reconciliation rule: prefer `activeSessionId` if it is
+   * present in `sessions`; otherwise fall back to `sessions[0]?.id`;
+   * otherwise `undefined`. This fixes a pre-existing UX gap where
+   * post-switch `MainArea` would show a blank pane because the stale
+   * `activeId` from the previous workspace didn't match any session
+   * in the new one.
+   */
+  adoptWorkspace: (sessions: SessionView[], activeSessionId: SessionId | null) => void;
   create: (args: SessionCreateArgs) => Promise<SessionView>;
   close: (
     id: SessionId,
@@ -241,6 +263,40 @@ export const useSessionStore = create<Store>((set, get) => {
       // that no longer exist after the backend reload.
       set({
         sessions,
+        isHydrated: true,
+        statusMessages: {},
+        hasUnread: {},
+        activity: {},
+        metrics: {},
+        lastTurnEndAt: {},
+        lastTurnDurationMs: {},
+        openTools: {},
+        openPermissions: {},
+        inTurn: {},
+      });
+    },
+
+    adoptWorkspace: (sessions, activeSessionId) => {
+      // Reconcile activeId: prefer the server-supplied id when it
+      // exists in `sessions`, else fall back to the first tab. This
+      // fixes the post-switch "blank MainArea" gap where a stale
+      // `activeId` from the old workspace pointed at no session in the
+      // new one.
+      let activeId: SessionId | undefined;
+      if (activeSessionId !== null && sessions.some((s) => s.id === activeSessionId)) {
+        activeId = activeSessionId;
+      } else {
+        activeId = sessions[0]?.id;
+      }
+      set({
+        sessions,
+        activeId,
+        // Drop any in-flight close-confirm modal state. It was scoped
+        // to a session in the OLD workspace, and surviving across the
+        // swap would either dangle (the id no longer matches anything
+        // we render) or — worse, if a new-workspace session happens to
+        // share the id — auto-target the wrong session for close.
+        pendingClose: undefined,
         isHydrated: true,
         statusMessages: {},
         hasUnread: {},

@@ -149,10 +149,13 @@ pub struct AppContext {
     /// * **`session_resize` and `frontend_ready`** apply the same
     ///   take-then-check pattern but return `Ok(())` silently on a
     ///   negative outcome. There is no useful error to surface — the
-    ///   next `ResizeObserver` fire (resize) or `workspace://changed`
-    ///   round-trip (frontend_ready) re-issues the call against the
-    ///   new scope, and a "switch in progress" toast for an
-    ///   automatically-issued background command would be noise.
+    ///   next `ResizeObserver` fire (resize) re-issues the call
+    ///   against the new scope, and `frontend_ready` is fire-once at
+    ///   app boot (post-PR5 the workspace switch handles its own
+    ///   inline restore + `restored=true` latch, so a defensive
+    ///   `frontend_ready` re-fire after a switch is itself a no-op
+    ///   CAS). A "switch in progress" toast for either of these
+    ///   automatically-issued background commands would be noise.
     /// * **`restore_all_sessions`** (called from `frontend_ready`'s
     ///   wrapper inside `spawn_blocking`) inherits an
     ///   `OwnedRwLockReadGuard` moved into the task, so the entire
@@ -1360,11 +1363,16 @@ fn trim_unknown_session_refs_with_store(
 ///
 /// Idempotent on a per-session basis: any session already live in the
 /// PTY pool *or* already registered in `pending_spawn` is skipped. This
-/// matters for the Phase 7 in-app workspace switch, which resets
-/// `restored = false` so a subsequent `frontend_ready` fires the
-/// restore for the new workspace — but if the user races a manual
-/// session_create against that, restore must not double-spawn or
-/// overwrite the live record.
+/// matters for the Phase 7 in-app workspace switch, which calls this
+/// function inline (under the switch's exclusive `switch_lock.write()`
+/// guard) after the scope swap and then latches `ctx.restored = true`.
+/// The `restored` atomic is **never reset to `false`** — once a binding
+/// has had its restore fired (either by `frontend_ready` at boot or by
+/// the inline restore inside `workspace_switch_impl_inner`) any
+/// subsequent `frontend_ready` becomes a no-op CAS. Idempotency here
+/// guards against the user racing a manual `session_create` against
+/// the inline restore: restore must not double-spawn or overwrite the
+/// live record.
 ///
 /// **Workspace-binding stability.** The store is snapshotted ONCE at
 /// the top of this function and re-used for every per-session read /
@@ -1789,67 +1797,77 @@ pub fn workspace_validate_impl(
 //    `pool.kill` (rare; e.g. PTY already dead) is logged and
 //    ignored. There is no abort path because park performs zero
 //    irreversible store mutations.
-// 8. Reset `restored = false` so the new workspace's
-//    restore-on-launch can fire when the frontend re-issues
-//    `frontend_ready`.
-// 9. Swap [`AppContext::workspace`] under `RwLock` write — the old
+// 8. Swap [`AppContext::workspace`] under `RwLock` write — the old
 //    `WorkspaceLockGuard` inside the old scope is dropped here, in
 //    one atomic moment, releasing the OS lock on the old workspace.
 //    Steps 6 and 7 ensured the only callbacks that *could* still
 //    fire are post-emit Tauri event deliveries to the JS side
 //    (handled by the `NotFound`-tolerant store re-resolution in
-//    `commands::mod::build_production_*`).
-// 10. Best-effort: update the per-branch `last-workspace.json` hint
-//     so the next launch resumes the new workspace by default.
-//     `workspace_root` was already persisted at step 5, so the
-//     post-swap frontend rehydrate is correct regardless of whether
-//     this succeeds.
-// 11. Emit `workspace://changed`. The frontend reacts by re-fetching
-//     config + sessions and re-issuing `frontend_ready` for the new
-//     workspace's restore. Returning from the function drops both
-//     guards (write lock + `switch_pending` decrement), allowing
-//     queued lifecycle handlers to proceed against the new scope.
+//    `commands::mod::build_production_*`). The `restored` atomic is
+//    **not** reset here (PR4's flow reset it before the swap so the
+//    frontend's follow-up `frontend_ready` could trigger restore;
+//    PR5 owns the restore inline at step 10, so resetting would be
+//    wrong — it would let a defensive `frontend_ready` re-fire
+//    restore against a workspace that was just restored).
+// 9. Best-effort: update the per-branch `last-workspace.json` hint
+//    so the next launch resumes the new workspace by default.
+//    `workspace_root` was already persisted at step 5, so the
+//    post-swap frontend rehydrate is correct regardless of whether
+//    this succeeds.
+// 10. Run [`restore_all_sessions`] for the new workspace inline. We
+//     are still under our exclusive `switch_lock.write()` guard, so no
+//     other workspace-mutating handler can interleave (lifecycle
+//     handlers reject; `frontend_ready` / `session_resize` silently
+//     no-op). Restore is dispatched onto a `spawn_blocking` thread
+//     because it does store IO + temp-file materialise + cleanup_orphans
+//     — same rationale as the existing `commands::frontend_ready`
+//     wrapper. Awaiting the join ensures sessions are in their
+//     post-restore state (`Starting` / `Error`) before we build the
+//     response. After the join, **latch `ctx.restored` to `true`**
+//     so any subsequent `frontend_ready` (defensive re-issue from the
+//     frontend, or a future code path that calls it after a switch)
+//     becomes a no-op CAS — restore for this binding has already
+//     fired exactly once, here.
+// 11. Build [`WorkspaceSwitchResult`] from the new store
+//     (`load_config` + `session_list_impl`). The frontend adopts the
+//     full state in one render — no follow-up `frontend_ready`
+//     round-trip and no `workspace://changed` event is needed.
+//     Returning from the function drops both guards (write lock +
+//     `switch_pending` decrement), allowing queued lifecycle
+//     handlers to proceed against the new scope.
 
 /// Tauri-shaped wrapper around the inner switch implementation —
 /// converts the [`AppHandle`] into the testable seams the inner
-/// function needs (an `app_data_dir` path and an emit closure).
+/// function needs (just an `app_data_dir` path).
 ///
 /// Production callers go through this; tests can call
-/// [`workspace_switch_impl_inner`] directly with a tempdir and a
-/// capturing closure to avoid having to build a real Tauri app.
+/// [`workspace_switch_impl_inner`] directly with a tempdir to avoid
+/// having to build a real Tauri app.
 pub async fn workspace_switch_impl(
-    ctx: &AppContext,
+    ctx: &Arc<AppContext>,
     app_handle: &tauri::AppHandle,
     new_path: &Path,
 ) -> Result<crate::types::WorkspaceSwitchResult, AppError> {
-    use tauri::{Emitter, Manager};
+    use tauri::Manager;
 
     let app_data_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
-    let app_for_emit = app_handle.clone();
-    let emit_fn: Arc<dyn Fn(&crate::types::WorkspaceChangedEvent) + Send + Sync> =
-        Arc::new(move |payload| {
-            if let Err(e) = app_for_emit.emit("workspace://changed", payload.clone()) {
-                warn!(error = %e, "emit workspace://changed failed; frontend may not refresh");
-            }
-        });
-    workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path, emit_fn).await
+    workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await
 }
 
 /// Testable inner of [`workspace_switch_impl`]. See module-level docs
 /// on the public wrapper for the full pipeline. Split out so unit tests
-/// can drive the swap with a tempdir-backed `app_data_dir` and a
-/// capturing emit closure, without standing up a real Tauri app.
+/// can drive the swap with a tempdir-backed `app_data_dir` without
+/// standing up a real Tauri app.
 pub async fn workspace_switch_impl_inner(
-    ctx: &AppContext,
+    ctx: &Arc<AppContext>,
     app_data_dir: &Path,
     branch: &str,
     new_path: &Path,
-    emit_changed: Arc<dyn Fn(&crate::types::WorkspaceChangedEvent) + Send + Sync>,
 ) -> Result<crate::types::WorkspaceSwitchResult, AppError> {
-    use crate::types::{WorkspaceChangedEvent, WorkspaceSwitchResult};
+    use crate::types::WorkspaceSwitchResult;
 
     // Step 1 — bump `switch_pending` and acquire the workspace switch
     // barrier for write. Held for the entire function body. The
@@ -1885,7 +1903,10 @@ pub async fn workspace_switch_impl_inner(
         )
     })?;
 
-    // Step 3 — no-op fast path.
+    // Step 3 — no-op fast path. We populate `config` and `sessions`
+    // from the *current* (unchanged) store so the wire payload is
+    // non-nullable; the frontend short-circuits adoption on the
+    // `noOp` flag.
     let current_root = ctx
         .workspace
         .read()
@@ -1893,9 +1914,13 @@ pub async fn workspace_switch_impl_inner(
         .workspace_root
         .clone();
     if current_root.as_ref() == Some(&canonical) {
+        let config = ctx.store().load_config();
+        let sessions = session_list_impl(ctx)?;
         return Ok(WorkspaceSwitchResult {
             workspace_root: canonical,
             no_op: true,
+            config,
+            sessions,
         });
     }
 
@@ -2021,21 +2046,19 @@ pub async fn workspace_switch_impl_inner(
         park_session_for_switch_impl(ctx, id).await;
     }
 
-    // Step 8 — reset the restore gate so the new workspace's
-    // restore_all_sessions can fire when the frontend re-issues
-    // frontend_ready.
-    ctx.restored.store(false, Ordering::SeqCst);
-
-    // Step 9 — swap WorkspaceScope. The OLD WorkspaceLockGuard inside
+    // Step 8 — swap WorkspaceScope. The OLD WorkspaceLockGuard inside
     // the old scope is dropped at this assignment, releasing the OS
-    // lock on the old workspace.
+    // lock on the old workspace. We swap **before** running restore
+    // because `restore_all_sessions` calls `ctx.store()` which
+    // delegates to `ctx.workspace.read()` — restore must read from
+    // the NEW workspace's store.
     let new_scope = crate::boot::into_scope(binding);
     {
         let mut w = ctx.workspace.write().expect("workspace lock poisoned");
         *w = new_scope;
     }
 
-    // Step 10 — best-effort hint. `workspace_root` was already
+    // Step 9 — best-effort hint. `workspace_root` was already
     // persisted at step 5, so the frontend rehydrate is correct
     // regardless of whether this succeeds; the hint is only used at
     // the *next* process boot to skip the picker.
@@ -2043,17 +2066,61 @@ pub async fn workspace_switch_impl_inner(
         warn!(error = %e, "failed to persist last-workspace hint after switch; non-fatal");
     }
 
-    // Step 11 — notify the frontend. The write guard `_switch` is
-    // dropped at function return, allowing queued lifecycle handlers
-    // to proceed against the new scope.
-    emit_changed(&WorkspaceChangedEvent {
-        workspace_root: canonical.clone(),
+    // Step 10 — run [`restore_all_sessions`] for the new workspace
+    // INLINE while we still hold the write guard. PR5 collapsed the
+    // previous "reset gate → return → frontend re-issues
+    // frontend_ready → backend kicks off restore" round-trip into
+    // this single call so the response can carry the post-restore
+    // state and the frontend adopts everything in one render.
+    //
+    // We dispatch onto `spawn_blocking` because restore does store
+    // IO + temp-file materialise + cleanup_orphans (same rationale
+    // as the existing `commands::frontend_ready` wrapper).
+    //
+    // Holding the write guard across the await is correct: tokio's
+    // `RwLockWriteGuard` is `Send`, and no `acquire_switch_read`
+    // caller can interleave (they're rejected for the duration of
+    // our guard). We do NOT reset `restored` to `false` — a future
+    // `frontend_ready` from the frontend is a no-op CAS, which is
+    // correct because restore for this binding has already fired
+    // exactly once (here).
+    //
+    // Errors from `restore_all_sessions` are best-effort logged
+    // inside the function; the only thing that *can* fail at this
+    // boundary is the `spawn_blocking` JoinHandle, which we surface
+    // as Internal so the caller sees a clean failure rather than a
+    // half-restored state.
+    let ctx_for_restore = Arc::clone(ctx);
+    let restore_join = tauri::async_runtime::spawn_blocking(move || {
+        restore_all_sessions(&ctx_for_restore);
     });
+    if let Err(join_err) = restore_join.await {
+        return Err(AppError::new(
+            "Internal",
+            format!("restore_all_sessions task panicked during workspace switch: {join_err}"),
+        ));
+    }
+    // Latch the `restored` gate to true so that any subsequent
+    // `frontend_ready` (e.g. defensive re-issue from the frontend, or a
+    // future code path that calls it after a switch) becomes a no-op
+    // CAS. PR4's flow reset this to `false` BEFORE the swap so the
+    // frontend's follow-up `frontend_ready` could trigger restore; PR5
+    // owns the restore inline, so we must explicitly mark it done to
+    // prevent a double-spawn.
+    ctx.restored.store(true, Ordering::SeqCst);
 
+    // Step 11 — assemble the result. The write guard `_switch` is
+    // dropped at function return, allowing queued lifecycle handlers
+    // to proceed against the new scope. Frontend adopts the full
+    // payload in one `setState`.
+    let config = ctx.store().load_config();
+    let sessions = session_list_impl(ctx)?;
     info!(workspace = %canonical.display(), "workspace switch complete");
     Ok(WorkspaceSwitchResult {
         workspace_root: canonical,
         no_op: false,
+        config,
+        sessions,
     })
 }
 

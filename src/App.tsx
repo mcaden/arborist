@@ -11,6 +11,13 @@
 //   5. `frontendReady()` — tell the backend listeners are live; backend then
 //      kicks off `restore_all_sessions` asynchronously (DESIGN §5.5).
 //
+// In-app workspace switches are handled entirely by
+// `lib/workspace-switch.ts::changeWorkspace`: the backend now runs the
+// new workspace's restore inline and returns the post-switch
+// `{ config, sessions }` in the result, which `changeWorkspace`
+// adopts atomically into the stores. No `workspace://changed` event
+// listener is needed; PR5 removed it.
+//
 // While the boot effect runs, a `<BootSplash />` is shown. On any thrown
 // error from the hydrate steps, an error overlay with a Reload button is
 // shown instead.
@@ -23,8 +30,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
-import { frontendReady, onWorkspaceChanged } from '@/lib/tauri-bridge';
-import { rehydrateActiveWorkspace } from '@/lib/rehydrate-workspace';
+import { frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
@@ -103,23 +109,6 @@ export function App(): JSX.Element {
     let unlistenStatus: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
     let unlistenMetrics: (() => void) | null = null;
-    // `onWorkspaceChanged` is async, so we hold its in-flight promise
-    // synchronously. Cleanup must be able to detach the listener even
-    // if the effect is torn down before the registration resolves —
-    // notably under React 18 StrictMode, which mounts → unmounts →
-    // remounts every effect on dev. If we held only the resolved
-    // unlisten (`(() => void) | null`), an early teardown would see
-    // `null`, leak the listener, and the second mount would register a
-    // duplicate — every `workspace://changed` event would then fire
-    // twice. The promise lets cleanup chain `then(unlisten => ...)`
-    // and reliably tear down whether or not registration has resolved.
-    let workspaceChangedUnlistenPromise: Promise<() => void> | null = null;
-    // `rehydrateActiveWorkspace` (in `lib/rehydrate-workspace.ts`)
-    // serialises calls on a Promise chain and elides any submission
-    // that has been superseded by a newer one — shared between this
-    // listener and the `changeWorkspace` fallback path so a duplicate
-    // rehydrate (one from the event, one from the post-
-    // `workspaceSwitch` fallback) is race-safe.
 
     const boot = async (): Promise<void> => {
       try {
@@ -131,37 +120,6 @@ export function App(): JSX.Element {
         unlistenStatus = subscribeToStatus();
         unlistenActivity = subscribeToActivity();
         unlistenMetrics = subscribeToMetrics();
-        // Re-hydrate config + sessions and re-issue frontend_ready when the
-        // backend swaps to a different workspace at runtime (Phase 7
-        // in-app workspace switch). The backend has already (a) **parked**
-        // every old-workspace session — PTYs killed but the persisted
-        // session records (sessions.json, lastOpenSessions, tabOrder)
-        // are intentionally retained so a later switch-back can restore
-        // them — (b) bound the new (branch, workspace) lock, and (c)
-        // persisted the new workspace_root into the active store before
-        // emitting this event — so it is safe to simply re-fetch.
-        //
-        // Assign the in-flight registration promise *before* awaiting it
-        // so cleanup can chain off it (StrictMode double-mount safety —
-        // see the declaration above).
-        workspaceChangedUnlistenPromise = onWorkspaceChanged(() => {
-          void rehydrateActiveWorkspace().catch((err) => {
-            // The backend swap already succeeded; rehydration failure
-            // here is a frontend-only inconsistency and shouldn't
-            // crash the app. Surface to console so the user can
-            // reload manually if needed.
-            console.error('workspace://changed re-hydrate failed', err);
-          });
-        });
-        await workspaceChangedUnlistenPromise;
-        // Cleanup may have run while we were awaiting the listener
-        // registration. We must NOT call `frontendReady()` from a
-        // torn-down tree — it is the backend's one-shot
-        // restore-sessions gate, and consuming it from a dead mount
-        // means the live remount sees a no-op and never restores
-        // sessions with its own listeners attached. Cleanup has
-        // already chained off `workspaceChangedUnlistenPromise` to
-        // detach the just-registered listener.
         if (cancelled) return;
         await frontendReady();
         if (cancelled) return;
@@ -198,23 +156,6 @@ export function App(): JSX.Element {
         } catch {
           // ignore
         }
-      }
-      if (workspaceChangedUnlistenPromise) {
-        // Snapshot the promise then null it out so a late `boot()`
-        // resolution after teardown sees nothing to clean up.
-        const pending = workspaceChangedUnlistenPromise;
-        workspaceChangedUnlistenPromise = null;
-        pending
-          .then((unlisten) => {
-            try {
-              unlisten();
-            } catch {
-              // ignore
-            }
-          })
-          .catch(() => {
-            // Registration itself failed — nothing to detach.
-          });
       }
     };
   }, []);

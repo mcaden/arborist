@@ -479,7 +479,7 @@ Rejection semantics:
 |---|---|
 | `session_create` / `session_close` / `session_restart` / `session_focus` / `config_set` | `WorkspaceSwitchInProgress` (user-initiated, surfaces as a toast — but the frontend overlay disables UI during a switch so this is defence-in-depth) |
 | `session_resize` | `Ok(())` silently — the next `ResizeObserver` fire after the switch completes corrects dimensions |
-| `frontend_ready` (restore branch) | `Ok(())` silently — frontend re-issues after `workspace://changed` |
+| `frontend_ready` (restore branch) | `Ok(())` silently — restore for the new workspace is now run inline by `workspace_switch` itself, so no second `frontend_ready` is needed |
 
 The switch runs the steps in this order (matching
 `workspace_switch_impl_inner`):
@@ -494,8 +494,12 @@ The switch runs the steps in this order (matching
    the same contention as a hard error if it persists. Then canonicalise
    `new_path`.
 3. **No-op fast path**: if the canonicalised path equals the currently
-   bound workspace root, return `{ workspaceRoot, noOp: true }`
-   immediately. No event is emitted, no other state mutates.
+   bound workspace root, return `WorkspaceSwitchResult { workspaceRoot,
+   noOp: true, config, sessions }` immediately, where `config` and
+   `sessions` are loaded from the *current* (unchanged) store so the
+   wire payload is non-nullable in every code path. The frontend
+   short-circuits adoption on the `noOp` flag rather than branching on
+   missing fields. No event is emitted, no other state mutates.
 4. `bind_workspace(new)` — create the new per-(branch, workspace)
    directory if needed, run seed-on-first-launch under
    `.config-seed.lock`, and **acquire the new `.lock`**. On contention
@@ -542,33 +546,50 @@ The switch runs the steps in this order (matching
    (and the orphan PTY harmlessly exits when the kernel reaps it on
    process exit). No abort path is needed because no irreversible
    store mutation happens here.
-8. Reset the `restored` atomic so the new workspace's
-   `restore_all_sessions` can fire when the frontend re-issues
-   `frontend_ready`.
-9. Atomically swap the `WorkspaceScope` (under `Arc<RwLock>`). The OLD
+8. Atomically swap the `WorkspaceScope` (under `Arc<RwLock>`). The OLD
    `WorkspaceLockGuard` inside the old scope is dropped at this
    assignment, releasing the OS lock on the old workspace. Steps 6 and
    7 ensured the only callbacks that could still fire are post-emit
    Tauri event deliveries to the JS side (handled by the
-   `NotFound`-tolerant store re-resolution in `commands::mod`).
-10. **Best-effort post-swap hint write.** Persist
-    `branches/<branch>/last-workspace.json` (or the canonical
-    `last-workspace.json` for a `main` build) via `write_hint`. The
-    hint is only consulted at the *next* process boot to skip the
-    picker; failure is logged and ignored. The single-source-of-truth
-    `workspaceRoot` was already persisted in step 5 above, so the
-    post-switch frontend rehydrate is correct regardless of whether
-    this hint lands.
-11. Emit `workspace://changed { workspaceRoot }` and return
-    `{ workspaceRoot, noOp: false }`. Returning drops both guards
-    (write lock + `switch_pending` decrement), allowing queued
-    lifecycle handlers to proceed against the new scope.
+   `NotFound`-tolerant store re-resolution in `commands::mod`). The
+   `restored` atomic is **not** reset here — it is latched to `true` in
+   step 10 after the inline restore completes, so a stray
+   `frontend_ready` after the switch returns becomes a no-op CAS rather
+   than a double-spawn trigger. (PR4's flow reset the atomic before the
+   swap so that the frontend's follow-up `frontend_ready` could trigger
+   restore; PR5 owns the restore inline, so an explicit reset would be
+   wrong here.)
+9. **Best-effort post-swap hint write.** Persist
+   `branches/<branch>/last-workspace.json` (or the canonical
+   `last-workspace.json` for a `main` build) via `write_hint`. The
+   hint is only consulted at the *next* process boot to skip the
+   picker; failure is logged and ignored. The single-source-of-truth
+   `workspaceRoot` was already persisted in step 5 above, so the
+   post-switch frontend rehydrate is correct regardless of whether
+   this hint lands.
+10. **Inline restore.** Run `restore_all_sessions` against the
+    now-bound new workspace under the same write guard, via
+    `tauri::async_runtime::spawn_blocking` (restore does blocking
+    store IO + temp-file materialisation + `cleanup_orphans`). After
+    restore completes, **latch `restored = true`** so a
+    frontend-initiated `frontend_ready` cannot re-fire restore against
+    the same workspace. The write guard is held for the entire restore
+    so no new lifecycle handler can interleave; restore registers each
+    session as a deferred-spawn entry whose `pool.spawn` fires from
+    the first `session_resize` after the switch returns.
+11. Build the post-switch snapshot — load `AppConfig` + the persisted
+    `Vec<SessionView>` from the new store — and return
+    `WorkspaceSwitchResult { workspaceRoot, noOp: false, config,
+    sessions }`. Returning drops both guards (write lock +
+    `switch_pending` decrement), allowing queued lifecycle handlers
+    to proceed against the new scope.
 
-The frontend treats `workspace://changed` as authoritative — it does not
-re-derive scope from any other event. Sessions belonging to the old
-workspace are **parked** (PTYs killed, records preserved) by step 8;
-the new workspace's sessions are restored by `frontend_ready` in the
-usual way (§5.5). Switching back to the original workspace later will
+The frontend treats the returned `{ config, sessions }` as
+authoritative — it adopts both stores atomically in a single render
+(see `lib/workspace-switch.ts::changeWorkspace`). Sessions belonging
+to the old workspace are **parked** (PTYs killed, records preserved)
+by step 7; the new workspace's sessions are restored inline by step 10
+in the same call. Switching back to the original workspace later will
 re-spawn its parked sessions via the same restore path, with AI
 conversation context preserved through `compose::with_resume`.
 
@@ -703,7 +724,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `instructions_list` | — | `InstructionSet[]` | List available instruction sets from `instructionSetsDir` |
 | `worktrees_list` | `{ repoRoot: string }` | `WorktreeInfo[]` | Enumerate git worktrees rooted at `repoRoot`. Implemented via the injectable `GitRunner` seam (production: `git worktree list --porcelain`, parsed in `src-tauri/src/git.rs`). **Always returns `Ok(vec![])` on failure** — git missing, repo_root not a directory, repo_root is not a git repository, or any IO/parse error degrades to an empty list (logged with `code="GitUnavailable"`) so the UI's "Browse…" fallback is never blocked by an error toast. `WorktreeInfo = { path, branch?, isMain, isLocked }`. |
 | `workspace_validate` | `{ path: string }` | `{ valid: boolean, error?: string, alreadyOpenInAnotherInstance?: boolean }` | Validate a candidate workspace root for the first-boot picker (Roadmap §1.1) and the in-app workspace switcher (§5.5c). Returns `valid: true` only when `path` is an absolute, existing directory that is a **primary git repository root** — i.e. `git -C <path> rev-parse --show-toplevel` equals `path` itself **AND** `<path>/.git` is a *directory*. Linked git worktrees (where `.git` is a *file* containing `gitdir: <path-into-primary>`) and submodule working trees are explicitly rejected, because Arborist's session model spawns child worktrees from a primary repo root and a linked worktree cannot host its own worktrees (`git worktree add` from inside one fails). Subdirectories of a repo are also rejected (toplevel != path). On failure, `error` carries a short human-readable reason (`"path is not an absolute directory"`, `"not a git repository"`, `"path is a linked git worktree, not a primary repository root"`, `"path must be the repository root (...)"`, …). Never throws an `AppError` for the "invalid" case — the picker shows inline feedback. The same rules are enforced at boot by `crate::boot::validate_repo_root`; the two MUST stay in sync. **`alreadyOpenInAnotherInstance` is an advisory contention probe** (set only when the caller can supply an `app_data_dir` — i.e. the public Tauri command path; internal in-app callers pass `None` and leave the field as `undefined`). When set, it is the result of a non-destructive `WorkspaceLockGuard::probe` against the per-(branch, workspace) `.lock` file: `true` ⇒ another Arborist instance is currently bound here, `false` ⇒ free at probe time, `undefined` ⇒ no probe was performed. The signal is purely advisory — there is an inherent race window between probe and the authoritative acquire performed by `bind_workspace`/`workspace_switch`. The picker MUST render this as a warning and NOT a hard block; persistent contention surfaces later as a `WorkspaceLocked` error from the acquire. |
-| `workspace_switch` | `{ path: string }` | `{ workspaceRoot: string, noOp: boolean }` | Atomically swap the running process from the current (branch, workspace) pair to the new one identified by `path` (§5.5c). The full transaction (validate → no-op fast path → acquire new lock → **persist `workspaceRoot` into new `config.json` (aborts switch on failure)** → drain AI-discovery callbacks (`metrics.stop_all_and_join`) → **park** old sessions (`pool.kill` drains PTY-status callbacks; persisted records are preserved) → reset restore gate → swap `WorkspaceScope` → best-effort persist hint → emit `workspace://changed`) runs under a `tokio::sync::RwLock<()>` write guard (`switch_lock`) held for the entire function body, paired with an `AtomicUsize` counter (`switch_pending`) bumped before the lock is awaited. The pair quiesces in-flight workspace-mutating handlers before the swap and rejects new ones with `WorkspaceSwitchInProgress` for the duration; concurrent switches queue serially on the write side. Returns `noOp: true` (no event emitted, no work done) when `path` canonicalises to the currently bound root. Returns `WorkspaceLocked` on lock-contention with the old workspace still bound; the frontend should surface this as a hard error. On success (`noOp: false`), the frontend listens for `workspace://changed`, re-hydrates `configStore` + `sessionStore`, and re-issues `frontend_ready` to drive `restore_all_sessions` against the new workspace. **Park semantics**: the old workspace's `sessions.json`, `last_open_sessions`, `tab_order`, and `active_session_id` are left untouched, so a later switch-back resurrects every session at its previous position with Claude/Copilot `--resume` keeping AI conversation context alive (§5.5c step 7). |
+| `workspace_switch` | `{ path: string }` | `{ workspaceRoot: string, noOp: boolean, config: AppConfig, sessions: SessionView[] }` | Atomically swap the running process from the current (branch, workspace) pair to the new one identified by `path` (§5.5c). The full transaction (validate → no-op fast path → acquire new lock → **persist `workspaceRoot` into new `config.json` (aborts switch on failure)** → drain AI-discovery callbacks (`metrics.stop_all_and_join`) → **park** old sessions (`pool.kill` drains PTY-status callbacks; persisted records are preserved) → swap `WorkspaceScope` → best-effort persist hint → **inline `restore_all_sessions` for the new workspace under the same write guard** → latch `restored = true` (the gate is **not** reset before restore — restoring inline means latching to true at the end is the only correct transition; see §5.5c step 8) → load `{ config, sessions }` from the new store) runs under a `tokio::sync::RwLock<()>` write guard (`switch_lock`) held for the entire function body, paired with an `AtomicUsize` counter (`switch_pending`) bumped before the lock is awaited. The pair quiesces in-flight workspace-mutating handlers before the swap and rejects new ones with `WorkspaceSwitchInProgress` for the duration; concurrent switches queue serially on the write side. Returns `noOp: true` (no work done; `config` + `sessions` reflect the unchanged state) when `path` canonicalises to the currently bound root. Returns `WorkspaceLocked` on lock-contention with the old workspace still bound; the frontend should surface this as a hard error. On success (`noOp: false`), the frontend adopts the returned `config` + `sessions` atomically into both stores in a single render (`lib/workspace-switch.ts::changeWorkspace` → `configStore.adoptWorkspace` + `sessionStore.actions.adoptWorkspace`); no second round-trip and no `workspace://changed` event are needed. **Park semantics**: the old workspace's `sessions.json`, `last_open_sessions`, `tab_order`, and `active_session_id` are left untouched, so a later switch-back resurrects every session at its previous position with Claude/Copilot `--resume` keeping AI conversation context alive (§5.5c step 7). |
 | `worktree_create` | `{ name: string }` | `{ path: string }` | Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2). Requires `workspaceRoot` to be set in `AppConfig`; errors with `NotFound` otherwise. The `name` is re-validated server-side via the same rules as `validateWorktreeName` (no spaces; no `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\\`; cannot start/end with `.` or `/`; cannot end with `.lock`; cannot be `@`; 1–255 chars); `InvalidPath` is returned for any rule violation. Runs `git -C <workspaceRoot> worktree add .worktrees/<name> -b <name>` via the injected `GitRunner`; bubbles up the captured stderr in the `Internal` error message on git failure. Returns the canonical absolute path to the new worktree directory. |
 
 > **Test-only seam.** The Rust backend consults two env vars,
@@ -724,7 +745,11 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `session://status` | `{ sessionId, status }` | Notify session state changes (including `'error'`) |
 | `session://activity` | `{ sessionId, kind: 'title' \| 'attention' \| 'working' \| 'idle' \| 'promptStart' \| 'commandStart' \| 'commandEnd' \| 'turnStart' \| 'turnEnd' \| 'toolStart' \| 'toolEnd' \| 'awaitingPermission' \| 'permissionResolved', value?, exit?, durationMs?, toolName?, toolCallId?, success?, requestId?, permissionKind?, summary?, approved? }` | Per-session activity. Two sources: (1) the legacy PTY-byte scanner in `src-tauri/src/activity.rs` (OSC parsing + output byte-rate) emits `title`/`attention`/`working`/`idle`/`promptStart`/`commandStart`/`commandEnd` for **all** tools; (2) the Copilot `events.jsonl` tailer in `src-tauri/src/copilot_events.rs` emits the richer `turnStart`/`turnEnd`/`toolStart`/`toolEnd`/`awaitingPermission`/`permissionResolved` variants for Copilot sessions whose `ai_session_id` is known. The frontend reducer keeps both axes — they're additive; the `selectDisplayStatus` priority order is `error > starting > exited > awaitingPermission > attention > runningTool > thinking > working > awaiting > idle`. Best-effort & advisory — UI must degrade gracefully if a CLI emits nothing. |
 | `session://metrics` | `{ sessionId, model?, contextUsedPct?, contextTokensUsed?, contextTokensLimit?, inputTokens?, outputTokens?, observedAt }` | Per-session token usage / context-window utilization. Emitted by `src-tauri/src/session_metrics.rs`, which polls Claude's `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` transcripts (heuristic cwd+mtime mapping) and extracts cumulative `usage` from the latest assistant turn. Claude-only in v1; Copilot tabs receive no events. Drives the compact second line on each sidebar tab. Best-effort & debounced — UI must degrade gracefully when no snapshot is present. |
-| `workspace://changed` | `{ workspaceRoot: string }` | Emitted at the end of a successful, non-no-op `workspace_switch` (§5.5c). Frontend listeners must treat the running process as freshly bound to `workspaceRoot`: re-hydrate `configStore` + `sessionStore`, then re-issue `frontend_ready` so `restore_all_sessions` runs against the new workspace. The backend emits exactly one event per successful switch — the emit happens inside the same `switch_lock` write-guarded section that owns the swap, and the no-op fast path returns before any emit. No event is emitted when the switch is a no-op (target equals current workspace). |
+
+> **Removed in PR5 (settings-flush):** `workspace://changed` no longer
+> exists. State transfer for an in-app workspace switch happens inline
+> on the `workspace_switch` reply (`{ config, sessions }`); see the
+> `workspace_switch` row above and §5.5c.
 
 ### Plugin commands routed via the bridge
 

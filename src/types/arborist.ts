@@ -290,17 +290,20 @@ export interface WorkspaceSwitchArgs {
 // MIRROR: src-tauri/src/types.rs::WorkspaceSwitchResult
 // Resolves on success of `workspace_switch`. `workspaceRoot` is the
 // **canonical** path the backend bound to. `noOp` is `true` if the
-// requested path matched the workspace already in use — no teardown
-// happened and no `workspace://changed` event was emitted.
+// requested path matched the workspace already in use — in that case
+// `config` and `sessions` mirror the *current* (unchanged) state so
+// the wire payload is non-nullable but the frontend can short-circuit
+// adoption.
+//
+// On a real swap, `config` and `sessions` reflect the **new**
+// workspace's state *after* the inline restore loop has run —
+// sessions are already in `Starting` status, so the frontend adopts
+// everything in one render with no flicker. The
+// `workspace://changed` event was deleted in PR5; this result is now
+// the sole authoritative state-transfer channel for in-app switches.
 export interface WorkspaceSwitchResult {
   workspaceRoot: string;
   noOp: boolean;
-}
-
-// MIRROR: src-tauri/src/types.rs::WorkspaceChangedEvent
-// Payload for the `workspace://changed` event. Subscribers should drop
-// any in-memory state derived from the old workspace and re-fetch from
-// the backend.
-export interface WorkspaceChangedEvent {
-  workspaceRoot: string;
+  config: AppConfig;
+  sessions: SessionView[];
 }

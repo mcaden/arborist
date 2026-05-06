@@ -357,14 +357,6 @@ use arborist_lib::workspace_lock::WorkspaceLockGuard;
 use arborist_lib::workspace_scope::WorkspaceScope;
 use std::sync::RwLock;
 
-fn switch_emit_capturing(
-    captured: Arc<Mutex<Vec<arborist_lib::types::WorkspaceChangedEvent>>>,
-) -> Arc<dyn Fn(&arborist_lib::types::WorkspaceChangedEvent) + Send + Sync> {
-    Arc::new(move |evt| {
-        captured.lock().unwrap().push(evt.clone());
-    })
-}
-
 /// Build a `Arc<AppContext>` whose `WorkspaceScope` is bound to a real
 /// in-process `WorkspaceLockGuard` rooted at `workspace_a`. Returns the
 /// AppContext and the path that's been canonicalised + locked.
@@ -397,7 +389,7 @@ fn build_switch_ctx(
 }
 
 #[tokio::test]
-async fn workspace_switch_happy_path_swaps_and_emits() {
+async fn workspace_switch_happy_path_swaps_and_returns_state() {
     let app_data_dir = TempDir::new().unwrap();
     let ws_a = make_repo_tempdir();
     let ws_b = make_repo_tempdir();
@@ -416,20 +408,27 @@ async fn workspace_switch_happy_path_swaps_and_emits() {
     // Re-point the runner at ws_b so workspace_validate_impl accepts it.
     runner.set_repo_root(ws_b.path());
 
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let result = workspace_switch_impl_inner(
-        &ctx,
-        app_data_dir.path(),
-        "main",
-        ws_b.path(),
-        switch_emit_capturing(captured.clone()),
-    )
-    .await
-    .expect("switch must succeed");
+    let result = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_b.path())
+        .await
+        .expect("switch must succeed");
 
     assert!(!result.no_op, "expected a real swap, not a no-op");
     let canon_b = dunce::canonicalize(ws_b.path()).unwrap();
     assert_eq!(result.workspace_root, canon_b);
+
+    // PR5 atomic state: the result carries the new workspace's config
+    // (workspace_root persisted at step 5, then loaded in step 11) and
+    // its session list (empty here; B was freshly bound).
+    assert_eq!(
+        result.config.workspace_root,
+        Some(canon_b.clone()),
+        "result.config must reflect the NEW workspace's persisted root"
+    );
+    assert!(
+        result.sessions.is_empty(),
+        "fresh workspace B has no sessions; got {:?}",
+        result.sessions
+    );
 
     // The bound workspace_root snapshot must reflect ws_b.
     let bound = ctx
@@ -444,11 +443,6 @@ async fn workspace_switch_happy_path_swaps_and_emits() {
     // The new store must have workspace_root persisted (single source of truth).
     let cfg = ctx.store().load_config();
     assert_eq!(cfg.workspace_root, Some(canon_b.clone()));
-
-    // workspace://changed emitted exactly once with the canonical path.
-    let evts = captured.lock().unwrap();
-    assert_eq!(evts.len(), 1);
-    assert_eq!(evts[0].workspace_root, canon_b);
 
     // The OLD lock has been dropped; we can re-acquire it.
     let old_layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
@@ -467,9 +461,15 @@ async fn workspace_switch_happy_path_swaps_and_emits() {
         "switch_lock should be free after a completed switch",
     );
 
-    // Restored gate was reset so the new workspace's restore_all_sessions
-    // can fire when frontend_ready re-issues.
-    assert!(!ctx.restored.load(std::sync::atomic::Ordering::SeqCst));
+    // PR5: `restored` is **not reset to false** — it is latched to
+    // `true` after the inline restore that ran as part of this
+    // switch. A defensive follow-up `frontend_ready` would therefore
+    // be a no-op CAS, which is correct (restore has already fired
+    // exactly once for this binding).
+    assert!(
+        ctx.restored.load(std::sync::atomic::Ordering::SeqCst),
+        "restored gate is set after inline restore",
+    );
 }
 
 #[tokio::test]
@@ -486,20 +486,18 @@ async fn workspace_switch_no_op_when_target_equals_current() {
         "main",
     );
 
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let result = workspace_switch_impl_inner(
-        &ctx,
-        app_data_dir.path(),
-        "main",
-        ws.path(),
-        switch_emit_capturing(captured.clone()),
-    )
-    .await
-    .expect("no-op switch must succeed");
+    let result = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws.path())
+        .await
+        .expect("no-op switch must succeed");
 
     assert!(result.no_op);
     assert_eq!(result.workspace_root, ws_canon);
-    assert!(captured.lock().unwrap().is_empty(), "no event on no-op");
+    // Even on no-op the result carries the (unchanged) config + session
+    // list so the wire payload is non-nullable. The test scope was
+    // built without ever persisting `workspace_root` into config.json
+    // (production boot does this; our build_switch_ctx skips it), so
+    // we only assert the session list shape, not config.workspace_root.
+    assert!(result.sessions.is_empty());
 }
 
 #[tokio::test]
@@ -519,19 +517,11 @@ async fn workspace_switch_refuses_invalid_target() {
     // Drop the runner's repo-root so workspace_validate_impl rejects.
     runner.clear_repo_root();
 
-    let captured = Arc::new(Mutex::new(Vec::new()));
     let bad_target = TempDir::new().unwrap();
-    let err = workspace_switch_impl_inner(
-        &ctx,
-        app_data_dir.path(),
-        "main",
-        bad_target.path(),
-        switch_emit_capturing(captured.clone()),
-    )
-    .await
-    .expect_err("non-git target must error");
+    let err = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", bad_target.path())
+        .await
+        .expect_err("non-git target must error");
     assert_eq!(err.code, "InvalidPath");
-    assert!(captured.lock().unwrap().is_empty());
 
     // Barrier is releasable again on failure (write guard dropped on
     // function return regardless of error path).
@@ -573,18 +563,10 @@ async fn workspace_switch_returns_locked_when_target_is_held() {
         let _holder =
             WorkspaceLockGuard::acquire(layout_b.lock_path()).expect("pre-acquire ws_b lock");
 
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let err = workspace_switch_impl_inner(
-            &ctx,
-            app_data_dir.path(),
-            "main",
-            ws_b.path(),
-            switch_emit_capturing(captured.clone()),
-        )
-        .await
-        .expect_err("must report contention");
+        let err = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_b.path())
+            .await
+            .expect_err("must report contention");
         assert_eq!(err.code, "WorkspaceLocked");
-        assert!(captured.lock().unwrap().is_empty());
         // Barrier is releasable again on contention failure.
         assert!(
             ctx.switch_lock.try_write().is_ok(),
@@ -654,16 +636,9 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
 
     // Switch A → B.
     runner.set_repo_root(ws_b.path());
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    workspace_switch_impl_inner(
-        &ctx,
-        app_data_dir.path(),
-        "main",
-        ws_b.path(),
-        switch_emit_capturing(captured.clone()),
-    )
-    .await
-    .expect("switch must succeed");
+    workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_b.path())
+        .await
+        .expect("switch must succeed");
 
     // The bound store is now B's; B starts empty.
     assert!(ctx.store().load_sessions().is_empty(), "B starts empty");
@@ -695,15 +670,9 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
     // the freshly-bound A store (so restore_all_sessions has something
     // to spawn).
     runner.set_repo_root(ws_a.path());
-    workspace_switch_impl_inner(
-        &ctx,
-        app_data_dir.path(),
-        "main",
-        ws_a.path(),
-        switch_emit_capturing(captured.clone()),
-    )
-    .await
-    .expect("switch back must succeed");
+    workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_a.path())
+        .await
+        .expect("switch back must succeed");
 
     let after = ctx.store().load_sessions();
     assert_eq!(after.len(), 2, "round-trip must preserve session count");
