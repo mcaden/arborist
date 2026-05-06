@@ -100,11 +100,15 @@ let outputUnlisten: Promise<() => void> | null = null;
 let storeUnsubscribe: (() => void) | null = null;
 let fontsReadyAttached = false;
 
-// Wake-refit listener state. All four are owned by `ensureWakeListeners()`
-// (install) and `teardownWakeListeners()` (test-only cleanup). The DPI media
-// query is re-attached against the new DPR after every fire because
-// `(resolution: Xdppx)` queries are pinned to a specific value — so we
-// listen for the *current* DPR transitioning false, then re-arm.
+// Wake-refit listener state. All module-scope state in this block —
+// the install flag, the rAF/timer coalescing handles, the visibility/
+// focus listener references, and the DPI media query plus its
+// API-agnostic detach closure — is owned by `ensureWakeListeners()`
+// (install) and `teardownWakeListeners()` (test-only cleanup); no other
+// site reads or mutates it. The DPI media query is re-attached against
+// the new DPR after every fire because `(resolution: Xdppx)` queries
+// are pinned to a specific value — so we listen for the *current* DPR
+// transitioning false, then re-arm.
 let wakeListenersInstalled = false;
 let wakeRefitPending = false;
 let wakeRefitFrame: number | null = null;
