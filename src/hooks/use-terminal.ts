@@ -26,6 +26,44 @@
 //   resolve. It runs `fit()` + `term.refresh()` to recover from any stale
 //   renderer state (e.g. measurements taken pre-font-load or while the
 //   panel was `visibility: hidden`).
+// * Wake/visibility/DPI refit: when the OS sleeps, WebView2 can suspend its
+//   renderer; on resume the canvas/inline-size state can be stale even
+//   though the host's CSS box never changed (so `ResizeObserver` doesn't
+//   fire). We listen for `document.visibilitychange` (visible again),
+//   `window.focus` (covers WebView2 cases where focus returns without a
+//   visibility transition) and `matchMedia('(resolution: <DPR>dppx)')`
+//   `change` (DPI change from docking/undocking), and refit only the
+//   *active* terminal. Hidden terminals (kept mounted by `MainArea` with
+//   `visibility: hidden`) are deliberately skipped — `TerminalView`'s
+//   `isActive` effect already runs `refit()` on tab activation, so they
+//   self-heal when the user switches to them. This keeps the wake pass
+//   O(1) regardless of how many sessions are open. All triggers are
+//   coalesced through a single `rAF` so a sleep→wake that fires multiple
+//   events still only does one refit pass.
+//
+//   Workspace-switch safety (DESIGN.md §5.5c — `workspace_switch`):
+//   `workspace_switch` parks every session in the outgoing workspace
+//   (PTY killed, persisted record preserved) and inline-restores the new
+//   workspace's sessions under a write barrier. The session-store
+//   subscription disposes each terminal entry as its id leaves the
+//   store, then `adoptWorkspace` atomically swaps in the new session
+//   list + reconciled `activeId`. Wake-refit must remain safe across
+//   that transition without any explicit teardown of the install-once
+//   wake listeners. Three guards make this true:
+//     1. `scheduleWakeRefit` reads `useSessionStore.getState().activeId`
+//        *inside* its `rAF` callback (not at install time), so it sees
+//        the post-`adoptWorkspace` value.
+//     2. Before calling `refitEntry` it checks
+//        `entry.wrapper.isConnected`; parked / disposed entries either
+//        return `undefined` from `registry.get` (no entry) or fail the
+//        `isConnected` check, and the callback no-ops.
+//     3. `refitEntry` itself re-checks `entry.wrapper.isConnected` and
+//        the surrounding call site is wrapped in `try/catch`.
+//   A wake event firing in the orphan window between disposal and
+//   adopt is therefore a benign no-op; the next wake event after
+//   `adoptWorkspace` refits the new active session. Pinned by the
+//   "survives a workspace-switch orphan window" test in
+//   `use-terminal.test.tsx`.
 
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
@@ -61,6 +99,184 @@ const registry = new Map<SessionId, RegistryEntry>();
 let outputUnlisten: Promise<() => void> | null = null;
 let storeUnsubscribe: (() => void) | null = null;
 let fontsReadyAttached = false;
+
+// Wake-refit listener state. All module-scope state in this block —
+// the install flag, the rAF/timer coalescing handles, the visibility/
+// focus listener references, and the DPI media query plus its
+// API-agnostic detach closure — is owned by `ensureWakeListeners()`
+// (install) and `teardownWakeListeners()` (test-only cleanup); no other
+// site reads or mutates it. The DPI media query is re-attached against
+// the new DPR after every fire because `(resolution: Xdppx)` queries
+// are pinned to a specific value — so we listen for the *current* DPR
+// transitioning false, then re-arm.
+let wakeListenersInstalled = false;
+let wakeRefitPending = false;
+let wakeRefitFrame: number | null = null;
+let wakeRefitFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+let visibilityListener: (() => void) | null = null;
+let focusListener: (() => void) | null = null;
+let dpiMediaQuery: MediaQueryList | null = null;
+// Detach closure captured at install time — invokes either
+// `removeEventListener('change', ...)` (modern) or `removeListener(...)`
+// (legacy WebView fallback) so teardown doesn't have to know which API
+// the runtime supports.
+let dpiMediaQueryDetach: (() => void) | null = null;
+
+/**
+ * Coalesce multiple wake triggers (visibility, focus, DPI) into a single
+ * refit pass per animation frame. Only refits the *active* session;
+ * hidden sessions (kept mounted by `MainArea` with `visibility: hidden`)
+ * are skipped because `TerminalView`'s `isActive` effect already runs
+ * `refit()` when the user switches to them — so they self-heal lazily.
+ * This keeps wake work O(1) regardless of session count.
+ */
+function scheduleWakeRefit(): void {
+  if (wakeRefitPending) return;
+  wakeRefitPending = true;
+
+  const run = (): void => {
+    wakeRefitPending = false;
+    wakeRefitFrame = null;
+    if (wakeRefitFallbackTimer !== null) {
+      clearTimeout(wakeRefitFallbackTimer);
+      wakeRefitFallbackTimer = null;
+    }
+    const activeId = useSessionStore.getState().activeId;
+    if (!activeId) return;
+    const entry = registry.get(activeId);
+    if (!entry || !entry.wrapper || !entry.wrapper.isConnected) return;
+    try {
+      refitEntry(activeId, entry);
+    } catch {
+      // refitEntry already swallows fit() throws; this is belt-and-suspenders.
+    }
+  };
+
+  if (typeof requestAnimationFrame === 'function') {
+    wakeRefitFrame = requestAnimationFrame(run);
+  } else {
+    wakeRefitFallbackTimer = setTimeout(run, 0);
+  }
+}
+
+/**
+ * Install/refresh the DPI media-query listener. We pin to the current DPR;
+ * when it transitions (docking/undocking, monitor change during sleep) we
+ * refit and re-arm against the new DPR. Idempotent w.r.t. an already-armed
+ * query — the caller is expected to clear `dpiMediaQuery` before re-arming.
+ *
+ * Older WebViews only expose the legacy `addListener`/`removeListener` API
+ * on `MediaQueryList` (no `addEventListener`); we mirror the fallback used
+ * in `App.tsx` for the dark-mode media query.
+ */
+function installDpiListener(): void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  const dpr = window.devicePixelRatio || 1;
+  let mq: MediaQueryList;
+  try {
+    mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
+  } catch {
+    // Some older WebViews don't support `resolution` in matchMedia syntax.
+    // DPI changes are best-effort; visibility/focus still cover sleep/wake.
+    return;
+  }
+  let detach: (() => void) | null = null;
+  const listener = (_event: MediaQueryListEvent): void => {
+    scheduleWakeRefit();
+    // Detach the (now-stale) query and re-arm against the new DPR.
+    if (detach) {
+      try {
+        detach();
+      } catch {
+        // ignore
+      }
+    }
+    if (dpiMediaQuery === mq) {
+      dpiMediaQuery = null;
+      dpiMediaQueryDetach = null;
+    }
+    installDpiListener();
+  };
+  // Modern: addEventListener. Legacy WebViews: addListener.
+  if (typeof mq.addEventListener === 'function') {
+    try {
+      mq.addEventListener('change', listener);
+    } catch {
+      return;
+    }
+    detach = (): void => mq.removeEventListener('change', listener);
+  } else if (typeof mq.addListener === 'function') {
+    try {
+      mq.addListener(listener);
+    } catch {
+      return;
+    }
+    detach = (): void => mq.removeListener(listener);
+  } else {
+    // Neither API available — DPI changes will go unhandled, but
+    // visibility/focus still cover sleep/wake.
+    return;
+  }
+  dpiMediaQuery = mq;
+  dpiMediaQueryDetach = detach;
+}
+
+/**
+ * Wire up wake/visibility/DPI listeners that recover the renderer after
+ * the OS suspends WebView2 (system sleep, monitor unplug, etc). Idempotent;
+ * a second call is a no-op. See file header for the design rationale.
+ */
+function ensureWakeListeners(): void {
+  if (wakeListenersInstalled) return;
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+  visibilityListener = (): void => {
+    if (!document.hidden) scheduleWakeRefit();
+  };
+  document.addEventListener('visibilitychange', visibilityListener);
+
+  focusListener = (): void => {
+    scheduleWakeRefit();
+  };
+  window.addEventListener('focus', focusListener);
+
+  installDpiListener();
+  wakeListenersInstalled = true;
+}
+
+/**
+ * Test-only: tear down the wake listeners installed by `ensureWakeListeners`.
+ * Called from `__resetTerminalRegistryForTests` so each test starts clean.
+ */
+function teardownWakeListeners(): void {
+  if (typeof document !== 'undefined' && visibilityListener) {
+    document.removeEventListener('visibilitychange', visibilityListener);
+  }
+  visibilityListener = null;
+  if (typeof window !== 'undefined' && focusListener) {
+    window.removeEventListener('focus', focusListener);
+  }
+  focusListener = null;
+  if (dpiMediaQueryDetach) {
+    try {
+      dpiMediaQueryDetach();
+    } catch {
+      // ignore
+    }
+  }
+  dpiMediaQuery = null;
+  dpiMediaQueryDetach = null;
+  if (wakeRefitFrame !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(wakeRefitFrame);
+  }
+  wakeRefitFrame = null;
+  if (wakeRefitFallbackTimer !== null) {
+    clearTimeout(wakeRefitFallbackTimer);
+    wakeRefitFallbackTimer = null;
+  }
+  wakeRefitPending = false;
+  wakeListenersInstalled = false;
+}
 
 function ensureGlobalSubscriptions(): void {
   if (outputUnlisten === null) {
@@ -121,6 +337,8 @@ function ensureGlobalSubscriptions(): void {
         // ignore — refit is best-effort
       });
   }
+
+  ensureWakeListeners();
 }
 
 /**
@@ -784,192 +1002,10 @@ export function __resetTerminalRegistryForTests(): void {
     storeUnsubscribe = null;
   }
   fontsReadyAttached = false;
+  teardownWakeListeners();
 }
 
 /** Test-only: peek at the registry. */
 export function __getTerminalRegistryForTests(): ReadonlyMap<SessionId, RegistryEntry> {
   return registry;
-}
-
-// --------------------------------------------------------------------------
-// Debug helpers (Sidebar "Fit" button)
-// --------------------------------------------------------------------------
-//
-// `forceRefitAllTerminals` is the imperative escape hatch users can hit when
-// the renderer looks wrong. It runs the same `refitEntry` path that the
-// debounced ResizeObserver and the activation rAF would, on every entry —
-// not just the active one — so a hidden tab also gets corrected before the
-// user switches to it.
-//
-// `captureTerminalDebugSnapshot` produces a JSON-serializable snapshot of
-// each registry entry plus environment context (DPR, fonts state,
-// visibility, window size). The Sidebar button captures one snapshot
-// BEFORE forcing a refit and another AFTER, so a paste-back into a fresh
-// debug session shows both the suspected-bad state and what the manual
-// refit changed.
-
-export function forceRefitAllTerminals(): void {
-  for (const [id, entry] of registry) {
-    refitEntry(id, entry);
-  }
-}
-
-export interface TerminalDebugRect {
-  width: number;
-  height: number;
-  top: number;
-  left: number;
-}
-
-export interface TerminalDebugAncestor {
-  tag: string;
-  classes: string;
-  display: string;
-  visibility: string;
-  position: string;
-  width: number;
-  height: number;
-}
-
-export interface TerminalDebugEntry {
-  sessionId: SessionId;
-  isAttached: boolean;
-  hostConnected: boolean;
-  wrapperConnected: boolean;
-  termCols: number;
-  termRows: number;
-  lastReportedCols: number;
-  lastReportedRows: number;
-  fontFamily: string | undefined;
-  fontSize: number | undefined;
-  hostRect: TerminalDebugRect | null;
-  wrapperRect: TerminalDebugRect | null;
-  screenRect: TerminalDebugRect | null;
-  /** Approximate cell dims derived from `.xterm-screen` rect / cols/rows. */
-  approxCellWidth: number | null;
-  approxCellHeight: number | null;
-  /** Computed style of the host element. */
-  hostDisplay: string | null;
-  hostVisibility: string | null;
-  /** A few ancestors, oldest-first (root → host's parent). */
-  ancestors: TerminalDebugAncestor[];
-}
-
-export interface TerminalDebugSnapshot {
-  capturedAt: string;
-  windowInnerWidth: number | null;
-  windowInnerHeight: number | null;
-  devicePixelRatio: number | null;
-  documentVisibility: string | null;
-  documentHasFocus: boolean | null;
-  fontsStatus: string | null;
-  darkMode: boolean | null;
-  registrySize: number;
-  entries: TerminalDebugEntry[];
-}
-
-function safeRect(el: Element | null): TerminalDebugRect | null {
-  if (!el) return null;
-  try {
-    const r = el.getBoundingClientRect();
-    return { width: r.width, height: r.height, top: r.top, left: r.left };
-  } catch {
-    return null;
-  }
-}
-
-function safeComputed(el: Element | null): CSSStyleDeclaration | null {
-  if (!el || typeof window === 'undefined') return null;
-  try {
-    return window.getComputedStyle(el);
-  } catch {
-    return null;
-  }
-}
-
-function describeAncestors(host: HTMLElement | null, max = 6): TerminalDebugAncestor[] {
-  // Walk parent chain bottom-up (closest-first, capped at `max`), then
-  // reverse so the returned array is oldest-first (root → host's parent)
-  // as documented on `TerminalDebugEntry.ancestors`. Reading the snapshot
-  // top-down matches how DevTools shows the DOM tree.
-  const collected: TerminalDebugAncestor[] = [];
-  let cur: HTMLElement | null = host?.parentElement ?? null;
-  let depth = 0;
-  while (cur && depth < max) {
-    const cs = safeComputed(cur);
-    const r = safeRect(cur);
-    collected.push({
-      tag: cur.tagName.toLowerCase(),
-      classes: cur.className || '',
-      display: cs?.display ?? '',
-      visibility: cs?.visibility ?? '',
-      position: cs?.position ?? '',
-      width: r?.width ?? 0,
-      height: r?.height ?? 0,
-    });
-    cur = cur.parentElement;
-    depth += 1;
-  }
-  return collected.reverse();
-}
-
-function describeEntry(sessionId: SessionId, entry: RegistryEntry): TerminalDebugEntry {
-  const host = entry.host;
-  const wrapper = entry.wrapper;
-  const screen = wrapper?.querySelector<HTMLElement>('.xterm-screen') ?? null;
-  const screenRect = safeRect(screen);
-  const cols = entry.term.cols;
-  const rows = entry.term.rows;
-  const hostCs = safeComputed(host);
-
-  // Best-effort font info — xterm's options are typed loosely; coerce.
-  let fontFamily: string | undefined;
-  let fontSize: number | undefined;
-  try {
-    const opts = entry.term.options as { fontFamily?: string; fontSize?: number } | undefined;
-    fontFamily = opts?.fontFamily;
-    fontSize = opts?.fontSize;
-  } catch {
-    // ignore
-  }
-
-  return {
-    sessionId,
-    isAttached: !!host,
-    hostConnected: host?.isConnected ?? false,
-    wrapperConnected: wrapper?.isConnected ?? false,
-    termCols: cols,
-    termRows: rows,
-    lastReportedCols: entry.lastCols,
-    lastReportedRows: entry.lastRows,
-    fontFamily,
-    fontSize,
-    hostRect: safeRect(host),
-    wrapperRect: safeRect(wrapper),
-    screenRect,
-    approxCellWidth: screenRect && cols > 0 ? screenRect.width / cols : null,
-    approxCellHeight: screenRect && rows > 0 ? screenRect.height / rows : null,
-    hostDisplay: hostCs?.display ?? null,
-    hostVisibility: hostCs?.visibility ?? null,
-    ancestors: describeAncestors(host),
-  };
-}
-
-export function captureTerminalDebugSnapshot(): TerminalDebugSnapshot {
-  const hasWindow = typeof window !== 'undefined';
-  const hasDoc = typeof document !== 'undefined';
-  const fonts = hasDoc ? (document as Document & { fonts?: { status?: string } }).fonts : undefined;
-  return {
-    capturedAt: new Date().toISOString(),
-    windowInnerWidth: hasWindow ? window.innerWidth : null,
-    windowInnerHeight: hasWindow ? window.innerHeight : null,
-    devicePixelRatio: hasWindow ? window.devicePixelRatio : null,
-    documentVisibility: hasDoc ? document.visibilityState : null,
-    documentHasFocus:
-      hasDoc && typeof document.hasFocus === 'function' ? document.hasFocus() : null,
-    fontsStatus: fonts?.status ?? null,
-    darkMode: hasDoc ? document.documentElement.classList.contains('dark') : null,
-    registrySize: registry.size,
-    entries: Array.from(registry, ([id, entry]) => describeEntry(id, entry)),
-  };
 }
