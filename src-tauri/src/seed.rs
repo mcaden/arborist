@@ -293,7 +293,7 @@ fn should_seed_from_legacy_config(legacy_path: &Path, layout: &StoreLayout) -> b
         return false;
     }
     match read_legacy_workspace_root(legacy_path) {
-        Some(Some(legacy_root)) => paths_equal(&legacy_root, layout.workspace()),
+        Some(Some(legacy_root)) => paths_equal(&legacy_root, layout.workspace().as_path()),
         Some(None) => layout.root().is_canonical(),
         None => {
             // Parse failure on the candidate seed source: skip with a
@@ -319,7 +319,7 @@ fn legacy_workspace_root_matches(legacy_config_path: &Path, layout: &StoreLayout
     }
     matches!(
         read_legacy_workspace_root(legacy_config_path),
-        Some(Some(root)) if paths_equal(&root, layout.workspace()),
+        Some(Some(root)) if paths_equal(&root, layout.workspace().as_path()),
     )
 }
 
@@ -403,7 +403,7 @@ fn write_marker_create_new(layout: &StoreLayout, dest: &Path) -> io::Result<()> 
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let meta = WorkspaceMeta {
-        workspace: layout.workspace().to_path_buf(),
+        workspace: layout.workspace().as_path().to_path_buf(),
         branch: layout.root().branch().to_owned(),
         initialised_at: now,
     };
@@ -437,8 +437,8 @@ mod tests {
         fs::write(path, serde_json::to_vec_pretty(body).unwrap()).unwrap();
     }
 
-    fn canon(p: &Path) -> PathBuf {
-        dunce::canonicalize(p).unwrap()
+    fn canon(p: &Path) -> crate::store_layout::CanonicalPath {
+        crate::store_layout::CanonicalPath::canonicalise(p).unwrap()
     }
 
     /// First-launch with no seed source: marker is written, no other
@@ -449,7 +449,7 @@ mod tests {
         let workspace = TempDir::new().unwrap();
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
-        let layout = root.for_workspace(canon(workspace.path()));
+        let layout = root.for_workspace(&canon(workspace.path()));
 
         let report = initialise_workspace_dir(&layout).unwrap();
         assert!(!report.already_seeded);
@@ -477,7 +477,7 @@ mod tests {
         let workspace_canon = canon(workspace.path());
 
         let canonical_root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let canonical_layout = canonical_root.for_workspace(workspace_canon.clone());
+        let canonical_layout = canonical_root.for_workspace(&workspace_canon);
         // Pre-seed the canonical workspace settings, including
         // session-list fields the strip must remove.
         touch_json(
@@ -495,7 +495,7 @@ mod tests {
         fs::write(canonical_layout.sessions_path(), b"{}").unwrap();
 
         let branch_root = StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
-        let branch_layout = branch_root.for_workspace(workspace_canon.clone());
+        let branch_layout = branch_root.for_workspace(&workspace_canon);
         let report = initialise_workspace_dir(&branch_layout).unwrap();
 
         assert!(!report.already_seeded);
@@ -548,7 +548,7 @@ mod tests {
         let workspace_canon = canon(workspace.path());
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
-        let layout = root.for_workspace(workspace_canon.clone());
+        let layout = root.for_workspace(&workspace_canon);
 
         // Legacy config from an old canonical install, with a
         // matching workspaceRoot so the seed is allowed.
@@ -556,7 +556,7 @@ mod tests {
             &root.legacy_config_path(),
             &serde_json::json!({
                 "configVersion": 4,
-                "workspaceRoot": workspace_canon.to_string_lossy(),
+                "workspaceRoot": workspace_canon.as_path().to_string_lossy(),
                 "instructionSetsDir": "/y",
                 "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440001"],
                 "tabOrder": ["550e8400-e29b-41d4-a716-446655440001"],
@@ -585,7 +585,7 @@ mod tests {
         );
         assert_eq!(
             obj.get("workspaceRoot").and_then(|v| v.as_str()),
-            Some(workspace_canon.to_string_lossy().as_ref()),
+            Some(workspace_canon.as_path().to_string_lossy().as_ref()),
             "workspaceRoot must survive the strip"
         );
     }
@@ -601,13 +601,13 @@ mod tests {
         let workspace_canon = canon(workspace.path());
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let layout = root.for_workspace(workspace_canon.clone());
+        let layout = root.for_workspace(&workspace_canon);
 
         touch_json(
             &root.legacy_config_path(),
             &serde_json::json!({
                 "configVersion": 4,
-                "workspaceRoot": workspace_canon.to_string_lossy(),
+                "workspaceRoot": workspace_canon.as_path().to_string_lossy(),
                 "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
                 "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
                 "activeSessionId": "550e8400-e29b-41d4-a716-446655440000",
@@ -649,13 +649,13 @@ mod tests {
         let workspace_canon = canon(workspace.path());
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let layout = root.for_workspace(workspace_canon.clone());
+        let layout = root.for_workspace(&workspace_canon);
 
         touch_json(
             &root.legacy_config_path(),
             &serde_json::json!({
                 "configVersion": 4,
-                "workspaceRoot": canon(other.path()).to_string_lossy(),
+                "workspaceRoot": canon(other.path()).as_path().to_string_lossy(),
             }),
         );
         fs::write(root.legacy_sessions_path(), b"{}").unwrap();
@@ -676,7 +676,7 @@ mod tests {
         let workspace_canon = canon(workspace.path());
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let layout = root.for_workspace(workspace_canon);
+        let layout = root.for_workspace(&workspace_canon);
 
         touch_json(
             &root.legacy_config_path(),
@@ -700,7 +700,7 @@ mod tests {
         let workspace = TempDir::new().unwrap();
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
-        let layout = root.for_workspace(canon(workspace.path()));
+        let layout = root.for_workspace(&canon(workspace.path()));
 
         touch_json(
             &root.legacy_config_path(),
@@ -722,14 +722,14 @@ mod tests {
         let workspace_canon = canon(workspace.path());
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let layout = root.for_workspace(workspace_canon.clone());
+        let layout = root.for_workspace(&workspace_canon);
         // Seed source so the winner has work to do (makes the test
         // more sensitive to races than a pure-Fresh case).
         touch_json(
             &root.legacy_config_path(),
             &serde_json::json!({
                 "configVersion": 4,
-                "workspaceRoot": workspace_canon.to_string_lossy(),
+                "workspaceRoot": workspace_canon.as_path().to_string_lossy(),
             }),
         );
 
@@ -764,7 +764,7 @@ mod tests {
         let workspace_canon = canon(workspace.path());
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let layout = root.for_workspace(workspace_canon.clone());
+        let layout = root.for_workspace(&workspace_canon);
 
         // First call: nothing to seed, marker written.
         let first = initialise_workspace_dir(&layout).unwrap();
@@ -776,7 +776,7 @@ mod tests {
             &root.legacy_config_path(),
             &serde_json::json!({
                 "configVersion": 4,
-                "workspaceRoot": workspace_canon.to_string_lossy(),
+                "workspaceRoot": workspace_canon.as_path().to_string_lossy(),
             }),
         );
         fs::write(root.legacy_sessions_path(), b"{}").unwrap();
@@ -795,7 +795,7 @@ mod tests {
         let workspace = TempDir::new().unwrap();
 
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let layout = root.for_workspace(canon(workspace.path()));
+        let layout = root.for_workspace(&canon(workspace.path()));
 
         fs::create_dir_all(root.legacy_config_path().parent().unwrap()).unwrap();
         fs::write(root.legacy_config_path(), b"not json {{{").unwrap();
@@ -816,7 +816,7 @@ mod tests {
         let app_data = TempDir::new().unwrap();
         let workspace = TempDir::new().unwrap();
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
-        let layout = root.for_workspace(canon(workspace.path()));
+        let layout = root.for_workspace(&canon(workspace.path()));
 
         // Hand-write a marker (NOT via initialise) — simulates a
         // sibling process that won the seed first.

@@ -262,7 +262,7 @@ fn workspace_validate_reports_held_lock_as_already_open_windows() {
 
     let canon = dunce::canonicalize(dir.path()).unwrap();
     let layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
-        .for_workspace(canon);
+        .for_workspace(&arborist_lib::store_layout::CanonicalPath::assume_canonical(canon));
     std::fs::create_dir_all(layout.workspace_dir()).unwrap();
     let _holder = arborist_lib::workspace_lock::WorkspaceLockGuard::acquire(layout.lock_path())
         .expect("hold the lock from the test process");
@@ -377,7 +377,7 @@ fn build_switch_ctx(
     let canon =
         dunce::canonicalize(workspace_a).expect("canonicalise initial workspace for test ctx");
     let layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir, branch)
-        .for_workspace(canon.clone());
+        .for_workspace(&arborist_lib::store_layout::CanonicalPath::assume_canonical(canon.clone()));
     std::fs::create_dir_all(layout.workspace_dir()).unwrap();
     let lock = WorkspaceLockGuard::acquire(layout.lock_path()).expect("acquire initial test lock");
     let store = ConfigStore::from_layout(layout).expect("from_layout for test");
@@ -452,7 +452,9 @@ async fn workspace_switch_happy_path_swaps_and_emits() {
 
     // The OLD lock has been dropped; we can re-acquire it.
     let old_layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
-        .for_workspace(ws_a_canon.clone());
+        .for_workspace(
+            &arborist_lib::store_layout::CanonicalPath::assume_canonical(ws_a_canon.clone()),
+        );
     let _re = WorkspaceLockGuard::acquire(old_layout.lock_path())
         .expect("old workspace lock must be free after switch");
 
@@ -552,7 +554,9 @@ async fn workspace_switch_returns_locked_when_target_is_held() {
     runner.set_repo_root(ws_b.path());
     let canon_b = dunce::canonicalize(ws_b.path()).unwrap();
     let layout_b = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
-        .for_workspace(canon_b.clone());
+        .for_workspace(
+            &arborist_lib::store_layout::CanonicalPath::assume_canonical(canon_b.clone()),
+        );
     std::fs::create_dir_all(layout_b.workspace_dir()).unwrap();
 
     // Note: on Unix, fs2 per-process flock semantics may allow same-process
@@ -661,7 +665,9 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
     // ❗ The crucial assertion: A's records must STILL be on disk under
     // its branch-scoped workspace dir, untouched by the park.
     let layout_a = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
-        .for_workspace(ws_a_canon.clone());
+        .for_workspace(
+            &arborist_lib::store_layout::CanonicalPath::assume_canonical(ws_a_canon.clone()),
+        );
     let store_a_after =
         ConfigStore::from_layout(layout_a.clone()).expect("re-open A's store after switch");
     let a_sessions = store_a_after.load_sessions();
