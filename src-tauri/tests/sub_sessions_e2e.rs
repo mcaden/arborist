@@ -343,7 +343,7 @@ async fn cascade_kills_terminal_subs_and_prunes_persistence() {
         Duration::from_secs(2)
     ));
     assert_eq!(h.sub_ctx.store.list_for(&parent).len(), 2);
-    assert_eq!(h.ctx.store.load_config().last_open_sub_sessions.len(), 2);
+    assert_eq!(h.ctx.store().load_config().last_open_sub_sessions.len(), 2);
 
     // Cascade and verify both sub-sessions are gone everywhere.
     close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
@@ -355,7 +355,11 @@ async fn cascade_kills_terminal_subs_and_prunes_persistence() {
         "store not pruned"
     );
     assert!(
-        h.ctx.store.load_config().last_open_sub_sessions.is_empty(),
+        h.ctx
+            .store()
+            .load_config()
+            .last_open_sub_sessions
+            .is_empty(),
         "persistence not pruned"
     );
 }
@@ -389,8 +393,13 @@ async fn session_close_cascades_subs_via_tombstone() {
     // Guard dropped: tombstone clears, parent + sub all gone.
     assert!(!h.ctx.is_parent_closing(&parent));
     assert!(h.sub_ctx.store.list_for(&parent).is_empty());
-    assert!(h.ctx.store.load_config().last_open_sub_sessions.is_empty());
-    assert!(!h.ctx.store.load_sessions().contains_key(&parent));
+    assert!(h
+        .ctx
+        .store()
+        .load_config()
+        .last_open_sub_sessions
+        .is_empty());
+    assert!(!h.ctx.store().load_sessions().contains_key(&parent));
 }
 
 #[tokio::test]
@@ -420,13 +429,17 @@ async fn restore_drops_orphan_records_when_parent_is_gone() {
         composed_command: "sh -i".into(),
     };
     let orphan_id = orphan.id;
-    h.ctx.store.append_last_open_sub_session(orphan).unwrap();
-    assert_eq!(h.ctx.store.load_config().last_open_sub_sessions.len(), 1);
+    h.ctx.store().append_last_open_sub_session(orphan).unwrap();
+    assert_eq!(h.ctx.store().load_config().last_open_sub_sessions.len(), 1);
 
     restore_all_sub_sessions_impl(&h.ctx, &h.sub_ctx);
 
     assert!(
-        h.ctx.store.load_config().last_open_sub_sessions.is_empty(),
+        h.ctx
+            .store()
+            .load_config()
+            .last_open_sub_sessions
+            .is_empty(),
         "orphan should have been dropped from persistence"
     );
     assert!(
@@ -455,7 +468,7 @@ async fn restore_respawns_terminal_subs_under_extant_parent() {
     h.sub_pool.kill(&sub.id).await.ok();
 
     // Stable id: the persisted record still references it.
-    let persisted = h.ctx.store.load_config().last_open_sub_sessions;
+    let persisted = h.ctx.store().load_config().last_open_sub_sessions;
     assert_eq!(persisted.len(), 1);
     assert_eq!(persisted[0].id, sub.id);
 
@@ -494,7 +507,11 @@ async fn restore_rejects_records_under_closing_parent() {
     restore_all_sub_sessions_impl(&h.ctx, &h.sub_ctx);
 
     assert!(
-        h.ctx.store.load_config().last_open_sub_sessions.is_empty(),
+        h.ctx
+            .store()
+            .load_config()
+            .last_open_sub_sessions
+            .is_empty(),
         "records under closing parent must be pruned"
     );
     assert!(
@@ -525,7 +542,7 @@ async fn relaunch_swaps_terminal_pty_under_same_id() {
         Duration::from_secs(2)
     ));
     // Persistence row still present and points at the same id.
-    let persisted = h.ctx.store.load_config().last_open_sub_sessions;
+    let persisted = h.ctx.store().load_config().last_open_sub_sessions;
     assert_eq!(persisted.len(), 1);
     assert_eq!(persisted[0].id, sub.id);
 }
@@ -543,7 +560,7 @@ async fn relaunch_rejects_when_def_was_deleted() {
     // User deletes the def via Settings. Persisted sub record still
     // references the gone def id.
     h.ctx
-        .store
+        .store()
         .save_config(PartialAppConfig {
             custom_processes: Some(vec![]),
             ..Default::default()

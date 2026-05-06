@@ -43,6 +43,22 @@ function seedDef(overrides: Partial<CustomProcessDef> = {}) {
   }));
 }
 
+function seedDefWithoutIcon(): void {
+  // Build a def with NO `iconDataUri` key at all (rather than `iconDataUri: undefined`,
+  // which exactOptionalPropertyTypes rejects). This is the "icon not yet cached"
+  // shape that orphan/cold-start defs have on disk.
+  const def: CustomProcessDef = {
+    id: 'vscode',
+    name: 'VS Code',
+    kind: 'application',
+    command: 'code .',
+    enabled: true,
+  };
+  useConfigStore.setState((s) => ({
+    config: { ...s.config, customProcesses: [def] },
+  }));
+}
+
 beforeEach(() => {
   useSubSessionStore.setState({
     subSessions: [],
@@ -83,7 +99,7 @@ describe('useSubSessionIcon', () => {
   });
 
   it('returns undefined when the def has no cached iconDataUri', () => {
-    seedDef({ iconDataUri: undefined });
+    seedDefWithoutIcon();
     useSubSessionStore.setState({ subSessions: [makeApp()] });
     const { result } = renderHook(() => useSubSessionIcon(SUB_ID));
     expect(result.current).toBeUndefined();

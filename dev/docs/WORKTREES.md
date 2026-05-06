@@ -8,6 +8,18 @@ created by Arborist lives at a fixed, predictable location underneath it.
 This document explains the convention, why it exists, and how the rest of
 the app cooperates with it.
 
+> **Workspace root must be a primary clone, not a linked worktree.**
+> Arborist creates per-session worktrees from the workspace root via
+> `git worktree add`, and you cannot spawn a worktree from inside
+> another worktree. Both `crate::commands::workspace_validate_impl`
+> (the picker / in-app switcher) and `crate::boot::validate_repo_root`
+> (the boot-time CLI / hint / legacy / native-picker chain) enforce
+> this by additionally requiring `<workspaceRoot>/.git` to be a
+> *directory*. A linked worktree has `.git` as a *file* containing
+> `gitdir: <path-into-primary>`; that case is rejected up front so
+> session creation never silently fails downstream. Submodule working
+> trees (also a `.git` file) are rejected for the same reason.
+
 ## The convention
 
 Given a configured `workspaceRoot` of `/path/to/repo`, all worktrees

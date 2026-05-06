@@ -30,7 +30,7 @@ export interface WorkspacePickerProps {
 type ValidationState =
   | { kind: 'idle' }
   | { kind: 'validating' }
-  | { kind: 'valid' }
+  | { kind: 'valid'; alreadyOpen: boolean }
   | { kind: 'invalid'; error: string };
 
 const DEBOUNCE_MS = 250;
@@ -58,6 +58,12 @@ export function WorkspacePicker({
     inputRef.current?.focus();
   }, []);
 
+  // Pre-trim `initialPath` once: in `change` mode the picker is opened
+  // from a Settings/indicator surface that already passed the canonical
+  // bound `workspaceRoot` here, so it's the authoritative reference for
+  // "the path this process currently holds the lock on".
+  const currentTrimmed = (initialPath ?? '').trim();
+
   useEffect(() => {
     // Editing the path invalidates any prior submission error — keep the
     // UI in sync with the user's current intent.
@@ -75,7 +81,26 @@ export function WorkspacePicker({
           const result = await workspaceValidate(trimmed);
           if (seq !== requestSeq.current) return;
           if (result.valid) {
-            setValidation({ kind: 'valid' });
+            // Suppress the contention warning when the user is targeting
+            // the workspace we're already bound to. The backend probe
+            // checks the same `.lock` file *this* process holds; on
+            // Windows `LockFileEx` is per-handle, so the probe always
+            // reports "occupied" for the current workspace even though
+            // a switch to it is just the no-op fast-path in
+            // `workspace_switch_impl_inner` (step 3). On Unix `flock`
+            // would be re-entrant for the same process but we'd still
+            // be flashing a misleading "open in another instance"
+            // banner the moment the change-mode dialog opens (since
+            // `initialPath` seeds the input). Compare against the
+            // pre-trimmed bound path; equality is conservative (we
+            // miss separator-normalised variants like `C:/x` vs
+            // `C:\x`) — those still get the warning, but Confirm in
+            // that case still resolves to a no-op switch.
+            const isCurrent = currentTrimmed.length > 0 && trimmed === currentTrimmed;
+            setValidation({
+              kind: 'valid',
+              alreadyOpen: !isCurrent && result.alreadyOpenInAnotherInstance === true,
+            });
           } else {
             setValidation({ kind: 'invalid', error: result.error ?? 'invalid path' });
           }
@@ -87,7 +112,7 @@ export function WorkspacePicker({
       })();
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [path]);
+  }, [path, currentTrimmed]);
 
   const handleBrowse = useCallback(async () => {
     try {
@@ -118,7 +143,7 @@ export function WorkspacePicker({
   const sub =
     mode === 'first-boot'
       ? 'Arborist needs the path to a git repository it can manage worktrees in. This is the directory that contains the .git folder.'
-      : 'Switching workspaces will close every open session. The new workspace must be the root of a git repository.';
+      : 'Switching workspaces will park every open session in the current workspace (kill the running terminals while preserving each session record so you can switch back to resume). The new workspace must be the root of a git repository.';
 
   const errorText = validation.kind === 'invalid' ? validation.error : (submitError ?? null);
 
@@ -171,6 +196,18 @@ export function WorkspacePicker({
             </span>
           ) : null}
         </p>
+
+        {validation.kind === 'valid' && validation.alreadyOpen ? (
+          <p
+            role="status"
+            aria-live="polite"
+            data-testid="picker-already-open-warning"
+            className="mt-2 text-xs text-amber-700 dark:text-amber-400"
+          >
+            ⚠ This workspace appears to already be open in another Arborist window. Opening it here
+            will fail unless the other window releases it first.
+          </p>
+        ) : null}
 
         {errorText !== null ? (
           <p id={errorId} role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">

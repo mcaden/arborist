@@ -65,7 +65,7 @@ function seed(config: Partial<AppConfig> = {}): void {
       lastOpenSubSessions: [],
       ...config,
     } as AppConfig,
-    isHydrated: true,
+    status: 'ready',
   });
 }
 
@@ -141,7 +141,12 @@ describe('TabContextMenu', () => {
     const onClose = vi.fn();
     render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
     fireEvent.click(screen.getByRole('menuitem', { name: /restart/i }));
-    expect(bridgeMock.sessionRestart).toHaveBeenCalledWith({ sessionId: PARENT });
+    expect(bridgeMock.sessionRestart).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: PARENT }),
+    );
+    const call = bridgeMock.sessionRestart.mock.calls[0]?.[0];
+    expect(call?.cols).toBeGreaterThan(0);
+    expect(call?.rows).toBeGreaterThan(0);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

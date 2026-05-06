@@ -5,7 +5,7 @@
 // tab). Two tabs:
 //
 //   General           — workspace root (delegates to the existing
-//                       WorkspacePicker so the close-all-sessions
+//                       WorkspacePicker so the park-old-sessions
 //                       invariant lives in one place — see
 //                       `lib/workspace-switch.ts`), instruction sets
 //                       directory (path picker), pre-launch commands

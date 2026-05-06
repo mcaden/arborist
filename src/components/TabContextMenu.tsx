@@ -25,6 +25,7 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { getTerminalDimensions, measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError, sessionRestart } from '@/lib/tauri-bridge';
 import { useEnabledCustomProcesses } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
@@ -156,10 +157,16 @@ export function TabContextMenu({
   };
 
   const handleRestart = (): void => {
-    void sessionRestart({ sessionId: parentSessionId }).catch((err: unknown) => {
-      const message = formatError(err);
-      console.warn(`[TabContextMenu] session_restart failed: ${message}`);
-    });
+    // Reuse the active terminal's measured cols/rows so the restarted PTY
+    // child paints at the size xterm currently shows. Falls back to a
+    // fresh measurement if the terminal isn't attached.
+    const dims = getTerminalDimensions(parentSessionId) ?? measureInitialPtyDimensions();
+    void sessionRestart({ sessionId: parentSessionId, cols: dims.cols, rows: dims.rows }).catch(
+      (err: unknown) => {
+        const message = formatError(err);
+        console.warn(`[TabContextMenu] session_restart failed: ${message}`);
+      },
+    );
     closeMenu();
   };
 

@@ -364,7 +364,20 @@ export type ActivityEvent =
   | { kind: 'promptStart' }
   | { kind: 'commandStart' }
   | { kind: 'commandEnd'; exit: number | null }
-  | { kind: 'turnEnd'; durationMs: number | null };
+  | { kind: 'turnEnd'; durationMs: number | null }
+  // Copilot events.jsonl tailer (Phase 2.5). New variants are emitted
+  // alongside the legacy PTY-byte signals; the reducer treats them as
+  // additive — they don't replace `working` / `idle`.
+  | { kind: 'turnStart' }
+  | { kind: 'toolStart'; toolName: string; toolCallId: string }
+  | { kind: 'toolEnd'; toolCallId: string; success: boolean }
+  | {
+      kind: 'awaitingPermission';
+      requestId: string;
+      permissionKind: string;
+      summary: string | null;
+    }
+  | { kind: 'permissionResolved'; requestId: string; approved: boolean };
 
 // MIRROR: src-tauri/src/types.rs::SessionActivityEvent
 // Payload of the `session://activity` Tauri event (DESIGN §6). The
@@ -412,9 +425,28 @@ export interface WorktreeInfo {
 // MIRROR: src-tauri/src/types.rs::WorkspaceValidateResult
 // Returned by the `workspace_validate` command (Roadmap §1.1). `error` is
 // only populated when `valid === false`.
+//
+// `alreadyOpenInAnotherInstance` is an **advisory** Phase 8 signal:
+// `true` when a non-blocking probe of the per-(branch, workspace) `.lock`
+// file revealed that another Arborist process **bound to the same
+// `(branch, workspace)` pair** currently holds it, `false` if the
+// probe acquired the lock cleanly (and immediately released it), and
+// `undefined` if the probe was not performed (e.g. the path failed
+// earlier validation, or the call site didn't have an `app_data_dir`
+// to derive the lock path from). The lock is OS-advisory and
+// auto-releases when the holding process exits (clean or crash) — so
+// `true` here means "another live instance" and never a stale-lock
+// remnant. Contention with a *different* branch (e.g. release vs dev
+// build of the same workspace) is **not** detected here because each
+// branch gets its own scoped lock path. Picker UIs should surface a
+// warning when `true` but still allow the user to confirm — the
+// authoritative lock acquire happens at switch/boot time and will
+// fail with `WorkspaceLocked` if the contention is still present
+// then.
 export interface WorkspaceValidateResult {
   valid: boolean;
   error?: string;
+  alreadyOpenInAnotherInstance?: boolean;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorktreeCreateResult
@@ -422,4 +454,33 @@ export interface WorkspaceValidateResult {
 // canonical absolute path to the newly-created worktree directory.
 export interface WorktreeCreateResult {
   path: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorkspaceSwitchArgs
+// Argument struct for the `workspace_switch` command. The Tauri invoke
+// wrapper passes this as `{ args: { path } }` to match the Rust handler
+// signature `workspace_switch(args: WorkspaceSwitchArgs)`.
+export interface WorkspaceSwitchArgs {
+  path: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorkspaceSwitchResult
+// Resolves on success of `workspace_switch`. `workspaceRoot` is the
+// **canonical** path the backend bound to. `noOp` is `true` if the
+// requested path matched the workspace already in use — in that case
+// `config` and `sessions` mirror the *current* (unchanged) state so
+// the wire payload is non-nullable but the frontend can short-circuit
+// adoption.
+//
+// On a real swap, `config` and `sessions` reflect the **new**
+// workspace's state *after* the inline restore loop has run —
+// sessions are already in `Starting` status, so the frontend adopts
+// everything in one render with no flicker. The
+// `workspace://changed` event was deleted in PR5; this result is now
+// the sole authoritative state-transfer channel for in-app switches.
+export interface WorkspaceSwitchResult {
+  workspaceRoot: string;
+  noOp: boolean;
+  config: AppConfig;
+  sessions: SessionView[];
 }

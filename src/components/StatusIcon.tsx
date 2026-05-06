@@ -83,6 +83,42 @@ export function StatusIcon({ status, className, title }: StatusIconProps): JSX.E
         </svg>
       );
 
+    case 'awaitingPermission':
+      // Padlock — agent is blocked on a permission decision. The amber
+      // colour (set by the caller via className) deliberately matches
+      // `attention` so the user reads "this tab needs me" at a glance.
+      return (
+        <svg {...common} data-testid="status-icon-awaiting-permission">
+          {title ? <title>{title}</title> : null}
+          <rect x="5" y="11" width="14" height="9" rx="2" />
+          <path d="M8 11 V8 a4 4 0 0 1 8 0 v3" />
+        </svg>
+      );
+
+    case 'runningTool':
+      // Wrench — distinct from the sparkle (`working`) and dots
+      // (`thinking`) so a glance at the icon answers "what is the agent
+      // doing right now?".
+      return (
+        <svg {...common} data-testid="status-icon-running-tool">
+          {title ? <title>{title}</title> : null}
+          <path d="M14.7 3.5 a4.5 4.5 0 0 0 5.8 5.8 L13 16.8 l-2.8-2.8 z" />
+          <line x1="9.5" y1="14.5" x2="4.5" y2="19.5" />
+        </svg>
+      );
+
+    case 'thinking':
+      // Three dots — universal "agent is processing". Pairs with an
+      // `animate-pulse` class supplied by the caller.
+      return (
+        <svg {...common} data-testid="status-icon-thinking" fill="currentColor" stroke="none">
+          {title ? <title>{title}</title> : null}
+          <circle cx="6" cy="12" r="1.5" />
+          <circle cx="12" cy="12" r="1.5" />
+          <circle cx="18" cy="12" r="1.5" />
+        </svg>
+      );
+
     case 'exited':
       // Filled stop square — terminal-state indicator.
       return (

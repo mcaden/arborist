@@ -75,6 +75,38 @@ pub const ANSI_FULL_RESET: &str = "\x1bc";
 /// Orphan temp-dir age threshold for [`cleanup_orphans`].
 pub const ORPHAN_AGE_THRESHOLD: Duration = Duration::from_secs(60 * 60);
 
+/// Outcome of a [`PtyPool::kill`] call.
+///
+/// `kill` removes the runtime entry from the pool unconditionally and
+/// always issues `killer.kill()` (SIGKILL on Unix / `TerminateProcess`
+/// on Windows — both unconditional process-termination primitives).
+/// The OS-level kill primitive almost never fails for a child we just
+/// spawned and own, but the post-kill wait-thread join (which calls
+/// `child.wait()` to reap the process) **can** time out in
+/// pathological cases (e.g. Unix zombie reaping is delayed, Windows
+/// handle still held by a debugger). The outcome captures whether we
+/// actually observed the process being reaped within
+/// [`KILL_GRACE`] so callers can decide whether to log a possible
+/// orphan PID.
+///
+/// `park_session_for_switch_impl` uses this to surface the rare
+/// "kill-issued-but-unconfirmed" case during an in-app workspace
+/// switch — without that visibility, an orphaned CLI from a parked
+/// session could be silently respawned as a second live process for
+/// the same tab on the next switch-back. See PR #32 round-12 review
+/// thread for the underlying concern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillOutcome {
+    /// `killer.kill()` returned `Ok` AND the wait thread joined
+    /// cleanly within [`KILL_GRACE`]. The OS has reaped the process.
+    Reaped,
+    /// `killer.kill()` returned `Err`, OR the wait thread did not
+    /// join within [`KILL_GRACE`]. The process **may** still be
+    /// alive at the recorded PID — callers should log loudly so a
+    /// human can find and clean up the orphan.
+    Unconfirmed { pid: u32 },
+}
+
 // ---------------------------------------------------------------------------
 // Spawner / child trait seam
 // ---------------------------------------------------------------------------
@@ -829,7 +861,18 @@ impl PtyPool {
     ///
     /// Async because we await the drain-task join with a timeout. **Never
     /// holds the pool lock across `.await`** (DESIGN/copilot-instructions).
-    pub async fn kill(&self, id: &SessionId) -> Result<(), Error> {
+    ///
+    /// Returns [`KillOutcome::Reaped`] on the happy path (kill returned
+    /// `Ok` AND the wait thread joined within [`KILL_GRACE`]) so callers
+    /// can confirm the OS reaped the child. Returns
+    /// [`KillOutcome::Unconfirmed`] when the kill primitive returned an
+    /// error OR the wait thread did not join in time — both are rare,
+    /// but in either case the child **may** still be alive at the
+    /// recorded PID. The runtime entry is removed from the pool either
+    /// way (so the SessionId is free for a fresh respawn). Callers that
+    /// care about possible orphans (e.g. `park_session_for_switch_impl`)
+    /// should log loudly when they see `Unconfirmed`.
+    pub async fn kill(&self, id: &SessionId) -> Result<KillOutcome, Error> {
         // 1. Remove the runtime entry under the lock; everything else
         //    happens with no lock held.
         let rt = {
@@ -842,12 +885,19 @@ impl PtyPool {
         let Some(rt) = rt else {
             return Err(Error::NotFound(format!("session {id} not in pty pool")));
         };
+        let pid = rt.pid;
 
         // 2. Mark killed so the wait thread doesn't emit Exited/Error.
         rt.killed.store(true, Ordering::SeqCst);
 
-        // 3. Kill the child via the independent killer handle. Best-effort.
-        let _ = rt.killer.kill();
+        // 3. Kill the child via the independent killer handle.
+        //    `PortableKiller::kill` issues SIGKILL on Unix (unconditional
+        //    process termination) or `TerminateProcess` on Windows
+        //    (also unconditional). Failure here is rare — typically only
+        //    permission-denied or the child has already exited — but we
+        //    capture it so we can surface it in `KillOutcome` rather
+        //    than swallow it as we used to with `let _ =`.
+        let killer_result = rt.killer.kill();
 
         // 4. Drop the sender; cancel the drain task; await with a timeout.
         drop(rt.sender);
@@ -864,14 +914,24 @@ impl PtyPool {
 
         // 5. Best-effort: join the wait thread (it should exit when the PTY
         //    closes). Use a tokio blocking task with a short timeout so we
-        //    don't block the executor forever.
-        if let Some(handle) = rt.wait_thread {
-            let _ = timeout(
-                KILL_GRACE,
-                tokio::task::spawn_blocking(move || handle.join()),
+        //    don't block the executor forever. The success/failure of this
+        //    join is the load-bearing signal for `KillOutcome`: a clean
+        //    join means the OS reaped the child within `KILL_GRACE`.
+        let wait_joined = if let Some(handle) = rt.wait_thread {
+            matches!(
+                timeout(
+                    KILL_GRACE,
+                    tokio::task::spawn_blocking(move || handle.join()),
+                )
+                .await,
+                Ok(Ok(Ok(()))),
             )
-            .await;
-        }
+        } else {
+            // No wait thread to join (e.g. constructed without one in
+            // some test paths). Treat as confirmed reaped — there's
+            // nothing to verify.
+            true
+        };
 
         // 6. Delete the per-session temp dir.
         let dir = compose::session_temp_dir(id);
@@ -880,7 +940,33 @@ impl PtyPool {
                 debug!(session_id = %id, dir = %dir.display(), error = %e, "remove_dir_all failed");
             }
         }
-        Ok(())
+
+        // 7. Decide on the outcome. The kill **was** issued in step 3
+        //    regardless of what we return here — we never re-spawn the
+        //    same SessionId from the pool's perspective because step 1
+        //    already evicted it. The outcome is purely diagnostic, so
+        //    the caller can record an orphan PID for human cleanup.
+        if killer_result.is_err() || !wait_joined {
+            if let Err(e) = killer_result {
+                warn!(
+                    session_id = %id,
+                    pid,
+                    error = ?e,
+                    "kill: killer.kill() returned error; process may still be alive at this PID",
+                );
+            }
+            if !wait_joined {
+                warn!(
+                    session_id = %id,
+                    pid,
+                    grace_secs = KILL_GRACE.as_secs(),
+                    "kill: wait thread did not join within grace period; process may still be alive at this PID",
+                );
+            }
+            Ok(KillOutcome::Unconfirmed { pid })
+        } else {
+            Ok(KillOutcome::Reaped)
+        }
     }
 
     /// Synchronous best-effort kill used by `respawn_existing` (where we

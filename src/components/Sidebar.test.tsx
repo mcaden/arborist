@@ -428,7 +428,7 @@ describe('Sidebar', () => {
   });
 
   it('does not swallow Enter/Space activation on non-tab buttons in the bottom bar', () => {
-    // Regression for the "Settings/Fit buttons stop working with the
+    // Regression for the "Settings button stops working with the
     // keyboard" PR-review finding: the tablist `onKeyDown` used to fire
     // `preventDefault()` on Enter/Space for ANY descendant, so focusing
     // the Settings button and pressing Enter would no longer activate

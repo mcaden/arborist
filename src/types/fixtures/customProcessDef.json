@@ -1,8 +1,0 @@
-{
-  "id": "vscode",
-  "name": "VS Code",
-  "kind": "application",
-  "command": "code .",
-  "enabled": true,
-  "icon": "vscode"
-}

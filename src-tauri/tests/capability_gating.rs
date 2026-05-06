@@ -91,6 +91,10 @@ fn main_capability_allows_core_default_and_ping() {
         "main capability must include allow-workspace-validate so workspace_validate is callable; got {identifiers:?}",
     );
     assert!(
+        identifiers.contains(&"allow-workspace-switch"),
+        "main capability must include allow-workspace-switch so workspace_switch is callable; got {identifiers:?}",
+    );
+    assert!(
         identifiers.contains(&"allow-worktree-create"),
         "main capability must include allow-worktree-create so worktree_create is callable; got {identifiers:?}",
     );
@@ -326,4 +330,21 @@ fn allow_worktree_create_permission_file_declares_command() {
     let raw =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(raw.contains("worktree_create"));
+}
+
+#[test]
+fn allow_workspace_switch_permission_file_declares_command() {
+    let path = manifest_dir()
+        .join("permissions")
+        .join("allow-workspace-switch.toml");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-workspace-switch\""),
+        "permission identifier must remain `allow-workspace-switch`",
+    );
+    assert!(
+        raw.contains("\"workspace_switch\""),
+        "permission must allow the `workspace_switch` command",
+    );
 }

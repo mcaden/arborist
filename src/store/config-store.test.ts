@@ -81,11 +81,16 @@ describe('useConfigStore.hydrate', () => {
 
 describe('useConfigStore.set', () => {
   it('forwards only the diff (no undefined fields) to config_set', async () => {
-    const diff: PartialAppConfig = {
+    // Cast away `exactOptionalPropertyTypes` so we can hand `config_set` an
+    // explicit `undefined` and verify the store strips it. Production
+    // callers cannot construct this shape (the type forbids it), but the
+    // store contract still needs to defend against an accidental
+    // `undefined` slipping through e.g. `Object.fromEntries`.
+    const diff = {
       prelaunchCommands: ['nvm use'],
       // explicit undefined must be stripped
       instructionSetsDir: undefined,
-    };
+    } as unknown as PartialAppConfig;
 
     await useConfigStore.getState().set(diff);
 

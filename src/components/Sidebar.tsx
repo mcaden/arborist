@@ -23,7 +23,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { CloseConfirmDialog } from './CloseConfirmDialog';
-import { FitDebugButton } from './FitDebugButton';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
 import { SidebarSubTab } from './SidebarSubTab';
@@ -288,7 +287,6 @@ export function Sidebar(): JSX.Element {
           <span aria-hidden="true">⚙</span>
           <span>Settings</span>
         </button>
-        <FitDebugButton />
       </div>
       <CloseConfirmDialog />
       <SubCloseConfirmDialog />

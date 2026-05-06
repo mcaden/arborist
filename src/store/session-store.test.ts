@@ -37,6 +37,9 @@ function resetStore(): void {
     metrics: {},
     lastTurnEndAt: {},
     lastTurnDurationMs: {},
+    openTools: {},
+    openPermissions: {},
+    inTurn: {},
   });
 }
 
@@ -307,6 +310,70 @@ describe('requestClose / cancelClose', () => {
 
     expect(bridgeMock.sessionClose).not.toHaveBeenCalled();
     expect(bridgeMock.configSet).not.toHaveBeenCalled();
+  });
+});
+
+describe('adoptWorkspace', () => {
+  it('replaces sessions and reconciles activeId from the supplied activeSessionId', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      activeId: 'old',
+    });
+    const incoming = [makeView({ id: 'new1' }), makeView({ id: 'new2' })];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, 'new2');
+
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['new1', 'new2']);
+    expect(useSessionStore.getState().activeId).toBe('new2');
+  });
+
+  it('falls back to sessions[0] when activeSessionId is null', () => {
+    const incoming = [makeView({ id: 'first' }), makeView({ id: 'second' })];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, null);
+
+    expect(useSessionStore.getState().activeId).toBe('first');
+  });
+
+  it('falls back to sessions[0] when activeSessionId points at a missing session', () => {
+    const incoming = [makeView({ id: 'first' })];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, 'ghost');
+
+    expect(useSessionStore.getState().activeId).toBe('first');
+  });
+
+  it('clears pendingClose so a stale close-confirm modal cannot leak across the workspace switch', () => {
+    // Regression: without this reset, an open close-confirm dialog
+    // for a session in the OLD workspace would either dangle (id no
+    // longer renders) or — worse, on id collision — auto-target the
+    // wrong session for close in the NEW workspace.
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      pendingClose: 'old',
+    });
+
+    useSessionStore.getState().actions.adoptWorkspace([makeView({ id: 'new' })], null);
+
+    expect(useSessionStore.getState().pendingClose).toBeUndefined();
+  });
+
+  it('resets every per-session derived cache to avoid stale entries leaking', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      statusMessages: { old: 'boom' },
+      hasUnread: { old: true },
+      activity: { old: 'working' },
+      lastTurnEndAt: { old: 123 },
+    });
+
+    useSessionStore.getState().actions.adoptWorkspace([makeView({ id: 'new' })], null);
+
+    const s = useSessionStore.getState();
+    expect(s.statusMessages).toEqual({});
+    expect(s.hasUnread).toEqual({});
+    expect(s.activity).toEqual({});
+    expect(s.lastTurnEndAt).toEqual({});
   });
 });
 
@@ -699,7 +766,9 @@ describe('applyActivity (turnEnd)', () => {
       lastTurnEndAt: { a: 1700000000 },
       lastTurnDurationMs: { a: 500 },
     });
-    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve());
+    bridgeMock.sessionClose.mockImplementation(() =>
+      Promise.resolve({ worktreeDeleteError: null }),
+    );
     await useSessionStore.getState().actions.close('a');
     expect(useSessionStore.getState().lastTurnEndAt).toEqual({});
     expect(useSessionStore.getState().lastTurnDurationMs).toEqual({});
@@ -749,9 +818,45 @@ describe('selectDisplayStatus', () => {
     expect(status()).toBe('exited');
   });
 
-  it('attention beats working and awaiting', () => {
+  it('awaitingPermission outranks attention, runningTool, thinking, working, awaiting', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a', status: 'running', createdAt: NOW - 60 })],
+      activity: { a: 'attention' },
+      openTools: { a: { t1: { toolName: 'shell', toolCallId: 't1' } } },
+      openPermissions: {
+        a: { r1: { requestId: 'r1', permissionKind: 'shell', summary: 'rm -rf /' } },
+      },
+      inTurn: { a: true },
+      lastTurnEndAt: { a: NOW - 1 },
+    });
+    expect(status()).toBe('awaitingPermission');
+  });
+
+  it('attention beats runningTool, thinking, working and awaiting', () => {
     setup({ activity: 'attention', lastTurnEndAt: NOW - 1 });
+    useSessionStore.setState((s) => ({
+      ...s,
+      openTools: { a: { t1: { toolName: 'shell', toolCallId: 't1' } } },
+      inTurn: { a: true },
+    }));
     expect(status()).toBe('attention');
+  });
+
+  it('runningTool beats thinking, working and awaiting', () => {
+    setup({ lastTurnEndAt: NOW - 1 });
+    useSessionStore.setState((s) => ({
+      ...s,
+      openTools: { a: { t1: { toolName: 'view', toolCallId: 't1' } } },
+      inTurn: { a: true },
+      activity: { a: 'working' },
+    }));
+    expect(status()).toBe('runningTool');
+  });
+
+  it('thinking beats working and awaiting when in turn with no open tools', () => {
+    setup({ activity: 'working', lastTurnEndAt: NOW - 1 });
+    useSessionStore.setState((s) => ({ ...s, inTurn: { a: true } }));
+    expect(status()).toBe('thinking');
   });
 
   it('working beats awaiting', () => {
@@ -779,4 +884,126 @@ describe('selectDisplayStatus', () => {
     useSessionStore.setState({ sessions: [] });
     expect(status()).toBe('idle');
   });
+
+  it('attention is rendered ahead of runningTool when both are present', () => {
+    setup({ activity: 'attention' });
+    useSessionStore.setState((s) => ({
+      ...s,
+      openTools: { a: { t1: { toolName: 'edit', toolCallId: 't1' } } },
+    }));
+    expect(status()).toBe('attention');
+  });
+});
+
+describe('applyActivity (events.jsonl variants)', () => {
+  beforeEach(() => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      activeId: 'a',
+    });
+  });
+
+  it('toolStart adds an OpenTool keyed by toolCallId; toolEnd removes it', () => {
+    const { applyActivity } = useSessionStore.getState().actions;
+    applyActivity({ sessionId: 'a', kind: 'toolStart', toolName: 'shell', toolCallId: 't1' });
+    expect(useSessionStore.getState().openTools.a).toEqual({
+      t1: { toolName: 'shell', toolCallId: 't1' },
+    });
+    applyActivity({ sessionId: 'a', kind: 'toolEnd', toolCallId: 't1', success: true });
+    expect(useSessionStore.getState().openTools.a).toBeUndefined();
+  });
+
+  it('toolEnd for an unknown id is a no-op', () => {
+    const before = useSessionStore.getState();
+    useSessionStore.getState().actions.applyActivity({
+      sessionId: 'a',
+      kind: 'toolEnd',
+      toolCallId: 'nope',
+      success: false,
+    });
+    expect(useSessionStore.getState()).toBe(before);
+  });
+
+  it('toolStart is idempotent for matching name+id', () => {
+    const { applyActivity } = useSessionStore.getState().actions;
+    applyActivity({ sessionId: 'a', kind: 'toolStart', toolName: 'view', toolCallId: 't1' });
+    const ref = useSessionStore.getState().openTools;
+    applyActivity({ sessionId: 'a', kind: 'toolStart', toolName: 'view', toolCallId: 't1' });
+    expect(useSessionStore.getState().openTools).toBe(ref);
+  });
+
+  it('awaitingPermission adds an OpenPermission; permissionResolved removes it', () => {
+    const { applyActivity } = useSessionStore.getState().actions;
+    applyActivity({
+      sessionId: 'a',
+      kind: 'awaitingPermission',
+      requestId: 'r1',
+      permissionKind: 'shell',
+      summary: 'git status',
+    });
+    expect(useSessionStore.getState().openPermissions.a).toEqual({
+      r1: { requestId: 'r1', permissionKind: 'shell', summary: 'git status' },
+    });
+    applyActivity({ sessionId: 'a', kind: 'permissionResolved', requestId: 'r1', approved: true });
+    expect(useSessionStore.getState().openPermissions.a).toBeUndefined();
+  });
+
+  it('turnStart sets inTurn; turnEnd clears it and records lastTurnEndAt', () => {
+    const { applyActivity } = useSessionStore.getState().actions;
+    applyActivity({ sessionId: 'a', kind: 'turnStart' });
+    expect(useSessionStore.getState().inTurn.a).toBe(true);
+    applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
+    expect(useSessionStore.getState().inTurn.a).toBeUndefined();
+    expect(useSessionStore.getState().lastTurnEndAt.a).toBeGreaterThan(0);
+  });
+
+  it('events for unknown sessions are dropped', () => {
+    const { applyActivity } = useSessionStore.getState().actions;
+    applyActivity({
+      sessionId: 'ghost',
+      kind: 'toolStart',
+      toolName: 'shell',
+      toolCallId: 't1',
+    });
+    expect(useSessionStore.getState().openTools).toEqual({});
+  });
+
+  it('applyStatus → starting clears stale openTools, openPermissions, inTurn', () => {
+    useSessionStore.setState({
+      openTools: { a: { t1: { toolName: 'view', toolCallId: 't1' } } },
+      openPermissions: { a: { r1: { requestId: 'r1', permissionKind: 'shell', summary: null } } },
+      inTurn: { a: true },
+    });
+    useSessionStore
+      .getState()
+      .actions.applyStatus({ sessionId: 'a', status: 'starting' } as SessionStatusEvent);
+    const s = useSessionStore.getState();
+    expect(s.openTools).toEqual({});
+    expect(s.openPermissions).toEqual({});
+    expect(s.inTurn).toEqual({});
+  });
+
+  it.each(['exited', 'error'] as const)(
+    'applyStatus → %s clears stale openTools, openPermissions, inTurn (hygiene)',
+    (terminalStatus) => {
+      // selectDisplayStatus short-circuits on `error`/`exited`, so the
+      // stale maps can't display the wrong icon — but they can leak to
+      // tooltip enumeration and any future consumer that reads them
+      // directly. Clear on every terminal transition for hygiene.
+      useSessionStore.setState({
+        openTools: { a: { t1: { toolName: 'shell', toolCallId: 't1' } } },
+        openPermissions: {
+          a: { r1: { requestId: 'r1', permissionKind: 'shell', summary: 'rm -rf /' } },
+        },
+        inTurn: { a: true },
+      });
+      useSessionStore
+        .getState()
+        .actions.applyStatus({ sessionId: 'a', status: terminalStatus } as SessionStatusEvent);
+      const s = useSessionStore.getState();
+      expect(s.openTools).toEqual({});
+      expect(s.openPermissions).toEqual({});
+      expect(s.inTurn).toEqual({});
+    },
+  );
 });

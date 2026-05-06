@@ -51,6 +51,8 @@ describe('tauri-bridge.mock', () => {
         tool: 'claude',
         worktreePath: '/wt',
         instructionSetId: 'claude-default',
+        cols: 80,
+        rows: 24,
       }),
     ).rejects.toThrow('not implemented');
   });

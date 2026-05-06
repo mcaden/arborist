@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::commands::session::acquire_switch_read;
 use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
@@ -42,6 +43,10 @@ pub fn subsession_create_impl(
     sub_ctx: &SubAppContext,
     args: SubSessionCreateArgs,
 ) -> Result<SubSession, AppError> {
+    // Reject while a workspace switch is queued or active. Held for the
+    // entire body so the switch can't see a half-spawned sub-session.
+    let _switch = acquire_switch_read(ctx)?;
+
     // Phase 7 race guard: refuse new children under a closing parent.
     // The tombstone is set synchronously by the `session_close` wrapper
     // before cascade, and removed via RAII guard once the parent record
@@ -56,7 +61,7 @@ pub fn subsession_create_impl(
         ));
     }
 
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     let def = cfg
         .custom_processes
         .iter()
@@ -75,7 +80,7 @@ pub fn subsession_create_impl(
     }
 
     // Look up the parent session for its worktree path.
-    let sessions = ctx.store.load_sessions();
+    let sessions = ctx.store().load_sessions();
     let parent = sessions.get(&args.parent_session_id).ok_or_else(|| {
         AppError::new(
             "NotFound",
@@ -109,7 +114,7 @@ pub fn subsession_create_impl(
         label: sub.label.clone(),
         composed_command: sub.composed_command.clone(),
     };
-    if let Err(e) = ctx.store.append_last_open_sub_session(record) {
+    if let Err(e) = ctx.store().append_last_open_sub_session(record) {
         sub_ctx.store.remove(&sub.id);
         return Err(AppError::from(e));
     }
@@ -143,7 +148,7 @@ pub fn subsession_create_impl(
         }
         Err(e) => {
             sub_ctx.store.remove(&sub.id);
-            let _ = ctx.store.remove_last_open_sub_session(&sub.id);
+            let _ = ctx.store().remove_last_open_sub_session(&sub.id);
             Err(AppError::from(e))
         }
     }
@@ -171,6 +176,14 @@ pub async fn subsession_close_impl(
     id: SubSessionId,
     intent: SubSessionCloseIntent,
 ) -> Result<(), AppError> {
+    // Reject while a workspace switch is queued or active. Held for the
+    // full body (including across `pool.kill().await`) so the switch's
+    // `write().await` cannot proceed until our teardown completes
+    // against the old store. NOTE: the parent-cascade path uses
+    // `close_for_parent_impl` directly (not this function), so adding
+    // the gate here does not block parent-close cascades.
+    let _switch = acquire_switch_read(ctx)?;
+
     let snapshot = sub_ctx
         .store
         .get(&id)
@@ -215,7 +228,7 @@ pub async fn subsession_close_impl(
         },
     }
     sub_ctx.store.remove(&id);
-    let _ = ctx.store.remove_last_open_sub_session(&id);
+    let _ = ctx.store().remove_last_open_sub_session(&id);
     Ok(())
 }
 
@@ -227,7 +240,15 @@ pub async fn subsession_close_impl(
 /// (no PID in the store), returns `Error::NotApplicable` so the
 /// frontend can decide whether to relaunch (Phase 7) or just leave
 /// the tab greyed.
-pub fn subsession_focus_impl(sub_ctx: &SubAppContext, id: SubSessionId) -> Result<(), AppError> {
+pub fn subsession_focus_impl(
+    ctx: &AppContext,
+    sub_ctx: &SubAppContext,
+    id: SubSessionId,
+) -> Result<(), AppError> {
+    // Reject while a workspace switch is queued or active. Focus can
+    // race a swap of the underlying app_pool tracking.
+    let _switch = acquire_switch_read(ctx)?;
+
     let sub = sub_ctx
         .store
         .get(&id)
@@ -268,9 +289,14 @@ pub fn subsession_list_impl(
 /// `NotApplicable` so the frontend can present a clear error if it
 /// accidentally routes input there.
 pub fn subsession_input_impl(
+    ctx: &AppContext,
     sub_ctx: &SubAppContext,
     args: crate::types::SubSessionInputArgs,
 ) -> Result<(), AppError> {
+    // Reject while a workspace switch is queued or active. Writing to a
+    // PTY that's about to be drained for swap would be silently lost.
+    let _switch = acquire_switch_read(ctx)?;
+
     if let Some(sub) = sub_ctx.store.get(&args.id) {
         if matches!(sub.kind, CustomProcessKind::Application) {
             return Err(AppError::from(Error::NotApplicable(
@@ -374,7 +400,7 @@ pub async fn close_for_parent_impl(
             }
         }
         sub_ctx.store.remove(&sub.id);
-        if let Err(e) = ctx.store.remove_last_open_sub_session(&sub.id) {
+        if let Err(e) = ctx.store().remove_last_open_sub_session(&sub.id) {
             warn!(
                 parent_session_id = %parent_id,
                 sub_session_id = %sub.id,
@@ -414,12 +440,12 @@ pub async fn close_for_parent_impl(
 /// next app launch can retry; the row is already visible via the
 /// `restored` event with status `Error`.
 pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) {
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     let records = cfg.last_open_sub_sessions.clone();
     if records.is_empty() {
         return;
     }
-    let sessions = ctx.store.load_sessions();
+    let sessions = ctx.store().load_sessions();
 
     info!(
         sub_record_count = records.len(),
@@ -437,7 +463,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
                     parent_session_id = %record.parent_session_id,
                     "restore: dropping orphan sub-session (parent gone)"
                 );
-                let _ = ctx.store.remove_last_open_sub_session(&record.id);
+                let _ = ctx.store().remove_last_open_sub_session(&record.id);
                 continue;
             }
         };
@@ -447,7 +473,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
                 parent_session_id = %record.parent_session_id,
                 "restore: dropping sub-session under closing parent"
             );
-            let _ = ctx.store.remove_last_open_sub_session(&record.id);
+            let _ = ctx.store().remove_last_open_sub_session(&record.id);
             continue;
         }
 
@@ -535,6 +561,12 @@ pub async fn subsession_relaunch_impl(
     sub_ctx: &SubAppContext,
     id: SubSessionId,
 ) -> Result<SubSession, AppError> {
+    // Reject while a workspace switch is queued or active. Held for the
+    // full body (including across `pool.kill().await` + spawn) so the
+    // new child can't end up bound to the old workspace's CWD after a
+    // mid-flight swap.
+    let _switch = acquire_switch_read(ctx)?;
+
     let existing = sub_ctx
         .store
         .get(&id)
@@ -543,7 +575,7 @@ pub async fn subsession_relaunch_impl(
     // Look up the def fresh — relaunch picks up any post-creation edits
     // the user made via the Settings tab. If the def has been deleted
     // we refuse rather than spawning an empty command.
-    let cfg = ctx.store.load_config();
+    let cfg = ctx.store().load_config();
     let def = cfg
         .custom_processes
         .iter()
@@ -566,7 +598,7 @@ pub async fn subsession_relaunch_impl(
     }
 
     // Look up the parent session for its worktree path.
-    let sessions = ctx.store.load_sessions();
+    let sessions = ctx.store().load_sessions();
     let parent = sessions.get(&existing.parent_session_id).ok_or_else(|| {
         AppError::new(
             "NotFound",
@@ -628,7 +660,7 @@ pub async fn subsession_relaunch_impl(
         label: refreshed.label.clone(),
         composed_command: refreshed.composed_command.clone(),
     };
-    if let Err(e) = ctx.store.append_last_open_sub_session(updated_record) {
+    if let Err(e) = ctx.store().append_last_open_sub_session(updated_record) {
         warn!(sub_session_id = %id, error = ?e, "relaunch: persistence refresh failed");
     }
     (sub_ctx.sink.status)(&id, SubSessionStatus::Starting, None, None);

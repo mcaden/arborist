@@ -28,6 +28,8 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
+    customProcesses: [],
+    lastOpenSubSessions: [],
     ...overrides,
   };
 }
@@ -234,7 +236,14 @@ describe('NewSessionDialog', () => {
     // Now the original (stale) request resolves with data — it must be
     // ignored so the cleared list stays cleared and loading stays false.
     await act(async () => {
-      resolveList([{ path: `${REPO_ROOT}/.worktrees/stale`, branch: 'stale', isMain: false }]);
+      resolveList([
+        {
+          path: `${REPO_ROOT}/.worktrees/stale`,
+          branch: 'stale',
+          isMain: false,
+          isLocked: false,
+        },
+      ]);
     });
     expect(screen.queryByRole('button', { name: /\.worktrees\/stale/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/^Loading\.\.\.$/)).not.toBeInTheDocument();
@@ -264,7 +273,14 @@ describe('NewSessionDialog', () => {
       // Late response after unmount must not trigger setState (no React act
       // warning, no "update on unmounted component" warning).
       await act(async () => {
-        resolveList([{ path: `${REPO_ROOT}/.worktrees/late`, branch: 'late', isMain: false }]);
+        resolveList([
+          {
+            path: `${REPO_ROOT}/.worktrees/late`,
+            branch: 'late',
+            isMain: false,
+            isLocked: false,
+          },
+        ]);
       });
       const offending = errorSpy.mock.calls.find((args) => {
         const msg = String(args[0] ?? '');
@@ -289,11 +305,26 @@ describe('NewSessionDialog', () => {
     // We resolve #2 first and #1 last, simulating a slow first request that
     // races the post-failure refresh. The displayed list must reflect #2.
     const stale: WorktreeInfo[] = [
-      { path: `${REPO_ROOT}/.worktrees/old-feature`, branch: 'old-feature', isMain: false },
+      {
+        path: `${REPO_ROOT}/.worktrees/old-feature`,
+        branch: 'old-feature',
+        isMain: false,
+        isLocked: false,
+      },
     ];
     const fresh: WorktreeInfo[] = [
-      { path: `${REPO_ROOT}/.worktrees/old-feature`, branch: 'old-feature', isMain: false },
-      { path: `${REPO_ROOT}/.worktrees/my-feature`, branch: 'my-feature', isMain: false },
+      {
+        path: `${REPO_ROOT}/.worktrees/old-feature`,
+        branch: 'old-feature',
+        isMain: false,
+        isLocked: false,
+      },
+      {
+        path: `${REPO_ROOT}/.worktrees/my-feature`,
+        branch: 'my-feature',
+        isMain: false,
+        isLocked: false,
+      },
     ];
     let resolveStaleList: (value: WorktreeInfo[]) => void = () => {};
     let resolveFreshList: (value: WorktreeInfo[]) => void = () => {};

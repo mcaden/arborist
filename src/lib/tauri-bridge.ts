@@ -44,6 +44,7 @@ import type {
   SubSessionStatusEvent,
   Tool,
   WorktreeInfo,
+  WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
 } from '@/types/arborist';
@@ -275,6 +276,45 @@ export function workspaceValidate(path: string): Promise<WorkspaceValidateResult
 export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
   return invoke<WorktreeCreateResult>('worktree_create', {
     args: { name },
+  });
+}
+
+/**
+ * Switch the active workspace at runtime without restarting the process.
+ *
+ * Backend pipeline (see `commands/session.rs::workspace_switch_impl_inner`):
+ * validate the new path → fast-path no-op if unchanged → acquire the new
+ * workspace's `.lock` and persist `workspace_root` into its store (this
+ * happens **before** any irreversible state change, so a save failure can
+ * abort cleanly with the old binding still intact) → **park** every open
+ * session in the old workspace (kill the PTYs but **preserve** the
+ * session records in `sessions.json` so a later switch-back can restore
+ * them via `--resume`-spliced re-spawn) → swap the active `WorkspaceScope`
+ * (releases the old workspace's `.lock`) → write `last-workspace.json`
+ * boot hint → run `restore_all_sessions` for the new workspace inline →
+ * return the post-switch `{ config, sessions }` so the frontend can
+ * adopt all state in one render. (PR5: the previous
+ * `workspace://changed` event has been removed; the result IS the
+ * state-transfer channel.)
+ *
+ * Note: park is **not** close — the old workspace's `sessions.json` is
+ * intentionally retained. Tests / future callers must not assume the
+ * old workspace's persisted sessions are deleted by this command.
+ *
+ * Rejects with `AppError`. Notable codes:
+ *  - `WorkspaceLocked` — the target is open in another Arborist window.
+ *  - `WorkspaceSwitchInProgress` — a previous switch hasn't finished yet.
+ *  - `InvalidPath` / `Internal` — validation or filesystem failure.
+ *
+ * On success, callers should NOT manually patch the config store; the
+ * backend has already done so against the *new* workspace and the
+ * resolved result carries the post-switch `config` + `sessions`
+ * payloads that the frontend adopts atomically (see
+ * `lib/workspace-switch.ts`).
+ */
+export function workspaceSwitch(path: string): Promise<WorkspaceSwitchResult> {
+  return invoke<WorkspaceSwitchResult>('workspace_switch', {
+    args: { path },
   });
 }
 
