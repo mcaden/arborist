@@ -1789,32 +1789,37 @@ pub fn workspace_validate_impl(
 //    `pool.kill` (rare; e.g. PTY already dead) is logged and
 //    ignored. There is no abort path because park performs zero
 //    irreversible store mutations.
-// 8. Run [`restore_all_sessions`] for the new workspace inline. We
-//    are still under our exclusive `switch_lock.write()` guard, so no
-//    other workspace-mutating handler can interleave (lifecycle
-//    handlers reject; `frontend_ready` / `session_resize` silently
-//    no-op). Restore is dispatched onto a `spawn_blocking` thread
-//    because it does store IO + temp-file materialise + cleanup_orphans
-//    — same rationale as the existing `commands::frontend_ready`
-//    wrapper. Awaiting the join ensures sessions are in their
-//    post-restore state (`Starting` / `Error`) before we build the
-//    response. The `restored` CAS gate is left at its current value
-//    (intentionally NOT reset to false): a subsequent
-//    `frontend_ready` from the frontend is a no-op CAS, which is
-//    correct — restore has already fired exactly once for this
-//    workspace binding.
-// 9. Swap [`AppContext::workspace`] under `RwLock` write — the old
+// 8. Swap [`AppContext::workspace`] under `RwLock` write — the old
 //    `WorkspaceLockGuard` inside the old scope is dropped here, in
 //    one atomic moment, releasing the OS lock on the old workspace.
 //    Steps 6 and 7 ensured the only callbacks that *could* still
 //    fire are post-emit Tauri event deliveries to the JS side
 //    (handled by the `NotFound`-tolerant store re-resolution in
-//    `commands::mod::build_production_*`).
-// 10. Best-effort: update the per-branch `last-workspace.json` hint
-//     so the next launch resumes the new workspace by default.
-//     `workspace_root` was already persisted at step 5, so the
-//     post-swap frontend rehydrate is correct regardless of whether
-//     this succeeds.
+//    `commands::mod::build_production_*`). The `restored` atomic is
+//    **not** reset here (PR4's flow reset it before the swap so the
+//    frontend's follow-up `frontend_ready` could trigger restore;
+//    PR5 owns the restore inline at step 10, so resetting would be
+//    wrong — it would let a defensive `frontend_ready` re-fire
+//    restore against a workspace that was just restored).
+// 9. Best-effort: update the per-branch `last-workspace.json` hint
+//    so the next launch resumes the new workspace by default.
+//    `workspace_root` was already persisted at step 5, so the
+//    post-swap frontend rehydrate is correct regardless of whether
+//    this succeeds.
+// 10. Run [`restore_all_sessions`] for the new workspace inline. We
+//     are still under our exclusive `switch_lock.write()` guard, so no
+//     other workspace-mutating handler can interleave (lifecycle
+//     handlers reject; `frontend_ready` / `session_resize` silently
+//     no-op). Restore is dispatched onto a `spawn_blocking` thread
+//     because it does store IO + temp-file materialise + cleanup_orphans
+//     — same rationale as the existing `commands::frontend_ready`
+//     wrapper. Awaiting the join ensures sessions are in their
+//     post-restore state (`Starting` / `Error`) before we build the
+//     response. After the join, **latch `ctx.restored` to `true`**
+//     so any subsequent `frontend_ready` (defensive re-issue from the
+//     frontend, or a future code path that calls it after a switch)
+//     becomes a no-op CAS — restore for this binding has already
+//     fired exactly once, here.
 // 11. Build [`WorkspaceSwitchResult`] from the new store
 //     (`load_config` + `session_list_impl`). The frontend adopts the
 //     full state in one render — no follow-up `frontend_ready`

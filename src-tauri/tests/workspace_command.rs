@@ -461,10 +461,11 @@ async fn workspace_switch_happy_path_swaps_and_returns_state() {
         "switch_lock should be free after a completed switch",
     );
 
-    // PR5: `restored` is left at its previous value (intentionally NOT
-    // reset). Restore for the new workspace already fired inline as
-    // part of this switch — a follow-up `frontend_ready` would be a
-    // no-op CAS, which is correct.
+    // PR5: `restored` is **not reset to false** — it is latched to
+    // `true` after the inline restore that ran as part of this
+    // switch. A defensive follow-up `frontend_ready` would therefore
+    // be a no-op CAS, which is correct (restore has already fired
+    // exactly once for this binding).
     assert!(
         ctx.restored.load(std::sync::atomic::Ordering::SeqCst),
         "restored gate is set after inline restore",
