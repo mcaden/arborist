@@ -23,6 +23,14 @@ path = "src/main.rs"
 name = "arborist-test-child"
 path = "src/bin/arborist_test_child.rs"
 
+# Helper used by `tests/workspace_lock_multiprocess.rs` to verify that
+# cross-process contention on `WorkspaceLockGuard` produces
+# `LockError::Contention`. Same Cargo convention as the test child:
+# its built path is exposed via `CARGO_BIN_EXE_arborist-test-locker`.
+[[bin]]
+name = "arborist-test-locker"
+path = "src/bin/arborist_test_locker.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -38,6 +46,9 @@ portable-pty = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 dunce = "1"
+sha2 = "0.10"
+fs2 = "0.4"
+rfd = "0.16"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }

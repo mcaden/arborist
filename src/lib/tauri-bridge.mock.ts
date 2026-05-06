@@ -37,50 +37,27 @@ const rejectNotImplemented = (): Promise<never> => Promise.reject(new Error('not
 // Default unlisten is a no-op so subscribers don't blow up on cleanup.
 const noopUnlisten: UnlistenFn = () => {};
 
-export const ping: Mock<
-  Parameters<typeof realBridge.ping>,
-  ReturnType<typeof realBridge.ping>
-> = vi.fn(() => Promise.resolve('pong'));
+export const ping: Mock<typeof realBridge.ping> = vi.fn(() => Promise.resolve('pong'));
 
-export const sessionCreate: Mock<
-  Parameters<typeof realBridge.sessionCreate>,
-  ReturnType<typeof realBridge.sessionCreate>
-> = vi.fn(rejectNotImplemented);
+export const sessionCreate: Mock<typeof realBridge.sessionCreate> = vi.fn(rejectNotImplemented);
 
-export const sessionList: Mock<
-  Parameters<typeof realBridge.sessionList>,
-  ReturnType<typeof realBridge.sessionList>
-> = vi.fn(() => Promise.resolve([]));
+export const sessionList: Mock<typeof realBridge.sessionList> = vi.fn(() => Promise.resolve([]));
 
-export const sessionClose: Mock<
-  Parameters<typeof realBridge.sessionClose>,
-  ReturnType<typeof realBridge.sessionClose>
-> = vi.fn(() => Promise.resolve());
+export const sessionClose: Mock<typeof realBridge.sessionClose> = vi.fn(() =>
+  Promise.resolve({ worktreeDeleteError: null }),
+);
 
-export const sessionFocus: Mock<
-  Parameters<typeof realBridge.sessionFocus>,
-  ReturnType<typeof realBridge.sessionFocus>
-> = vi.fn(() => Promise.resolve());
+export const sessionFocus: Mock<typeof realBridge.sessionFocus> = vi.fn(() => Promise.resolve());
 
-export const sessionResize: Mock<
-  Parameters<typeof realBridge.sessionResize>,
-  ReturnType<typeof realBridge.sessionResize>
-> = vi.fn(() => Promise.resolve());
+export const sessionResize: Mock<typeof realBridge.sessionResize> = vi.fn(() => Promise.resolve());
 
-export const sessionInput: Mock<
-  Parameters<typeof realBridge.sessionInput>,
-  ReturnType<typeof realBridge.sessionInput>
-> = vi.fn(() => Promise.resolve());
+export const sessionInput: Mock<typeof realBridge.sessionInput> = vi.fn(() => Promise.resolve());
 
-export const sessionRestart: Mock<
-  Parameters<typeof realBridge.sessionRestart>,
-  ReturnType<typeof realBridge.sessionRestart>
-> = vi.fn(() => Promise.resolve());
+export const sessionRestart: Mock<typeof realBridge.sessionRestart> = vi.fn(() =>
+  Promise.resolve(),
+);
 
-export const frontendReady: Mock<
-  Parameters<typeof realBridge.frontendReady>,
-  ReturnType<typeof realBridge.frontendReady>
-> = vi.fn(() => Promise.resolve());
+export const frontendReady: Mock<typeof realBridge.frontendReady> = vi.fn(() => Promise.resolve());
 
 // `config_get`/`config_set`/`instructions_list` are real implementations as
 // of Phase 4; their default mock behaviour returns benign empty values so
@@ -101,20 +78,15 @@ const defaultAppConfig = (): AppConfig => ({
   activeSessionId: null,
 });
 
-export const configGet: Mock<
-  Parameters<typeof realBridge.configGet>,
-  ReturnType<typeof realBridge.configGet>
-> = vi.fn(() => Promise.resolve(defaultAppConfig()));
+export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() =>
+  Promise.resolve(defaultAppConfig()),
+);
 
-export const configSet: Mock<
-  Parameters<typeof realBridge.configSet>,
-  ReturnType<typeof realBridge.configSet>
-> = vi.fn(() => Promise.resolve());
+export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() => Promise.resolve());
 
-export const instructionsList: Mock<
-  Parameters<typeof realBridge.instructionsList>,
-  ReturnType<typeof realBridge.instructionsList>
-> = vi.fn(() => Promise.resolve([]));
+export const instructionsList: Mock<typeof realBridge.instructionsList> = vi.fn(() =>
+  Promise.resolve([]),
+);
 
 export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() =>
   Promise.resolve([]),
@@ -126,29 +98,27 @@ export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.f
 
 export const worktreeCreate: Mock<typeof realBridge.worktreeCreate> = vi.fn(rejectNotImplemented);
 
+export const workspaceSwitch: Mock<typeof realBridge.workspaceSwitch> = vi.fn(rejectNotImplemented);
+
 export const pickDirectory: Mock<typeof realBridge.pickDirectory> = vi.fn(() =>
   Promise.resolve(null),
 );
 
-export const onSessionOutput: Mock<
-  Parameters<typeof realBridge.onSessionOutput>,
-  ReturnType<typeof realBridge.onSessionOutput>
-> = vi.fn(() => Promise.resolve(noopUnlisten));
+export const onSessionOutput: Mock<typeof realBridge.onSessionOutput> = vi.fn(() =>
+  Promise.resolve(noopUnlisten),
+);
 
-export const onSessionStatus: Mock<
-  Parameters<typeof realBridge.onSessionStatus>,
-  ReturnType<typeof realBridge.onSessionStatus>
-> = vi.fn(() => Promise.resolve(noopUnlisten));
+export const onSessionStatus: Mock<typeof realBridge.onSessionStatus> = vi.fn(() =>
+  Promise.resolve(noopUnlisten),
+);
 
-export const onSessionActivity: Mock<
-  Parameters<typeof realBridge.onSessionActivity>,
-  ReturnType<typeof realBridge.onSessionActivity>
-> = vi.fn(() => Promise.resolve(noopUnlisten));
+export const onSessionActivity: Mock<typeof realBridge.onSessionActivity> = vi.fn(() =>
+  Promise.resolve(noopUnlisten),
+);
 
-export const onSessionMetrics: Mock<
-  Parameters<typeof realBridge.onSessionMetrics>,
-  ReturnType<typeof realBridge.onSessionMetrics>
-> = vi.fn(() => Promise.resolve(noopUnlisten));
+export const onSessionMetrics: Mock<typeof realBridge.onSessionMetrics> = vi.fn(() =>
+  Promise.resolve(noopUnlisten),
+);
 
 // Re-export the bridge's argument-shape interfaces so consumers importing
 // from the mock get identical types.
@@ -181,6 +151,7 @@ export function resetBridgeMocks(): void {
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
   worktreeCreate.mockReset().mockImplementation(rejectNotImplemented);
+  workspaceSwitch.mockReset().mockImplementation(rejectNotImplemented);
   pickDirectory.mockReset().mockImplementation(() => Promise.resolve(null));
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
@@ -209,6 +180,7 @@ const _shapeCheck = {
   worktreesList,
   workspaceValidate,
   worktreeCreate,
+  workspaceSwitch,
   pickDirectory,
   onSessionOutput,
   onSessionStatus,

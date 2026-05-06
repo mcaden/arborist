@@ -43,6 +43,16 @@ export interface ConfigStoreState {
   /** Re-read the persisted config and replace the cached snapshot. */
   hydrate: () => Promise<void>;
   /**
+   * Atomically replace the cached config with a server-truth snapshot
+   * (no diff merge). Used by `lib/workspace-switch.ts` after a
+   * successful `workspaceSwitch` to install the **new** workspace's
+   * config in one render — combined with `sessionStore.adoptWorkspace`,
+   * this collapses the old "config-store.hydrate → frontendReady →
+   * session-store.hydrate" round-trip chain into a single paint.
+   * Marks the store as `ready` and clears any prior error.
+   */
+  adoptWorkspace: (config: AppConfig) => void;
+  /**
    * Push a diff to the backend via `configSet` and, on success, mirror the
    * diff into the local cache. Only fields explicitly present on `patch`
    * are forwarded — `undefined` values are stripped first so the backend's
@@ -109,6 +119,10 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       set({ status: 'error', error: message });
       throw err;
     }
+  },
+
+  adoptWorkspace: (config) => {
+    set({ config, status: 'ready', error: null });
   },
 
   set: async (patch) => {

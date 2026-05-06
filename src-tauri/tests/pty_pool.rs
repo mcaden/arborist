@@ -497,12 +497,24 @@ impl Read for ParkedReader {
 
 struct FakeKiller {
     eof_flag: Arc<AtomicBool>,
+    /// When true, `kill()` returns an `Err` even though it still flips
+    /// the eof flag so the reader/waiter unblock. Used by the
+    /// `kill_returns_unconfirmed_when_killer_errors` regression test
+    /// to drive the `KillOutcome::Unconfirmed` branch deterministically
+    /// without waiting out `KILL_GRACE`.
+    fail: bool,
 }
 
 impl PtyKiller for FakeKiller {
     fn kill(&self) -> Result<(), arborist_lib::types::Error> {
         self.eof_flag.store(true, Ordering::Relaxed);
-        Ok(())
+        if self.fail {
+            Err(arborist_lib::types::Error::PtyKillFailed(
+                "simulated kill failure".into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -546,6 +558,9 @@ enum FakeMode {
     Parked,
     /// Park reader; auto-exit waiter after `delay`.
     AutoExit { delay: Duration, exit_code: u32 },
+    /// Parked reader, but `killer.kill()` returns `Err`. Used to
+    /// exercise the `KillOutcome::Unconfirmed` branch of `pool.kill`.
+    ParkedKillFails,
 }
 
 struct FakeSpawner {
@@ -582,34 +597,48 @@ impl PtySpawner for FakeSpawner {
         *self.last_eof.lock().unwrap() = Some(Arc::clone(&eof));
 
         let mode = self.mode.lock().unwrap().clone();
-        let (reader, exit_code, auto_exit): (Box<dyn Read + Send>, u32, Option<Duration>) =
-            match mode {
-                FakeMode::Scripted {
-                    chunks,
+        let (reader, exit_code, auto_exit, fail_kill): (
+            Box<dyn Read + Send>,
+            u32,
+            Option<Duration>,
+            bool,
+        ) = match mode {
+            FakeMode::Scripted {
+                chunks,
+                pause,
+                exit_code,
+            } => {
+                let r = ScriptedReader {
+                    chunks: chunks.into_iter(),
                     pause,
-                    exit_code,
-                } => {
-                    let r = ScriptedReader {
-                        chunks: chunks.into_iter(),
-                        pause,
-                    };
-                    (Box::new(r), exit_code, None)
-                }
-                FakeMode::Parked => (
-                    Box::new(ParkedReader {
-                        eof: Arc::clone(&eof),
-                    }),
-                    0,
-                    None,
-                ),
-                FakeMode::AutoExit { delay, exit_code } => (
-                    Box::new(ParkedReader {
-                        eof: Arc::clone(&eof),
-                    }),
-                    exit_code,
-                    Some(delay),
-                ),
-            };
+                };
+                (Box::new(r), exit_code, None, false)
+            }
+            FakeMode::Parked => (
+                Box::new(ParkedReader {
+                    eof: Arc::clone(&eof),
+                }),
+                0,
+                None,
+                false,
+            ),
+            FakeMode::AutoExit { delay, exit_code } => (
+                Box::new(ParkedReader {
+                    eof: Arc::clone(&eof),
+                }),
+                exit_code,
+                Some(delay),
+                false,
+            ),
+            FakeMode::ParkedKillFails => (
+                Box::new(ParkedReader {
+                    eof: Arc::clone(&eof),
+                }),
+                0,
+                None,
+                true,
+            ),
+        };
 
         Ok(SpawnedChild {
             pid,
@@ -621,7 +650,10 @@ impl PtySpawner for FakeSpawner {
                 exit_code,
                 auto_exit_after: auto_exit,
             }),
-            killer: Arc::new(FakeKiller { eof_flag: eof }),
+            killer: Arc::new(FakeKiller {
+                eof_flag: eof,
+                fail: fail_kill,
+            }),
         })
     }
 }
@@ -907,6 +939,84 @@ fn session_id_new_yields_unique_uuids() {
     let b = SessionId::new();
     assert_ne!(a.0, Uuid::nil());
     assert_ne!(a, b);
+}
+
+// ---------------------------------------------------------------------------
+// KillOutcome (PR #32 round-12 review): pool.kill must distinguish
+// "process reaped" from "kill issued but reap unconfirmed" so callers
+// like park_session_for_switch_impl can log a possible orphan PID
+// instead of silently dropping the signal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn kill_returns_reaped_on_clean_kill_and_join() {
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::Parked));
+    let pool = PtyPool::new(spawner);
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let (sink, _outs, _stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
+
+    let outcome = rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
+    assert_eq!(
+        outcome,
+        arborist_lib::pty_pool::KillOutcome::Reaped,
+        "happy-path kill must report Reaped so callers know the OS reclaimed the process"
+    );
+    assert!(!pool.contains(&session.id));
+}
+
+#[test]
+fn kill_returns_unconfirmed_when_killer_errors() {
+    // Regression for PR #32 round-12 review finding: previously
+    // `pool.kill` did `let _ = rt.killer.kill()` and returned `Ok(())`
+    // even when the OS-level kill primitive itself reported failure.
+    // `park_session_for_switch_impl` then proceeded as if the child
+    // had died — but the persisted session record still said "live"
+    // and the next switch-back would respawn it as a SECOND live
+    // process for the same SessionId. The fix surfaces the kill
+    // failure as `KillOutcome::Unconfirmed { pid }` so the caller can
+    // log the orphan PID for human cleanup.
+    //
+    // Here we drive the killer-error branch in isolation by flipping
+    // the FakeKiller's `fail` flag (the killer still nudges the eof
+    // flag so the read/wait threads exit promptly, keeping the test
+    // fast — KILL_GRACE is 2s, which we don't want to wait through
+    // for every CI run).
+    let spawner = Arc::new(FakeSpawner::new(FakeMode::ParkedKillFails));
+    let pool = PtyPool::new(spawner);
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = make_session(dir.path());
+    let (sink, _outs, _stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    let pid = pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
+
+    let outcome = rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
+
+    match outcome {
+        arborist_lib::pty_pool::KillOutcome::Unconfirmed { pid: reported_pid } => {
+            assert_eq!(
+                reported_pid, pid,
+                "Unconfirmed must carry the recorded PID so the caller can log it for human cleanup"
+            );
+        }
+        other => panic!(
+            "expected Unconfirmed when killer.kill() returns Err; got {:?}",
+            other
+        ),
+    }
+
+    // Even on Unconfirmed, the runtime entry must be evicted so the
+    // SessionId is free for a fresh respawn (this matches the existing
+    // pool-eviction contract that callers already rely on).
+    assert!(!pool.contains(&session.id));
 }
 
 // Silence unused-import lints when the platform-specific quoter selects

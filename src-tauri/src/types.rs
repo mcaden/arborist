@@ -664,6 +664,31 @@ pub struct WorkspaceValidateArgs {
 /// an absolute, existing directory containing a git repository. On failure,
 /// `error` carries a short human-readable reason for inline picker feedback.
 ///
+/// `alreadyOpenInAnotherInstance` is an **advisory** flag set when a
+/// non-blocking probe of the per-(branch, workspace) `.lock` file
+/// could not acquire the OS lock — i.e. another Arborist process
+/// **bound to the same `(branch, workspace)` pair** currently holds
+/// it. The lock is OS-advisory: if a previous owner exited (cleanly
+/// or by crash) the OS releases the file handle and the probe will
+/// succeed, so this flag does **not** indicate a stale lock —
+/// `WorkspaceLockGuard` does not require any explicit cleanup
+/// (see `workspace_lock.rs` "Crash semantics").
+/// Contention with a different branch (e.g. release vs dev build of
+/// the same workspace) is **not** detected here because each branch
+/// gets its own scoped lock path under
+/// `<app_data_dir>/[branches/<branch>/]workspaces/<key>/.lock`. The
+/// picker UI surfaces a warning but still allows the user to
+/// confirm; the actual lock is acquired transactionally by
+/// `workspace_switch` (or boot), which will fail with
+/// `WorkspaceLocked` if the contention is still present.
+/// The probe treats a missing `.lock` file as "no contention" (it
+/// short-circuits and returns `Ok(true)` without creating the file),
+/// so the missing file alone never produces an absent value — it
+/// serialises as `Some(false)` ("probed, no contention"). The field
+/// is `None` only when the path failed earlier validation (no probe
+/// attempted), the caller passed `app_data_dir = None`, or the probe
+/// itself hit an I/O error.
+///
 /// MIRROR: `src/types/arborist.ts::WorkspaceValidateResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -671,6 +696,11 @@ pub struct WorkspaceValidateResult {
     pub valid: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error: Option<String>,
+    /// `Some(true)` if a non-blocking lock probe revealed contention;
+    /// `Some(false)` if the probe succeeded; `None` if no probe was
+    /// performed (e.g. the path failed earlier validation).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub already_open_in_another_instance: Option<bool>,
 }
 
 /// Arguments for `worktree_create` (Roadmap §2.2).
@@ -690,6 +720,40 @@ pub struct WorktreeCreateArgs {
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeCreateResult {
     pub path: PathBuf,
+}
+
+/// Arguments for `workspace_switch` (Phase 7 — in-app workspace switch).
+///
+/// MIRROR: `src/types/arborist.ts::WorkspaceSwitchArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSwitchArgs {
+    pub path: String,
+}
+
+/// Result of `workspace_switch`. `workspaceRoot` is the **canonical** path
+/// the backend bound to (which may differ in casing / separators from the
+/// path the frontend submitted). `noOp` is `true` if the requested path
+/// resolved to the workspace already in use; in that case `config` and
+/// `sessions` mirror the *current* (unchanged) workspace's state so the
+/// wire payload is non-nullable but the frontend can short-circuit
+/// adoption on the flag.
+///
+/// On a real swap, `config` and `sessions` reflect the **new** workspace's
+/// state *after* the inline restore loop has run — sessions are already
+/// in `Starting` (or `Error` if the restore preflight failed), so the
+/// frontend can adopt everything in one render with no flicker. The
+/// `workspace://changed` event was deleted in PR5; this result is now
+/// the sole authoritative state-transfer channel for in-app switches.
+///
+/// MIRROR: `src/types/arborist.ts::WorkspaceSwitchResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSwitchResult {
+    pub workspace_root: PathBuf,
+    pub no_op: bool,
+    pub config: AppConfig,
+    pub sessions: Vec<SessionView>,
 }
 
 /// Crate-wide error type. Internal Rust code consumes this via `?`; at the

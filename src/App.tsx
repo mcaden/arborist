@@ -11,11 +11,18 @@
 //   5. `frontendReady()` — tell the backend listeners are live; backend then
 //      kicks off `restore_all_sessions` asynchronously (DESIGN §5.5).
 //
+// In-app workspace switches are handled entirely by
+// `lib/workspace-switch.ts::changeWorkspace`: the backend now runs the
+// new workspace's restore inline and returns the post-switch
+// `{ config, sessions }` in the result, which `changeWorkspace`
+// adopts atomically into the stores. No `workspace://changed` event
+// listener is needed; PR5 removed it.
+//
 // While the boot effect runs, a `<BootSplash />` is shown. On any thrown
 // error from the hydrate steps, an error overlay with a Reload button is
 // shown instead.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
@@ -26,6 +33,7 @@ import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/li
 import { frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import { selectIsSwitching, useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 
 type BootStatus = 'booting' | 'ready' | 'error';
 
@@ -113,6 +121,7 @@ export function App(): JSX.Element {
         unlistenStatus = subscribeToStatus();
         unlistenActivity = subscribeToActivity();
         unlistenMetrics = subscribeToMetrics();
+        if (cancelled) return;
         await frontendReady();
         if (cancelled) return;
         setStatus('ready');
@@ -177,11 +186,105 @@ function ReadyApp(): JSX.Element {
     );
   }
 
+  // The `isSwitching` subscription lives inside `ReadyAppShell` (not
+  // here) so the first-boot picker branch above doesn't re-render on
+  // flag flips. In practice the picker only mounts when no workspace
+  // is bound and `changeWorkspace` (the only writer) is unreachable
+  // from there, so this is hygiene rather than a live bug.
+  return <ReadyAppShell />;
+}
+
+// Split out so the focus-management `useEffect` only mounts under the
+// `workspaceRoot` branch (the picker branch returns early above and
+// must not register the trap). Two layers gate input while a
+// transactional workspace switch is in flight (see DESIGN §5.5c —
+// inputs received mid-switch would land against ambiguous state):
+//
+// 1. The underlying app root gets `aria-busy` and `inert`. `inert`
+//    is the authoritative gate: it removes the subtree from the
+//    sequential focus order AND blocks click / keyboard / AT
+//    interactions. All Tauri-supported WebViews ship with `inert`
+//    today (WebView2 ≥109, WKWebView ≥15.5, WebKitGTK ≥2.40), so
+//    the previous claim that `pointer-events-auto` was a "failsafe
+//    even on platforms where `inert` is unavailable" was misleading
+//    — `pointer-events-auto` only addresses pointer events, not
+//    keyboard.
+// 2. The overlay itself is a modal: `role="alertdialog"`,
+//    `aria-modal="true"`, `tabIndex={-1}`, and an effect moves
+//    focus into it on mount (so any element previously focused in
+//    the now-inert subtree loses focus) and restores focus on
+//    unmount. A document-level `focusin` listener bounces escapes
+//    back into the overlay as a defence-in-depth in the (currently
+//    hypothetical) case where a future WebView regression lets
+//    focus escape `inert`.
+//
+// The `isSwitching` flag flips off in the same render that adopts
+// the new workspace's data, so users never see a "no workspace"
+// flash between hide-overlay and tabs-populated.
+function ReadyAppShell(): JSX.Element {
+  const isSwitching = useWorkspaceSwitchUiStore(selectIsSwitching);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isSwitching) return;
+    const previouslyFocused =
+      typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+    overlayRef.current?.focus();
+    const trapFocus = (e: FocusEvent): void => {
+      const overlay = overlayRef.current;
+      if (!overlay) return;
+      const target = e.target as Node | null;
+      if (target && !overlay.contains(target)) {
+        overlay.focus();
+      }
+    };
+    document.addEventListener('focusin', trapFocus);
+    return () => {
+      document.removeEventListener('focusin', trapFocus);
+      // Only restore focus if the previously-focused element is still
+      // attached and focusable. After a successful switch the old
+      // session's tab is gone from the DOM, so there's nothing to
+      // restore — let the browser pick the next focus target.
+      if (
+        previouslyFocused &&
+        typeof previouslyFocused.focus === 'function' &&
+        document.contains(previouslyFocused)
+      ) {
+        previouslyFocused.focus();
+      }
+    };
+  }, [isSwitching]);
+
   return (
-    <div className="flex h-full w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100">
-      <Sidebar />
-      <MainArea />
-      <NewSessionDialog />
+    <div className="relative h-full w-full">
+      <div
+        className="flex h-full w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100"
+        aria-busy={isSwitching || undefined}
+        // `inert` is a boolean attribute; React passes it through when
+        // truthy. Cast to `unknown` because the global JSX intrinsics
+        // for `<div>` only added `inert` typing in newer React types.
+        {...(isSwitching ? ({ inert: '' } as unknown as { inert: string }) : {})}
+      >
+        <Sidebar />
+        <MainArea />
+        <NewSessionDialog />
+      </div>
+      {isSwitching && (
+        <div
+          ref={overlayRef}
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="workspace-switch-overlay-label"
+          aria-live="polite"
+          tabIndex={-1}
+          data-testid="workspace-switch-overlay"
+          className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-white/70 outline-none backdrop-blur-sm dark:bg-slate-900/70"
+        >
+          <div className="flex flex-col items-center gap-2 rounded border border-slate-300 bg-white px-6 py-4 text-sm text-slate-700 shadow dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            <p id="workspace-switch-overlay-label">Switching workspace…</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
