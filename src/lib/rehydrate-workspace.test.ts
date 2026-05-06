@@ -169,4 +169,57 @@ describe('rehydrateActiveWorkspace', () => {
     await rehydrateActiveWorkspace();
     expect(sessionHydrate).toHaveBeenCalledTimes(1);
   });
+
+  it('bails an in-flight rehydrate as soon as a newer call is submitted mid-run', async () => {
+    // Regression for PR #32 round-12 review finding: the existing
+    // dequeue-time gen check only handles calls queued behind us
+    // BEFORE we started. Both call sites in the workspace-switch flow
+    // (App-level `workspace://changed` listener AND the explicit
+    // fallback rehydrate inside `changeWorkspace`) are triggered by
+    // the same backend state change but the second one fires AFTER
+    // the listener-driven run has already passed its initial guard.
+    // Without mid-run gen checks, both runs would do all three
+    // backend round-trips on every successful workspace switch.
+    //
+    // Trace:
+    //   1. Call A is submitted → starts → awaits configStore.hydrate.
+    //   2. Call B is submitted (held in queue behind A's chain).
+    //   3. A's configStore.hydrate resolves → mid-run check sees
+    //      `myGenA(1) < submitted(2)` → A bails (no frontendReady,
+    //      no sessionHydrate).
+    //   4. B dequeues → runs the full pipeline (1 of each call).
+    //
+    // Net: configHydrate twice (1 wasted), frontendReady once,
+    // sessionHydrate once. Without the mid-run check we'd see 2/2/2.
+    let resolveFirstConfig: (() => void) | undefined;
+    const firstConfig = new Promise<void>((resolve) => {
+      resolveFirstConfig = resolve;
+    });
+    configHydrate.mockImplementationOnce(() => firstConfig);
+
+    const firstCall = rehydrateActiveWorkspace();
+    // Yield once so call A actually starts running and is awaiting
+    // configHydrate. Otherwise B is queued before A starts and the
+    // existing dequeue-time check (already covered by the
+    // "coalesces a superseded rehydrate" test) handles it.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(configHydrate).toHaveBeenCalledTimes(1);
+
+    // Submit call B while A is mid-flight, parked at configHydrate.
+    const secondCall = rehydrateActiveWorkspace();
+
+    // Resolve A's configHydrate so it reaches the mid-run check.
+    resolveFirstConfig?.();
+
+    await firstCall;
+    await secondCall;
+
+    // A's configHydrate ran (the wasted one we can't avoid). After
+    // its mid-run check, A bailed → no frontendReady, no
+    // sessionHydrate from A. B then ran fully.
+    expect(configHydrate).toHaveBeenCalledTimes(2);
+    expect(frontendReady).toHaveBeenCalledTimes(1);
+    expect(sessionHydrate).toHaveBeenCalledTimes(1);
+  });
 });

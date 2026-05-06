@@ -682,13 +682,37 @@ async fn park_session_for_switch_impl(ctx: &AppContext, id: SessionId) {
     //    (step 6 inside pool::kill); restore re-materialises temp
     //    files from the persisted `Session.temp_files` so this is
     //    safe.
+    //
+    //    `pool.kill` reports a `KillOutcome` so we can distinguish
+    //    "OS confirmed the child was reaped within KILL_GRACE" from
+    //    "kill issued but reap not observed in time". For an
+    //    `Unconfirmed` outcome we log loudly with the PID so a human
+    //    can find and clean up the orphan if one actually leaked
+    //    (the kill primitive itself was still issued — see step 3 of
+    //    `pool.kill` — so this is genuinely a rare edge case, not the
+    //    hot path). We still continue with the swap because rolling
+    //    back the workspace switch on a single park's reap timeout
+    //    would block the user on a problem they can't see; the swap
+    //    contract is "park is best-effort" (DESIGN §5.5c step 7).
     if ctx.pool.contains(&id) {
-        if let Err(e) = ctx.pool.kill(&id).await {
-            warn!(
-                session_id = %id,
-                error = ?e,
-                "park: pool.kill failed during workspace switch; continuing without aborting swap (record preserved for restore)"
-            );
+        match ctx.pool.kill(&id).await {
+            Ok(crate::pty_pool::KillOutcome::Reaped) => {}
+            Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
+                warn!(
+                    session_id = %id,
+                    pid,
+                    "park: pool.kill issued but reap unconfirmed within grace period; \
+                     a CLI process may still be alive at this PID. Workspace switch \
+                     proceeding (record preserved for restore); manual cleanup may be needed."
+                );
+            }
+            Err(e) => {
+                warn!(
+                    session_id = %id,
+                    error = ?e,
+                    "park: pool.kill failed during workspace switch; continuing without aborting swap (record preserved for restore)"
+                );
+            }
         }
     }
     // **Intentionally absent**: store.remove_session, save_config,

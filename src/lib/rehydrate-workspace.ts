@@ -27,6 +27,21 @@
 // overwrite ours anyway, so the intermediate hydrate is pure waste +
 // UI flicker). The newest submission always runs.
 //
+// Mid-run supersession: the dequeue-time check above only handles
+// calls that were queued behind us BEFORE we started. The normal
+// workspace-switch flow has TWO callers triggered by the same backend
+// state change: the App-level `workspace://changed` listener fires
+// first (microtask), and then `changeWorkspace()`'s defensive
+// fallback rehydrate fires from the resolved `workspaceSwitch`
+// promise — which can land AFTER the listener-driven run has already
+// passed its initial guard. Without re-checking generation between
+// each backend round-trip, the in-flight run would do all three
+// stages and then the explicit caller's run would do all three again
+// (every workspace switch on the success path). Re-checking after
+// each `await` lets the in-flight run bail as soon as a newer caller
+// is submitted, capping the redundant work at the configStore fetch
+// already in flight when supersession occurred.
+//
 // Step ordering — IMPORTANT (regression: parked sessions never
 // resumed after switch-back):
 //   1. configStore.hydrate()  — frontend-only state; no UI
@@ -90,7 +105,13 @@ export async function rehydrateActiveWorkspace(): Promise<void> {
     // briefly flash the wrong workspace in the UI on the way through.
     if (myGen < submitted) return;
     await useConfigStore.getState().hydrate();
+    // Mid-run supersession check: a newer caller (e.g. the explicit
+    // `changeWorkspace` rehydrate landing right after the App listener
+    // fired its own) makes the rest of our work redundant — bail
+    // before doing the next round-trip.
+    if (myGen < submitted) return;
     await frontendReady();
+    if (myGen < submitted) return;
     await useSessionStore.getState().actions.hydrate();
   });
   // Swallow errors when extending the chain so a failing run does not
