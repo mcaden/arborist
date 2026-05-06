@@ -45,6 +45,81 @@ use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+/// A `PathBuf` that is **statically asserted** to have been canonicalised
+/// before construction. The hashing in [`workspace_key`] and the
+/// directory layout in [`StoreRoot::for_workspace`] are stable only over
+/// canonical paths — two equivalent-but-byte-different forms of the
+/// same workspace would split its on-disk state across two storage
+/// dirs. Wrapping the path in this newtype makes that invariant
+/// compile-checkable: every call site that wants to derive a layout
+/// must show a `CanonicalPath`, and the only public way to get one is
+/// [`CanonicalPath::canonicalise`] (which actually canonicalises) or
+/// [`CanonicalPath::assume_canonical`] (which is a deliberate
+/// escape-hatch — see its doc).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CanonicalPath(PathBuf);
+
+impl CanonicalPath {
+    /// Canonicalise `p` via [`dunce::canonicalize`] (which avoids the
+    /// `\\?\` UNC prefix on Windows that
+    /// [`std::fs::canonicalize`] would otherwise produce). The path
+    /// must exist on disk; symlinks are resolved, `..` components are
+    /// removed, and on Windows the case is normalised to whatever the
+    /// filesystem reports.
+    ///
+    /// This is the *only* fallible constructor. Production code should
+    /// prefer this entry point so the resulting `CanonicalPath` is
+    /// genuinely canonical, not merely declared so.
+    pub fn canonicalise(p: impl AsRef<Path>) -> std::io::Result<Self> {
+        dunce::canonicalize(p.as_ref()).map(Self)
+    }
+
+    /// Construct a `CanonicalPath` from a `PathBuf` that the caller
+    /// **already canonicalised by some other route**.
+    ///
+    /// **Use sparingly.** This bypasses the runtime canonicalisation
+    /// guarantee and trusts the caller's claim. Legitimate uses:
+    /// - The path was just produced by [`Self::canonicalise`] upstream
+    ///   (e.g. plumbed through a struct field as `PathBuf`) and we
+    ///   want to re-tag it without a redundant filesystem round-trip.
+    /// - Synthetic test fixtures whose paths intentionally do not
+    ///   exist on disk (e.g. the unit tests in this module that
+    ///   exercise `workspace_key` against `/repos/x` literals).
+    ///
+    /// Do **not** use this to wrap raw user input. It's a deliberate
+    /// foot-gun preserved only because the alternative — forcing
+    /// every test fixture to materialise a real directory just to be
+    /// canonicalised — is more harmful than the foot-gun.
+    #[must_use]
+    pub fn assume_canonical(p: PathBuf) -> Self {
+        Self(p)
+    }
+
+    /// Borrow the inner path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Consume self and return the inner `PathBuf`.
+    #[must_use]
+    pub fn into_inner(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl AsRef<Path> for CanonicalPath {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CanonicalPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.display().fmt(f)
+    }
+}
+
 /// Returns `true` if `branch` represents the canonical (top-level) build.
 ///
 /// Both an empty string (no git info / detached HEAD / shallow clone) and
@@ -61,31 +136,29 @@ pub fn is_canonical_build(branch: &str) -> bool {
 /// key for a workspace. 16 hex chars = 64 bits = collision-free for any
 /// realistic number of workspaces.
 ///
-/// **The caller MUST pass an already-canonicalised absolute path.** The
-/// hash is computed over the path's platform-native byte representation,
-/// so two equivalent paths that aren't byte-identical (different case
-/// on Windows, with vs without a trailing separator, symlink vs target,
-/// etc.) would otherwise produce different keys and accidentally split
-/// a single workspace's state across two storage dirs.
-///
-/// On Unix we hash the raw `OsStr` bytes (paths are opaque byte
-/// sequences and may not be valid UTF-8). On Windows we hash the UTF-16
-/// LE code units. We deliberately do **not** route through
-/// `to_string_lossy`, which would replace invalid UTF-8 with `U+FFFD`
-/// and could collide two genuinely distinct non-UTF-8 paths to the
-/// same key.
+/// The input is statically required to be a [`CanonicalPath`] so two
+/// equivalent paths that aren't byte-identical (different case on
+/// Windows, with vs without a trailing separator, symlink vs target,
+/// etc.) cannot be passed in by accident. The hash is computed over
+/// the path's platform-native byte representation: on Unix the raw
+/// `OsStr` bytes (paths are opaque byte sequences and may not be valid
+/// UTF-8); on Windows the UTF-16 LE code units. We deliberately do
+/// **not** route through `to_string_lossy`, which would replace
+/// invalid UTF-8 with `U+FFFD` and could collide two genuinely
+/// distinct non-UTF-8 paths to the same key.
 #[must_use]
-pub fn workspace_key(canonical_path: &Path) -> String {
+pub fn workspace_key(canonical_path: &CanonicalPath) -> String {
+    let path = canonical_path.as_path();
     let mut hasher = Sha256::new();
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
-        hasher.update(canonical_path.as_os_str().as_bytes());
+        hasher.update(path.as_os_str().as_bytes());
     }
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt as _;
-        for wide in canonical_path.as_os_str().encode_wide() {
+        for wide in path.as_os_str().encode_wide() {
             hasher.update(wide.to_le_bytes());
         }
     }
@@ -93,7 +166,7 @@ pub fn workspace_key(canonical_path: &Path) -> String {
     {
         // Fallback for exotic platforms: lossy string. None of our
         // supported targets reach this branch.
-        hasher.update(canonical_path.to_string_lossy().as_bytes());
+        hasher.update(path.to_string_lossy().as_bytes());
     }
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(16);
@@ -216,7 +289,10 @@ impl StoreRoot {
     /// Returns `None` when this root **is** the canonical root — a
     /// canonical build seeding from itself makes no sense.
     #[must_use]
-    pub fn canonical_workspace_settings_path(&self, canonical_workspace: &Path) -> Option<PathBuf> {
+    pub fn canonical_workspace_settings_path(
+        &self,
+        canonical_workspace: &CanonicalPath,
+    ) -> Option<PathBuf> {
         if self.is_canonical() {
             None
         } else {
@@ -230,13 +306,14 @@ impl StoreRoot {
     }
 
     /// Promote this root to a full per-workspace [`StoreLayout`].
-    /// `canonical_workspace` MUST already be canonicalised — see
-    /// [`workspace_key`] for the stability requirement.
+    /// Requires a [`CanonicalPath`] so [`workspace_key`]'s stability
+    /// invariant cannot be silently broken by an un-canonicalised
+    /// caller.
     #[must_use]
-    pub fn for_workspace(&self, canonical_workspace: impl Into<PathBuf>) -> StoreLayout {
+    pub fn for_workspace(&self, canonical_workspace: &CanonicalPath) -> StoreLayout {
         StoreLayout {
             root: self.clone(),
-            workspace: canonical_workspace.into(),
+            workspace: canonical_workspace.clone(),
         }
     }
 }
@@ -250,7 +327,7 @@ impl StoreRoot {
 #[derive(Debug, Clone)]
 pub struct StoreLayout {
     root: StoreRoot,
-    workspace: PathBuf,
+    workspace: CanonicalPath,
 }
 
 impl StoreLayout {
@@ -262,7 +339,7 @@ impl StoreLayout {
 
     /// The canonicalised workspace path this layout is keyed on.
     #[must_use]
-    pub fn workspace(&self) -> &Path {
+    pub fn workspace(&self) -> &CanonicalPath {
         &self.workspace
     }
 
@@ -322,6 +399,13 @@ mod tests {
         StoreRoot::new(PathBuf::from(app_data), branch.to_string())
     }
 
+    /// Test helper: wrap a synthetic path literal as canonical without
+    /// touching the filesystem. Real production code uses
+    /// [`CanonicalPath::canonicalise`].
+    fn cp(p: &str) -> CanonicalPath {
+        CanonicalPath::assume_canonical(PathBuf::from(p))
+    }
+
     // ----- is_canonical_build -------------------------------------------
 
     #[test]
@@ -345,20 +429,20 @@ mod tests {
 
     #[test]
     fn workspace_key_is_deterministic() {
-        let p = PathBuf::from("/repos/arborist");
+        let p = cp("/repos/arborist");
         assert_eq!(workspace_key(&p), workspace_key(&p));
     }
 
     #[test]
     fn workspace_key_differs_for_different_paths() {
-        let a = workspace_key(&PathBuf::from("/repos/arborist"));
-        let b = workspace_key(&PathBuf::from("/repos/other"));
+        let a = workspace_key(&cp("/repos/arborist"));
+        let b = workspace_key(&cp("/repos/other"));
         assert_ne!(a, b);
     }
 
     #[test]
     fn workspace_key_is_16_lowercase_hex() {
-        let key = workspace_key(&PathBuf::from("/some/workspace/path"));
+        let key = workspace_key(&cp("/some/workspace/path"));
         assert_eq!(key.len(), 16, "key must be exactly 16 hex chars");
         assert!(
             key.chars()
@@ -377,8 +461,8 @@ mod tests {
     fn workspace_key_does_not_collide_non_utf8_unix_paths() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
-        let a = PathBuf::from(OsStr::from_bytes(b"/tmp/test\xFF"));
-        let b = PathBuf::from(OsStr::from_bytes(b"/tmp/test\xFE"));
+        let a = CanonicalPath::assume_canonical(PathBuf::from(OsStr::from_bytes(b"/tmp/test\xFF")));
+        let b = CanonicalPath::assume_canonical(PathBuf::from(OsStr::from_bytes(b"/tmp/test\xFE")));
         assert_ne!(
             workspace_key(&a),
             workspace_key(&b),
@@ -420,12 +504,12 @@ mod tests {
 
     #[test]
     fn workspace_dir_for_whitespace_branch_matches_trimmed_layout() {
-        let ws = PathBuf::from("/repos/x");
+        let ws = cp("/repos/x");
         let r1 = root("/data", "feat");
         let r2 = root("/data", "  feat  ");
         assert_eq!(
-            r1.for_workspace(ws.clone()).workspace_dir(),
-            r2.for_workspace(ws).workspace_dir(),
+            r1.for_workspace(&ws).workspace_dir(),
+            r2.for_workspace(&ws).workspace_dir(),
             "whitespace-padded branch must hash to the same workspace dir",
         );
     }
@@ -464,7 +548,7 @@ mod tests {
     fn canonical_workspace_settings_path_is_none_for_canonical_root() {
         let r = root("/data", "main");
         assert_eq!(
-            r.canonical_workspace_settings_path(&PathBuf::from("/repos/x")),
+            r.canonical_workspace_settings_path(&cp("/repos/x")),
             None,
             "canonical build seeding from itself makes no sense",
         );
@@ -473,7 +557,7 @@ mod tests {
     #[test]
     fn canonical_workspace_settings_path_points_at_canonical_layout_for_branch() {
         let r = root("/data", "feat");
-        let ws = PathBuf::from("/repos/x");
+        let ws = cp("/repos/x");
         let key = workspace_key(&ws);
         assert_eq!(
             r.canonical_workspace_settings_path(&ws),
@@ -485,8 +569,8 @@ mod tests {
 
     #[test]
     fn workspace_dir_for_canonical_omits_branch_segment() {
-        let layout = root("/data", "main").for_workspace(PathBuf::from("/repos/x"));
-        let key = workspace_key(&PathBuf::from("/repos/x"));
+        let layout = root("/data", "main").for_workspace(&cp("/repos/x"));
+        let key = workspace_key(&cp("/repos/x"));
         assert_eq!(
             layout.workspace_dir(),
             PathBuf::from(format!("/data/workspaces/{key}")),
@@ -495,8 +579,8 @@ mod tests {
 
     #[test]
     fn workspace_dir_for_branch_includes_branch_segment() {
-        let layout = root("/data", "feat").for_workspace(PathBuf::from("/repos/x"));
-        let key = workspace_key(&PathBuf::from("/repos/x"));
+        let layout = root("/data", "feat").for_workspace(&cp("/repos/x"));
+        let key = workspace_key(&cp("/repos/x"));
         assert_eq!(
             layout.workspace_dir(),
             PathBuf::from(format!("/data/branches/feat/workspaces/{key}")),
@@ -505,7 +589,7 @@ mod tests {
 
     #[test]
     fn leaf_paths_live_under_workspace_dir() {
-        let layout = root("/data", "feat").for_workspace(PathBuf::from("/repos/x"));
+        let layout = root("/data", "feat").for_workspace(&cp("/repos/x"));
         let dir = layout.workspace_dir();
         assert_eq!(layout.settings_path(), dir.join("config.json"));
         assert_eq!(layout.sessions_path(), dir.join("sessions.json"));
@@ -520,8 +604,8 @@ mod tests {
     #[test]
     fn two_layouts_for_different_workspaces_do_not_collide() {
         let r = root("/data", "feat");
-        let a = r.for_workspace(PathBuf::from("/repos/x"));
-        let b = r.for_workspace(PathBuf::from("/repos/y"));
+        let a = r.for_workspace(&cp("/repos/x"));
+        let b = r.for_workspace(&cp("/repos/y"));
         assert_ne!(a.workspace_dir(), b.workspace_dir());
         assert_ne!(a.settings_path(), b.settings_path());
         assert_ne!(a.lock_path(), b.lock_path());
@@ -529,11 +613,36 @@ mod tests {
 
     #[test]
     fn two_layouts_for_different_branches_same_workspace_do_not_collide() {
-        let ws = PathBuf::from("/repos/x");
-        let a = root("/data", "main").for_workspace(ws.clone());
-        let b = root("/data", "feat").for_workspace(ws);
+        let ws = cp("/repos/x");
+        let a = root("/data", "main").for_workspace(&ws);
+        let b = root("/data", "feat").for_workspace(&ws);
         assert_ne!(a.workspace_dir(), b.workspace_dir());
         assert_ne!(a.settings_path(), b.settings_path());
         assert_ne!(a.lock_path(), b.lock_path());
+    }
+
+    // ----- CanonicalPath -----------------------------------------------
+
+    #[test]
+    fn assume_canonical_round_trips() {
+        let p = PathBuf::from("/repos/x");
+        let cp = CanonicalPath::assume_canonical(p.clone());
+        assert_eq!(cp.as_path(), p.as_path());
+        assert_eq!(cp.clone().into_inner(), p);
+    }
+
+    #[test]
+    fn canonicalise_resolves_real_path() {
+        // Use the system temp dir which is always canonicalisable on
+        // every platform we ship to.
+        let td = tempfile::TempDir::new().expect("tempdir");
+        let canon = CanonicalPath::canonicalise(td.path()).expect("canonicalise tempdir");
+        // Directory should still exist and the inner path should be a
+        // valid canonicalised form of the input.
+        assert!(canon.as_path().is_dir());
+        assert!(
+            canon.as_path().is_absolute(),
+            "canonicalise must return an absolute path"
+        );
     }
 }

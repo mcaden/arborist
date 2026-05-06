@@ -314,13 +314,13 @@ pub fn resolve_boot_workspace(
 ) -> Result<Option<(PathBuf, BootSource)>, BootError> {
     if let Some(p) = &args.workspace {
         let canon = canonicalise_existing(p)?;
-        validate_repo_root(&canon, git_runner, BootSource::Cli)?;
-        return Ok(Some((canon, BootSource::Cli)));
+        validate_repo_root(canon.as_path(), git_runner, BootSource::Cli)?;
+        return Ok(Some((canon.into_inner(), BootSource::Cli)));
     }
     if let Some(p) = read_hint(app_data_dir, branch) {
         match canonicalise_existing(&p) {
-            Ok(canon) => match validate_repo_root(&canon, git_runner, BootSource::Hint) {
-                Ok(()) => return Ok(Some((canon, BootSource::Hint))),
+            Ok(canon) => match validate_repo_root(canon.as_path(), git_runner, BootSource::Hint) {
+                Ok(()) => return Ok(Some((canon.into_inner(), BootSource::Hint))),
                 Err(e) => warn!(
                     path = ?canon, error = %e,
                     "hint workspace is no longer a git repository; ignoring"
@@ -331,26 +331,30 @@ pub fn resolve_boot_workspace(
     }
     if let Some(p) = read_legacy_workspace_root(app_data_dir) {
         match canonicalise_existing(&p) {
-            Ok(canon) => match validate_repo_root(&canon, git_runner, BootSource::Legacy) {
-                Ok(()) => return Ok(Some((canon, BootSource::Legacy))),
-                Err(e) => warn!(
-                    path = ?canon, error = %e,
-                    "legacy workspace_root is no longer a git repository; ignoring"
-                ),
-            },
+            Ok(canon) => {
+                match validate_repo_root(canon.as_path(), git_runner, BootSource::Legacy) {
+                    Ok(()) => return Ok(Some((canon.into_inner(), BootSource::Legacy))),
+                    Err(e) => warn!(
+                        path = ?canon, error = %e,
+                        "legacy workspace_root is no longer a git repository; ignoring"
+                    ),
+                }
+            }
             Err(_) => warn!(path = ?p, "legacy workspace_root no longer exists; ignoring"),
         }
     }
     Ok(None)
 }
 
-fn canonicalise_existing(p: &Path) -> Result<PathBuf, BootError> {
-    let canon = dunce::canonicalize(p).map_err(|source| BootError::Canonicalise {
-        path: p.to_path_buf(),
-        source,
+fn canonicalise_existing(p: &Path) -> Result<crate::store_layout::CanonicalPath, BootError> {
+    let canon = crate::store_layout::CanonicalPath::canonicalise(p).map_err(|source| {
+        BootError::Canonicalise {
+            path: p.to_path_buf(),
+            source,
+        }
     })?;
-    if !canon.is_dir() {
-        return Err(BootError::InvalidWorkspace(canon));
+    if !canon.as_path().is_dir() {
+        return Err(BootError::InvalidWorkspace(canon.into_inner()));
     }
     Ok(canon)
 }
@@ -466,9 +470,9 @@ pub fn bind_workspace(
     origin: BootSource,
 ) -> Result<WorkspaceBinding, BootError> {
     let canon = canonicalise_existing(workspace_root)?;
-    validate_repo_root(&canon, git_runner, origin)?;
+    validate_repo_root(canon.as_path(), git_runner, origin)?;
     let root = StoreRoot::new(app_data_dir, branch);
-    let layout = root.for_workspace(canon.clone());
+    let layout = root.for_workspace(&canon);
 
     fs::create_dir_all(layout.workspace_dir())?;
 
@@ -477,12 +481,12 @@ pub fn bind_workspace(
         Err(LockError::Contention) => {
             return Err(BootError::Contention {
                 branch: branch.to_string(),
-                workspace: canon,
+                workspace: canon.into_inner(),
             });
         }
         Err(LockError::Io(source)) => {
             return Err(BootError::Lock {
-                workspace: canon,
+                workspace: canon.into_inner(),
                 source,
             });
         }
@@ -497,7 +501,7 @@ pub fn bind_workspace(
         })?;
 
     Ok(WorkspaceBinding {
-        workspace_root: canon,
+        workspace_root: canon.into_inner(),
         layout,
         store,
         lock,
@@ -1213,8 +1217,8 @@ mod tests {
         // No side-effects: lock/seed must NOT have run for a rejected
         // path. (Otherwise we'd leave a stray .lock under app_data_dir
         // for a workspace that was never actually bound.)
-        let layout =
-            StoreRoot::new(&app_data, "main").for_workspace(dunce::canonicalize(&ws).unwrap());
+        let layout = StoreRoot::new(&app_data, "main")
+            .for_workspace(&crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap());
         assert!(
             !layout.lock_path().exists(),
             "lock file must not be created when bind_workspace rejects the path"
@@ -1261,8 +1265,8 @@ mod tests {
 
         // No side-effects: a rejected worktree path must not leave a
         // lock or any seeded state under app_data_dir.
-        let layout =
-            StoreRoot::new(&app_data, "main").for_workspace(dunce::canonicalize(&ws).unwrap());
+        let layout = StoreRoot::new(&app_data, "main")
+            .for_workspace(&crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap());
         assert!(
             !layout.lock_path().exists(),
             "lock file must not be created when bind_workspace rejects a linked worktree"
@@ -1327,8 +1331,8 @@ mod tests {
 
         // Pre-create the storage layout's config.json as a directory so
         // the post-bind save fails.
-        let canon_ws = dunce::canonicalize(&ws).unwrap();
-        let layout = StoreRoot::new(&app_data, "main").for_workspace(canon_ws);
+        let canon_ws = crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap();
+        let layout = StoreRoot::new(&app_data, "main").for_workspace(&canon_ws);
         std::fs::create_dir_all(layout.workspace_dir()).unwrap();
         std::fs::create_dir_all(layout.settings_path()).unwrap();
 

@@ -1775,7 +1775,9 @@ mod tests {
             app_data.path().to_path_buf(),
             "feature-x".to_owned(),
         );
-        let layout = root.for_workspace(workspace_canon.clone());
+        let workspace_canon_typed =
+            crate::store_layout::CanonicalPath::assume_canonical(workspace_canon.clone());
+        let layout = root.for_workspace(&workspace_canon_typed);
         let expected_settings_path = layout.settings_path();
         let expected_workspace_dir = layout.workspace_dir();
 
@@ -1785,7 +1787,7 @@ mod tests {
         assert_eq!(store.dir(), expected_workspace_dir.as_path());
         // The retained layout points back at the same workspace.
         let retained = store.layout().expect("layout retained");
-        assert_eq!(retained.workspace(), workspace_canon.as_path());
+        assert_eq!(retained.workspace().as_path(), workspace_canon.as_path());
         assert_eq!(retained.settings_path(), expected_settings_path);
 
         // Round-trip: a save persists to the layout's settings path.
@@ -1814,15 +1816,16 @@ mod tests {
     fn from_layout_is_deterministic_for_same_inputs() {
         let app_data = TempDir::new().expect("app_data");
         let workspace = TempDir::new().expect("workspace");
-        let canonical = canon(workspace.path());
+        let canonical =
+            crate::store_layout::CanonicalPath::assume_canonical(canon(workspace.path()));
 
         let root_a = crate::store_layout::StoreRoot::new(
             app_data.path().to_path_buf(),
             "feature-x".to_owned(),
         );
         let root_b = root_a.clone();
-        let store_a = ConfigStore::from_layout(root_a.for_workspace(canonical.clone())).expect("a");
-        let store_b = ConfigStore::from_layout(root_b.for_workspace(canonical.clone())).expect("b");
+        let store_a = ConfigStore::from_layout(root_a.for_workspace(&canonical)).expect("a");
+        let store_b = ConfigStore::from_layout(root_b.for_workspace(&canonical)).expect("b");
         assert_eq!(store_a.dir(), store_b.dir());
     }
 
@@ -1839,8 +1842,14 @@ mod tests {
             app_data.path().to_path_buf(),
             "feature-x".to_owned(),
         );
-        let store_a = ConfigStore::from_layout(root.for_workspace(canon(ws_a.path()))).expect("a");
-        let store_b = ConfigStore::from_layout(root.for_workspace(canon(ws_b.path()))).expect("b");
+        let store_a = ConfigStore::from_layout(root.for_workspace(
+            &crate::store_layout::CanonicalPath::assume_canonical(canon(ws_a.path())),
+        ))
+        .expect("a");
+        let store_b = ConfigStore::from_layout(root.for_workspace(
+            &crate::store_layout::CanonicalPath::assume_canonical(canon(ws_b.path())),
+        ))
+        .expect("b");
         assert_ne!(
             store_a.dir(),
             store_b.dir(),

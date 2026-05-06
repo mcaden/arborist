@@ -1568,21 +1568,21 @@ pub fn workspace_validate_impl(
     if path.is_relative() {
         return Ok(invalid("path must be absolute"));
     }
-    let canon = match dunce::canonicalize(path) {
+    let canon = match crate::store_layout::CanonicalPath::canonicalise(path) {
         Ok(c) => c,
         Err(e) => return Ok(invalid(&format!("path could not be resolved: {e}"))),
     };
-    if !canon.is_dir() {
+    if !canon.as_path().is_dir() {
         return Ok(invalid("path is not a directory"));
     }
     let toplevel = ctx
         .git_runner
-        .git_toplevel(&canon)
+        .git_toplevel(canon.as_path())
         .map_err(AppError::from)?;
     let Some(toplevel) = toplevel else {
         return Ok(invalid("path is not a git repository"));
     };
-    if toplevel != canon {
+    if toplevel != *canon.as_path() {
         return Ok(invalid(&format!(
             "path must be the repository root ({})",
             toplevel.display()
@@ -1596,7 +1596,7 @@ pub fn workspace_validate_impl(
     // a workspace would make every session-creation flow break. Mirrors
     // the parallel check in [`crate::boot::validate_repo_root`]; keep
     // the two in sync.
-    if !canon.join(".git").is_dir() {
+    if !canon.as_path().join(".git").is_dir() {
         return Ok(invalid(
             "path is a linked git worktree, not a primary repository root \
              (Arborist cannot spawn worktrees from inside another worktree; \
@@ -1607,7 +1607,7 @@ pub fn workspace_validate_impl(
     // Phase 8 — advisory contention probe. Only meaningful for callers
     // that supplied `app_data_dir`; tests typically don't.
     let already_open = app_data_dir.and_then(|root| {
-        let layout = crate::store_layout::StoreRoot::new(root, branch).for_workspace(canon.clone());
+        let layout = crate::store_layout::StoreRoot::new(root, branch).for_workspace(&canon);
         match crate::workspace_lock::WorkspaceLockGuard::probe(layout.lock_path()) {
             Ok(free) => Some(!free),
             Err(e) => {
