@@ -742,7 +742,10 @@ fn now_unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .unwrap_or_else(|_| {
+            tracing::warn!("system clock before UNIX epoch; using 0");
+            0
+        })
 }
 
 /// Compute the cwd a sub-session should spawn under: the parent

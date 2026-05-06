@@ -81,8 +81,9 @@ the UUID id space is global across `Session` and `SubSession`.
 - `Unsupported` — e.g. window-focus on Wayland.
 - `AppSpawnFailed` — application kind spawn failure.
 - `InvalidCustomProcessDef` — `config_set` boundary validation rejection.
-- `ParentClosing` — `subsession_create` / `subsession_relaunch` against a
-  parent currently mid-cascade.
+- `InvalidArgument` (with message "parent session … is closing") —
+  `subsession_create` / `subsession_relaunch` against a parent currently
+  mid-cascade.
 
 ### Optional system dependencies
 

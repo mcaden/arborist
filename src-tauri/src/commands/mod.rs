@@ -417,11 +417,20 @@ pub fn build_production_sink(
             // Re-resolve the current store on every callback so a
             // workspace switch in flight cannot cause a stale write
             // into the previously-bound store.
-            let store = workspace_for_status
-                .read()
-                .expect("workspace lock poisoned")
-                .store
-                .clone();
+            let store = match workspace_for_status.read() {
+                Ok(guard) => guard.store.clone(),
+                Err(_) => {
+                    tracing::error!(session_id = %session_id, "workspace lock poisoned; skipping status persist");
+                    // Still emit the event so the frontend sees the transition.
+                    let payload = SessionStatusEvent {
+                        session_id: *session_id,
+                        status,
+                        message,
+                    };
+                    let _ = app_for_status.emit("session://status", payload);
+                    return;
+                }
+            };
             if let Err(e) = store.update_session_status(session_id, status, pid) {
                 use crate::types::Error as E;
                 if !matches!(e, E::NotFound(_)) {
@@ -490,11 +499,13 @@ pub fn build_production_ai_session_discover(
 ) -> crate::session_metrics::AiSessionDiscoveryCb {
     Arc::new(
         move |session_id: crate::types::SessionId, ai_session_id: String| {
-            let store = workspace
-                .read()
-                .expect("workspace lock poisoned")
-                .store
-                .clone();
+            let store = match workspace.read() {
+                Ok(guard) => guard.store.clone(),
+                Err(_) => {
+                    tracing::error!(%session_id, "workspace lock poisoned; skipping ai session id persist");
+                    return;
+                }
+            };
             match store.update_session_ai_session_id(&session_id, Some(ai_session_id.clone())) {
                 Ok(true) => {
                     tracing::debug!(%session_id, %ai_session_id, "ai session id discovered");
