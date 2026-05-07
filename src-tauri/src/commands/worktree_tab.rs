@@ -79,12 +79,16 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
 }
 
 /// Close a worktree tab and cascade-close all child sessions and sub-sessions. Returns a result with any per-child errors that occurred (the tab
-/// itself is always removed). The workspace-switch read guard is acquired by individual `session_close_impl` calls.
+/// itself is always removed). The switch-read guard is held for the full body so the workspace cannot be swapped mid-cascade — which would otherwise
+/// leave the wrong workspace's config mutated. Holding the guard across awaits is correct: tokio guards are `Send`, and `session_close_impl`'s own
+/// `acquire_switch_read` permits multiple concurrent readers (see DESIGN §locking).
 pub async fn worktree_tab_close_impl(
     ctx: &AppContext,
     sub_ctx: std::sync::Arc<crate::sub_sessions::SubAppContext>,
     id: WorktreeTabId,
 ) -> Result<WorktreeTabCloseResult, AppError> {
+    let _switch = session::acquire_switch_read(ctx)?;
+
     // Validate tab exists and grab its path before starting the cascade.
     let tab_path = {
         let cfg = ctx.store().load_config();
@@ -103,7 +107,6 @@ pub async fn worktree_tab_close_impl(
     let mut child_errors: Vec<String> = Vec::new();
 
     // Close each child session (this cascades to their sub-sessions automatically).
-    // Each session_close_impl call acquires its own switch-read guard internally.
     for sid in &child_session_ids {
         let _guard = ctx.mark_parent_closing(*sid);
         super::subsession::close_for_parent_impl(ctx, &sub_ctx, *sid).await;
@@ -136,19 +139,21 @@ pub async fn worktree_tab_close_impl(
 pub fn worktree_tab_focus_impl(ctx: &AppContext, id: WorktreeTabId) -> Result<(), AppError> {
     let _switch = session::acquire_switch_read(ctx)?;
 
+    // Validate before mutation. Holding `_switch` and the config write lock inside `save_config_with` makes this check-then-write effectively atomic
+    // wrt other commands in this process.
+    let mut found = false;
     ctx.store()
         .save_config_with(PartialAppConfig::default(), |cfg| {
-            if !cfg.worktree_tabs.iter().any(|t| t.id == id) {
-                return false;
+            if cfg.worktree_tabs.iter().any(|t| t.id == id) {
+                cfg.active_worktree_tab_id = Some(id);
+                found = true;
+                true
+            } else {
+                false
             }
-            cfg.active_worktree_tab_id = Some(id);
-            true
         })
         .map_err(AppError::from)?;
-
-    // Validate the tab existed (the closure above silently no-ops on miss — check post-hoc).
-    let cfg = ctx.store().load_config();
-    if !cfg.worktree_tabs.iter().any(|t| t.id == id) {
+    if !found {
         return Err(AppError::new("NotFound", format!("worktree tab {id} not found")));
     }
     Ok(())
@@ -174,83 +179,113 @@ pub fn worktree_tab_list_impl(ctx: &AppContext) -> Result<Vec<WorktreeTab>, AppE
     Ok(result)
 }
 
-/// Reorder worktree tabs. The provided IDs list becomes the new `worktree_tab_order`; each tab's `tab_index` is updated to match.
+/// Reorder worktree tabs. The provided IDs list becomes the new `worktree_tab_order`; each tab's `tab_index` is updated to match. The list must
+/// contain every existing tab exactly once (no partial reorder → silent tab loss). Validation runs *inside* the config write lock so a malformed
+/// call cannot leave `tab_index` and `worktree_tab_order` in disagreement.
 pub fn worktree_tab_reorder_impl(ctx: &AppContext, ids: Vec<WorktreeTabId>) -> Result<(), AppError> {
     let _switch = session::acquire_switch_read(ctx)?;
+
+    // ValidationError captured inside the closure so we can return a descriptive error after the save_config_with call.
+    let mut validation_error: Option<AppError> = None;
 
     ctx.store()
         .save_config_with(PartialAppConfig::default(), |cfg| {
             let known: HashSet<WorktreeTabId> = cfg.worktree_tabs.iter().map(|t| t.id).collect();
-            // Completeness + existence are validated; any mismatch is a caller bug, but we update what we can.
+            if ids.len() != known.len() {
+                validation_error = Some(AppError::new(
+                    "InvalidArgument",
+                    format!("reorder list must contain all {} tabs, got {}", known.len(), ids.len()),
+                ));
+                return false;
+            }
+            for id in &ids {
+                if !known.contains(id) {
+                    validation_error = Some(AppError::new("NotFound", format!("worktree tab {id} not found in reorder list")));
+                    return false;
+                }
+            }
+            // All checks passed — apply mutation.
             for (idx, id) in ids.iter().enumerate() {
                 if let Some(tab) = cfg.worktree_tabs.iter_mut().find(|t| &t.id == id) {
                     tab.tab_index = idx;
                 }
             }
-            // Only update order if it covers all tabs (prevent silent tab loss).
-            if ids.len() == known.len() && ids.iter().all(|id| known.contains(id)) {
-                cfg.worktree_tab_order = ids.clone();
-            }
+            cfg.worktree_tab_order = ids.clone();
             true
         })
         .map_err(AppError::from)?;
 
-    // Post-hoc validation for the caller.
-    let cfg = ctx.store().load_config();
-    let known: HashSet<WorktreeTabId> = cfg.worktree_tabs.iter().map(|t| t.id).collect();
-    if ids.len() != known.len() {
-        return Err(AppError::new(
-            "InvalidArgument",
-            format!("reorder list must contain all {} tabs, got {}", known.len(), ids.len()),
-        ));
-    }
-    for id in &ids {
-        if !known.contains(id) {
-            return Err(AppError::new("NotFound", format!("worktree tab {id} not found in reorder list")));
-        }
+    if let Some(err) = validation_error {
+        return Err(err);
     }
     Ok(())
 }
 
 /// Set (or clear) the active child for a worktree tab. When `child_id` is `None`, the worktree dashboard shows; when `Some`, the matching session or
-/// sub-session terminal is shown.
-pub fn worktree_tab_set_active_child_impl(ctx: &AppContext, args: WorktreeTabSetActiveChildArgs) -> Result<(), AppError> {
+/// sub-session terminal is shown. Validates that the child belongs to this worktree:
+/// - `ChildId::Session(sid)` — the session's `worktree_path` must match the tab's path.
+/// - `ChildId::SubSession(ssid)` — the sub-session's parent session's `worktree_path` must match the tab's path.
+pub fn worktree_tab_set_active_child_impl(
+    ctx: &AppContext,
+    sub_ctx: std::sync::Arc<crate::sub_sessions::SubAppContext>,
+    args: WorktreeTabSetActiveChildArgs,
+) -> Result<(), AppError> {
     let _switch = session::acquire_switch_read(ctx)?;
 
-    // Validate session child belongs to this worktree tab (if applicable).
-    if let Some(ChildId::Session(ref sid)) = args.child_id {
+    // Validate the child belongs to this worktree tab (if applicable). Done before the write lock so we can return descriptive errors.
+    if let Some(ref child) = args.child_id {
         let cfg = ctx.store().load_config();
         let tab = cfg
             .worktree_tabs
             .iter()
             .find(|t| t.id == args.id)
             .ok_or_else(|| AppError::new("NotFound", format!("worktree tab {} not found", args.id)))?;
+        let tab_path = tab.path.clone();
         let sessions = ctx.store().load_sessions();
-        let session = sessions
-            .get(sid)
-            .ok_or_else(|| AppError::new("NotFound", format!("session {sid} not found")))?;
-        if session.worktree_path != tab.path {
-            return Err(AppError::new(
-                "InvalidArgument",
-                format!("session {sid} worktree path does not match worktree tab {}", args.id),
-            ));
+        match child {
+            ChildId::Session(sid) => {
+                let session = sessions
+                    .get(sid)
+                    .ok_or_else(|| AppError::new("NotFound", format!("session {sid} not found")))?;
+                if session.worktree_path != tab_path {
+                    return Err(AppError::new(
+                        "InvalidArgument",
+                        format!("session {sid} worktree path does not match worktree tab {}", args.id),
+                    ));
+                }
+            }
+            ChildId::SubSession(ssid) => {
+                // Resolve the sub-session in the live in-memory store, then verify its parent session belongs to this worktree.
+                let sub = sub_ctx
+                    .store
+                    .get(ssid)
+                    .ok_or_else(|| AppError::new("NotFound", format!("sub-session {ssid} not found")))?;
+                let parent = sessions
+                    .get(&sub.parent_session_id)
+                    .ok_or_else(|| AppError::new("NotFound", format!("sub-session {ssid} parent session not found")))?;
+                if parent.worktree_path != tab_path {
+                    return Err(AppError::new(
+                        "InvalidArgument",
+                        format!("sub-session {ssid} parent worktree path does not match worktree tab {}", args.id),
+                    ));
+                }
+            }
         }
     }
 
+    let mut found = false;
     ctx.store()
         .save_config_with(PartialAppConfig::default(), |cfg| {
             if let Some(tab) = cfg.worktree_tabs.iter_mut().find(|t| t.id == args.id) {
                 tab.active_child_id = args.child_id;
+                found = true;
                 true
             } else {
                 false
             }
         })
         .map_err(AppError::from)?;
-
-    // Post-hoc check that tab existed.
-    let cfg = ctx.store().load_config();
-    if !cfg.worktree_tabs.iter().any(|t| t.id == args.id) {
+    if !found {
         return Err(AppError::new("NotFound", format!("worktree tab {} not found", args.id)));
     }
     Ok(())

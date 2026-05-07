@@ -582,7 +582,8 @@ pub async fn worktree_tab_reorder(app: tauri::AppHandle, args: WorktreeTabReorde
 #[tauri::command]
 pub async fn worktree_tab_set_active_child(app: tauri::AppHandle, args: WorktreeTabSetActiveChildArgs) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
-    worktree_tab::worktree_tab_set_active_child_impl(&ctx, args)
+    let sub_ctx = sub_ctx_of(&app)?;
+    worktree_tab::worktree_tab_set_active_child_impl(&ctx, sub_ctx, args)
 }
 
 #[cfg(test)]

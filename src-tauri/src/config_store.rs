@@ -1036,14 +1036,21 @@ pub fn seed_default_custom_processes(defs: &mut Vec<CustomProcessDef>) {
 fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>) {
     use crate::compose;
 
-    // Build ordered list of unique canonical worktree paths, following the old tab_order for position. Fall back to session iteration order for
-    // sessions that weren't in tab_order.
+    // Pre-compute canonicalised worktree path for each session, falling back to the raw path on error. Reused below for both tab creation and the
+    // active-session lookup so a flaky canonicalize() can't make the two disagree.
+    let session_canonical: BTreeMap<SessionId, PathBuf> = sessions
+        .iter()
+        .map(|(sid, s)| (*sid, dunce::canonicalize(&s.worktree_path).unwrap_or_else(|_| s.worktree_path.clone())))
+        .collect();
+
     let mut seen_paths: BTreeMap<PathBuf, WorktreeTabId> = BTreeMap::new();
     let mut ordered_tabs: Vec<WorktreeTab> = Vec::new();
 
-    // Helper: process a session's worktree path, creating a tab if unseen.
-    let mut ensure_tab = |session: &Session| {
-        let canonical = dunce::canonicalize(&session.worktree_path).unwrap_or_else(|_| session.worktree_path.clone());
+    let mut ensure_tab = |sid: &SessionId| {
+        let canonical = match session_canonical.get(sid) {
+            Some(p) => p.clone(),
+            None => return,
+        };
         if seen_paths.contains_key(&canonical) {
             return;
         }
@@ -1052,7 +1059,6 @@ fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "worktree".into());
-        // Deduplicate label across already-created tabs.
         let existing_labels: Vec<&str> = ordered_tabs.iter().map(|t| t.label.as_str()).collect();
         let label = compose::dedupe_label(&existing_labels, &name);
         let tab_index = ordered_tabs.len();
@@ -1070,19 +1076,17 @@ fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>
 
     // Walk tab_order first (preserves user's ordering), then pick up any stragglers.
     for sid in &cfg.tab_order {
-        if let Some(session) = sessions.get(sid) {
-            ensure_tab(session);
-        }
+        ensure_tab(sid);
     }
-    for session in sessions.values() {
-        ensure_tab(session);
+    for sid in sessions.keys() {
+        ensure_tab(sid);
     }
 
-    // Derive active_worktree_tab_id from old active_session_id, and set that tab's active_child_id.
+    // Derive active_worktree_tab_id from old active_session_id, and set that tab's active_child_id. Uses the *same* canonicalised path the tab was
+    // created with, so this lookup cannot miss when the tab was created in the first pass.
     if let Some(active_sid) = cfg.active_session_id {
-        if let Some(session) = sessions.get(&active_sid) {
-            let canonical = dunce::canonicalize(&session.worktree_path).unwrap_or_else(|_| session.worktree_path.clone());
-            if let Some(&tab_id) = seen_paths.get(&canonical) {
+        if let Some(canonical) = session_canonical.get(&active_sid) {
+            if let Some(&tab_id) = seen_paths.get(canonical) {
                 cfg.active_worktree_tab_id = Some(tab_id);
                 if let Some(tab) = ordered_tabs.iter_mut().find(|t| t.id == tab_id) {
                     tab.active_child_id = Some(ChildId::Session(active_sid));
