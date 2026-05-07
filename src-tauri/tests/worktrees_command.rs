@@ -1,10 +1,8 @@
-//! Phase 10 integration test for the `worktrees_list` command business
-//! logic. Exercises [`worktrees_list_impl`] with a fake [`GitRunner`] so
-//! the test does not depend on a real `git` binary.
+//! Phase 10 integration test for the `worktrees_list` command business logic. Exercises [`worktrees_list_impl`] with a fake [`GitRunner`] so the test
+//! does not depend on a real `git` binary.
 //!
-//! Real-binary coverage of the porcelain parser lives in
-//! `src/git.rs::tests` (the unit tests there spin up a real, empty
-//! `tempdir` to assert the graceful-degradation path).
+//! Real-binary coverage of the porcelain parser lives in `src/git.rs::tests` (the unit tests there spin up a real, empty `tempdir` to assert the
+//! graceful-degradation path).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

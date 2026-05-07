@@ -1,21 +1,15 @@
 //! Tauri command handlers.
 //!
-//! Phase 3 introduced `ping`; Phase 4 added `config_get`/`config_set` and
-//! `instructions_list`; Phase 7 adds the full session lifecycle plus the
-//! `frontend_ready` gate. The actual business logic for session commands
-//! lives in the [`session`] submodule as `*_impl` free functions taking
+//! Phase 3 introduced `ping`; Phase 4 added `config_get`/`config_set` and `instructions_list`; Phase 7 adds the full session lifecycle plus the
+//! `frontend_ready` gate. The actual business logic for session commands lives in the [`session`] submodule as `*_impl` free functions taking
 //! [`session::AppContext`]; the `#[tauri::command]` wrappers below are
-//! intentionally thin so that integration tests can drive the same code
-//! paths directly.
+//! intentionally thin so that integration tests can drive the same code paths directly.
 //!
 //! ## Capability model (Tauri v2)
 //!
-//! In Tauri v2, application-defined commands are gated by capability
-//! declarations the same way plugin commands are. Each command needs a
-//! permission file under `src-tauri/permissions/` referenced from
-//! `src-tauri/capabilities/main.json`. Adding a new command without the
-//! matching permission entry will cause the `invoke()` call to be rejected
-//! at runtime with no compile-time warning.
+//! In Tauri v2, application-defined commands are gated by capability declarations the same way plugin commands are. Each command needs a permission
+//! file under `src-tauri/permissions/` referenced from `src-tauri/capabilities/main.json`. Adding a new command without the matching permission entry
+//! will cause the `invoke()` call to be rejected at runtime with no compile-time warning.
 
 pub mod session;
 pub mod subsession;
@@ -37,8 +31,7 @@ use crate::workspace_scope::WorkspaceScope;
 
 pub use session::AppContext;
 
-/// Smoke-test command used to verify the Tauri command/event scaffold is
-/// wired correctly. Always returns `Ok("pong")`.
+/// Smoke-test command used to verify the Tauri command/event scaffold is wired correctly. Always returns `Ok("pong")`.
 #[tauri::command]
 pub async fn ping() -> Result<String, AppError> {
     Ok("pong".to_owned())
@@ -46,12 +39,9 @@ pub async fn ping() -> Result<String, AppError> {
 
 /// Resolve the [`ConfigStore`] for the current Tauri app instance.
 ///
-/// **Legacy, no longer used in production boot.** Phase 6 replaced the
-/// boot path with [`crate::boot::bind_workspace`], which opens a
-/// per-(branch, workspace) store under the OS lock. This helper
-/// remains as a diagnostic / fallback that opens a `ConfigStore`
-/// rooted at the legacy `<app_data_dir>` (no isolation, no lock).
-/// Do not use from new code — call `AppContext::store()` instead.
+/// **Legacy, no longer used in production boot.** Phase 6 replaced the boot path with [`crate::boot::bind_workspace`], which opens a per-(branch,
+/// workspace) store under the OS lock. This helper remains as a diagnostic / fallback that opens a `ConfigStore` rooted at the legacy
+/// `<app_data_dir>` (no isolation, no lock). Do not use from new code — call `AppContext::store()` instead.
 pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
     let dir: PathBuf = app.path().app_data_dir().map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
     ConfigStore::open(dir).map_err(AppError::from)
@@ -64,40 +54,28 @@ pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
     Ok(ctx.store().load_config())
 }
 
-/// Deep-merges `partial` into the persisted [`AppConfig`] and returns
-/// the resulting config so the frontend can replace its in-memory
-/// snapshot in a single round trip. Returning the merged config (vs.
-/// `()`) is load-bearing for backend-derived fields like
-/// `icon_data_uri`: the frontend never sends them, but the backfill
-/// pass below populates them under the same write lock — without the
-/// returned value the user would have to restart the app to see
-/// freshly-resolved icons.
+/// Deep-merges `partial` into the persisted [`AppConfig`] and returns the resulting config so the frontend can replace its in-memory snapshot in a
+/// single round trip. Returning the merged config (vs. `()`) is load-bearing for backend-derived fields like `icon_data_uri`: the frontend never
+/// sends them, but the backfill pass below populates them under the same write lock — without the returned value the user would have to restart the
+/// app to see freshly-resolved icons.
 ///
-/// Refused while a workspace switch is in progress — the swap relies on
-/// no new writes landing in the *old* store between the
-/// `switch_pending` bump and the actual `WorkspaceScope` swap. See
+/// Refused while a workspace switch is in progress — the swap relies on no new writes landing in the *old* store between the `switch_pending` bump
+/// and the actual `WorkspaceScope` swap. See
 /// [`session::acquire_switch_read`] for the full barrier protocol.
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<AppConfig, AppError> {
     let ctx = ctx_of(&app)?;
-    // Workspace-switch barrier: refuse new writes against the old store
-    // while a swap is queued. The read guard is held across
-    // `save_config_with` so the switch's `write().await` waits for our
-    // persist + icon backfill to commit before swapping the
-    // `WorkspaceScope`.
+    // Workspace-switch barrier: refuse new writes against the old store while a swap is queued. The read guard is held across `save_config_with` so
+    // the switch's `write().await` waits for our persist + icon backfill to commit before swapping the `WorkspaceScope`.
     let _switch = session::acquire_switch_read(&ctx)?;
-    // Run the user's patch and the icon backfill *under the same
-    // store-internal write lock* so two concurrent `config_set` calls
-    // can't lose each other's updates. `save_config_with` holds the
-    // lock across load → merge → mutate → write.
+    // Run the user's patch and the icon backfill *under the same store-internal write lock* so two concurrent `config_set` calls can't lose each
+    // other's updates. `save_config_with` holds the lock across load → merge → mutate → write.
     let icon_cache = sub_ctx_of(&app).ok().map(|c| c.icon_cache.clone());
     let merged = ctx
         .store()
         .save_config_with(partial, |cfg| {
-            // Best-effort: walk every command string and resolve a
-            // cached icon data URI. Failures are swallowed — the
-            // user's patch is what matters here, the icon is a
-            // cosmetic enhancement.
+            // Best-effort: walk every command string and resolve a cached icon data URI. Failures are swallowed — the user's patch is what matters
+            // here, the icon is a cosmetic enhancement.
             let Some(cache) = &icon_cache else {
                 return false;
             };
@@ -108,16 +86,13 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
     Ok(merged)
 }
 
-/// Best-effort cwd for resolving relative-path commands at config-save
-/// time. Defs are templates — the user's workspace root is the most
-/// useful default; OS temp is the last resort. Absolute commands
-/// (`C:\Program Files\...`, `/usr/bin/...`) ignore this entirely.
+/// Best-effort cwd for resolving relative-path commands at config-save time. Defs are templates — the user's workspace root is the most useful
+/// default; OS temp is the last resort. Absolute commands (`C:\Program Files\...`, `/usr/bin/...`) ignore this entirely.
 fn backfill_cwd(cfg: &AppConfig) -> std::path::PathBuf {
     cfg.workspace_root.clone().filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir)
 }
 
-/// Discovers and returns the list of [`InstructionSet`]s available under the
-/// configured `instructionSetsDir`.
+/// Discovers and returns the list of [`InstructionSet`]s available under the configured `instructionSetsDir`.
 #[tauri::command]
 pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionSet>, AppError> {
     let ctx = ctx_of(&app)?;
@@ -125,10 +100,8 @@ pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionS
     list_instructions_for(&cfg)
 }
 
-// ---------------------------------------------------------------------------
-// Phase 7: session commands. Each wrapper resolves the managed
-// `Arc<AppContext>`, hands the typed args to the matching `*_impl`, and
-// returns the result. *No* business logic in this layer.
+// --------------------------------------------------------------------------- Phase 7: session commands. Each wrapper resolves the managed
+// `Arc<AppContext>`, hands the typed args to the matching `*_impl`, and returns the result. *No* business logic in this layer.
 // ---------------------------------------------------------------------------
 
 fn ctx_of(app: &tauri::AppHandle) -> Result<Arc<AppContext>, AppError> {
@@ -153,21 +126,15 @@ pub async fn session_list(app: tauri::AppHandle) -> Result<Vec<SessionView>, App
 pub async fn session_close(app: tauri::AppHandle, args: SessionCloseArgs) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
-    // Refuse the entire close (parent + sub-session cascade) while a
-    // workspace switch is in progress. Without this guard, the cascade
-    // below would tear down sub-sessions even when `session_close_impl`
-    // is about to reject with `WorkspaceSwitchInProgress`, orphaning
-    // the parent in a broken half-closed state.
+    // Refuse the entire close (parent + sub-session cascade) while a workspace switch is in progress. Without this guard, the cascade below would
+    // tear down sub-sessions even when `session_close_impl` is about to reject with `WorkspaceSwitchInProgress`, orphaning the parent in a broken
+    // half-closed state.
     let _switch = session::acquire_switch_read(&ctx)?;
-    // Phase 7 cascade: mark the parent as closing (RAII guard ensures
-    // removal even on panic), tear down its sub-sessions, then close the
-    // parent itself. The tombstone closes the door on a concurrent
-    // `subsession_create` racing into the close window.
+    // Phase 7 cascade: mark the parent as closing (RAII guard ensures removal even on panic), tear down its sub-sessions, then close the parent
+    // itself. The tombstone closes the door on a concurrent `subsession_create` racing into the close window.
     //
-    // Workspace-switch rejection *also* lives inside `session_close_impl`
-    // (it takes its own `try_read()` on `AppContext::switch_lock` for
-    // the full body, including across `pool.kill().await`) — keep the
-    // impl as the single source of truth for the gating policy.
+    // Workspace-switch rejection *also* lives inside `session_close_impl` (it takes its own `try_read()` on `AppContext::switch_lock` for the full
+    // body, including across `pool.kill().await`) — keep the impl as the single source of truth for the gating policy.
     let _guard = ctx.mark_parent_closing(args.session_id);
     subsession::close_for_parent_impl(&ctx, &sub_ctx, args.session_id).await;
     session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
@@ -197,39 +164,27 @@ pub async fn session_restart(app: tauri::AppHandle, args: SessionRestartArgs) ->
     session::session_restart_impl(&ctx, args)
 }
 
-/// Frontend signals that it has subscribed to `session://output` and
-/// `session://status`. The first call triggers restore-on-launch (DESIGN
-/// §5.5); subsequent calls are no-ops.
+/// Frontend signals that it has subscribed to `session://output` and `session://status`. The first call triggers restore-on-launch (DESIGN §5.5);
+/// subsequent calls are no-ops.
 ///
-/// **Awaits restore registration** before resolving so the frontend can
-/// safely fire its first `session_resize` (issued synchronously by
-/// `attachToHost` → `refitEntry`) and trust that any restored session id
-/// is already registered in `pending_spawn`. Without this, the
-/// resize-arrives-before-restore race would silently drop the deferred
-/// spawn (`pool.resize` → `NotFound`), leaving the session stuck in
-/// `Starting` with no PTY child.
+/// **Awaits restore registration** before resolving so the frontend can safely fire its first `session_resize` (issued synchronously by
+/// `attachToHost` → `refitEntry`) and trust that any restored session id is already registered in `pending_spawn`. Without this, the
+/// resize-arrives-before-restore race would silently drop the deferred spawn (`pool.resize` → `NotFound`), leaving the session stuck in `Starting`
+/// with no PTY child.
 ///
-/// **Workspace-switch coordination.** We acquire an
-/// `OwnedRwLockReadGuard` on [`AppContext::switch_lock`] and move it
-/// into the `spawn_blocking` task that runs `restore_all_sessions`.
-/// This bounds the entire restore loop by the same barrier that gates
-/// every other workspace-mutating handler: a switch's `write().await`
-/// cannot proceed until restore returns. We additionally check
+/// **Workspace-switch coordination.** We acquire an `OwnedRwLockReadGuard` on [`AppContext::switch_lock`] and move it into the `spawn_blocking` task
+/// that runs `restore_all_sessions`. This bounds the entire restore loop by the same barrier that gates every other workspace-mutating handler: a
+/// switch's `write().await` cannot proceed until restore returns. We additionally check
 /// [`AppContext::switch_pending`] both before and after taking the
-/// owned guard (matching [`session::acquire_switch_read`]'s ordering)
-/// because tokio's `try_read_owned` is permit-based and does NOT
-/// reject when a writer is queued behind active readers — the counter
-/// is what closes that gap. On a negative outcome we silently
-/// `Ok(())`. (As of PR5, in-app workspace switches run their own
-/// inline restore under the write guard and no longer rely on a
-/// follow-up `frontend_ready`; this command remains for the boot-time
-/// initial restore.)
+/// owned guard (matching [`session::acquire_switch_read`]'s ordering) because tokio's `try_read_owned` is permit-based and does NOT reject when a
+/// writer is queued behind active readers — the counter is what closes that gap. On a negative outcome we silently `Ok(())`. (As of PR5, in-app
+/// workspace switches run their own inline restore under the write guard and no longer rely on a follow-up `frontend_ready`; this command remains for
+/// the boot-time initial restore.)
 #[tauri::command]
 pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
-    // Pre-check: cheap atomic load avoids touching the lock during a
-    // switch.
+    // Pre-check: cheap atomic load avoids touching the lock during a switch.
     if ctx.switch_pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
         return Ok(());
     }
@@ -237,8 +192,7 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
         Ok(g) => g,
         Err(_) => return Ok(()),
     };
-    // Post-check: closes the take-then-set race the same way
-    // `acquire_switch_read` does. See [`AppContext::switch_lock`].
+    // Post-check: closes the take-then-set race the same way `acquire_switch_read` does. See [`AppContext::switch_lock`].
     if ctx.switch_pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
         return Ok(());
     }
@@ -248,22 +202,15 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     }
     let ctx_for_task = Arc::clone(&ctx);
     let sub_ctx_for_task = Arc::clone(&sub_ctx);
-    // `restore_all_sessions` no longer spawns PTYs (it only does
-    // disk IO + HashMap inserts), so the work is bounded — but we
-    // still run it on a blocking thread because materialise_temp_files
-    // / cleanup_orphans / store IO can block. We *await* completion
-    // here so the resolution of `frontend_ready` becomes a
-    // happens-before edge for the frontend's first `session_resize`.
+    // `restore_all_sessions` no longer spawns PTYs (it only does disk IO + HashMap inserts), so the work is bounded — but we still run it on a
+    // blocking thread because materialise_temp_files / cleanup_orphans / store IO can block. We *await* completion here so the resolution of
+    // `frontend_ready` becomes a happens-before edge for the frontend's first `session_resize`.
     //
-    // Phase 7: after the parent-session restore completes, run the
-    // sub-session restore second pass on the SAME blocking thread
-    // so children only attempt to spawn after their parents have
-    // been re-materialised in `sessions.json`. Both restores must
-    // be done before we return — same happens-before reasoning.
+    // Phase 7: after the parent-session restore completes, run the sub-session restore second pass on the SAME blocking thread so children only
+    // attempt to spawn after their parents have been re-materialised in `sessions.json`. Both restores must be done before we return — same
+    // happens-before reasoning.
     tauri::async_runtime::spawn_blocking(move || {
-        // Move the owned switch read guard into the closure so it
-        // stays held for the full restore loop. Dropped when the
-        // closure returns.
+        // Move the owned switch read guard into the closure so it stays held for the full restore loop. Dropped when the closure returns.
         let _switch = switch_guard;
         session::restore_all_sessions(&ctx_for_task);
         subsession::restore_all_sub_sessions_impl(&ctx_for_task, &sub_ctx_for_task);
@@ -273,9 +220,8 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Enumerate worktrees rooted at `repo_root` (DESIGN §6, Phase 10). Always
-/// returns `Ok(vec![])` on discovery failures so the UI's "Browse…"
-/// fallback is never blocked by an error toast.
+/// Enumerate worktrees rooted at `repo_root` (DESIGN §6, Phase 10). Always returns `Ok(vec![])` on discovery failures so the UI's "Browse…" fallback
+/// is never blocked by an error toast.
 #[tauri::command]
 pub async fn worktrees_list(app: tauri::AppHandle, repo_root: String) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {
     let ctx = ctx_of(&app)?;
@@ -283,8 +229,7 @@ pub async fn worktrees_list(app: tauri::AppHandle, repo_root: String) -> Result<
     session::worktrees_list_impl(&ctx, &path)
 }
 
-/// Validate a candidate workspace root (Roadmap §1.1). Never errors for the
-/// "invalid path" case — the picker shows inline feedback.
+/// Validate a candidate workspace root (Roadmap §1.1). Never errors for the "invalid path" case — the picker shows inline feedback.
 #[tauri::command]
 pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateArgs) -> Result<WorkspaceValidateResult, AppError> {
     use tauri::Manager as _;
@@ -294,21 +239,17 @@ pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateAr
     session::workspace_validate_impl(&ctx, &path, Some(&app_data_dir), crate::BUILD_BRANCH)
 }
 
-/// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>`
-/// on a fresh branch named `<name>` (Roadmap §2.2).
+/// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2).
 #[tauri::command]
 pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) -> Result<WorktreeCreateResult, AppError> {
     let ctx = ctx_of(&app)?;
     session::worktree_create_impl(&ctx, &args.name)
 }
 
-/// Switch the active workspace in-place (Phase 7). Closes every open
-/// session in the current workspace, releases its OS lock, acquires the
-/// new workspace's lock, opens the new ConfigStore, runs
-/// `restore_all_sessions` for the new workspace inline, and returns the
-/// post-switch `{ config, sessions }` so the frontend can adopt
-/// everything in one render. Returns `AppError::WorkspaceLocked` if
-/// another Arborist instance holds the new workspace's lock.
+/// Switch the active workspace in-place (Phase 7). Closes every open session in the current workspace, releases its OS lock, acquires the new
+/// workspace's lock, opens the new ConfigStore, runs `restore_all_sessions` for the new workspace inline, and returns the post-switch `{ config,
+/// sessions }` so the frontend can adopt everything in one render. Returns `AppError::WorkspaceLocked` if another Arborist instance holds the new
+/// workspace's lock.
 #[tauri::command]
 pub async fn workspace_switch(app: tauri::AppHandle, args: WorkspaceSwitchArgs) -> Result<WorkspaceSwitchResult, AppError> {
     let ctx = ctx_of(&app)?;
@@ -316,38 +257,26 @@ pub async fn workspace_switch(app: tauri::AppHandle, args: WorkspaceSwitchArgs) 
     session::workspace_switch_impl(&ctx, &app, &path).await
 }
 
-// ---------------------------------------------------------------------------
-// Production PtySink builder.
+// --------------------------------------------------------------------------- Production PtySink builder.
 // ---------------------------------------------------------------------------
 
-/// Construct the production [`PtySink`] whose callbacks emit Tauri events
-/// and persist status changes to the [`ConfigStore`].
+/// Construct the production [`PtySink`] whose callbacks emit Tauri events and persist status changes to the [`ConfigStore`].
 ///
-/// The status callback persists the new status before emitting the event so
-/// any subsequent `session_list` observes the new value. NotFound errors
-/// are intentionally swallowed: the wait thread can race `session_close`
-/// and report `Exited` against an already-removed record.
-/// Build a [`PtySink`](crate::pty_pool::PtySink) that bridges PTY events
-/// from the [`PtyPool`](crate::pty_pool::PtyPool) into Tauri events
-/// and the persisted session record.
+/// The status callback persists the new status before emitting the event so any subsequent `session_list` observes the new value. NotFound errors are
+/// intentionally swallowed: the wait thread can race `session_close` and report `Exited` against an already-removed record. Build a
+/// [`PtySink`](crate::pty_pool::PtySink) that bridges PTY events from the [`PtyPool`](crate::pty_pool::PtyPool) into Tauri events and the persisted
+/// session record.
 ///
-/// Output / activity callbacks: pure event-emit, no store touch — the
-/// closure only borrows `app: AppHandle`.
+/// Output / activity callbacks: pure event-emit, no store touch — the closure only borrows `app: AppHandle`.
 ///
-/// Status callback: persists `SessionStatus` and `pid` via
-/// `ConfigStore::update_session_status`. Phase 7 (in-app workspace
-/// switch): the closure resolves the *current* store via
-/// `workspace.read()` on every invocation rather than capturing a
-/// snapshot — so a status update that arrives after a workspace swap
-/// writes into the new workspace's store. (This is generally a no-op
-/// because the new store does not contain the old workspace's session
-/// id, and `update_session_status` returns `NotFound` which is
-/// intentionally swallowed below — but it is the right semantics:
-/// never write into the abandoned old store.)
+/// Status callback: persists `SessionStatus` and `pid` via `ConfigStore::update_session_status`. Phase 7 (in-app workspace switch): the closure
+/// resolves the *current* store via `workspace.read()` on every invocation rather than capturing a snapshot — so a status update that arrives after a
+/// workspace swap writes into the new workspace's store. (This is generally a no-op because the new store does not contain the old workspace's
+/// session id, and `update_session_status` returns `NotFound` which is intentionally swallowed below — but it is the right semantics: never write
+/// into the abandoned old store.)
 ///
-/// `update_session_status` may return `NotFound` if the wait thread
-/// races `session_close` (or, post-switch, if the session belongs to
-/// the old workspace). NotFound errors are intentionally swallowed.
+/// `update_session_status` may return `NotFound` if the wait thread races `session_close` (or, post-switch, if the session belongs to the old
+/// workspace). NotFound errors are intentionally swallowed.
 #[must_use]
 pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<WorkspaceScope>>) -> crate::pty_pool::PtySink {
     let app_for_output = app.clone();
@@ -365,9 +294,8 @@ pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<Worksp
     let workspace_for_status = workspace;
     let status = Arc::new(
         move |session_id: &SessionId, status: SessionStatus, pid: Option<u32>, message: Option<String>| {
-            // Re-resolve the current store on every callback so a
-            // workspace switch in flight cannot cause a stale write
-            // into the previously-bound store.
+            // Re-resolve the current store on every callback so a workspace switch in flight cannot cause a stale write into the previously-bound
+            // store.
             let store = match workspace_for_status.read() {
                 Ok(guard) => guard.store.clone(),
                 Err(_) => {
@@ -413,9 +341,8 @@ pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<Worksp
     crate::pty_pool::PtySink::new(output, status, activity)
 }
 
-/// Build the production metrics emitter (Issue #3) — fires
-/// `session://metrics` Tauri events. Tests construct their own callback
-/// (typically a channel sender) and pass it to [`AppContext::new`].
+/// Build the production metrics emitter (Issue #3) — fires `session://metrics` Tauri events. Tests construct their own callback (typically a channel
+/// sender) and pass it to [`AppContext::new`].
 #[must_use]
 pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_metrics::MetricsCb {
     Arc::new(move |payload: crate::types::SessionMetricsEvent| {
@@ -425,23 +352,16 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_me
     })
 }
 
-/// Production AI-session discovery callback. Persists the discovered AI
-/// session id on the matching `Session` record so the next app-restart
-/// restore can `--resume <id>` and continue the conversation.
+/// Production AI-session discovery callback. Persists the discovered AI session id on the matching `Session` record so the next app-restart restore
+/// can `--resume <id>` and continue the conversation.
 ///
-/// Phase 7 (in-app workspace switch): the closure resolves the
-/// *current* store via `workspace.read()` on every invocation rather
-/// than capturing a snapshot. After a switch, callbacks from
-/// not-yet-joined watchers will write into the new store; the matching
-/// session id will not be present there and the resulting `NotFound`
-/// is swallowed below. The Phase 7 switch path also calls
-/// `metrics.stop_all_and_join()` before the swap to make this race
-/// vanishingly small in practice.
+/// Phase 7 (in-app workspace switch): the closure resolves the *current* store via `workspace.read()` on every invocation rather than capturing a
+/// snapshot. After a switch, callbacks from not-yet-joined watchers will write into the new store; the matching session id will not be present there
+/// and the resulting `NotFound` is swallowed below. The Phase 7 switch path also calls `metrics.stop_all_and_join()` before the swap to make this
+/// race vanishingly small in practice.
 ///
-/// Errors are intentionally swallowed (with a debug log) — discovery is
-/// a best-effort signal that fires every metrics-watcher poll, and a
-/// transient store error must not crash the watcher thread or surface
-/// to the UI.
+/// Errors are intentionally swallowed (with a debug log) — discovery is a best-effort signal that fires every metrics-watcher poll, and a transient
+/// store error must not crash the watcher thread or surface to the UI.
 #[must_use]
 pub fn build_production_ai_session_discover(workspace: Arc<RwLock<WorkspaceScope>>) -> crate::session_metrics::AiSessionDiscoveryCb {
     Arc::new(move |session_id: crate::types::SessionId, ai_session_id: String| {
@@ -466,9 +386,8 @@ pub fn build_production_ai_session_discover(workspace: Arc<RwLock<WorkspaceScope
 
 /// Build the production turn-end emitter — fires a
 /// [`crate::activity::ActivityEvent::TurnEnd`] over the existing
-/// `session://activity` channel so the frontend's activity reducer
-/// handles it the same way as PTY-derived activity events. Tests
-/// substitute a capturing closure.
+/// `session://activity` channel so the frontend's activity reducer handles it the same way as PTY-derived activity events. Tests substitute a
+/// capturing closure.
 #[must_use]
 pub fn build_production_turn_emit(app: tauri::AppHandle) -> crate::session_metrics::TurnCb {
     Arc::new(move |session_id: SessionId, duration_ms: Option<u64>| {
@@ -482,10 +401,8 @@ pub fn build_production_turn_emit(app: tauri::AppHandle) -> crate::session_metri
     })
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2: sub-session commands. Wrappers resolve the managed
-// `Arc<SubAppContext>` (created in `lib.rs::run`) and forward to the
-// matching `subsession::*_impl`.
+// --------------------------------------------------------------------------- Phase 2: sub-session commands. Wrappers resolve the managed
+// `Arc<SubAppContext>` (created in `lib.rs::run`) and forward to the matching `subsession::*_impl`.
 // ---------------------------------------------------------------------------
 
 fn sub_ctx_of(app: &tauri::AppHandle) -> Result<Arc<SubAppContext>, AppError> {
@@ -535,10 +452,8 @@ pub async fn subsession_resize(app: tauri::AppHandle, args: SubSessionResizeArgs
     subsession::subsession_resize_impl(&ctx, &sub_ctx, args)
 }
 
-/// Phase 7: relaunch a sub-session under the **same id**. For a greyed
-/// Application sub-tab (status `exited`/`error`) this re-spawns the
-/// external app; for a Terminal sub-tab it kills the old PTY and spawns
-/// a fresh one. The persisted record is unchanged (id stable).
+/// Phase 7: relaunch a sub-session under the **same id**. For a greyed Application sub-tab (status `exited`/`error`) this re-spawns the external app;
+/// for a Terminal sub-tab it kills the old PTY and spawns a fresh one. The persisted record is unchanged (id stable).
 #[tauri::command]
 pub async fn subsession_relaunch(app: tauri::AppHandle, args: SubSessionIdArg) -> Result<SubSession, AppError> {
     let ctx = ctx_of(&app)?;
@@ -546,18 +461,12 @@ pub async fn subsession_relaunch(app: tauri::AppHandle, args: SubSessionIdArg) -
     subsession::subsession_relaunch_impl(&ctx, &sub_ctx, args.id).await
 }
 
-/// Best-effort fetch of the OS application icon for an
-/// `application`-kind sub-session. Returns `Some("data:image/png;base64,…")`
-/// if the OS exposes an icon for the running PID's executable;
-/// returns `None` (not an error) for the common cases where
-/// extraction isn't possible (PID exited, terminal sub-session,
-/// platform unsupported, miss). The frontend falls back to the
-/// generic emoji on `None`.
+/// Best-effort fetch of the OS application icon for an `application`-kind sub-session. Returns `Some("data:image/png;base64,…")` if the OS exposes an
+/// icon for the running PID's executable; returns `None` (not an error) for the common cases where extraction isn't possible (PID exited, terminal
+/// sub-session, platform unsupported, miss). The frontend falls back to the generic emoji on `None`.
 ///
-/// Extraction runs on the blocking pool because each backend
-/// (`SHGetFileInfoW`, `sips`, filesystem walks) can briefly block.
-/// Returning `Ok(None)` rather than an error keeps the frontend hook
-/// simple — there's no meaningful action it can take on a miss.
+/// Extraction runs on the blocking pool because each backend (`SHGetFileInfoW`, `sips`, filesystem walks) can briefly block. Returning `Ok(None)`
+/// rather than an error keeps the frontend hook simple — there's no meaningful action it can take on a miss.
 #[tauri::command]
 pub async fn subsession_icon(app: tauri::AppHandle, args: SubSessionIdArg) -> Result<Option<String>, AppError> {
     let sub_ctx = sub_ctx_of(&app)?;
@@ -575,13 +484,10 @@ pub async fn subsession_icon(app: tauri::AppHandle, args: SubSessionIdArg) -> Re
     Ok(result)
 }
 
-/// Build the production [`crate::sub_sessions::SubPtySink`] whose callbacks
-/// emit Tauri events over `session://output` (shared UUID id space) and the
-/// new `subsession://status` / `subsession://exited` channels. The status
-/// callback also mutates the in-memory
+/// Build the production [`crate::sub_sessions::SubPtySink`] whose callbacks emit Tauri events over `session://output` (shared UUID id space) and the
+/// new `subsession://status` / `subsession://exited` channels. The status callback also mutates the in-memory
 /// [`crate::sub_sessions::SubSessionStore`] so `subsession_list` returns
-/// the current lifecycle state without requiring the frontend to maintain
-/// its own shadow copy.
+/// the current lifecycle state without requiring the frontend to maintain its own shadow copy.
 #[must_use]
 pub fn build_production_sub_sink(app: tauri::AppHandle, store: Arc<crate::sub_sessions::SubSessionStore>) -> crate::sub_sessions::SubPtySink {
     let app_for_output = app.clone();
@@ -599,10 +505,8 @@ pub fn build_production_sub_sink(app: tauri::AppHandle, store: Arc<crate::sub_se
     let store_for_status = store;
     let status = Arc::new(
         move |id: &crate::types::SubSessionId, status: crate::types::SubSessionStatus, pid: Option<u32>, message: Option<String>| {
-            // Persist status into the in-memory store before emitting so
-            // any `subsession_list` racing the event sees the new value.
-            // NotFound is expected when the sub-session is closed before
-            // its wait thread reports completion.
+            // Persist status into the in-memory store before emitting so any `subsession_list` racing the event sees the new value. NotFound is
+            // expected when the sub-session is closed before its wait thread reports completion.
             if let Err(e) = store_for_status.set_status(id, status, pid) {
                 use crate::types::Error as E;
                 if !matches!(e, E::NotFound(_)) {

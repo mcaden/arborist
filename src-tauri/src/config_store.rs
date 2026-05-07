@@ -1,21 +1,17 @@
 //! Persistence layer for Arborist (Phase 4).
 //!
-//! Two logical JSON stores live side-by-side in a single directory (typically
-//! the OS-specific `app_data_dir` provided by Tauri):
+//! Two logical JSON stores live side-by-side in a single directory (typically the OS-specific `app_data_dir` provided by Tauri):
 //!
 //! * `config.json`   → [`AppConfig`]
 //! * `sessions.json` → `BTreeMap<SessionId, Session>`
 //!
-//! Both files are written atomically using `tempfile::NamedTempFile::persist`
-//! so an interrupted write never leaves a truncated file. On Unix the parent
-//! directory is `fsync`-ed after `persist` so the rename itself is durable.
+//! Both files are written atomically using `tempfile::NamedTempFile::persist` so an interrupted write never leaves a truncated file. On Unix the
+//! parent directory is `fsync`-ed after `persist` so the rename itself is durable.
 //!
 //! ## Crash & corruption handling
 //!
-//! `load_config` / `load_sessions` **never panic** on malformed input. If the
-//! JSON fails to parse (or fails schema validation), the offending file is
-//! moved aside to `<name>.bad-<unix-timestamp>` and an empty/default value is
-//! returned. A `tracing::warn!` event with the
+//! `load_config` / `load_sessions` **never panic** on malformed input. If the JSON fails to parse (or fails schema validation), the offending file is
+//! moved aside to `<name>.bad-<unix-timestamp>` and an empty/default value is returned. A `tracing::warn!` event with the
 //! [`Error::ConfigQuarantined`](crate::types::Error::ConfigQuarantined) code
 //! describes which file was quarantined and why.
 //!
@@ -30,13 +26,10 @@
 //!
 //! ## Instruction discovery (`discover_instructions`)
 //!
-//! `*.md` files in `instructionSetsDir` are loaded; each candidate is
-//! canonicalized and asserted to lie inside the canonical
-//! `instructionSetsDir` (defence against symlinks pointing outside). Files
-//! larger than 1 MiB are skipped + warned. Filenames prefixed with `claude-`
-//! and `copilot-` are bound to those tools respectively; everything else is
-//! ignored. The discovered "default" per tool is `<tool>-default.md` if it
-//! exists, else the first alphabetical match for that tool prefix. The
+//! `*.md` files in `instructionSetsDir` are loaded; each candidate is canonicalized and asserted to lie inside the canonical `instructionSetsDir`
+//! (defence against symlinks pointing outside). Files larger than 1 MiB are skipped + warned. Filenames prefixed with `claude-` and `copilot-` are
+//! bound to those tools respectively; everything else is ignored. The discovered "default" per tool is `<tool>-default.md` if it exists, else the
+//! first alphabetical match for that tool prefix. The
 //! [`InstructionSetId`] for each set is its filename stem (e.g.
 //! `claude-default`).
 
@@ -59,70 +52,49 @@ use crate::types::{
 const CONFIG_FILENAME: &str = "config.json";
 const SESSIONS_FILENAME: &str = "sessions.json";
 
-/// Maximum size (in bytes) of a single instruction file. Files exceeding
-/// this cap are skipped during discovery (defence in depth — see DESIGN
-/// §8.2).
+/// Maximum size (in bytes) of a single instruction file. Files exceeding this cap are skipped during discovery (defence in depth — see DESIGN §8.2).
 pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 
-// ---------------------------------------------------------------------------
-// ConfigStore
+// --------------------------------------------------------------------------- ConfigStore
 // ---------------------------------------------------------------------------
 
 /// Handle to the on-disk store directory. Cheap to construct and clone.
 ///
-/// All write paths (`save_config`, `save_session`, `remove_session`,
-/// `update_session_status`, `update_session_ai_session_id`,
-/// `append_last_open_sub_session`, `remove_last_open_sub_session`) are
-/// serialized through a mutex shared by clones of the same handle.
-/// Without this, load-modify-write paths called from different threads
-/// using the same `ConfigStore` instance (e.g. the PTY wait thread
-/// updating `status` while a metrics watcher updates `ai_session_id`)
-/// would race and silently lose updates. Atomic file writes
-/// (`tempfile::persist`) only protect against torn reads, not against
-/// lost updates.
+/// All write paths (`save_config`, `save_session`, `remove_session`, `update_session_status`, `update_session_ai_session_id`,
+/// `append_last_open_sub_session`, `remove_last_open_sub_session`) are serialized through a mutex shared by clones of the same handle. Without this,
+/// load-modify-write paths called from different threads using the same `ConfigStore` instance (e.g. the PTY wait thread updating `status` while a
+/// metrics watcher updates `ai_session_id`) would race and silently lose updates. Atomic file writes (`tempfile::persist`) only protect against torn
+/// reads, not against lost updates.
 ///
-/// Scope: this guard covers writes performed through clones of the same
-/// `ConfigStore` only. Separately opened `ConfigStore` instances
-/// pointing at the same directory do **not** share this mutex and are
-/// therefore not serialized against each other — which is why
-/// command handlers route through the managed `AppContext`'s store via
-/// `AppContext::store()` rather than calling `ConfigStore::open` per
-/// request. Concurrent access from a second Arborist process **is**
-/// prevented at the `(branch, workspace)` granularity by the OS-level
-/// advisory lock acquired in [`crate::boot::bind_workspace`] (held in
+/// Scope: this guard covers writes performed through clones of the same `ConfigStore` only. Separately opened `ConfigStore` instances pointing at the
+/// same directory do **not** share this mutex and are therefore not serialized against each other — which is why command handlers route through the
+/// managed `AppContext`'s store via `AppContext::store()` rather than calling `ConfigStore::open` per request. Concurrent access from a second
+/// Arborist process **is** prevented at the `(branch, workspace)` granularity by the OS-level advisory lock acquired in
+/// [`crate::boot::bind_workspace`] (held in
 /// [`crate::workspace_scope::WorkspaceScope`] for the lifetime of the
-/// running instance). Two binaries that bind the *same* `(branch,
-/// workspace)` tuple cannot run concurrently. A user editing
-/// `sessions.json` by hand while the app is running is still not
-/// supported.
+/// running instance). Two binaries that bind the *same* `(branch, workspace)` tuple cannot run concurrently. A user editing `sessions.json` by hand
+/// while the app is running is still not supported.
 ///
-/// Concurrent reads (`load_config`, `load_sessions`) intentionally do
-/// **not** take the lock; if they race a writer they may observe either
-/// the pre- or post-write state, which is the same guarantee
-/// `write_atomic` already provides.
+/// Concurrent reads (`load_config`, `load_sessions`) intentionally do **not** take the lock; if they race a writer they may observe either the pre-
+/// or post-write state, which is the same guarantee `write_atomic` already provides.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     dir: PathBuf,
     /// Optional [`StoreLayout`] this store was constructed from. Set by
     /// [`ConfigStore::from_layout`] (the per-(branch, workspace) entry
-    /// point used by `WorkspaceScope`); `None` when constructed via the
-    /// legacy [`ConfigStore::open`] path (tests, examples, and any
-    /// flat-directory caller). Callers that need the layout's
-    /// auxiliary paths (lock file, seed lock, legacy seed sources)
-    /// should use [`ConfigStore::layout`] and handle the `None` case.
+    /// point used by `WorkspaceScope`); `None` when constructed via the legacy [`ConfigStore::open`] path (tests, examples, and any flat-directory
+    /// caller). Callers that need the layout's auxiliary paths (lock file, seed lock, legacy seed sources) should use [`ConfigStore::layout`] and
+    /// handle the `None` case.
     layout: Option<StoreLayout>,
     write_lock: Arc<Mutex<()>>,
 }
 
 impl ConfigStore {
-    /// Open (or create) a store rooted at `dir`. The directory will be
-    /// created if it does not yet exist.
+    /// Open (or create) a store rooted at `dir`. The directory will be created if it does not yet exist.
     ///
-    /// Prefer [`ConfigStore::from_layout`] in production code paths
-    /// where a [`StoreLayout`] is available — it carries enough
-    /// information to resolve the lock-file path, seed-lock path, and
-    /// legacy fall-back seed paths. `open` remains the supported entry
-    /// point for tests, examples, and other flat-directory callers.
+    /// Prefer [`ConfigStore::from_layout`] in production code paths where a [`StoreLayout`] is available — it carries enough information to resolve
+    /// the lock-file path, seed-lock path, and legacy fall-back seed paths. `open` remains the supported entry point for tests, examples, and other
+    /// flat-directory callers.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, Error> {
         let dir = dir.into();
         fs::create_dir_all(&dir).map_err(Error::Io)?;
@@ -133,10 +105,8 @@ impl ConfigStore {
         })
     }
 
-    /// Open (or create) a store at `layout.workspace_dir()`, retaining
-    /// the [`StoreLayout`] for later access via [`Self::layout`]. This
-    /// is the canonical entry point used by `WorkspaceScope` at boot
-    /// and by the in-app workspace switch.
+    /// Open (or create) a store at `layout.workspace_dir()`, retaining the [`StoreLayout`] for later access via [`Self::layout`]. This is the
+    /// canonical entry point used by `WorkspaceScope` at boot and by the in-app workspace switch.
     pub fn from_layout(layout: StoreLayout) -> Result<Self, Error> {
         let dir = layout.workspace_dir();
         fs::create_dir_all(&dir).map_err(Error::Io)?;
@@ -147,8 +117,7 @@ impl ConfigStore {
         })
     }
 
-    /// The [`StoreLayout`] this store was constructed from, when
-    /// available. Returns `None` for stores opened via the legacy
+    /// The [`StoreLayout`] this store was constructed from, when available. Returns `None` for stores opened via the legacy
     /// [`Self::open`] path. Use this to reach auxiliary paths
     /// (`lock_path`, `seed_lock_path`, legacy seed sources).
     #[must_use]
@@ -156,8 +125,7 @@ impl ConfigStore {
         self.layout.as_ref()
     }
 
-    /// Filesystem directory backing this store. Mostly useful for tests and
-    /// diagnostics.
+    /// Filesystem directory backing this store. Mostly useful for tests and diagnostics.
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -216,10 +184,8 @@ impl ConfigStore {
             }
         };
 
-        // Future-version downgrade guard: if a newer build wrote this file
-        // (e.g. user downgraded to this branch), don't risk silently
-        // rewriting it without the future fields. Quarantine and return
-        // defaults so the user notices.
+        // Future-version downgrade guard: if a newer build wrote this file (e.g. user downgraded to this branch), don't risk silently rewriting it
+        // without the future fields. Quarantine and return defaults so the user notices.
         if parsed.config_version > CONFIG_VERSION_CURRENT {
             let quarantined = quarantine(&path);
             warn!(
@@ -234,24 +200,18 @@ impl ConfigStore {
         }
 
         let mut cfg = parsed;
-        // v1/v2 → v3: `workspace_root` did not exist. If the user already
-        // had exactly one `worktree_roots` entry, treat that as the
-        // workspace so they don't get pushed back through the first-boot
-        // picker for no reason. Multi-root and zero-root configs leave
-        // `workspace_root` as `None` and the picker will be shown.
+        // v1/v2 → v3: `workspace_root` did not exist. If the user already had exactly one `worktree_roots` entry, treat that as the workspace so they
+        // don't get pushed back through the first-boot picker for no reason. Multi-root and zero-root configs leave `workspace_root` as `None` and
+        // the picker will be shown.
         if cfg.config_version < 3 && cfg.workspace_root.is_none() && cfg.worktree_roots.len() == 1 {
             cfg.workspace_root = Some(cfg.worktree_roots[0].clone());
         }
-        // Bump the on-disk version stamp so the next save records the
-        // current schema explicitly. (`active_session_id` was the v1→v2
-        // addition; `workspace_root` is the v2→v3 addition; `custom_processes`
-        // and `last_open_sub_sessions` are the v3→v4 additions. All
-        // default via serde, so missing fields hydrate cleanly already.)
+        // Bump the on-disk version stamp so the next save records the current schema explicitly. (`active_session_id` was the v1→v2 addition;
+        // `workspace_root` is the v2→v3 addition; `custom_processes` and `last_open_sub_sessions` are the v3→v4 additions. All default via serde, so
+        // missing fields hydrate cleanly already.)
         //
-        // v3→v4: additively seed the built-in custom-process defs
-        // (`shell`, `open-folder`, `vscode`). Only IDs not already present
-        // are inserted, so a user who edited / deleted a built-in does not
-        // get it silently re-injected on every launch.
+        // v3→v4: additively seed the built-in custom-process defs (`shell`, `open-folder`, `vscode`). Only IDs not already present are inserted, so a
+        // user who edited / deleted a built-in does not get it silently re-injected on every launch.
         if cfg.config_version < 4 {
             seed_default_custom_processes(&mut cfg.custom_processes);
         }
@@ -262,10 +222,8 @@ impl ConfigStore {
         sanitize_loaded_sub_session_records(&mut cfg.last_open_sub_sessions, &cfg.custom_processes);
         validate_loaded_config(&mut cfg);
 
-        // Validate default instruction set IDs against the *discovered* set.
-        // Skip validation entirely if we don't have an instructionSetsDir
-        // configured — there's nothing to validate against and we'd
-        // otherwise clobber legitimate IDs that haven't yet been observed.
+        // Validate default instruction set IDs against the *discovered* set. Skip validation entirely if we don't have an instructionSetsDir
+        // configured — there's nothing to validate against and we'd otherwise clobber legitimate IDs that haven't yet been observed.
         if !cfg.instruction_sets_dir.as_os_str().is_empty() {
             let discovered = discover_instructions(&cfg.instruction_sets_dir).unwrap_or_default();
             let known_ids: BTreeSet<InstructionSetId> = discovered.iter().map(|i| i.id.clone()).collect();
@@ -293,24 +251,17 @@ impl ConfigStore {
         cfg
     }
 
-    /// Apply a partial update to the persisted [`AppConfig`] and write the
-    /// merged result back to disk atomically.
+    /// Apply a partial update to the persisted [`AppConfig`] and write the merged result back to disk atomically.
     ///
-    /// Each path field provided in `patch` is canonicalized; relative paths
-    /// are rejected with [`Error::InvalidPath`]. Per-worktree override keys
-    /// are canonicalized; keys that fail canonicalization are dropped with a
-    /// warning rather than poisoning the whole call.
+    /// Each path field provided in `patch` is canonicalized; relative paths are rejected with [`Error::InvalidPath`]. Per-worktree override keys are
+    /// canonicalized; keys that fail canonicalization are dropped with a warning rather than poisoning the whole call.
     pub fn save_config(&self, patch: PartialAppConfig) -> Result<AppConfig, Error> {
         self.save_config_with(patch, |_| false)
     }
 
-    /// Variant of [`Self::save_config`] that also runs an arbitrary
-    /// in-place mutation against the merged config **while holding
-    /// the write lock**, then persists once. The mutation's return
-    /// value is unused — we always write because the patch was
-    /// already merged in. The lock spans load → merge → mutate →
-    /// write, eliminating the read-modify-write race that would
-    /// exist if a caller did `save_config` followed by `write_full`.
+    /// Variant of [`Self::save_config`] that also runs an arbitrary in-place mutation against the merged config **while holding the write lock**,
+    /// then persists once. The mutation's return value is unused — we always write because the patch was already merged in. The lock spans load →
+    /// merge → mutate → write, eliminating the read-modify-write race that would exist if a caller did `save_config` followed by `write_full`.
     pub fn save_config_with<F>(&self, patch: PartialAppConfig, mut mutate: F) -> Result<AppConfig, Error>
     where
         F: FnMut(&mut AppConfig) -> bool,
@@ -324,14 +275,11 @@ impl ConfigStore {
         Ok(cfg)
     }
 
-    /// Write the supplied [`AppConfig`] verbatim, bumping the version
-    /// stamp. Used by the icon backfill path which mutates the config
-    /// in fields the public `PartialAppConfig` patch surface doesn't
-    /// expose (`icon_data_uri` is backend-derived, not user-editable).
+    /// Write the supplied [`AppConfig`] verbatim, bumping the version stamp. Used by the icon backfill path which mutates the config in fields the
+    /// public `PartialAppConfig` patch surface doesn't expose (`icon_data_uri` is backend-derived, not user-editable).
     ///
-    /// **Caution:** holds the write lock for its own duration only;
-    /// don't sandwich it with a `load_config` from a separate caller
-    /// expecting an atomic read-modify-write — use
+    /// **Caution:** holds the write lock for its own duration only; don't sandwich it with a `load_config` from a separate caller expecting an atomic
+    /// read-modify-write — use
     /// [`Self::save_config_with`] for that case.
     pub fn write_full(&self, mut cfg: AppConfig) -> Result<AppConfig, Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -342,9 +290,7 @@ impl ConfigStore {
 
     // ----- Sessions -------------------------------------------------------
 
-    /// Load all persisted [`Session`] records, keyed by ID. A missing or
-    /// malformed file produces an empty map (with quarantine on parse
-    /// failure).
+    /// Load all persisted [`Session`] records, keyed by ID. A missing or malformed file produces an empty map (with quarantine on parse failure).
     pub fn load_sessions(&self) -> BTreeMap<SessionId, Session> {
         let path = self.sessions_path();
         let raw = match fs::read_to_string(&path) {
@@ -379,11 +325,9 @@ impl ConfigStore {
         }
     }
 
-    /// Strict variant of [`Self::load_sessions`] for callers that perform
-    /// destructive operations and cannot safely treat IO/parse failures as
-    /// "no sessions exist". Returns the full session map on success or the
-    /// underlying error otherwise. A missing file is still treated as an
-    /// empty map (a fresh install has no `sessions.json`).
+    /// Strict variant of [`Self::load_sessions`] for callers that perform destructive operations and cannot safely treat IO/parse failures as "no
+    /// sessions exist". Returns the full session map on success or the underlying error otherwise. A missing file is still treated as an empty map (a
+    /// fresh install has no `sessions.json`).
     pub fn try_load_sessions(&self) -> Result<BTreeMap<SessionId, Session>, Error> {
         let path = self.sessions_path();
         let raw = match fs::read_to_string(&path) {
@@ -415,8 +359,7 @@ impl ConfigStore {
         write_atomic(&self.sessions_path(), &all)
     }
 
-    /// Mutate the persisted status (and optionally PID) of a session record.
-    /// Used by the Phase 6 wait thread so reloaded sessions never advertise
+    /// Mutate the persisted status (and optionally PID) of a session record. Used by the Phase 6 wait thread so reloaded sessions never advertise
     /// stale `running`/`pid` values.
     pub fn update_session_status(&self, id: &SessionId, status: SessionStatus, pid: Option<u32>) -> Result<(), Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -429,12 +372,9 @@ impl ConfigStore {
         write_atomic(&self.sessions_path(), &all)
     }
 
-    /// Mutate the persisted `ai_session_id` of a session record. Used by
-    /// the metrics watchers' discovery callback so app-restart restore
-    /// can resume the AI conversation. Returns `Ok(true)` when the value
-    /// changed (and was therefore persisted), `Ok(false)` when the value
-    /// was already current — the latter avoids a redundant disk write
-    /// every poll once the watcher has converged.
+    /// Mutate the persisted `ai_session_id` of a session record. Used by the metrics watchers' discovery callback so app-restart restore can resume
+    /// the AI conversation. Returns `Ok(true)` when the value changed (and was therefore persisted), `Ok(false)` when the value was already current —
+    /// the latter avoids a redundant disk write every poll once the watcher has converged.
     pub fn update_session_ai_session_id(&self, id: &SessionId, ai_session_id: Option<String>) -> Result<bool, Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
@@ -451,9 +391,8 @@ impl ConfigStore {
 
     // ----- Sub-sessions (last_open_sub_sessions list) --------------------
 
-    /// Append a sub-session record to `AppConfig.lastOpenSubSessions`,
-    /// replacing any existing entry with the same id. Serialized via the
-    /// shared `write_lock`.
+    /// Append a sub-session record to `AppConfig.lastOpenSubSessions`, replacing any existing entry with the same id. Serialized via the shared
+    /// `write_lock`.
     pub fn append_last_open_sub_session(&self, record: crate::types::SubSessionRecord) -> Result<(), Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = self.load_config();
@@ -475,16 +414,12 @@ impl ConfigStore {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Loaded-session migrations
+// --------------------------------------------------------------------------- Loaded-session migrations
 // ---------------------------------------------------------------------------
 
-/// Rewrite Copilot session `composed_command` values that were persisted
-/// before we dropped the legacy `--interactive <string>` invocation. The
-/// modern `copilot` CLI rejects that flag with "too many arguments". Any
-/// trailing `copilot ...` segment is replaced with bare `copilot`, so
-/// restart-on-launch and `session_restart` work for sessions created by
-/// older builds.
+/// Rewrite Copilot session `composed_command` values that were persisted before we dropped the legacy `--interactive <string>` invocation. The modern
+/// `copilot` CLI rejects that flag with "too many arguments". Any trailing `copilot ...` segment is replaced with bare `copilot`, so
+/// restart-on-launch and `session_restart` work for sessions created by older builds.
 fn migrate_copilot_composed_commands(sessions: &mut BTreeMap<SessionId, Session>) {
     for (id, session) in sessions.iter_mut() {
         if session.tool != Tool::Copilot {
@@ -510,13 +445,11 @@ fn migrate_copilot_composed_commands(sessions: &mut BTreeMap<SessionId, Session>
     }
 }
 
-// ---------------------------------------------------------------------------
-// Loaded-config validation
+// --------------------------------------------------------------------------- Loaded-config validation
 // ---------------------------------------------------------------------------
 
 fn validate_loaded_config(cfg: &mut AppConfig) {
-    // Canonicalize instructionSetsDir. An empty path = "no directory yet
-    // configured" and is left as-is.
+    // Canonicalize instructionSetsDir. An empty path = "no directory yet configured" and is left as-is.
     if !cfg.instruction_sets_dir.as_os_str().is_empty() {
         match dunce::canonicalize(&cfg.instruction_sets_dir) {
             Ok(p) if p.is_dir() => cfg.instruction_sets_dir = p,
@@ -564,8 +497,7 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
         })
         .collect();
 
-    // workspace_root: canonicalize, drop on failure (treated like a stale
-    // path — the picker will be re-shown on next launch).
+    // workspace_root: canonicalize, drop on failure (treated like a stale path — the picker will be re-shown on next launch).
     if let Some(ws) = cfg.workspace_root.take() {
         match dunce::canonicalize(&ws) {
             Ok(c) if c.is_dir() => cfg.workspace_root = Some(c),
@@ -606,8 +538,7 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
     cfg.worktree_prelaunch_commands = filtered;
 }
 
-// ---------------------------------------------------------------------------
-// Partial merge / save validation
+// --------------------------------------------------------------------------- Partial merge / save validation
 // ---------------------------------------------------------------------------
 
 fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Error> {
@@ -624,8 +555,7 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         }
     }
     if let Some(dir) = patch.instruction_sets_dir {
-        // Empty string = "clear the directory" (revert to the unconfigured
-        // default). Otherwise the path must be absolute and exist.
+        // Empty string = "clear the directory" (revert to the unconfigured default). Otherwise the path must be absolute and exist.
         if dir.as_os_str().is_empty() {
             cfg.instruction_sets_dir = PathBuf::new();
         } else {
@@ -639,9 +569,8 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
             cfg.instruction_sets_dir = canon;
         }
     }
-    // workspace_root is tri-state like active_session_id: absent → leave
-    // alone; Some(None) → clear; Some(Some(path)) → set after validating it
-    // is an absolute, existing directory.
+    // workspace_root is tri-state like active_session_id: absent → leave alone; Some(None) → clear; Some(Some(path)) → set after validating it is an
+    // absolute, existing directory.
     if let Some(ws) = patch.workspace_root {
         match ws {
             None => cfg.workspace_root = None,
@@ -677,8 +606,7 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(launch) = patch.ai_launch_commands {
         let crate::types::PartialAiLaunchCommands { claude, copilot } = launch;
         if let Some(c) = claude {
-            // Clear cached icon when the command changes — re-resolution
-            // will re-populate it from a post-save backfill pass.
+            // Clear cached icon when the command changes — re-resolution will re-populate it from a post-save backfill pass.
             if c != cfg.ai_launch_commands.claude {
                 cfg.ai_launch_commands.claude_icon_data_uri = None;
             }
@@ -719,17 +647,14 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(t) = patch.tab_order {
         cfg.tab_order = t;
     }
-    // Tri-state: `None` → don't touch; `Some(None)` → clear; `Some(Some(id))` →
-    // set.
+    // Tri-state: `None` → don't touch; `Some(None)` → clear; `Some(Some(id))` → set.
     if let Some(active) = patch.active_session_id {
         cfg.active_session_id = active;
     }
     if let Some(mut defs) = patch.custom_processes {
         validate_custom_processes(&defs)?;
-        // Preserve cached `icon_data_uri` across patches that don't
-        // carry it (the frontend never sends it — it's a backend
-        // derived field). Drop the cache when `command` changes so
-        // the next backfill pass re-resolves.
+        // Preserve cached `icon_data_uri` across patches that don't carry it (the frontend never sends it — it's a backend derived field). Drop the
+        // cache when `command` changes so the next backfill pass re-resolves.
         let prev: BTreeMap<crate::types::CustomProcessDefId, &crate::types::CustomProcessDef> =
             cfg.custom_processes.iter().map(|d| (d.id.clone(), d)).collect();
         for def in defs.iter_mut() {
@@ -750,11 +675,9 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     Ok(())
 }
 
-/// Reject obviously-invalid [`CustomProcessDef`] lists at the
-/// `config_set` boundary so corrupt state can't reach the runtime.
+/// Reject obviously-invalid [`CustomProcessDef`] lists at the `config_set` boundary so corrupt state can't reach the runtime.
 ///
-/// Rules (also enforced by the Settings UI in Phase 6, but the backend is
-/// the source of truth):
+/// Rules (also enforced by the Settings UI in Phase 6, but the backend is the source of truth):
 ///
 /// * Non-empty `id` and `name`.
 /// * `id` matches `[a-zA-Z0-9_-]+` (so it can be safely used as a wire key and
@@ -795,8 +718,7 @@ fn validate_custom_processes(defs: &[CustomProcessDef]) -> Result<(), Error> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Atomic write
+// --------------------------------------------------------------------------- Atomic write
 // ---------------------------------------------------------------------------
 
 fn write_atomic<T: serde::Serialize>(target: &Path, value: &T) -> Result<(), Error> {
@@ -823,8 +745,7 @@ fn write_atomic<T: serde::Serialize>(target: &Path, value: &T) -> Result<(), Err
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Quarantine
+// --------------------------------------------------------------------------- Quarantine
 // ---------------------------------------------------------------------------
 
 fn quarantine(path: &Path) -> Option<PathBuf> {
@@ -844,8 +765,7 @@ fn quarantine(path: &Path) -> Option<PathBuf> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Instruction discovery
+// --------------------------------------------------------------------------- Instruction discovery
 // ---------------------------------------------------------------------------
 
 const CLAUDE_PREFIX: &str = "claude-";
@@ -853,13 +773,11 @@ const COPILOT_PREFIX: &str = "copilot-";
 const CLAUDE_DEFAULT_FILENAME: &str = "claude-default.md";
 const COPILOT_DEFAULT_FILENAME: &str = "copilot-default.md";
 
-/// Scan `dir` for `*.md` files and return the discovered [`InstructionSet`]
-/// list. Returns `Err` only if `dir` itself can't be read; per-file errors
+/// Scan `dir` for `*.md` files and return the discovered [`InstructionSet`] list. Returns `Err` only if `dir` itself can't be read; per-file errors
 /// are logged and the offending file is skipped.
 ///
-/// The returned list is sorted by `file_path` so the per-tool default
-/// selection (`<tool>-default.md` if present, else first alphabetical with
-/// the right prefix) is deterministic.
+/// The returned list is sorted by `file_path` so the per-tool default selection (`<tool>-default.md` if present, else first alphabetical with the
+/// right prefix) is deterministic.
 pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
     if dir.as_os_str().is_empty() {
         return Ok(Vec::new());
@@ -898,8 +816,7 @@ pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
             continue;
         };
 
-        // Symlink defence — canonicalize and confirm we're still inside
-        // canon_dir.
+        // Symlink defence — canonicalize and confirm we're still inside canon_dir.
         let canon = match dunce::canonicalize(&path) {
             Ok(p) => p,
             Err(e) => {
@@ -943,8 +860,7 @@ pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
         } else if stem.starts_with(COPILOT_PREFIX) {
             Tool::Copilot
         } else {
-            // Files not matching either prefix are ignored — the prefix
-            // convention is documented in CONFIGURATION.md.
+            // Files not matching either prefix are ignored — the prefix convention is documented in CONFIGURATION.md.
             continue;
         };
 
@@ -967,8 +883,7 @@ pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
 }
 
 fn humanize_stem(stem: &str) -> String {
-    // "claude-default" → "Claude default"; mostly a UX nicety. Kept simple
-    // — this is not a translation layer.
+    // "claude-default" → "Claude default"; mostly a UX nicety. Kept simple — this is not a translation layer.
     let mut chars = stem.replace(['-', '_'], " ");
     if let Some(c) = chars.get_mut(0..1) {
         c.make_ascii_uppercase();
@@ -992,8 +907,7 @@ fn filename_matches(path: &Path, filename: &str) -> bool {
         .is_some_and(|n| n.eq_ignore_ascii_case(filename))
 }
 
-// ---------------------------------------------------------------------------
-// Tauri command surface helpers
+// --------------------------------------------------------------------------- Tauri command surface helpers
 // ---------------------------------------------------------------------------
 
 /// Public helper used by the `instructions_list` Tauri command. Wraps
@@ -1002,8 +916,7 @@ pub fn list_instructions_for(cfg: &AppConfig) -> Result<Vec<InstructionSet>, App
     discover_instructions(&cfg.instruction_sets_dir).map_err(AppError::from)
 }
 
-// ---------------------------------------------------------------------------
-// Built-in custom-process defs (configVersion 3→4 seeding)
+// --------------------------------------------------------------------------- Built-in custom-process defs (configVersion 3→4 seeding)
 // ---------------------------------------------------------------------------
 
 /// Reserved ID for the built-in "Shell" terminal launcher.
@@ -1013,20 +926,16 @@ pub const BUILTIN_DEF_ID_OPEN_FOLDER: &str = "open-folder";
 /// Reserved ID for the built-in "VS Code" application launcher.
 pub const BUILTIN_DEF_ID_VSCODE: &str = "vscode";
 
-/// Construct the on-first-launch [`AppConfig`] with the built-in
-/// custom-process defs already seeded. Used both for the missing-file
-/// path and the quarantine-and-default-on-load path so a fresh install
-/// always sees the documented Launch menu entries.
+/// Construct the on-first-launch [`AppConfig`] with the built-in custom-process defs already seeded. Used both for the missing-file path and the
+/// quarantine-and-default-on-load path so a fresh install always sees the documented Launch menu entries.
 fn default_seeded_config() -> AppConfig {
     let mut cfg = AppConfig::default();
     seed_default_custom_processes(&mut cfg.custom_processes);
     cfg
 }
 
-/// Drop persisted [`CustomProcessDef`]s that fail validation. Unlike the
-/// strict `config_set` boundary, the load path is *graceful*: an
-/// individually-corrupt def (empty command, bad id) is logged and removed
-/// rather than nuking the whole config. Duplicate IDs keep the first
+/// Drop persisted [`CustomProcessDef`]s that fail validation. Unlike the strict `config_set` boundary, the load path is *graceful*: an
+/// individually-corrupt def (empty command, bad id) is logged and removed rather than nuking the whole config. Duplicate IDs keep the first
 /// occurrence and drop later ones.
 fn sanitize_loaded_custom_processes(defs: &mut Vec<CustomProcessDef>) {
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -1060,11 +969,9 @@ fn sanitize_loaded_custom_processes(defs: &mut Vec<CustomProcessDef>) {
     }
 }
 
-/// Sanitize persisted [`SubSessionRecord`]s on load: drop any whose
-/// `def_id` no longer exists in the user's `custom_processes` (the def
-/// was deleted between sessions), and backfill `composed_command` from
-/// the def for legacy v3→v4 records that didn't persist it. Both are
-/// silent — restore-on-launch is best-effort.
+/// Sanitize persisted [`SubSessionRecord`]s on load: drop any whose `def_id` no longer exists in the user's `custom_processes` (the def was deleted
+/// between sessions), and backfill `composed_command` from the def for legacy v3→v4 records that didn't persist it. Both are silent —
+/// restore-on-launch is best-effort.
 fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs: &[CustomProcessDef]) {
     let by_id: std::collections::BTreeMap<&CustomProcessDefId, &CustomProcessDef> = defs.iter().map(|d| (&d.id, d)).collect();
     let original_len = records.len();
@@ -1092,15 +999,11 @@ fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs
     }
 }
 
-/// table) into `defs`. Only IDs not already present are appended;
-/// existing entries (including ones the user has edited or disabled) are
-/// left untouched. Insertion order mirrors the plan table so a fresh
-/// install renders the menu in the documented order.
+/// table) into `defs`. Only IDs not already present are appended; existing entries (including ones the user has edited or disabled) are left
+/// untouched. Insertion order mirrors the plan table so a fresh install renders the menu in the documented order.
 ///
-/// `vscode` is enabled by default iff the `code` binary is discoverable
-/// on `PATH` at seed time. The probe is best-effort: a transient PATH
-/// hiccup just leaves it disabled (the user can flip the toggle in the
-/// Settings dialog).
+/// `vscode` is enabled by default iff the `code` binary is discoverable on `PATH` at seed time. The probe is best-effort: a transient PATH hiccup
+/// just leaves it disabled (the user can flip the toggle in the Settings dialog).
 pub fn seed_default_custom_processes(defs: &mut Vec<CustomProcessDef>) {
     let existing: BTreeSet<CustomProcessDefId> = defs.iter().map(|d| d.id.clone()).collect();
     for built_in in default_custom_processes() {
@@ -1110,9 +1013,8 @@ pub fn seed_default_custom_processes(defs: &mut Vec<CustomProcessDef>) {
     }
 }
 
-/// The full ordered list of built-in defs, regardless of whether they
-/// are already present in any particular config. Test-only callers may
-/// use this for assertions; production code should call
+/// The full ordered list of built-in defs, regardless of whether they are already present in any particular config. Test-only callers may use this
+/// for assertions; production code should call
 /// [`seed_default_custom_processes`] which is additive.
 #[must_use]
 pub fn default_custom_processes() -> Vec<CustomProcessDef> {
@@ -1148,19 +1050,15 @@ pub fn default_custom_processes() -> Vec<CustomProcessDef> {
 }
 
 fn default_shell_command() -> String {
-    // Phase 1 keeps this minimal: launch the platform shell interactively.
-    // The PTY pool will spawn it via `$SHELL -c <cmd>` (Unix) or
-    // `%COMSPEC% /c <cmd>` (Windows), so the inner command is a fresh
-    // login-ish invocation of the same shell. We deliberately don't pass
-    // `--login` so we don't fight the user's profile order.
+    // Phase 1 keeps this minimal: launch the platform shell interactively. The PTY pool will spawn it via `$SHELL -c <cmd>` (Unix) or `%COMSPEC% /c
+    // <cmd>` (Windows), so the inner command is a fresh login-ish invocation of the same shell. We deliberately don't pass `--login` so we don't
+    // fight the user's profile order.
     if cfg!(target_os = "windows") {
         "cmd".to_owned()
     } else {
-        // Use $SHELL when set, but only if it looks like a sane absolute
-        // path with no shell-metacharacters. A weird $SHELL (containing
-        // spaces, quotes, `;`, `&`, `|`, `$`, backticks, newlines, …) would
-        // be re-interpreted by the launcher's `sh -c`, so we fall back to
-        // `sh -i` rather than persist a footgun into the user's seed.
+        // Use $SHELL when set, but only if it looks like a sane absolute path with no shell-metacharacters. A weird $SHELL (containing spaces,
+        // quotes, `;`, `&`, `|`, `$`, backticks, newlines, …) would be re-interpreted by the launcher's `sh -c`, so we fall back to `sh -i` rather
+        // than persist a footgun into the user's seed.
         let shell = std::env::var("SHELL")
             .ok()
             .filter(|s| {
@@ -1182,14 +1080,11 @@ const fn default_open_folder_command() -> &'static str {
     }
 }
 
-/// Return `true` if `cmd` resolves to an executable on the current
-/// process's `PATH`. Pure-std implementation so we don't have to pull in
-/// the `which` crate just for this best-effort probe. Errors and missing
-/// `PATH` both yield `false`.
+/// Return `true` if `cmd` resolves to an executable on the current process's `PATH`. Pure-std implementation so we don't have to pull in the `which`
+/// crate just for this best-effort probe. Errors and missing `PATH` both yield `false`.
 ///
-/// On Unix, requires at least one executable bit (`0o111`) so a stray
-/// non-executable file named like the command on `PATH` doesn't enable a
-/// launcher that will fail to spawn.
+/// On Unix, requires at least one executable bit (`0o111`) so a stray non-executable file named like the command on `PATH` doesn't enable a launcher
+/// that will fail to spawn.
 #[must_use]
 pub fn command_on_path(cmd: &str) -> bool {
     let path = match std::env::var_os("PATH") {
@@ -1227,13 +1122,11 @@ fn is_executable(path: &Path) -> bool {
 
 #[cfg(not(unix))]
 fn is_executable(_path: &Path) -> bool {
-    // On Windows, `is_file()` + a recognized suffix from PATHEXT-ish list
-    // is the practical equivalent. We don't crack `PATHEXT` here yet.
+    // On Windows, `is_file()` + a recognized suffix from PATHEXT-ish list is the practical equivalent. We don't crack `PATHEXT` here yet.
     true
 }
 
-// ---------------------------------------------------------------------------
-// Tests
+// --------------------------------------------------------------------------- Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1358,8 +1251,7 @@ mod tests {
     fn load_config_returns_defaults_when_missing() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
-        // Fresh-install path seeds the built-in custom-process defs;
-        // every other field must equal AppConfig::default().
+        // Fresh-install path seeds the built-in custom-process defs; every other field must equal AppConfig::default().
         let mut expected = AppConfig::default();
         seed_default_custom_processes(&mut expected.custom_processes);
         assert_eq!(store.load_config(), expected);
@@ -1419,8 +1311,7 @@ mod tests {
         let err = store.try_load_sessions().expect_err("expected parse failure");
         assert!(matches!(err, Error::Internal(_)), "got {err:?}");
 
-        // Strict variant must NOT quarantine — the caller (a destructive
-        // operation) needs the file intact so it can be inspected/repaired.
+        // Strict variant must NOT quarantine — the caller (a destructive operation) needs the file intact so it can be inspected/repaired.
         assert!(path.exists(), "try_load_sessions must not quarantine the bad file");
         let badfiles: Vec<_> = fs::read_dir(td.path())
             .expect("rd")
@@ -1516,8 +1407,7 @@ mod tests {
             .expect("ok");
         assert_eq!(first.prelaunch_commands, vec!["echo hi".to_owned()]);
 
-        // Second write: set tab_order only — prelaunch_commands must
-        // survive.
+        // Second write: set tab_order only — prelaunch_commands must survive.
         let id = SessionId::new();
         let second = store
             .save_config(PartialAppConfig {
@@ -1569,8 +1459,7 @@ mod tests {
         touch(&inst.join("copilot-default.md"), "p");
 
         let store = ConfigStore::open(td.path().join("store")).expect("open");
-        // Hand-write a config.json that points at a non-existent claude
-        // ID and the real instructionSetsDir.
+        // Hand-write a config.json that points at a non-existent claude ID and the real instructionSetsDir.
         let canon_inst = canon(&inst);
         let raw = serde_json::json!({
             "configVersion": 1,
@@ -1722,8 +1611,7 @@ mod tests {
         let store = ConfigStore::open(td.path()).expect("open");
         let id = SessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"));
 
-        // Hand-write sessions.json with the legacy invocation a pre-fix
-        // build would have persisted.
+        // Hand-write sessions.json with the legacy invocation a pre-fix build would have persisted.
         let raw = serde_json::json!({
             id.to_string(): {
                 "id": id,
@@ -1797,10 +1685,8 @@ mod tests {
 
     #[test]
     fn atomic_write_leaves_old_file_intact_on_persist_failure() {
-        // Simulate a "persist failure" by trying to persist into a path
-        // whose parent directory is a *file*, not a dir. This is the
-        // closest portable approximation of a cross-filesystem rename
-        // failure we can produce without root.
+        // Simulate a "persist failure" by trying to persist into a path whose parent directory is a *file*, not a dir. This is the closest portable
+        // approximation of a cross-filesystem rename failure we can produce without root.
         let td = TempDir::new().expect("td");
         let target = td.path().join("config.json");
         fs::write(&target, b"OLD").expect("seed");
@@ -2002,13 +1888,9 @@ mod tests {
 
     #[test]
     fn load_config_migrates_v3_with_user_edited_shell_preserved() {
-        // The v3 user has already customised the built-in `shell` (renamed
-        // it, swapped to fish, disabled it). The v3→v4 seed pass must
-        // NOT clobber the user's edits — only append the missing
-        // built-ins (open-folder, vscode). This covers the `load_config`
-        // integration path, complementing the
-        // `seeding_is_additive_and_does_not_overwrite_user_edits` unit
-        // test on the seeding helper itself.
+        // The v3 user has already customised the built-in `shell` (renamed it, swapped to fish, disabled it). The v3→v4 seed pass must NOT clobber
+        // the user's edits — only append the missing built-ins (open-folder, vscode). This covers the `load_config` integration path, complementing
+        // the `seeding_is_additive_and_does_not_overwrite_user_edits` unit test on the seeding helper itself.
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
@@ -2111,9 +1993,7 @@ mod tests {
 
     #[test]
     fn load_config_v4_does_not_reseed_after_user_deleted_a_builtin() {
-        // User on v4 already has only `shell` (deleted vscode + open-folder
-        // intentionally); the migration must not run again, so the deletes
-        // stick.
+        // User on v4 already has only `shell` (deleted vscode + open-folder intentionally); the migration must not run again, so the deletes stick.
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
@@ -2362,8 +2242,7 @@ mod tests {
     #[test]
     fn load_config_seeds_defaults_when_file_unparseable() {
         let td = TempDir::new().expect("td");
-        // Write garbage as config.json so parse fails and triggers
-        // quarantine-and-default. Defaults must still include built-ins.
+        // Write garbage as config.json so parse fails and triggers quarantine-and-default. Defaults must still include built-ins.
         fs::write(td.path().join("config.json"), b"not json {{ ").expect("write");
         let store = ConfigStore::open(td.path()).expect("open");
         let cfg = store.load_config();
@@ -2405,9 +2284,7 @@ mod tests {
     fn load_config_drops_invalid_persisted_custom_processes() {
         let td = TempDir::new().expect("td");
         let path = td.path().join("config.json");
-        // Hand-craft a v4 config with one valid, one empty-command, one
-        // duplicate-id def. Sanitize on load should keep only the first
-        // valid one.
+        // Hand-craft a v4 config with one valid, one empty-command, one duplicate-id def. Sanitize on load should keep only the first valid one.
         let crafted = serde_json::json!({
             "configVersion": CONFIG_VERSION_CURRENT,
             "defaultInstructionSets": { "claude": "", "copilot": "" },
@@ -2449,20 +2326,16 @@ mod tests {
 
     // ----- from_layout --------------------------------------------------
 
-    /// `from_layout` must round-trip a save/load on the per-(branch,
-    /// workspace) settings path resolved from the layout, and the
-    /// resulting store must expose its layout via [`ConfigStore::layout`]
-    /// so callers (seed-on-first-launch, in-app workspace switch) can
-    /// reach auxiliary paths like `lock_path()` and
-    /// `legacy_config_path()`.
+    /// `from_layout` must round-trip a save/load on the per-(branch, workspace) settings path resolved from the layout, and the resulting store must
+    /// expose its layout via [`ConfigStore::layout`] so callers (seed-on-first-launch, in-app workspace switch) can reach auxiliary paths like
+    /// `lock_path()` and `legacy_config_path()`.
     #[test]
     fn from_layout_writes_under_layout_workspace_dir() {
         let app_data = TempDir::new().expect("app_data");
         let workspace = TempDir::new().expect("workspace");
         let workspace_canon = canon(workspace.path());
 
-        // Branch build → settings live under
-        // `<app_data>/branches/feature-x/workspaces/<key>/config.json`.
+        // Branch build → settings live under `<app_data>/branches/feature-x/workspaces/<key>/config.json`.
         let root = crate::store_layout::StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
         let workspace_canon_typed = crate::store_layout::CanonicalPath::assume_canonical(workspace_canon.clone());
         let layout = root.for_workspace(&workspace_canon_typed);
@@ -2496,10 +2369,8 @@ mod tests {
         );
     }
 
-    /// Two `from_layout` stores with identical (branch, workspace)
-    /// inputs must resolve to the same directory — proves the workspace
-    /// key is deterministic and that branch builds in the same
-    /// workspace see one shared on-disk state.
+    /// Two `from_layout` stores with identical (branch, workspace) inputs must resolve to the same directory — proves the workspace key is
+    /// deterministic and that branch builds in the same workspace see one shared on-disk state.
     #[test]
     fn from_layout_is_deterministic_for_same_inputs() {
         let app_data = TempDir::new().expect("app_data");
@@ -2513,9 +2384,8 @@ mod tests {
         assert_eq!(store_a.dir(), store_b.dir());
     }
 
-    /// Different workspaces under the same branch must produce
-    /// distinct directories — proves isolation between sibling
-    /// workspaces is structural, not best-effort.
+    /// Different workspaces under the same branch must produce distinct directories — proves isolation between sibling workspaces is structural, not
+    /// best-effort.
     #[test]
     fn from_layout_isolates_distinct_workspaces() {
         let app_data = TempDir::new().expect("app_data");

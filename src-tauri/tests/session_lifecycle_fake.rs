@@ -1,17 +1,12 @@
-//! Phase 7 session-lifecycle integration tests using a deterministic fake
-//! PTY spawner. These tests drive the same `*_impl` business-logic
-//! functions the production Tauri command wrappers call, so they cover the
-//! full session-create → spawn → input → resize → close path without
-//! depending on a real Claude/Copilot install.
+//! Phase 7 session-lifecycle integration tests using a deterministic fake PTY spawner. These tests drive the same `*_impl` business-logic functions
+//! the production Tauri command wrappers call, so they cover the full session-create → spawn → input → resize → close path without depending on a
+//! real Claude/Copilot install.
 //!
 //! ## Why duplicate the FakeSpawner?
 //!
-//! Rust integration tests (`tests/*.rs`) are compiled as separate crates,
-//! so each test file has to bring its own helpers. We could promote the
-//! one in `tests/pty_pool.rs` to a `pub(crate)` test-support module, but
-//! that drags `portable-pty` into the public surface for the sake of test
-//! ergonomics. Copying the small helper here keeps the production crate's
-//! public surface honest.
+//! Rust integration tests (`tests/*.rs`) are compiled as separate crates, so each test file has to bring its own helpers. We could promote the one in
+//! `tests/pty_pool.rs` to a `pub(crate)` test-support module, but that drags `portable-pty` into the public surface for the sake of test ergonomics.
+//! Copying the small helper here keeps the production crate's public surface honest.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -34,8 +29,7 @@ use arborist_lib::types::{
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
 
-// ---------------------------------------------------------------------------
-// Deterministic fake spawner (cf. tests/pty_pool.rs::FakeSpawner)
+// --------------------------------------------------------------------------- Deterministic fake spawner (cf. tests/pty_pool.rs::FakeSpawner)
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -43,19 +37,15 @@ struct SpawnerState {
     spawn_count: usize,
     last_cwd: Option<PathBuf>,
     last_cmd: Option<ChildCommand>,
-    /// PtySize handed to the most recent `spawn` call. Used by regression
-    /// tests that pin the deferred-spawn path: `restore_all_sessions` no
-    /// longer spawns directly; the first `session_resize` from the
-    /// frontend triggers the spawn and *that* size — not
-    /// `DEFAULT_PTY_SIZE` — must reach the spawner so the CLI's first
-    /// paint matches the real terminal width.
+    /// PtySize handed to the most recent `spawn` call. Used by regression tests that pin the deferred-spawn path: `restore_all_sessions` no longer
+    /// spawns directly; the first `session_resize` from the frontend triggers the spawn and *that* size — not `DEFAULT_PTY_SIZE` — must reach the
+    /// spawner so the CLI's first paint matches the real terminal width.
     last_size: Option<PtySize>,
     /// One entry per spawn so a test can keep killing/respawning.
     eofs: Vec<Arc<AtomicBool>>,
     next_pid: u32,
-    /// If set, the next call to `spawn` returns this error and clears
-    /// the flag (one-shot). Used to drive failed-restart regression
-    /// tests that need to assert on persisted state after the failure.
+    /// If set, the next call to `spawn` returns this error and clears the flag (one-shot). Used to drive failed-restart regression tests that need to
+    /// assert on persisted state after the failure.
     fail_next_with: Option<arborist_lib::types::Error>,
 }
 
@@ -78,8 +68,7 @@ impl PtySpawner for FakeSpawner {
     fn spawn(&self, cmd: ChildCommand, cwd: &Path, size: PtySize) -> Result<SpawnedChild, arborist_lib::types::Error> {
         let mut s = self.state.lock().unwrap();
         if let Some(err) = s.fail_next_with.take() {
-            // Capture the inputs of the failed attempt too — assertions
-            // about *which* command was attempted still need to work.
+            // Capture the inputs of the failed attempt too — assertions about *which* command was attempted still need to work.
             s.spawn_count += 1;
             s.last_cwd = Some(cwd.to_path_buf());
             s.last_cmd = Some(cmd);
@@ -157,8 +146,7 @@ impl PtyWaiter for BlockingWaiter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sink that captures emissions for assertion
+// --------------------------------------------------------------------------- Sink that captures emissions for assertion
 // ---------------------------------------------------------------------------
 
 type StatusTuple = (SessionId, SessionStatus, Option<u32>, Option<String>);
@@ -188,8 +176,7 @@ fn capture_sink(events: Arc<CapturedEvents>, store: ConfigStore) -> PtySink {
     PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
-// ---------------------------------------------------------------------------
-// Test harness builder
+// --------------------------------------------------------------------------- Test harness builder
 // ---------------------------------------------------------------------------
 
 struct Harness {
@@ -202,8 +189,7 @@ struct Harness {
     instruction_id: InstructionSetId,
 }
 
-/// Records `remove_worktree` invocations so a test can assert opt-in
-/// deletion was forwarded to the git layer.
+/// Records `remove_worktree` invocations so a test can assert opt-in deletion was forwarded to the git layer.
 #[derive(Default)]
 struct RecordingGitRunner {
     removes: Mutex<Vec<(PathBuf, PathBuf)>>,
@@ -309,8 +295,7 @@ fn wait_until<F: FnMut() -> bool>(mut f: F, dur: Duration) -> bool {
     f()
 }
 
-// ---------------------------------------------------------------------------
-// Tests
+// --------------------------------------------------------------------------- Tests
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -357,12 +342,9 @@ async fn create_emits_starting_then_running_and_persists_session() {
 
 #[tokio::test]
 async fn create_passes_initial_size_to_spawner() {
-    // Regression: pre-fix, the PTY was always opened at DEFAULT_PTY_SIZE
-    // (80×24) regardless of what the frontend actually rendered, so the
-    // CLI's first paint (e.g. a Copilot/Claude splash) was always at 80
-    // cols. The frontend now measures its host first and passes the real
-    // dims through SessionCreateArgs; this test pins that they actually
-    // reach `PtySpawner::spawn`.
+    // Regression: pre-fix, the PTY was always opened at DEFAULT_PTY_SIZE (80×24) regardless of what the frontend actually rendered, so the CLI's
+    // first paint (e.g. a Copilot/Claude splash) was always at 80 cols. The frontend now measures its host first and passes the real dims through
+    // SessionCreateArgs; this test pins that they actually reach `PtySpawner::spawn`.
     let h = build_harness();
     let args = SessionCreateArgs {
         tool: Tool::Claude,
@@ -380,8 +362,7 @@ async fn create_passes_initial_size_to_spawner() {
 
 #[tokio::test]
 async fn restart_passes_dims_to_respawn() {
-    // Companion to `create_passes_initial_size_to_spawner` — restart goes
-    // through the same race and is fixed the same way (frontend reads
+    // Companion to `create_passes_initial_size_to_spawner` — restart goes through the same race and is fixed the same way (frontend reads
     // term.cols/rows and passes them in `SessionRestartArgs`).
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
@@ -402,12 +383,9 @@ async fn restart_passes_dims_to_respawn() {
 
 #[tokio::test]
 async fn create_rejects_zero_dimensions() {
-    // PR #28 review: raw u16 lets `0` slip through, which then fails
-    // deep inside `portable_pty::openpty` with an opaque OS error. The
-    // command boundary now rejects it with a stable, branchable code so
-    // the frontend can surface a real diagnostic (or a future refactor
-    // that bypasses `measureInitialPtyDimensions` is caught at the
-    // boundary instead of as a cryptic "PTY spawn failed").
+    // PR #28 review: raw u16 lets `0` slip through, which then fails deep inside `portable_pty::openpty` with an opaque OS error. The command
+    // boundary now rejects it with a stable, branchable code so the frontend can surface a real diagnostic (or a future refactor that bypasses
+    // `measureInitialPtyDimensions` is caught at the boundary instead of as a cryptic "PTY spawn failed").
     let h = build_harness();
     for (cols, rows) in [(0u16, 24u16), (80, 0), (0, 0)] {
         let args = SessionCreateArgs {
@@ -538,20 +516,16 @@ async fn focus_updates_active_session_id_and_rejects_unknown() {
     assert_eq!(err.code, "NotFound");
 }
 
-/// Regression for Phase 9 review Issue 3: `session_focus_impl` must
-/// refuse while a workspace switch is in progress. Without this gate,
-/// a stale tab-click from the frontend could write `active_session_id`
-/// for a not-yet-torn-down old-workspace session into a snapshot of
-/// the *old* store that races the swap.
+/// Regression for Phase 9 review Issue 3: `session_focus_impl` must refuse while a workspace switch is in progress. Without this gate, a stale
+/// tab-click from the frontend could write `active_session_id` for a not-yet-torn-down old-workspace session into a snapshot of the *old* store that
+/// races the swap.
 #[tokio::test]
 async fn focus_refuses_while_workspace_switch_in_progress() {
     let h = build_harness();
     let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
     {
-        // Simulate a queued/active workspace switch by holding the
-        // write guard on the unified switch barrier. Lifecycle
-        // handlers' `try_read()` then fails with TryLockError →
-        // `WorkspaceSwitchInProgress`.
+        // Simulate a queued/active workspace switch by holding the write guard on the unified switch barrier. Lifecycle handlers' `try_read()` then
+        // fails with TryLockError → `WorkspaceSwitchInProgress`.
         let _w = h.ctx.switch_lock.try_write().expect("switch_lock should be free in test");
         let err = session_focus_impl(&h.ctx, v.id).expect_err("must refuse mid-switch");
         assert_eq!(err.code, "WorkspaceSwitchInProgress");
@@ -559,10 +533,8 @@ async fn focus_refuses_while_workspace_switch_in_progress() {
     session_focus_impl(&h.ctx, v.id).expect("succeeds once gate clears");
 }
 
-/// Companion to `focus_refuses_…`. Each gated lifecycle handler must
-/// return `WorkspaceSwitchInProgress` while the unified switch barrier is
-/// write-held, then succeed once it drops. Covers the active-writer arm
-/// of the gate; the queued-writer arm is exercised separately below.
+/// Companion to `focus_refuses_…`. Each gated lifecycle handler must return `WorkspaceSwitchInProgress` while the unified switch barrier is
+/// write-held, then succeed once it drops. Covers the active-writer arm of the gate; the queued-writer arm is exercised separately below.
 #[tokio::test]
 async fn lifecycle_handlers_refuse_while_switch_write_held() {
     let h = build_harness();
@@ -604,12 +576,9 @@ async fn lifecycle_handlers_refuse_while_switch_write_held() {
     .expect("restart succeeds once gate clears");
 }
 
-/// `session_resize_impl` is the one gated handler that does **not**
-/// surface `WorkspaceSwitchInProgress` to the UI — it returns `Ok(())`
-/// silently and lets the next `ResizeObserver` event correct dimensions
-/// after the switch completes. Without this contract a flurry of
-/// resizes during a switch would spam error toasts (see PR4 design
-/// note in DESIGN §5.5c).
+/// `session_resize_impl` is the one gated handler that does **not** surface `WorkspaceSwitchInProgress` to the UI — it returns `Ok(())` silently and
+/// lets the next `ResizeObserver` event correct dimensions after the switch completes. Without this contract a flurry of resizes during a switch
+/// would spam error toasts (see PR4 design note in DESIGN §5.5c).
 #[tokio::test]
 async fn resize_silently_skips_while_switch_write_held() {
     let h = build_harness();
@@ -628,17 +597,11 @@ async fn resize_silently_skips_while_switch_write_held() {
     assert!(res.is_ok(), "resize during switch must return Ok(()) silently, got {res:?}",);
 }
 
-/// Regression for the rubber-duck's "queued-writer" finding. The
-/// rejection contract here is the **`switch_pending` counter**, not
-/// tokio `RwLock` fairness alone: a queued writer does NOT bump out
-/// new `try_read()` calls (the lock is permit-based and `try_read`
-/// consults only the current permit count, not the wait queue), so
-/// the switch increments `switch_pending` *before* awaiting the write
-/// lock, and handlers detect the queued switch by loading the counter
-/// after taking their read guard (see `acquire_switch_read`). This
-/// test simulates that exact prologue: hold a read guard, spawn a
-/// task that bumps `switch_pending` and queues for write, then assert
-/// that gated handlers reject (and resize is silent-Ok).
+/// Regression for the rubber-duck's "queued-writer" finding. The rejection contract here is the **`switch_pending` counter**, not tokio `RwLock`
+/// fairness alone: a queued writer does NOT bump out new `try_read()` calls (the lock is permit-based and `try_read` consults only the current permit
+/// count, not the wait queue), so the switch increments `switch_pending` *before* awaiting the write lock, and handlers detect the queued switch by
+/// loading the counter after taking their read guard (see `acquire_switch_read`). This test simulates that exact prologue: hold a read guard, spawn a
+/// task that bumps `switch_pending` and queues for write, then assert that gated handlers reject (and resize is silent-Ok).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
     let h = build_harness();
@@ -647,11 +610,9 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
     // Take a read guard so writers must queue.
     let read_guard = h.ctx.switch_lock.try_read().expect("read guard available initially");
 
-    // Spawn a task that mimics the *prologue* of
-    // `workspace_switch_impl_inner`: bump `switch_pending` BEFORE
-    // awaiting the write lock, decrement on drop. The task signals on
-    // `bumped_tx` immediately after the increment so the test can
-    // proceed deterministically — no sleeps, no fixed yield counts.
+    // Spawn a task that mimics the *prologue* of `workspace_switch_impl_inner`: bump `switch_pending` BEFORE awaiting the write lock, decrement on
+    // drop. The task signals on `bumped_tx` immediately after the increment so the test can proceed deterministically — no sleeps, no fixed yield
+    // counts.
     let lock_for_writer = Arc::clone(&h.ctx.switch_lock);
     let pending_for_writer = Arc::clone(&h.ctx.switch_pending);
     let (bumped_tx, bumped_rx) = tokio::sync::oneshot::channel::<()>();
@@ -665,18 +626,15 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
             }
         }
         let _decr = Decr(pending_for_writer);
-        // Signal AFTER incrementing the counter but BEFORE awaiting
-        // the write lock. The send is synchronous, so by the time the
-        // test's `bumped_rx.await` resolves the counter is bumped and
-        // this task immediately suspends on `write().await` — the
-        // exact state the take-then-check contract is designed for.
+        // Signal AFTER incrementing the counter but BEFORE awaiting the write lock. The send is synchronous, so by the time the test's
+        // `bumped_rx.await` resolves the counter is bumped and this task immediately suspends on `write().await` — the exact state the
+        // take-then-check contract is designed for.
         let _ = bumped_tx.send(());
         let _w = lock_for_writer.write().await;
         let _ = writer_done_tx.send(());
     });
 
-    // Deterministic synchronisation point: writer task has bumped the
-    // counter and is now queued for write.
+    // Deterministic synchronisation point: writer task has bumped the counter and is now queued for write.
     bumped_rx.await.expect("writer task signals after bumping switch_pending");
     assert_eq!(
         h.ctx.switch_pending.load(Ordering::SeqCst),
@@ -684,8 +642,7 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
         "writer task must have bumped switch_pending before we proceed",
     );
 
-    // With a queued writer (and a non-zero `switch_pending`),
-    // lifecycle handlers must reject.
+    // With a queued writer (and a non-zero `switch_pending`), lifecycle handlers must reject.
     let err = session_focus_impl(&h.ctx, v.id).expect_err("queued writer must block focus");
     assert_eq!(err.code, "WorkspaceSwitchInProgress");
 
@@ -711,9 +668,7 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
         .expect("writer task must signal completion");
     writer_task.await.expect("writer task must complete");
 
-    // `switch_pending` is back to zero (the writer's `Decr` guard
-    // dropped). After the switch's writer finishes, lifecycle
-    // handlers succeed again.
+    // `switch_pending` is back to zero (the writer's `Decr` guard dropped). After the switch's writer finishes, lifecycle handlers succeed again.
     assert_eq!(h.ctx.switch_pending.load(Ordering::SeqCst), 0);
     session_focus_impl(&h.ctx, v.id).expect("focus succeeds once writer drains");
 }
@@ -734,8 +689,7 @@ async fn close_kills_pty_removes_record_and_clears_active() {
     assert!(cfg.tab_order.is_empty());
     assert!(cfg.last_open_sessions.is_empty());
 
-    // Temp dir is swept by either pool.kill or the post-close belt-and-braces
-    // cleanup. Allow a beat for filesystem to settle on Windows.
+    // Temp dir is swept by either pool.kill or the post-close belt-and-braces cleanup. Allow a beat for filesystem to settle on Windows.
     let cleared = wait_until(|| !temp.exists(), Duration::from_secs(2));
     assert!(cleared, "session temp dir {temp:?} should be removed");
 }
@@ -744,8 +698,7 @@ async fn close_kills_pty_removes_record_and_clears_active() {
 async fn close_with_delete_worktree_invokes_git_runner_remove() {
     let git = RecordingGitRunner::new();
     let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
-    // Configure a workspace root that *contains* the session's worktree so
-    // the containment check passes.
+    // Configure a workspace root that *contains* the session's worktree so the containment check passes.
     let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
     h.ctx
         .store()
@@ -790,8 +743,7 @@ async fn close_without_delete_worktree_does_not_invoke_remove() {
 async fn close_with_delete_worktree_refuses_main_workspace_root() {
     let git = RecordingGitRunner::new();
     let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
-    // Point workspace_root at the same path as the session's worktree so
-    // the safety check trips.
+    // Point workspace_root at the same path as the session's worktree so the safety check trips.
     h.ctx
         .store()
         .save_config(PartialAppConfig {
@@ -810,9 +762,8 @@ async fn close_with_delete_worktree_refuses_main_workspace_root() {
         "expected a workspace-root refusal message, got: {msg}",
     );
     assert!(git.removes.lock().unwrap().is_empty(), "remove_worktree must not be invoked when refused");
-    // The session is still removed because the kill+config cleanup happens
-    // before the worktree-deletion attempt — the user opted in to losing
-    // the session even if the worktree is preserved.
+    // The session is still removed because the kill+config cleanup happens before the worktree-deletion attempt — the user opted in to losing the
+    // session even if the worktree is preserved.
     assert!(session_list_impl(&h.ctx).unwrap().is_empty());
 }
 
@@ -871,10 +822,8 @@ async fn close_with_delete_worktree_refuses_when_sessions_snapshot_unreadable() 
         .unwrap();
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
-    // Corrupt sessions.json so the strict snapshot read at the start of
-    // close fails. The destructive worktree-delete path must refuse
-    // rather than treat the unreadable snapshot as "session not found,
-    // skip silently".
+    // Corrupt sessions.json so the strict snapshot read at the start of close fails. The destructive worktree-delete path must refuse rather than
+    // treat the unreadable snapshot as "session not found, skip silently".
     std::fs::write(h.ctx.store().dir().join("sessions.json"), b"###bad###").unwrap();
 
     let result = session_close_impl(&h.ctx, view.id, true)
@@ -892,8 +841,7 @@ async fn close_with_delete_worktree_refuses_when_sessions_snapshot_unreadable() 
 async fn close_with_delete_worktree_refuses_when_outside_workspace_root() {
     let git = RecordingGitRunner::new();
     let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
-    // Configure workspace_root at an unrelated TempDir so the session's
-    // worktree is *not* contained under it.
+    // Configure workspace_root at an unrelated TempDir so the session's worktree is *not* contained under it.
     let unrelated_root = TempDir::new().unwrap();
     h.ctx
         .store()
@@ -948,8 +896,7 @@ async fn frontend_ready_is_one_shot() {
 
 #[tokio::test]
 async fn restore_defers_spawn_until_first_session_resize() {
-    // Bootstrap a harness, persist a session, then drop the pool and rebuild
-    // a fresh ctx around the same store — simulating an app restart.
+    // Bootstrap a harness, persist a session, then drop the pool and rebuild a fresh ctx around the same store — simulating an app restart.
     let h = build_harness();
     let original = session_create_impl(&h.ctx, create_args(&h)).unwrap();
     let persisted = h.ctx.store().load_sessions().get(&original.id).cloned().unwrap();
@@ -964,8 +911,7 @@ async fn restore_defers_spawn_until_first_session_resize() {
 
     restore_all_sessions(&ctx2);
 
-    // Restore *registers* the session for deferred spawn but doesn't spawn
-    // yet — so the spawner stays untouched and status is still Starting.
+    // Restore *registers* the session for deferred spawn but doesn't spawn yet — so the spawner stays untouched and status is still Starting.
     assert!(
         spawner2.state.lock().unwrap().last_cmd.is_none(),
         "restore_all_sessions must not invoke the spawner directly anymore"
@@ -975,9 +921,8 @@ async fn restore_defers_spawn_until_first_session_resize() {
     assert_eq!(listed_pre[0].status, SessionStatus::Starting);
     assert_eq!(listed_pre[0].pid, None);
 
-    // The first session_resize from the (now-mounted) frontend triggers
-    // the actual spawn — at the freshly-measured size, so the CLI's
-    // first paint sees the right cols/rows.
+    // The first session_resize from the (now-mounted) frontend triggers the actual spawn — at the freshly-measured size, so the CLI's first paint
+    // sees the right cols/rows.
     session_resize_impl(
         &ctx2,
         SessionResizeArgs {
@@ -994,8 +939,7 @@ async fn restore_defers_spawn_until_first_session_resize() {
     assert_eq!(listed[0].status, SessionStatus::Running);
     assert_eq!(listed[0].pid, Some(9000));
 
-    // The PtySize handed to the spawner reflects the frontend-measured
-    // dims, not DEFAULT_PTY_SIZE — this is the whole point of the fix.
+    // The PtySize handed to the spawner reflects the frontend-measured dims, not DEFAULT_PTY_SIZE — this is the whole point of the fix.
     let st = spawner2.state.lock().unwrap();
     let size = st.last_size.expect("spawner should have recorded a size");
     assert_eq!(size.cols, 132);
@@ -1016,21 +960,16 @@ async fn restore_defers_spawn_until_first_session_resize() {
 
 #[tokio::test]
 async fn restore_drops_session_record_when_worktree_directory_is_missing() {
-    // Bootstrap a harness, persist a session, then delete the worktree
-    // directory before restore. The restore loop must drop the persisted
-    // record and trim its id from `last_open_sessions` / `tab_order` /
-    // `active_session_id` rather than spawn (which would fail with an
-    // opaque OS error) or leave a permanent ghost tab in `Error` state.
+    // Bootstrap a harness, persist a session, then delete the worktree directory before restore. The restore loop must drop the persisted record and
+    // trim its id from `last_open_sessions` / `tab_order` / `active_session_id` rather than spawn (which would fail with an opaque OS error) or leave
+    // a permanent ghost tab in `Error` state.
     //
-    // This is the cross-restart counterpart to the workspace-switch
-    // park flow: parked sessions are revived by the same restore path,
-    // so a worktree that disappeared while parked must be cleaned up
-    // during restore rather than re-projected as a phantom tab.
+    // This is the cross-restart counterpart to the workspace-switch park flow: parked sessions are revived by the same restore path, so a worktree
+    // that disappeared while parked must be cleaned up during restore rather than re-projected as a phantom tab.
     let h = build_harness();
     let original = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
-    // Seed config so we can prove last_open_sessions/tab_order/active_session_id
-    // get trimmed too.
+    // Seed config so we can prove last_open_sessions/tab_order/active_session_id get trimmed too.
     h.ctx
         .store()
         .save_config(arborist_lib::types::PartialAppConfig {
@@ -1076,17 +1015,12 @@ async fn restore_drops_session_record_when_worktree_directory_is_missing() {
 
 #[tokio::test]
 async fn restore_trims_orphan_ids_in_config_with_no_session_record() {
-    // Defense-in-depth: the seed-fix in `seed.rs` strips
-    // `lastOpenSessions` / `tabOrder` / `activeSessionId` from
-    // `config.json` when a branch build seeds without a paired
-    // `sessions.json`. Pre-fix-state stores already have phantom
-    // IDs in config that don't correspond to any record. The
-    // `trim_unknown_session_refs` step in `restore_all_sessions`
-    // cleans those up on first restore after the upgrade.
+    // Defense-in-depth: the seed-fix in `seed.rs` strips `lastOpenSessions` / `tabOrder` / `activeSessionId` from `config.json` when a branch build
+    // seeds without a paired `sessions.json`. Pre-fix-state stores already have phantom IDs in config that don't correspond to any record. The
+    // `trim_unknown_session_refs` step in `restore_all_sessions` cleans those up on first restore after the upgrade.
     //
-    // Distinct from the worktree-missing test above: there, the
-    // record DOES exist but its worktree is gone. Here, the record
-    // never existed at all — only the config refers to the IDs.
+    // Distinct from the worktree-missing test above: there, the record DOES exist but its worktree is gone. Here, the record never existed at all —
+    // only the config refers to the IDs.
     let h = build_harness();
 
     // Stuff config with phantom IDs only (no `session_create_impl`).
@@ -1102,8 +1036,7 @@ async fn restore_trims_orphan_ids_in_config_with_no_session_record() {
         })
         .unwrap();
 
-    // Sessions store is empty (matches the bug scenario where the
-    // seed copied config.json but skipped sessions.json).
+    // Sessions store is empty (matches the bug scenario where the seed copied config.json but skipped sessions.json).
     assert!(h.ctx.store().load_sessions().is_empty());
 
     // "Restart": new pool + sink + ctx around the same store.
@@ -1138,11 +1071,9 @@ async fn restore_trims_orphan_ids_in_config_with_no_session_record() {
 
 #[tokio::test]
 async fn restore_does_not_rewrite_config_when_no_orphans_present() {
-    // The trim helper must be a no-op when nothing needs trimming
-    // (otherwise every launch would needlessly rewrite config.json).
-    // We can't directly observe "no write" without a fake store, but
-    // we can prove value-stability: a pre-existing config with all
-    // valid IDs must round-trip byte-for-byte after restore.
+    // The trim helper must be a no-op when nothing needs trimming (otherwise every launch would needlessly rewrite config.json). We can't directly
+    // observe "no write" without a fake store, but we can prove value-stability: a pre-existing config with all valid IDs must round-trip
+    // byte-for-byte after restore.
     let h = build_harness();
     let session = session_create_impl(&h.ctx, create_args(&h)).unwrap();
     h.ctx
@@ -1177,28 +1108,19 @@ async fn restore_does_not_rewrite_config_when_no_orphans_present() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// AI session-id pre-allocation (Phase 2)
+// --------------------------------------------------------------------------- AI session-id pre-allocation (Phase 2)
 // ---------------------------------------------------------------------------
 //
-// Background. Pre-pre-allocation, `Session.ai_session_id` was discovered
-// post-spawn from a CLI-side write (Claude transcript / Copilot OTel chat
-// span). A session that was created and never prompted before app
-// shutdown therefore had `ai_session_id == None`, and restore-on-launch
-// dropped the `--resume` augmentation entirely — the session came back as
-// a fresh CLI conversation. The user reported this as "only my open tab
-// fully resumes". Pre-allocation closes the gap for Copilot by deciding
-// the conversation id at create-time and binding the spawn to it via
-// `--resume <uuid>`. Copilot starts a fresh session at that uuid (verified
-// against `copilot --help`), so no on-disk transcript is required at
-// spawn time. Claude has no equivalent flag and continues the discovery
-// path.
+// Background. Pre-pre-allocation, `Session.ai_session_id` was discovered post-spawn from a CLI-side write (Claude transcript / Copilot OTel chat
+// span). A session that was created and never prompted before app shutdown therefore had `ai_session_id == None`, and restore-on-launch dropped the
+// `--resume` augmentation entirely — the session came back as a fresh CLI conversation. The user reported this as "only my open tab fully resumes".
+// Pre-allocation closes the gap for Copilot by deciding the conversation id at create-time and binding the spawn to it via `--resume <uuid>`. Copilot
+// starts a fresh session at that uuid (verified against `copilot --help`), so no on-disk transcript is required at spawn time. Claude has no
+// equivalent flag and continues the discovery path.
 
 fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
-    // The shared harness seeds a Claude-only instruction set on disk, so
-    // for Copilot we pass None — Copilot doesn't accept --instructions
-    // anyway (DESIGN §5.6: it auto-discovers `.github/copilot-instructions.md`
-    // from cwd).
+    // The shared harness seeds a Claude-only instruction set on disk, so for Copilot we pass None — Copilot doesn't accept --instructions anyway
+    // (DESIGN §5.6: it auto-discovers `.github/copilot-instructions.md` from cwd).
     let instruction_set_id = match tool {
         Tool::Claude => Some(h.instruction_id.clone()),
         Tool::Copilot => None,
@@ -1212,10 +1134,8 @@ fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
     }
 }
 
-/// Returns the spawned shell argv as a single string for substring asserts.
-/// The spawn cmd is platform-shaped (`cmd.exe /c <cmd>` on Windows,
-/// `$SHELL -c <cmd>` elsewhere); the composed command lives in the trailing
-/// arg in both cases.
+/// Returns the spawned shell argv as a single string for substring asserts. The spawn cmd is platform-shaped (`cmd.exe /c <cmd>` on Windows, `$SHELL
+/// -c <cmd>` elsewhere); the composed command lives in the trailing arg in both cases.
 fn last_spawn_args_joined(spawner: &FakeSpawner) -> String {
     let st = spawner.state.lock().unwrap();
     let cmd = st.last_cmd.as_ref().expect("expected at least one spawn");
@@ -1234,8 +1154,7 @@ async fn session_create_preallocates_ai_session_id_for_copilot() {
         .expect("Copilot create must pre-allocate ai_session_id");
     assert!(uuid::Uuid::parse_str(aid).is_ok(), "pre-allocated id should be a uuid; got {aid:?}",);
 
-    // composed_command itself stays bare (DESIGN §5.4 — persisted record
-    // is immutable). The splice happens on a clone at spawn time only.
+    // composed_command itself stays bare (DESIGN §5.4 — persisted record is immutable). The splice happens on a clone at spawn time only.
     assert!(
         !persisted.composed_command.contains("--resume"),
         "persisted composed_command must stay bare; got {:?}",
@@ -1312,9 +1231,8 @@ async fn session_restart_reallocates_ai_session_id_for_copilot() {
 
 #[tokio::test]
 async fn session_restart_clears_ai_session_id_for_claude() {
-    // Claude's restart contract: drop the prior conversation id eagerly so
-    // a crash between restart and the new watcher's first discovery can't
-    // leave us pointing at the pre-restart transcript.
+    // Claude's restart contract: drop the prior conversation id eagerly so a crash between restart and the new watcher's first discovery can't leave
+    // us pointing at the pre-restart transcript.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Claude)).unwrap();
 
@@ -1349,14 +1267,10 @@ async fn session_restart_clears_ai_session_id_for_claude() {
 
 #[tokio::test]
 async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent() {
-    // Pre-allocated Copilot uuids may legitimately have no
-    // ~/.copilot/session-state/<uuid>/ dir yet (e.g. app crashed before
-    // Copilot's first session.start flush, or the dir was swept). The
-    // pre-Phase-2 code would have dropped the splice in that case via
-    // `ai_session_transcript_exists`. With pre-allocation we rely on the
-    // fact that `copilot --resume <unknown-uuid>` safely creates a fresh
-    // session at that uuid — so we always splice and let the persisted id
-    // win.
+    // Pre-allocated Copilot uuids may legitimately have no ~/.copilot/session-state/<uuid>/ dir yet (e.g. app crashed before Copilot's first
+    // session.start flush, or the dir was swept). The pre-Phase-2 code would have dropped the splice in that case via `ai_session_transcript_exists`.
+    // With pre-allocation we rely on the fact that `copilot --resume <unknown-uuid>` safely creates a fresh session at that uuid — so we always
+    // splice and let the persisted id win.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
     let preallocated = h
@@ -1367,10 +1281,8 @@ async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent()
         .and_then(|s| s.ai_session_id.clone())
         .expect("Copilot create must pre-allocate");
 
-    // "App restart": new pool + sink + ctx around the same store. The
-    // pre-allocated uuid almost certainly has no ~/.copilot/session-state
-    // dir yet (we never ran a real Copilot in this test), but restore
-    // must splice anyway.
+    // "App restart": new pool + sink + ctx around the same store. The pre-allocated uuid almost certainly has no ~/.copilot/session-state dir yet (we
+    // never ran a real Copilot in this test), but restore must splice anyway.
     let spawner2 = Arc::new(FakeSpawner::new());
     let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
     let events2 = Arc::new(CapturedEvents::default());
@@ -1379,9 +1291,7 @@ async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent()
 
     restore_all_sessions(&ctx2);
 
-    // Restore now defers the actual spawn until first session_resize.
-    // Trigger that explicitly so we can assert on the splice the spawner
-    // sees.
+    // Restore now defers the actual spawn until first session_resize. Trigger that explicitly so we can assert on the splice the spawner sees.
     session_resize_impl(
         &ctx2,
         SessionResizeArgs {
@@ -1405,18 +1315,13 @@ async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent()
 
 #[tokio::test]
 async fn failed_copilot_restart_preserves_prior_ai_session_id() {
-    // Regression for the restart write-order bug. Pre-fix,
-    // `session_restart_impl` rotated the persisted Copilot
-    // `ai_session_id` to a freshly-allocated uuid *before* attempting
-    // `respawn_existing`. If respawn failed (e.g. transient PTY error,
-    // `cmd.exe` not found, etc.), the store was left pointing at a
-    // brand-new uuid that has no Copilot session-state directory and
-    // the prior — still-resumable — conversation was orphaned.
+    // Regression for the restart write-order bug. Pre-fix, `session_restart_impl` rotated the persisted Copilot `ai_session_id` to a
+    // freshly-allocated uuid *before* attempting `respawn_existing`. If respawn failed (e.g. transient PTY error, `cmd.exe` not found, etc.), the
+    // store was left pointing at a brand-new uuid that has no Copilot session-state directory and the prior — still-resumable — conversation was
+    // orphaned.
     //
-    // The fix defers the persist to *after* respawn succeeds. This
-    // test drives the failure path via `FakeSpawner::fail_next_with`
-    // and asserts the persisted record still carries the original
-    // pre-allocated uuid so the user can recover by restarting again.
+    // The fix defers the persist to *after* respawn succeeds. This test drives the failure path via `FakeSpawner::fail_next_with` and asserts the
+    // persisted record still carries the original pre-allocated uuid so the user can recover by restarting again.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
     let original_id = h
@@ -1427,8 +1332,7 @@ async fn failed_copilot_restart_preserves_prior_ai_session_id() {
         .and_then(|s| s.ai_session_id.clone())
         .expect("Copilot create must pre-allocate");
 
-    // Arm the spawner to reject the next spawn (the restart path's
-    // `respawn_existing` call).
+    // Arm the spawner to reject the next spawn (the restart path's `respawn_existing` call).
     {
         let mut s = h.spawner.state.lock().unwrap();
         s.fail_next_with = Some(arborist_lib::types::Error::PtySpawnFailed("simulated transient spawn failure".to_owned()));

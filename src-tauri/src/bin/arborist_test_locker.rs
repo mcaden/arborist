@@ -1,5 +1,4 @@
-//! `arborist-test-locker` — deterministic helper for cross-process
-//! workspace-lock integration tests.
+//! `arborist-test-locker` — deterministic helper for cross-process workspace-lock integration tests.
 //!
 //! Protocol:
 //!
@@ -15,8 +14,7 @@
 //! 3. On contention: print `CONTENDED\n` to stdout (flushed) and exit 2.
 //! 4. On any other error: print `ERROR: <message>\n` to stderr and exit 3.
 //!
-//! The `LOCKED` sentinel is the test's signal that the lock is held,
-//! so the parent test can attempt a contending acquire.
+//! The `LOCKED` sentinel is the test's signal that the lock is held, so the parent test can attempt a contending acquire.
 
 use arborist_lib::workspace_lock::{LockError, WorkspaceLockGuard};
 use std::io::{self, BufRead, Write};
@@ -37,8 +35,7 @@ fn main() -> ExitCode {
             if writeln!(out, "LOCKED").is_err() || out.flush().is_err() {
                 return ExitCode::from(3);
             }
-            // Block until parent closes our stdin, then release the lock
-            // by dropping `_guard` at end of scope.
+            // Block until parent closes our stdin, then release the lock by dropping `_guard` at end of scope.
             let stdin = io::stdin();
             stdin.lock().lines().for_each(|_| {});
             ExitCode::SUCCESS

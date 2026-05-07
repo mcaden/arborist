@@ -1,26 +1,17 @@
 //! Git integration — currently just `git worktree list --porcelain` parsing.
 //!
-//! The trait seam ([`GitRunner`]) lets tests inject canned outputs without
-//! depending on a real `git` binary. The production implementation
-//! ([`RealGitRunner`]) shells out to `git` and degrades gracefully:
-//! any failure (binary missing, not a repo, parse error, IO) yields
-//! `Ok(vec![])` with a `warn!` carrying a stable structured `code` so the
-//! frontend never blocks on discovery — see SPEC §5.2 (the manual
-//! "Browse…" affordance is always present).
+//! The trait seam ([`GitRunner`]) lets tests inject canned outputs without depending on a real `git` binary. The production implementation
+//! ([`RealGitRunner`]) shells out to `git` and degrades gracefully: any failure (binary missing, not a repo, parse error, IO) yields `Ok(vec![])`
+//! with a `warn!` carrying a stable structured `code` so the frontend never blocks on discovery — see SPEC §5.2 (the manual "Browse…" affordance is
+//! always present).
 //!
-//! Porcelain format reference:
-//! <https://git-scm.com/docs/git-worktree#_porcelain_format>
+//! Porcelain format reference: <https://git-scm.com/docs/git-worktree#_porcelain_format>
 //!
 //! Each worktree block looks like:
 //! ```text
-//! worktree /abs/path
-//! HEAD <sha>
-//! branch refs/heads/<name>      # OR `detached`
-//! locked [<reason>]?            # optional
-//! prunable [<reason>]?          # optional
+//! worktree /abs/path HEAD <sha> branch refs/heads/<name> # OR `detached` locked [<reason>]? # optional prunable [<reason>]? # optional
 //! ```
-//! Blocks are separated by blank lines; the very first one is the main
-//! worktree.
+//! Blocks are separated by blank lines; the very first one is the main worktree.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,20 +20,14 @@ use tracing::{debug, warn};
 
 use crate::types::{Error, WorktreeInfo};
 
-/// Build a `git` [`Command`] with the repo-selection environment variables
-/// stripped.
+/// Build a `git` [`Command`] with the repo-selection environment variables stripped.
 ///
-/// When arborist (or its test suite) runs as a child of another `git`
-/// invocation — most importantly the husky `pre-push` hook — git exports
-/// `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, etc. into the child
-/// environment. These take precedence over `-C <path>` / `current_dir(...)`,
-/// so a naively-spawned `git` ends up operating on the *outer* repo
-/// regardless of how the caller pinned the working directory. In the worst
-/// case that means writing commits onto the developer's checked-out branch
-/// or unregistering real worktrees from the bare repo (issue #13).
+/// When arborist (or its test suite) runs as a child of another `git` invocation — most importantly the husky `pre-push` hook — git exports
+/// `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, etc. into the child environment. These take precedence over `-C <path>` / `current_dir(...)`, so a
+/// naively-spawned `git` ends up operating on the *outer* repo regardless of how the caller pinned the working directory. In the worst case that
+/// means writing commits onto the developer's checked-out branch or unregistering real worktrees from the bare repo (issue #13).
 ///
-/// Strip the repo-selection variables here so every `git` we spawn really
-/// does target the repo the caller asked for.
+/// Strip the repo-selection variables here so every `git` we spawn really does target the repo the caller asked for.
 pub(crate) fn git_command() -> Command {
     let mut cmd = Command::new("git");
     for var in [
@@ -60,47 +45,32 @@ pub(crate) fn git_command() -> Command {
     cmd
 }
 
-/// Minimal seam over `git worktree list --porcelain`. Implementors must be
-/// `Send + Sync` so we can stash one in `Arc<dyn GitRunner>` on the
+/// Minimal seam over `git worktree list --porcelain`. Implementors must be `Send + Sync` so we can stash one in `Arc<dyn GitRunner>` on the
 /// `AppContext` and share it across worker threads.
 pub trait GitRunner: Send + Sync {
-    /// Enumerate the worktrees rooted at `repo_root`. Implementations MUST
-    /// return `Ok(vec![])` rather than an error if discovery is impossible
-    /// (missing binary, not a repo, IO error) — graceful degradation is a
-    /// load-bearing requirement of the SPEC §5.2 create flow.
+    /// Enumerate the worktrees rooted at `repo_root`. Implementations MUST return `Ok(vec![])` rather than an error if discovery is impossible
+    /// (missing binary, not a repo, IO error) — graceful degradation is a load-bearing requirement of the SPEC §5.2 create flow.
     fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>, Error>;
 
-    /// Probe whether `path` is a git repository — runs
-    /// `git -C <path> rev-parse --is-inside-work-tree`. Returns `Ok(true)`
-    /// only on a clean exit-code-0 with stdout `true`. Used by the
-    /// `workspace_validate` command (Roadmap §1.1).
-    /// Run `git -C <path> rev-parse --show-toplevel`. Returns
-    /// `Ok(Some(canonical_toplevel))` if `path` lies inside a git working
-    /// tree, or `Ok(None)` otherwise (missing dir, non-repo, or git
-    /// unavailable). Never errors on the "not a repo" case so the picker
-    /// can show inline feedback without a toast.
+    /// Probe whether `path` is a git repository — runs `git -C <path> rev-parse --is-inside-work-tree`. Returns `Ok(true)` only on a clean
+    /// exit-code-0 with stdout `true`. Used by the `workspace_validate` command (Roadmap §1.1). Run `git -C <path> rev-parse --show-toplevel`.
+    /// Returns `Ok(Some(canonical_toplevel))` if `path` lies inside a git working tree, or `Ok(None)` otherwise (missing dir, non-repo, or git
+    /// unavailable). Never errors on the "not a repo" case so the picker can show inline feedback without a toast.
     fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error>;
 
-    /// Run `git -C <repo_root> worktree add <relative_path> -b <branch>`.
-    /// `relative_path` is interpreted relative to `repo_root` (typically
-    /// `.worktrees/<branch>`). Returns the canonical absolute path of the
-    /// new worktree on success; otherwise an [`Error::Internal`] carrying
-    /// the captured stderr.
+    /// Run `git -C <repo_root> worktree add <relative_path> -b <branch>`. `relative_path` is interpreted relative to `repo_root` (typically
+    /// `.worktrees/<branch>`). Returns the canonical absolute path of the new worktree on success; otherwise an [`Error::Internal`] carrying the
+    /// captured stderr.
     fn create_worktree(&self, repo_root: &Path, relative_path: &Path, branch: &str) -> Result<PathBuf, Error>;
 
-    /// Run `git -C <repo_root> worktree remove --force <worktree_path>`.
-    /// `--force` is used because the user has explicitly confirmed
-    /// deletion in the UI (CloseConfirmDialog) and we have just torn down
-    /// the PTY that owned the cwd.
+    /// Run `git -C <repo_root> worktree remove --force <worktree_path>`. `--force` is used because the user has explicitly confirmed deletion in the
+    /// UI (CloseConfirmDialog) and we have just torn down the PTY that owned the cwd.
     ///
-    /// `repo_root` must be a stable checkout of the same repository
-    /// *outside* the target `worktree_path` — typically the configured
-    /// `workspace_root`. Callers must not pass `worktree_path` itself as
-    /// `repo_root`: the spawned `git` would inherit it as its CWD, and on
-    /// Windows the OS prevents deletion of a process's own CWD.
+    /// `repo_root` must be a stable checkout of the same repository *outside* the target `worktree_path` — typically the configured `workspace_root`.
+    /// Callers must not pass `worktree_path` itself as `repo_root`: the spawned `git` would inherit it as its CWD, and on Windows the OS prevents
+    /// deletion of a process's own CWD.
     ///
-    /// Errors are surfaced as [`Error::Internal`] carrying git's stderr so
-    /// the frontend can show the user a meaningful message.
+    /// Errors are surfaced as [`Error::Internal`] carrying git's stderr so the frontend can show the user a meaningful message.
     fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error>;
 }
 
@@ -139,9 +109,7 @@ impl GitRunner for RealGitRunner {
         };
 
         if !output.status.success() {
-            // Most common case: not a git repository. We don't bother
-            // distinguishing reasons — the contract is "empty list on any
-            // failure".
+            // Most common case: not a git repository. We don't bother distinguishing reasons — the contract is "empty list on any failure".
             warn!(
                 code = "GitUnavailable",
                 repo_root = %repo_root.display(),
@@ -184,8 +152,7 @@ impl GitRunner for RealGitRunner {
         if raw.is_empty() {
             return Ok(None);
         }
-        // `--show-toplevel` returns an already-absolute path; canonicalize it
-        // so symlink hops collapse to the same form the caller will pass in.
+        // `--show-toplevel` returns an already-absolute path; canonicalize it so symlink hops collapse to the same form the caller will pass in.
         let canon = dunce::canonicalize(&raw).unwrap_or_else(|_| PathBuf::from(raw));
         Ok(Some(canon))
     }
@@ -240,13 +207,10 @@ impl GitRunner for RealGitRunner {
     }
 }
 
-/// Parse `git worktree list --porcelain` output. The first block is the
-/// main worktree; subsequent blocks are linked worktrees. Detached HEADs
-/// produce a `detached` line in place of `branch …`. Locked worktrees
-/// carry a `locked` line (with an optional reason).
+/// Parse `git worktree list --porcelain` output. The first block is the main worktree; subsequent blocks are linked worktrees. Detached HEADs produce
+/// a `detached` line in place of `branch …`. Locked worktrees carry a `locked` line (with an optional reason).
 ///
-/// Pure function — no IO. Robust to empty input, trailing whitespace,
-/// and unknown porcelain keys (silently skipped).
+/// Pure function — no IO. Robust to empty input, trailing whitespace, and unknown porcelain keys (silently skipped).
 pub(crate) fn parse_porcelain(input: &str) -> Vec<WorktreeInfo> {
     let mut out: Vec<WorktreeInfo> = Vec::new();
     let mut is_first_block = true;
@@ -265,9 +229,8 @@ pub(crate) fn parse_porcelain(input: &str) -> Vec<WorktreeInfo> {
         }
 
         if let Some(rest) = line.strip_prefix("worktree ") {
-            // Begin a new block. Flush any in-progress block first (defensive
-            // — porcelain blocks should be blank-line-separated, but we
-            // don't want a missing blank line to swallow an entry).
+            // Begin a new block. Flush any in-progress block first (defensive — porcelain blocks should be blank-line-separated, but we don't want a
+            // missing blank line to swallow an entry).
             if let Some(p) = cur.take() {
                 if let Some(info) = p.finish(is_first_block) {
                     out.push(info);
@@ -277,8 +240,7 @@ pub(crate) fn parse_porcelain(input: &str) -> Vec<WorktreeInfo> {
             cur = Some(PartialWorktree::new(PathBuf::from(rest)));
         } else if let Some(p) = cur.as_mut() {
             if let Some(branch_ref) = line.strip_prefix("branch ") {
-                // Strip the conventional `refs/heads/` prefix to surface a
-                // friendly branch name. Anything else is passed through.
+                // Strip the conventional `refs/heads/` prefix to surface a friendly branch name. Anything else is passed through.
                 let name = branch_ref.strip_prefix("refs/heads/").unwrap_or(branch_ref).to_owned();
                 p.branch = Some(name);
             } else if line == "detached" {
@@ -419,22 +381,17 @@ locked migrating to slow disk
         let dir = tempfile::TempDir::new().unwrap();
         let runner = RealGitRunner;
         let out = runner.list_worktrees(dir.path()).expect("non-repo must degrade gracefully");
-        // Empty even though `git` is on PATH: the command exits non-zero
-        // because it isn't a repository.
+        // Empty even though `git` is on PATH: the command exits non-zero because it isn't a repository.
         assert!(out.is_empty());
     }
 
-    /// Build a `Command` with both repo-selection *and* identity/config
-    /// `GIT_*` variables stripped. Tests get a stricter scrub than production
-    /// because hostile env (set by an outer `git push` invoking the husky
-    /// pre-push hook) can otherwise reroute commits, override the repo, or
-    /// spoof committer identity in ways that pollute the developer's real
-    /// checkout (issue #13).
+    /// Build a `Command` with both repo-selection *and* identity/config `GIT_*` variables stripped. Tests get a stricter scrub than production
+    /// because hostile env (set by an outer `git push` invoking the husky pre-push hook) can otherwise reroute commits, override the repo, or spoof
+    /// committer identity in ways that pollute the developer's real checkout (issue #13).
     fn clean_test_git_command() -> Command {
         let mut cmd = git_command();
-        // Identity vars: keep test commits authored by the local
-        // `git config user.{name,email}` we set, regardless of any
-        // GIT_AUTHOR_* / GIT_COMMITTER_* the parent process exported.
+        // Identity vars: keep test commits authored by the local `git config user.{name,email}` we set, regardless of any GIT_AUTHOR_* /
+        // GIT_COMMITTER_* the parent process exported.
         for var in [
             "GIT_AUTHOR_NAME",
             "GIT_AUTHOR_EMAIL",
@@ -445,10 +402,8 @@ locked migrating to slow disk
         ] {
             cmd.env_remove(var);
         }
-        // `git -c k=v` style env-driven config (`GIT_CONFIG_COUNT` +
-        // `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`) can change behavior
-        // in subtle ways. Iterate the inherited env to drop the dynamic
-        // numbered keys too.
+        // `git -c k=v` style env-driven config (`GIT_CONFIG_COUNT` + `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`) can change behavior in subtle ways.
+        // Iterate the inherited env to drop the dynamic numbered keys too.
         for (k, _) in std::env::vars_os() {
             if let Some(s) = k.to_str() {
                 if s.starts_with("GIT_CONFIG_") {
@@ -459,18 +414,14 @@ locked migrating to slow disk
         cmd
     }
 
-    /// Initialise a fresh git repo in `dir`, with a single committed file so
-    /// `worktree add -b` succeeds (it requires HEAD to point at a commit).
+    /// Initialise a fresh git repo in `dir`, with a single committed file so `worktree add -b` succeeds (it requires HEAD to point at a commit).
     fn init_git_repo(dir: &Path) {
         let run = |args: &[&str]| {
             let s = clean_test_git_command()
-                // Pin process CWD to the tempdir as well as `-C`. On Windows,
-                // `git worktree add` resolves the new worktree's relative
-                // path *and* picks the repo to register against using the
-                // process CWD, not just `-C`. Without this, a test run from
-                // inside another git repo (which is the normal case for
-                // `cargo test`) can end up registering a worktree against
-                // the *outer* repo, polluting it with stale entries.
+                // Pin process CWD to the tempdir as well as `-C`. On Windows, `git worktree add` resolves the new worktree's relative path *and*
+                // picks the repo to register against using the process CWD, not just `-C`. Without this, a test run from inside another git repo
+                // (which is the normal case for `cargo test`) can end up registering a worktree against the *outer* repo, polluting it with stale
+                // entries.
                 .current_dir(dir)
                 .arg("-C")
                 .arg(dir)
@@ -487,18 +438,13 @@ locked migrating to slow disk
         run(&["commit", "-q", "-m", "init"]);
     }
 
-    /// RAII guard that force-removes any worktrees registered against
-    /// `repo_root` and prunes stale entries before the underlying `TempDir`
-    /// is dropped. Required on Windows where lingering files inside
-    /// `.git/worktrees/<name>/` can defeat `TempDir`'s recursive-delete and
-    /// leave junk on disk.
+    /// RAII guard that force-removes any worktrees registered against `repo_root` and prunes stale entries before the underlying `TempDir` is
+    /// dropped. Required on Windows where lingering files inside `.git/worktrees/<name>/` can defeat `TempDir`'s recursive-delete and leave junk on
+    /// disk.
     ///
-    /// As an extra safety net, also scrubs any worktree pointing into the
-    /// tempdir from the *outer* repo containing the test process's CWD
-    /// (typically the arborist checkout that hosts `cargo test`). This
-    /// guards against regression of the historical bug where
-    /// `git -C <tempdir> worktree add` registered against the outer repo
-    /// instead of the tempdir repo.
+    /// As an extra safety net, also scrubs any worktree pointing into the tempdir from the *outer* repo containing the test process's CWD (typically
+    /// the arborist checkout that hosts `cargo test`). This guards against regression of the historical bug where `git -C <tempdir> worktree add`
+    /// registered against the outer repo instead of the tempdir repo.
     struct WorktreeCleanup {
         repo_root: PathBuf,
         tempdir: tempfile::TempDir,
@@ -517,11 +463,9 @@ locked migrating to slow disk
 
     impl Drop for WorktreeCleanup {
         fn drop(&mut self) {
-            // Restrict every removal to paths under the tempdir. With the
-            // `GIT_*` env strip in `clean_test_git_command` this is now
-            // belt-and-braces, but the predicate is the load-bearing
-            // invariant: even if env-strip is ever bypassed, we MUST NOT
-            // delete a worktree that doesn't belong to our tempdir.
+            // Restrict every removal to paths under the tempdir. With the `GIT_*` env strip in `clean_test_git_command` this is now belt-and-braces,
+            // but the predicate is the load-bearing invariant: even if env-strip is ever bypassed, we MUST NOT delete a worktree that doesn't belong
+            // to our tempdir.
             let canon_temp = dunce::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
             let inside_temp = |p: &Path| -> bool {
                 let cp = dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
@@ -549,9 +493,8 @@ locked migrating to slow disk
                     if !predicate(&wt.path) {
                         continue;
                     }
-                    // Retry once: under parallel test contention, a transient
-                    // git lock can fail the first remove. Swallow the second
-                    // failure — Drop must not panic.
+                    // Retry once: under parallel test contention, a transient git lock can fail the first remove. Swallow the second failure — Drop
+                    // must not panic.
                     let mut ok = false;
                     for _ in 0..2 {
                         let st = clean_test_git_command()
@@ -638,11 +581,9 @@ locked migrating to slow disk
         let dir = WorktreeCleanup::new(tempfile::TempDir::new().unwrap());
         init_git_repo(dir.path());
         let runner = RealGitRunner;
-        // Pass a *relative* path — this matches the production contract
-        // (`worktree_create_impl` always passes `.worktrees/<branch>`) and
-        // is exactly the input shape that previously triggered the
-        // outer-repo-pollution bug. The cleanup guard + production
-        // current_dir fix together keep this hermetic.
+        // Pass a *relative* path — this matches the production contract (`worktree_create_impl` always passes `.worktrees/<branch>`) and is exactly
+        // the input shape that previously triggered the outer-repo-pollution bug. The cleanup guard + production current_dir fix together keep this
+        // hermetic.
         let new_path = runner
             .create_worktree(dir.path(), Path::new(".worktrees/feat-x"), "feat-x")
             .expect("create");
@@ -664,10 +605,8 @@ locked migrating to slow disk
         assert!(matches!(err, Error::WorktreeMissing(_)), "got {err:?}");
     }
 
-    /// Regression for issue #13: every `git` we spawn must drop the
-    /// repo-selection env vars so a hostile parent (e.g. husky pre-push)
-    /// cannot reroute commits or worktree-add calls onto the developer's
-    /// real checkout.
+    /// Regression for issue #13: every `git` we spawn must drop the repo-selection env vars so a hostile parent (e.g. husky pre-push) cannot reroute
+    /// commits or worktree-add calls onto the developer's real checkout.
     #[test]
     fn git_command_strips_repo_selection_env_vars() {
         let cmd = git_command();
@@ -689,10 +628,8 @@ locked migrating to slow disk
         }
     }
 
-    /// The test-only helper additionally strips identity and config-injection
-    /// vars so commits land with the deterministic `git config user.*` we set
-    /// in `init_git_repo`, regardless of any `GIT_AUTHOR_*` / `GIT_CONFIG_*`
-    /// the parent process exported.
+    /// The test-only helper additionally strips identity and config-injection vars so commits land with the deterministic `git config user.*` we set
+    /// in `init_git_repo`, regardless of any `GIT_AUTHOR_*` / `GIT_CONFIG_*` the parent process exported.
     #[test]
     fn clean_test_git_command_strips_identity_and_config_env() {
         let cmd = clean_test_git_command();

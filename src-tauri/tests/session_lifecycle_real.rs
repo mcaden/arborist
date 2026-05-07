@@ -1,20 +1,13 @@
 //! Phase 7 happy-path integration test against the **real** PortablePtySpawner.
 //!
-//! We override the `claude` program token with the test-only env-var seam
-//! (`ARBORIST_CLI_OVERRIDE_CLAUDE`) and point it at `arborist-test-child`, the
-//! deterministic child shipped alongside the PTY-pool tests. This proves the
-//! end-to-end flow — compose → temp file → portable-pty spawn → output
-//! drain → status persistence — works with no fakes anywhere except the CLI
-//! itself.
+//! We override the `claude` program token with the test-only env-var seam (`ARBORIST_CLI_OVERRIDE_CLAUDE`) and point it at `arborist-test-child`, the
+//! deterministic child shipped alongside the PTY-pool tests. This proves the end-to-end flow — compose → temp file → portable-pty spawn → output
+//! drain → status persistence — works with no fakes anywhere except the CLI itself.
 //!
-//! **Unix-only.** On Windows, `shell_quote_cmd` always wraps its input in
-//! `"…"`. Combined with the temp-file path argument's own quoting, the
-//! composed string we hand to `cmd.exe /c` contains four quote characters,
-//! which trips cmd.exe's "old behavior" (strip first + last quote) and
-//! produces an unspawnable command. Production `claude` is a bare token
-//! (never quoted), so this only manifests under the test override seam.
-//! The FakeSpawner suite (`session_lifecycle_fake.rs`) covers every Phase 7
-//! code path on Windows, and `pty_pool.rs` exercises PortablePtySpawner
+//! **Unix-only.** On Windows, `shell_quote_cmd` always wraps its input in `"…"`. Combined with the temp-file path argument's own quoting, the
+//! composed string we hand to `cmd.exe /c` contains four quote characters, which trips cmd.exe's "old behavior" (strip first + last quote) and
+//! produces an unspawnable command. Production `claude` is a bare token (never quoted), so this only manifests under the test override seam. The
+//! FakeSpawner suite (`session_lifecycle_fake.rs`) covers every Phase 7 code path on Windows, and `pty_pool.rs` exercises PortablePtySpawner
 //! end-to-end with a hand-crafted composed string that sidesteps the issue.
 
 #![cfg(unix)]
@@ -65,11 +58,9 @@ fn wait_until<F: FnMut() -> bool>(mut f: F, dur: Duration) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_spawner_drives_create_input_close_round_trip() {
-    // Tests can race via process-global env vars, but `cargo test` runs
-    // tests in this binary on the same process. We only have one test in
-    // this file, and the env var stays set for its duration — fine.
-    // SAFETY: setting an env var at the start of a single-test binary is
-    // race-free because nothing else reads it concurrently.
+    // Tests can race via process-global env vars, but `cargo test` runs tests in this binary on the same process. We only have one test in this file,
+    // and the env var stays set for its duration — fine. SAFETY: setting an env var at the start of a single-test binary is race-free because nothing
+    // else reads it concurrently.
     unsafe {
         std::env::set_var(CLAUDE_OVERRIDE_ENV, TEST_CHILD);
     }
@@ -98,9 +89,8 @@ async fn real_spawner_drives_create_input_close_round_trip() {
     let sink = build_sink(Arc::clone(&captured), store.clone());
     let ctx = Arc::new(AppContext::with_real_git(pool, store, sink));
 
-    // Create — this materialises the temp file, composes the command using
-    // the override (so the program is `<TEST_CHILD>` instead of `claude`),
-    // and spawns through portable-pty.
+    // Create — this materialises the temp file, composes the command using the override (so the program is `<TEST_CHILD>` instead of `claude`), and
+    // spawns through portable-pty.
     let view = session_create_impl(
         &ctx,
         SessionCreateArgs {
@@ -135,13 +125,11 @@ async fn real_spawner_drives_create_input_close_round_trip() {
     let saw_echo = wait_until(|| captured.output.lock().unwrap().contains("echo: hello"), Duration::from_secs(5));
     assert!(saw_echo, "expected echo of input; got {:?}", captured.output.lock().unwrap());
 
-    // Close. The pool kills the child and removes the persisted record;
-    // tearDown should be clean within a couple of seconds even on Windows.
+    // Close. The pool kills the child and removes the persisted record; tearDown should be clean within a couple of seconds even on Windows.
     session_close_impl(&ctx, view.id, false).await.unwrap();
     assert!(!ctx.pool.contains(&view.id));
 
-    // Restore parity for any later tests sharing this process. The test
-    // binary will exit immediately, so this is just hygiene.
+    // Restore parity for any later tests sharing this process. The test binary will exit immediately, so this is just hygiene.
     unsafe {
         std::env::remove_var(CLAUDE_OVERRIDE_ENV);
     }

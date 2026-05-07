@@ -1,17 +1,11 @@
-//! Resolve and cache icon data URIs for `CustomProcessDef`s and the
-//! Claude / Copilot AI-launch commands.
+//! Resolve and cache icon data URIs for `CustomProcessDef`s and the Claude / Copilot AI-launch commands.
 //!
-//! Strategy: at config-save time and at app startup, walk every
-//! command string that maps to a sidebar tab, run it through
+//! Strategy: at config-save time and at app startup, walk every command string that maps to a sidebar tab, run it through
 //! [`crate::cmd_resolver::resolve_command_icon_path`], extract a PNG
-//! data URI via [`crate::process_icon::IconCache::data_uri_for_path`],
-//! and store the result on the def itself (`icon_data_uri`). The
-//! frontend then renders synchronously from the persisted config —
-//! no per-render IPC call into the OS shell APIs.
+//! data URI via [`crate::process_icon::IconCache::data_uri_for_path`], and store the result on the def itself (`icon_data_uri`). The frontend then
+//! renders synchronously from the persisted config — no per-render IPC call into the OS shell APIs.
 //!
-//! Pure side-effect: mutates `cfg`. The caller decides whether to
-//! re-persist (the function returns whether anything actually
-//! changed).
+//! Pure side-effect: mutates `cfg`. The caller decides whether to re-persist (the function returns whether anything actually changed).
 
 use std::path::Path;
 
@@ -19,16 +13,12 @@ use crate::cmd_resolver::resolve_command_icon_path;
 use crate::process_icon::IconCache;
 use crate::types::AppConfig;
 
-/// Walk every icon-bearing command in `cfg` and fill in any missing
-/// `icon_data_uri` fields. Existing values are left alone — the
-/// invalidation contract lives in [`crate::config_store::merge_partial`],
-/// which clears the cache when a command changes. Returns `true` if
-/// any field was populated (i.e. caller should re-persist).
+/// Walk every icon-bearing command in `cfg` and fill in any missing `icon_data_uri` fields. Existing values are left alone — the invalidation
+/// contract lives in [`crate::config_store::merge_partial`], which clears the cache when a command changes. Returns `true` if any field was populated
+/// (i.e. caller should re-persist).
 ///
-/// `fallback_cwd` is used for relative-path resolution. Defs are
-/// templates (not bound to a worktree at save time), so the workspace
-/// root is the most useful default; OS temp dir is an acceptable last
-/// resort.
+/// `fallback_cwd` is used for relative-path resolution. Defs are templates (not bound to a worktree at save time), so the workspace root is the most
+/// useful default; OS temp dir is an acceptable last resort.
 pub fn backfill_icons(cfg: &mut AppConfig, cache: &IconCache, fallback_cwd: &Path) -> bool {
     let mut changed = false;
 
@@ -65,12 +55,9 @@ fn resolve_one(command: &str, cwd: &Path, cache: &IconCache) -> Option<String> {
 
 /// Two-phase icon resolution for the built-in AI tabs.
 ///
-/// Users can replace the launch command with anything — npm shims,
-/// in-house "agency" wrappers, custom dispatchers — and we don't
-/// want those wrapper icons showing up where Claude's or Copilot's
-/// brand icon belongs. So we try the *canonical* CLI name first and
-/// only fall back to the user's actual launch command if the default
-/// can't be resolved on this machine.
+/// Users can replace the launch command with anything — npm shims, in-house "agency" wrappers, custom dispatchers — and we don't want those wrapper
+/// icons showing up where Claude's or Copilot's brand icon belongs. So we try the *canonical* CLI name first and only fall back to the user's actual
+/// launch command if the default can't be resolved on this machine.
 ///
 /// 1. Resolve the default name (`claude` / `copilot`) on PATH+PATHEXT. If that
 ///    succeeds and isn't an interpreter wrapper, use its icon.
@@ -82,10 +69,8 @@ fn resolve_ai_icon(default_name: &str, launch_command: &str, cwd: &Path, cache: 
     resolve_ai_icon_with(default_name, launch_command, cwd, cache, resolve_one)
 }
 
-/// Test seam for [`resolve_ai_icon`]: the resolver is injected so
-/// unit tests can exercise the default-first ordering without
-/// touching the global `PATH` / `PATHEXT` environment (which would
-/// race with parallel tests in the same process).
+/// Test seam for [`resolve_ai_icon`]: the resolver is injected so unit tests can exercise the default-first ordering without touching the global
+/// `PATH` / `PATHEXT` environment (which would race with parallel tests in the same process).
 fn resolve_ai_icon_with<F>(default_name: &str, launch_command: &str, cwd: &Path, cache: &IconCache, resolve: F) -> Option<String>
 where
     F: Fn(&str, &Path, &IconCache) -> Option<String>,
@@ -120,8 +105,7 @@ mod tests {
         }
     }
 
-    /// A test extractor that hands back a fixed PNG for any path it's
-    /// asked about, recording the calls so we can assert dedup.
+    /// A test extractor that hands back a fixed PNG for any path it's asked about, recording the calls so we can assert dedup.
     struct CountingExtractor {
         calls: Mutex<Vec<PathBuf>>,
     }
@@ -138,8 +122,7 @@ mod tests {
         }
         fn extract_png(&self, exe: &Path) -> Option<Vec<u8>> {
             self.calls.lock().unwrap().push(exe.to_path_buf());
-            // Tiny fake PNG header — base64 encoder doesn't care about
-            // content, the data URI plumbing is what we're exercising.
+            // Tiny fake PNG header — base64 encoder doesn't care about content, the data URI plumbing is what we're exercising.
             Some(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
         }
     }
@@ -152,9 +135,7 @@ mod tests {
             ai_launch_commands: AiLaunchCommands {
                 claude: String::new(),
                 copilot: String::new(),
-                // Pre-populate AI fields so they don't trigger
-                // best-effort default-name resolution and confuse
-                // the `changed` flag we're asserting on.
+                // Pre-populate AI fields so they don't trigger best-effort default-name resolution and confuse the `changed` flag we're asserting on.
                 claude_icon_data_uri: Some("data:image/png;base64,BBBB".into()),
                 copilot_icon_data_uri: Some("data:image/png;base64,CCCC".into()),
             },
@@ -171,13 +152,11 @@ mod tests {
 
     #[test]
     fn backfill_populates_missing_uri_for_resolvable_command() {
-        // Real extractor — on Windows the system shell APIs will hand
-        // back *something* for cmd.exe. Skip if the test env can't
-        // resolve it (e.g. Linux CI without wine).
+        // Real extractor — on Windows the system shell APIs will hand back *something* for cmd.exe. Skip if the test env can't resolve it (e.g. Linux
+        // CI without wine).
         let cache = IconCache::new(Arc::new(RealIconExtractor));
-        // We need a command that resolves to a real exe but isn't an
-        // interpreter. On Windows `notepad` is universally present
-        // and resolvable via PATH.
+        // We need a command that resolves to a real exe but isn't an interpreter. On Windows `notepad` is universally present and resolvable via
+        // PATH.
         let probe_cmd = if cfg!(windows) { "notepad" } else { "ls" };
         if resolve_command_icon_path(probe_cmd, &std::env::temp_dir()).is_none() {
             eprintln!("skipping: {probe_cmd} not resolvable in this env");
@@ -197,24 +176,20 @@ mod tests {
         }
     }
 
-    /// `resolve_ai_icon` should prefer the default CLI name's icon
-    /// over the user's customized launch command when the default is
-    /// resolvable. This is the "agency wrapper" use case — the user
-    /// runs Claude through some in-house dispatcher but still wants
-    /// the Claude brand icon, not the wrapper's.
+    /// `resolve_ai_icon` should prefer the default CLI name's icon over the user's customized launch command when the default is resolvable. This is
+    /// the "agency wrapper" use case — the user runs Claude through some in-house dispatcher but still wants the Claude brand icon, not the
+    /// wrapper's.
     ///
-    /// We test via the injectable `resolve_ai_icon_with` seam so the
-    /// test never has to touch the global `PATH` env var (which races
-    /// with parallel tests in the same process).
+    /// We test via the injectable `resolve_ai_icon_with` seam so the test never has to touch the global `PATH` env var (which races with parallel
+    /// tests in the same process).
     #[test]
     fn ai_icon_prefers_default_name_over_launch_command_wrapper() {
         let cache = IconCache::new(Arc::new(CountingExtractor::new()));
         let cwd = std::env::temp_dir();
         let calls = Arc::new(Mutex::new(Vec::<String>::new()));
         let calls_for_resolver = Arc::clone(&calls);
-        // Fake resolver: returns Some only when asked about the
-        // canonical default name. For anything else (the wrapper
-        // command), pretends resolution fails.
+        // Fake resolver: returns Some only when asked about the canonical default name. For anything else (the wrapper command), pretends resolution
+        // fails.
         let resolve = move |program: &str, _: &Path, _: &IconCache| -> Option<String> {
             calls_for_resolver.lock().unwrap().push(program.to_owned());
             (program == "claude").then(|| "data:image/png;base64,DEFAULT".to_owned())
@@ -222,14 +197,11 @@ mod tests {
 
         let result = resolve_ai_icon_with("claude", "C:/wrappers/agency.exe --tool=claude", &cwd, &cache, resolve);
         assert_eq!(result.as_deref(), Some("data:image/png;base64,DEFAULT"));
-        // Critical assertion: only the *default* name was queried —
-        // the wrapper command was never asked about, because the
-        // default succeeded first.
+        // Critical assertion: only the *default* name was queried — the wrapper command was never asked about, because the default succeeded first.
         assert_eq!(*calls.lock().unwrap(), vec!["claude".to_owned()]);
     }
 
-    /// Mirror of the above: when the default name is *not*
-    /// resolvable, the wrapper command's icon is used as a fallback.
+    /// Mirror of the above: when the default name is *not* resolvable, the wrapper command's icon is used as a fallback.
     #[test]
     fn ai_icon_falls_back_to_launch_command_when_default_unresolvable() {
         let cache = IconCache::new(Arc::new(CountingExtractor::new()));
@@ -250,8 +222,7 @@ mod tests {
         );
     }
 
-    /// Empty / whitespace launch command + unresolvable default →
-    /// `None` (frontend falls back to the bundled SVG).
+    /// Empty / whitespace launch command + unresolvable default → `None` (frontend falls back to the bundled SVG).
     #[test]
     fn ai_icon_returns_none_when_default_fails_and_launch_is_empty() {
         let cache = IconCache::new(Arc::new(CountingExtractor::new()));

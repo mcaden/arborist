@@ -1,18 +1,15 @@
-//! Per-session activity inference — scans raw PTY output for structured
-//! signals (window title, attention notifications) and tracks output
-//! byte-rate to derive working/idle transitions.
+//! Per-session activity inference — scans raw PTY output for structured signals (window title, attention notifications) and tracks output byte-rate
+//! to derive working/idle transitions.
 //!
 //! ## Design
 //!
 //! The scanner is a **forward-everything** layer: bytes flow through
 //! [`ActivityScanner::feed_bytes`] unchanged on their way to xterm.js;
-//! the scanner only *additionally* emits typed [`ActivityEvent`]s for the
-//! UI to consume.
+//! the scanner only *additionally* emits typed [`ActivityEvent`]s for the UI to consume.
 //!
 //! ## Signals
 //!
-//! Recognised today (informed by raw captures of `claude` and `copilot`,
-//! see `src-tauri/examples/pty_capture.rs`):
+//! Recognised today (informed by raw captures of `claude` and `copilot`, see `src-tauri/examples/pty_capture.rs`):
 //!
 //! - **`OSC 0;<title>`** / **`OSC 2;<title>`** → [`ActivityEvent::Title`]. Both
 //!   terminate with either BEL (`\x07`) or ST (`\x1b\\`).
@@ -25,108 +22,80 @@
 //!   [`IDLE_THRESHOLD`] is reported as [`ActivityEvent::Idle`]; the next byte
 //!   after an idle window flips it back to [`ActivityEvent::Working`].
 //!
-//! Future-proofed (not currently emitted by either tested CLI but cheap to
-//! parse): **OSC 133 A/B/C/D** → semantic prompt/command markers.
+//! Future-proofed (not currently emitted by either tested CLI but cheap to parse): **OSC 133 A/B/C/D** → semantic prompt/command markers.
 //!
 //! ## State
 //!
-//! The OSC parser is a tiny state machine that survives across `feed_bytes`
-//! calls — sequences that span chunk boundaries are accumulated until
-//! their terminator arrives. There is a hard cap on the buffered string
-//! length ([`OSC_MAX_LEN`]) so a malformed (un-terminated) sequence cannot
-//! grow without bound.
+//! The OSC parser is a tiny state machine that survives across `feed_bytes` calls — sequences that span chunk boundaries are accumulated until their
+//! terminator arrives. There is a hard cap on the buffered string length ([`OSC_MAX_LEN`]) so a malformed (un-terminated) sequence cannot grow
+//! without bound.
 //!
-//! Working/idle inference is timestamp-driven: every byte updates
-//! `last_byte_at`; [`ActivityScanner::tick`] is called by an external
-//! timer and emits transitions.
+//! Working/idle inference is timestamp-driven: every byte updates `last_byte_at`; [`ActivityScanner::tick`] is called by an external timer and emits
+//! transitions.
 
 use std::time::{Duration, Instant};
 
 /// How long without output before a session is considered idle.
 pub const IDLE_THRESHOLD: Duration = Duration::from_millis(1500);
 
-/// How often the external ticker should call [`ActivityScanner::tick`].
-/// Public so the caller can size its timer accordingly.
+/// How often the external ticker should call [`ActivityScanner::tick`]. Public so the caller can size its timer accordingly.
 pub const TICK_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Maximum length of an in-progress OSC payload before we give up and
-/// discard it. Real titles and notifications are well under this.
+/// Maximum length of an in-progress OSC payload before we give up and discard it. Real titles and notifications are well under this.
 const OSC_MAX_LEN: usize = 4096;
 
 /// What [`ActivityScanner`] reports.
 //
-// `rename_all` controls only variant names. `rename_all_fields` controls
-// the named fields *inside* each variant — without it, a field like
-// `tool_call_id` would serialize as `tool_call_id` on the wire while the
-// TS mirror in `src/types/arborist.ts` expects `toolCallId`. The
-// frontend reducer (`session-store.ts::applyActivity`) reads camelCase
-// keys, so missing this rename silently zeroes every multi-word field.
-// Pinned by the `activity_event_serde_uses_camelcase_field_keys`
-// regression test below.
+// `rename_all` controls only variant names. `rename_all_fields` controls the named fields *inside* each variant — without it, a field like
+// `tool_call_id` would serialize as `tool_call_id` on the wire while the TS mirror in `src/types/arborist.ts` expects `toolCallId`. The frontend
+// reducer (`session-store.ts::applyActivity`) reads camelCase keys, so missing this rename silently zeroes every multi-word field. Pinned by the
+// `activity_event_serde_uses_camelcase_field_keys` regression test below.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ActivityEvent {
     /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
     Title { value: String },
-    /// Generic "the user should look at this tab" cue: standalone BEL,
-    /// `OSC 9`, `OSC 777;notify;...`.
+    /// Generic "the user should look at this tab" cue: standalone BEL, `OSC 9`, `OSC 777;notify;...`.
     Attention,
-    /// Output is flowing. Emitted on the first byte after an idle window
-    /// (or the very first byte of the session). Idempotent — only fires on
-    /// the idle→working transition.
+    /// Output is flowing. Emitted on the first byte after an idle window (or the very first byte of the session). Idempotent — only fires on the
+    /// idle→working transition.
     Working,
-    /// No output for [`IDLE_THRESHOLD`]. Emitted once per
-    /// working→idle transition by [`ActivityScanner::tick`].
+    /// No output for [`IDLE_THRESHOLD`]. Emitted once per working→idle transition by [`ActivityScanner::tick`].
     Idle,
-    /// `OSC 133;A` — start of prompt. Future-proofed; not currently
-    /// emitted by `claude` or `copilot`.
+    /// `OSC 133;A` — start of prompt. Future-proofed; not currently emitted by `claude` or `copilot`.
     PromptStart,
     /// `OSC 133;C` — start of command (user submitted prompt). Future-proofed.
     CommandStart,
-    /// `OSC 133;D[;<exit>]` — command ended with optional exit code.
-    /// Future-proofed.
+    /// `OSC 133;D[;<exit>]` — command ended with optional exit code. Future-proofed.
     CommandEnd { exit: Option<i32> },
-    /// An agent turn just completed. Emitted by the per-tool metrics
-    /// watcher (Copilot OTel `invoke_agent` span close; Claude transcript
-    /// `assistant`-line arrival), not by the PTY-stream scanner. Carries
-    /// the wall-clock duration of the turn when the source provides it.
+    /// An agent turn just completed. Emitted by the per-tool metrics watcher (Copilot OTel `invoke_agent` span close; Claude transcript
+    /// `assistant`-line arrival), not by the PTY-stream scanner. Carries the wall-clock duration of the turn when the source provides it.
     TurnEnd { duration_ms: Option<u64> },
 
-    /// Agent invoked a tool; user is not yet blocked on input. Emitted
-    /// by the Copilot events.jsonl tailer on `tool.execution_start`.
-    /// Tracked by frontend in a per-session open-tool map; the icon
-    /// flips to `runningTool` while the count > 0 and no permission is
-    /// pending.
+    /// Agent invoked a tool; user is not yet blocked on input. Emitted by the Copilot events.jsonl tailer on `tool.execution_start`. Tracked by
+    /// frontend in a per-session open-tool map; the icon flips to `runningTool` while the count > 0 and no permission is pending.
     ToolStart { tool_call_id: String, tool_name: String },
-    /// Tool finished. Pairs with [`Self::ToolStart`] by `tool_call_id`.
-    /// Emitted on `tool.execution_complete`.
+    /// Tool finished. Pairs with [`Self::ToolStart`] by `tool_call_id`. Emitted on `tool.execution_complete`.
     ToolEnd { tool_call_id: String, success: bool },
-    /// Agent requested a permission (most commonly: shell-command
-    /// approval); user is **blocked**. Emitted on `permission.requested`
-    /// from the Copilot events.jsonl tailer. The frontend promotes this
-    /// to the highest non-error display priority — this is the single
-    /// most actionable cue we can give the user about a sidebar tab.
+    /// Agent requested a permission (most commonly: shell-command approval); user is **blocked**. Emitted on `permission.requested` from the Copilot
+    /// events.jsonl tailer. The frontend promotes this to the highest non-error display priority — this is the single most actionable cue we can give
+    /// the user about a sidebar tab.
     AwaitingPermission {
         request_id: String,
-        /// Short human-readable identifier for what's being approved
-        /// (e.g. tool name, or `"shell"`). Surfaced in tooltips. Field
-        /// is `permission_kind` (not `kind`) to avoid colliding with
-        /// the serde tag on the parent enum.
+        /// Short human-readable identifier for what's being approved (e.g. tool name, or `"shell"`). Surfaced in tooltips. Field is `permission_kind`
+        /// (not `kind`) to avoid colliding with the serde tag on the parent enum.
         #[serde(rename = "permissionKind")]
         permission_kind: String,
-        /// Optional one-line summary (e.g. the shell command). Best-
-        /// effort — may be empty if the source didn't include enough
-        /// detail to render meaningfully.
+        /// Optional one-line summary (e.g. the shell command). Best- effort — may be empty if the source didn't include enough detail to render
+        /// meaningfully.
         summary: Option<String>,
     },
     /// Permission resolved (approved or denied). Pairs with
     /// [`Self::AwaitingPermission`] by `request_id`. Emitted on
     /// `permission.completed`.
     PermissionResolved { request_id: String, approved: bool },
-    /// An assistant turn began. Emitted on `assistant.turn_start` from
-    /// the Copilot events.jsonl tailer. The frontend uses this together
-    /// with the open-tool/open-permission counts to derive the
-    /// `thinking` display state (in-turn AND nothing else open).
+    /// An assistant turn began. Emitted on `assistant.turn_start` from the Copilot events.jsonl tailer. The frontend uses this together with the
+    /// open-tool/open-permission counts to derive the `thinking` display state (in-turn AND nothing else open).
     TurnStart,
 }
 
@@ -134,24 +103,20 @@ pub enum ActivityEvent {
 enum ParseState {
     /// Default: scanning for `\x1b` (ESC) or standalone BEL.
     Ground,
-    /// Saw `\x1b`, awaiting the next byte to disambiguate (OSC `]`,
-    /// CSI `[`, or something we don't care about).
+    /// Saw `\x1b`, awaiting the next byte to disambiguate (OSC `]`, CSI `[`, or something we don't care about).
     Esc,
-    /// Inside an OSC payload. The buffered string is everything between
-    /// `\x1b]` and the terminator (BEL or `\x1b\\`). We saw an `\x1b`
-    /// inside the payload and are checking whether it's the start of `\\`.
+    /// Inside an OSC payload. The buffered string is everything between `\x1b]` and the terminator (BEL or `\x1b\\`). We saw an `\x1b` inside the
+    /// payload and are checking whether it's the start of `\\`.
     OscPayload { saw_esc: bool },
 }
 
-/// Streaming activity scanner. One per session. Not `Send` across awaits;
-/// designed to live on the same OS thread as the PTY read loop.
+/// Streaming activity scanner. One per session. Not `Send` across awaits; designed to live on the same OS thread as the PTY read loop.
 pub struct ActivityScanner {
     state: ParseState,
     osc_buf: String,
     last_byte_at: Option<Instant>,
-    /// Whether the last [`ActivityEvent::Working`]/[`ActivityEvent::Idle`]
-    /// transition we *announced* was Working. Used to make working/idle
-    /// emission idempotent.
+    /// Whether the last [`ActivityEvent::Working`]/[`ActivityEvent::Idle`] transition we *announced* was Working. Used to make working/idle emission
+    /// idempotent.
     is_working: bool,
 }
 
@@ -172,9 +137,8 @@ impl ActivityScanner {
         }
     }
 
-    /// Feed raw PTY bytes. Returns any structured events recognised in
-    /// this chunk. Always uses the wall clock via [`Instant::now`]; tests
-    /// drive working/idle through [`Self::feed_bytes_at`] +
+    /// Feed raw PTY bytes. Returns any structured events recognised in this chunk. Always uses the wall clock via [`Instant::now`]; tests drive
+    /// working/idle through [`Self::feed_bytes_at`] +
     /// [`Self::tick_at`].
     pub fn feed_bytes(&mut self, bytes: &[u8]) -> Vec<ActivityEvent> {
         self.feed_bytes_at(bytes, Instant::now())
@@ -184,8 +148,7 @@ impl ActivityScanner {
     pub fn feed_bytes_at(&mut self, bytes: &[u8], now: Instant) -> Vec<ActivityEvent> {
         let mut out = Vec::new();
         if !bytes.is_empty() {
-            // Working transition fires on the first byte (cold start) or
-            // the first byte after an idle window.
+            // Working transition fires on the first byte (cold start) or the first byte after an idle window.
             if !self.is_working {
                 self.is_working = true;
                 out.push(ActivityEvent::Working);
@@ -199,8 +162,7 @@ impl ActivityScanner {
         out
     }
 
-    /// Periodic tick. Emits [`ActivityEvent::Idle`] once if the session
-    /// has been quiescent for at least [`IDLE_THRESHOLD`].
+    /// Periodic tick. Emits [`ActivityEvent::Idle`] once if the session has been quiescent for at least [`IDLE_THRESHOLD`].
     pub fn tick(&mut self) -> Option<ActivityEvent> {
         self.tick_at(Instant::now())
     }
@@ -231,21 +193,15 @@ impl ActivityScanner {
                     self.state = ParseState::OscPayload { saw_esc: false };
                 }
                 _ => {
-                    // CSI (`[`), single-char escapes, and anything else
-                    // we don't care about. Returning to Ground here is a
-                    // simplification — we don't need to fully parse CSI
-                    // since we only care about OSC and standalone BEL.
-                    // The trade-off: a `BEL` *inside* a CSI body would be
-                    // misclassified, but real CSI sequences never contain
-                    // BEL.
+                    // CSI (`[`), single-char escapes, and anything else we don't care about. Returning to Ground here is a simplification — we don't
+                    // need to fully parse CSI since we only care about OSC and standalone BEL. The trade-off: a `BEL` *inside* a CSI body would be
+                    // misclassified, but real CSI sequences never contain BEL.
                     self.state = ParseState::Ground;
                 }
             },
             ParseState::OscPayload { saw_esc } => {
                 if saw_esc {
-                    // Last byte was ESC; this should be `\` to terminate
-                    // (ST), otherwise the ESC was spurious — fold it into
-                    // the buffer and continue.
+                    // Last byte was ESC; this should be `\` to terminate (ST), otherwise the ESC was spurious — fold it into the buffer and continue.
                     if b == b'\\' {
                         self.finalize_osc(out);
                         self.state = ParseState::Ground;
@@ -270,13 +226,11 @@ impl ActivityScanner {
 
     fn push_osc_byte(&mut self, b: u8) {
         if self.osc_buf.len() >= OSC_MAX_LEN {
-            // Truncate silently — better than unbounded growth from a
-            // malformed stream. We will still attempt to parse what we
-            // have when the terminator arrives.
+            // Truncate silently — better than unbounded growth from a malformed stream. We will still attempt to parse what we have when the
+            // terminator arrives.
             return;
         }
-        // OSC payloads are conventionally text; non-UTF-8 bytes are
-        // replaced with `?` to keep `osc_buf` valid as a `String`.
+        // OSC payloads are conventionally text; non-UTF-8 bytes are replaced with `?` to keep `osc_buf` valid as a `String`.
         if b.is_ascii() {
             self.osc_buf.push(b as char);
         } else {
@@ -286,8 +240,7 @@ impl ActivityScanner {
 
     fn finalize_osc(&mut self, out: &mut Vec<ActivityEvent>) {
         let payload = std::mem::take(&mut self.osc_buf);
-        // OSC bodies look like `<Ps>;<rest>` where `Ps` is the numeric
-        // command identifier.
+        // OSC bodies look like `<Ps>;<rest>` where `Ps` is the numeric command identifier.
         let (ps, rest) = match payload.split_once(';') {
             Some((a, b)) => (a, b),
             None => (payload.as_str(), ""),
@@ -325,15 +278,10 @@ mod tests {
 
     #[test]
     fn activity_event_serde_uses_camelcase_field_keys() {
-        // The TS mirror in `src/types/arborist.ts` and the reducer in
-        // `src/store/session-store.ts` read camelCase keys
-        // (`toolCallId`, `toolName`, `requestId`, `durationMs`, etc.).
-        // The parent enum's `#[serde(rename_all = "camelCase")]` only
-        // renames *variants*; without `rename_all_fields = "camelCase"`,
-        // multi-word field names serialize in snake_case and the
-        // frontend silently sees `undefined` for every such field.
-        // This test pins the wire shape so a future maintainer can't
-        // regress it.
+        // The TS mirror in `src/types/arborist.ts` and the reducer in `src/store/session-store.ts` read camelCase keys (`toolCallId`, `toolName`,
+        // `requestId`, `durationMs`, etc.). The parent enum's `#[serde(rename_all = "camelCase")]` only renames *variants*; without
+        // `rename_all_fields = "camelCase"`, multi-word field names serialize in snake_case and the frontend silently sees `undefined` for every such
+        // field. This test pins the wire shape so a future maintainer can't regress it.
         let cases: &[(ActivityEvent, &[&str], &[&str])] = &[
             (
                 ActivityEvent::ToolStart {
@@ -515,8 +463,7 @@ mod tests {
     #[test]
     fn malformed_unterminated_osc_is_truncated_safely() {
         let mut s = ActivityScanner::new();
-        // Way more bytes than OSC_MAX_LEN — must not OOM the buffer or
-        // crash. The terminator never arrives, so no Title is emitted.
+        // Way more bytes than OSC_MAX_LEN — must not OOM the buffer or crash. The terminator never arrives, so no Title is emitted.
         let mut payload = b"\x1b]0;".to_vec();
         payload.extend(std::iter::repeat_n(b'x', OSC_MAX_LEN * 2));
         let evs = s.feed_bytes(&payload);
@@ -571,9 +518,8 @@ mod tests {
 
     #[test]
     fn captured_copilot_title_sequence() {
-        // Sequence lifted directly from the copilot capture in
-        // session-state files/captures/copilot.bin: the second of the
-        // two title sets it does at startup.
+        // Sequence lifted directly from the copilot capture in session-state files/captures/copilot.bin: the second of the two title sets it does at
+        // startup.
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]0;GitHub Copilot\x07");
         assert_eq!(

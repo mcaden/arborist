@@ -1,8 +1,7 @@
 //! Cross-platform PTY pool — Phase 6 of the implementation plan.
 //!
-//! Implements DESIGN §2.1 (PTY Pool), §5.1 step 2 + 7-9 (spawn / read thread /
-//! backpressure), §5.4 (restart from stored `composedCommand`), §5.6 (`cwd`
-//! is discrete, never interpolated), §8.3 (resource management).
+//! Implements DESIGN §2.1 (PTY Pool), §5.1 step 2 + 7-9 (spawn / read thread / backpressure), §5.4 (restart from stored `composedCommand`), §5.6
+//! (`cwd` is discrete, never interpolated), §8.3 (resource management).
 //!
 //! ## Architecture (reflecting the rules in `copilot-instructions.md`)
 //!
@@ -40,13 +39,11 @@ use crate::activity::{ActivityEvent, ActivityScanner, TICK_INTERVAL};
 use crate::compose::{self, platform_shell};
 use crate::types::{Error, Session, SessionId, SessionStatus, Tool};
 
-// ---------------------------------------------------------------------------
-// Tunables (DESIGN §8.3 / SPEC NF-09)
+// --------------------------------------------------------------------------- Tunables (DESIGN §8.3 / SPEC NF-09)
 // ---------------------------------------------------------------------------
 
-/// Bounded capacity for the per-session output channel. Once full, new chunks
-/// are **dropped** (newest-first) and a counter is incremented. DESIGN §8.3
-/// pins this at 512.
+/// Bounded capacity for the per-session output channel. Once full, new chunks are **dropped** (newest-first) and a counter is incremented. DESIGN
+/// §8.3 pins this at 512.
 pub const OUTPUT_CHANNEL_CAPACITY: usize = 512;
 
 /// How many drops between successive backpressure warnings.
@@ -58,8 +55,7 @@ pub const KILL_GRACE: Duration = Duration::from_secs(2);
 /// Maximum time we wait for the drain task to finish after `kill`.
 pub const DRAIN_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Default initial PTY size (mirrors xterm.js's default until the frontend
-/// resizes it).
+/// Default initial PTY size (mirrors xterm.js's default until the frontend resizes it).
 pub const DEFAULT_PTY_SIZE: PtySize = PtySize {
     rows: 24,
     cols: 80,
@@ -67,8 +63,7 @@ pub const DEFAULT_PTY_SIZE: PtySize = PtySize {
     pixel_height: 0,
 };
 
-/// ANSI full-reset sequence (`ESC c`). Prepended to the next emitted chunk
-/// after a backpressure drop so xterm.js cannot be left mid-escape (DESIGN
+/// ANSI full-reset sequence (`ESC c`). Prepended to the next emitted chunk after a backpressure drop so xterm.js cannot be left mid-escape (DESIGN
 /// §8.3 — added in Phase 6).
 pub const ANSI_FULL_RESET: &str = "\x1bc";
 
@@ -77,57 +72,41 @@ pub const ORPHAN_AGE_THRESHOLD: Duration = Duration::from_secs(60 * 60);
 
 /// Outcome of a [`PtyPool::kill`] call.
 ///
-/// `kill` removes the runtime entry from the pool unconditionally and
-/// always issues `killer.kill()` (SIGKILL on Unix / `TerminateProcess`
-/// on Windows — both unconditional process-termination primitives).
-/// The OS-level kill primitive almost never fails for a child we just
-/// spawned and own, but the post-kill wait-thread join (which calls
-/// `child.wait()` to reap the process) **can** time out in
-/// pathological cases (e.g. Unix zombie reaping is delayed, Windows
-/// handle still held by a debugger). The outcome captures whether we
-/// actually observed the process being reaped within
+/// `kill` removes the runtime entry from the pool unconditionally and always issues `killer.kill()` (SIGKILL on Unix / `TerminateProcess` on Windows
+/// — both unconditional process-termination primitives). The OS-level kill primitive almost never fails for a child we just spawned and own, but the
+/// post-kill wait-thread join (which calls `child.wait()` to reap the process) **can** time out in pathological cases (e.g. Unix zombie reaping is
+/// delayed, Windows handle still held by a debugger). The outcome captures whether we actually observed the process being reaped within
 /// [`KILL_GRACE`] so callers can decide whether to log a possible
 /// orphan PID.
 ///
-/// `park_session_for_switch_impl` uses this to surface the rare
-/// "kill-issued-but-unconfirmed" case during an in-app workspace
-/// switch — without that visibility, an orphaned CLI from a parked
-/// session could be silently respawned as a second live process for
-/// the same tab on the next switch-back. See PR #32 round-12 review
-/// thread for the underlying concern.
+/// `park_session_for_switch_impl` uses this to surface the rare "kill-issued-but-unconfirmed" case during an in-app workspace switch — without that
+/// visibility, an orphaned CLI from a parked session could be silently respawned as a second live process for the same tab on the next switch-back.
+/// See PR #32 round-12 review thread for the underlying concern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KillOutcome {
-    /// `killer.kill()` returned `Ok` AND the wait thread joined
-    /// cleanly within [`KILL_GRACE`]. The OS has reaped the process.
+    /// `killer.kill()` returned `Ok` AND the wait thread joined cleanly within [`KILL_GRACE`]. The OS has reaped the process.
     Reaped,
-    /// `killer.kill()` returned `Err`, OR the wait thread did not
-    /// join within [`KILL_GRACE`]. The process **may** still be
-    /// alive at the recorded PID — callers should log loudly so a
-    /// human can find and clean up the orphan.
+    /// `killer.kill()` returned `Err`, OR the wait thread did not join within [`KILL_GRACE`]. The process **may** still be alive at the recorded PID
+    /// — callers should log loudly so a human can find and clean up the orphan.
     Unconfirmed { pid: u32 },
 }
 
-// ---------------------------------------------------------------------------
-// Spawner / child trait seam
+// --------------------------------------------------------------------------- Spawner / child trait seam
 // ---------------------------------------------------------------------------
 
-/// Minimal description of a child process to spawn. Decoupled from
-/// `portable_pty::CommandBuilder` so test spawners don't need to depend on
+/// Minimal description of a child process to spawn. Decoupled from `portable_pty::CommandBuilder` so test spawners don't need to depend on
 /// portable-pty's API surface.
 #[derive(Debug, Clone)]
 pub struct ChildCommand {
     pub program: String,
     pub args: Vec<String>,
-    /// Environment variable additions/overrides applied on top of the
-    /// parent process's inherited env. Used to inject per-session
-    /// telemetry settings (e.g. Copilot's OTel file exporter path) without
-    /// touching the persisted `Session.composed_command`. Empty for tools
-    /// that need no extra env (e.g. Claude today).
+    /// Environment variable additions/overrides applied on top of the parent process's inherited env. Used to inject per-session telemetry settings
+    /// (e.g. Copilot's OTel file exporter path) without touching the persisted `Session.composed_command`. Empty for tools that need no extra env
+    /// (e.g. Claude today).
     pub env: Vec<(String, std::ffi::OsString)>,
 }
 
-/// Result of a successful spawn — a bundle of independent handles. Splitting
-/// them up means the wait-thread can block in `wait()` without holding any
+/// Result of a successful spawn — a bundle of independent handles. Splitting them up means the wait-thread can block in `wait()` without holding any
 /// lock that `write`/`resize`/`kill` need.
 pub struct SpawnedChild {
     /// OS PID of the child.
@@ -144,12 +123,9 @@ pub struct SpawnedChild {
     pub killer: Arc<dyn PtyKiller>,
 }
 
-/// Trait seam over `portable-pty`'s `PtySystem`. `PtyPool` accepts any
-/// implementor — production wires [`PortablePtySpawner`], tests wire fakes.
+/// Trait seam over `portable-pty`'s `PtySystem`. `PtyPool` accepts any implementor — production wires [`PortablePtySpawner`], tests wire fakes.
 pub trait PtySpawner: Send + Sync {
-    /// Open a PTY pair, spawn `cmd` inside it with the given working
-    /// directory and initial size, and return a fully decoupled handle
-    /// bundle.
+    /// Open a PTY pair, spawn `cmd` inside it with the given working directory and initial size, and return a fully decoupled handle bundle.
     fn spawn(&self, cmd: ChildCommand, cwd: &Path, size: PtySize) -> Result<SpawnedChild, Error>;
 }
 
@@ -158,51 +134,38 @@ pub trait PtyResize: Send + Sync {
     fn resize(&self, cols: u16, rows: u16) -> Result<(), Error>;
 }
 
-/// Wait handle. Owned by exactly one thread (the per-session wait thread)
-/// and consumed by [`Self::wait`].
+/// Wait handle. Owned by exactly one thread (the per-session wait thread) and consumed by [`Self::wait`].
 pub trait PtyWaiter: Send {
     fn wait(self: Box<Self>) -> Result<ExitStatus, Error>;
 }
 
-/// Kill handle. Independent of the waiter so the kill caller never has to
-/// contend with the wait thread.
+/// Kill handle. Independent of the waiter so the kill caller never has to contend with the wait thread.
 ///
-/// On Unix the production impl sends SIGTERM, waits up to [`KILL_GRACE`],
-/// then escalates to SIGKILL. On Windows it forwards to portable-pty's
-/// `kill`, which terminates the child via `TerminateProcess`.
+/// On Unix the production impl sends SIGTERM, waits up to [`KILL_GRACE`], then escalates to SIGKILL. On Windows it forwards to portable-pty's `kill`,
+/// which terminates the child via `TerminateProcess`.
 pub trait PtyKiller: Send + Sync {
     fn kill(&self) -> Result<(), Error>;
 }
 
-// ---------------------------------------------------------------------------
-// Production spawner (portable-pty)
+// --------------------------------------------------------------------------- Production spawner (portable-pty)
 // ---------------------------------------------------------------------------
 
 /// The reserved env-var namespace prefix for Arborist's own build/dev tooling.
 const ARBORIST_ENV_PREFIX: &str = "ARBORIST_";
 
-/// Strip every `ARBORIST_*` env var from the inherited environment of
-/// `builder`.
+/// Strip every `ARBORIST_*` env var from the inherited environment of `builder`.
 ///
-/// `portable_pty::CommandBuilder` snapshots the current process env at
-/// construction; `env_remove` records an unset that overrides those entries
-/// when the child is spawned. We enumerate `keys` and remove anything
-/// beginning with the `ARBORIST_` prefix — that namespace is reserved for
-/// Arborist's own build/dev tooling (e.g. `ARBORIST_BUILD_BRANCH` from
-/// build.rs, `ARBORIST_DEV_PORT` from `scripts/tauri-dev.mjs`) and must
-/// never leak into the user shells we spawn.
+/// `portable_pty::CommandBuilder` snapshots the current process env at construction; `env_remove` records an unset that overrides those entries when
+/// the child is spawned. We enumerate `keys` and remove anything beginning with the `ARBORIST_` prefix — that namespace is reserved for Arborist's
+/// own build/dev tooling (e.g. `ARBORIST_BUILD_BRANCH` from build.rs, `ARBORIST_DEV_PORT` from `scripts/tauri-dev.mjs`) and must never leak into the
+/// user shells we spawn.
 ///
-/// Prefix matching is **case-insensitive** (ASCII): on Windows env-var names
-/// are themselves case-insensitive, so a stray `Arborist_Dev_Port` set by an
-/// outer shell is the same variable as `ARBORIST_DEV_PORT` and must be
-/// stripped too. On Unix the names are technically distinct but the prefix
-/// is by convention reserved regardless of case, so this is also defensible
-/// (and safer than surprising callers with platform-divergent behaviour).
+/// Prefix matching is **case-insensitive** (ASCII): on Windows env-var names are themselves case-insensitive, so a stray `Arborist_Dev_Port` set by
+/// an outer shell is the same variable as `ARBORIST_DEV_PORT` and must be stripped too. On Unix the names are technically distinct but the prefix is
+/// by convention reserved regardless of case, so this is also defensible (and safer than surprising callers with platform-divergent behaviour).
 ///
-/// We compare on raw `OsStr` bytes (`as_encoded_bytes()`) rather than
-/// `to_str()` so non-UTF-8 keys (legal on Unix) whose leading bytes match
-/// `ARBORIST_` are still stripped — `to_str()` would return `None` and
-/// silently leak them.
+/// We compare on raw `OsStr` bytes (`as_encoded_bytes()`) rather than `to_str()` so non-UTF-8 keys (legal on Unix) whose leading bytes match
+/// `ARBORIST_` are still stripped — `to_str()` would return `None` and silently leak them.
 fn strip_arborist_env_keys<I, K>(builder: &mut CommandBuilder, keys: I)
 where
     I: IntoIterator<Item = K>,
@@ -250,21 +213,15 @@ impl PtySpawner for PortablePtySpawner {
         for a in &cmd.args {
             builder.arg(a);
         }
-        // DESIGN §5.6: cwd is the discrete worktree path — never spliced into
-        // the command string.
+        // DESIGN §5.6: cwd is the discrete worktree path — never spliced into the command string.
         builder.cwd(cwd);
-        // Strip Arborist build/dev tooling env vars from the inherited
-        // environment so they don't leak into PTY children. The running app
-        // inherits its launching shell's env, and any `ARBORIST_*` var set
-        // there (e.g. `ARBORIST_BUILD_BRANCH`, `ARBORIST_DEV_PORT` set by
-        // `scripts/tauri-dev.mjs`) would otherwise propagate to user shells
-        // and to nested `tauri:dev` invocations launched from a session,
-        // baking the wrong values into those builds. These vars are only
-        // meaningful at Arborist's own build/launch time.
+        // Strip Arborist build/dev tooling env vars from the inherited environment so they don't leak into PTY children. The running app inherits its
+        // launching shell's env, and any `ARBORIST_*` var set there (e.g. `ARBORIST_BUILD_BRANCH`, `ARBORIST_DEV_PORT` set by
+        // `scripts/tauri-dev.mjs`) would otherwise propagate to user shells and to nested `tauri:dev` invocations launched from a session, baking the
+        // wrong values into those builds. These vars are only meaningful at Arborist's own build/launch time.
         strip_arborist_env(&mut builder);
-        // Per-session env additions. The child still inherits the parent
-        // process's env (we never call `env_clear`); these are
-        // overrides/additions only — see `compose::env_for_tool`.
+        // Per-session env additions. The child still inherits the parent process's env (we never call `env_clear`); these are overrides/additions
+        // only — see `compose::env_for_tool`.
         for (k, v) in &cmd.env {
             builder.env(k, v);
         }
@@ -274,8 +231,7 @@ impl PtySpawner for PortablePtySpawner {
             .spawn_command(builder)
             .map_err(|e| Error::PtySpawnFailed(format!("spawn_command failed: {e}")))?;
 
-        // Drop the slave side immediately (per portable-pty docs) so the
-        // child doesn't keep the pty alive after it exits.
+        // Drop the slave side immediately (per portable-pty docs) so the child doesn't keep the pty alive after it exits.
         drop(pair.slave);
 
         let pid = child.process_id().ok_or_else(|| Error::PtySpawnFailed("child has no pid".into()))?;
@@ -352,8 +308,7 @@ impl PtyKiller for PortableKiller {
             guard.kill().map_err(|e| Error::PtyKillFailed(format!("kill failed: {e}")))?;
         }
 
-        // Unix-only SIGKILL escalation if the child doesn't react to SIGTERM
-        // within KILL_GRACE.
+        // Unix-only SIGKILL escalation if the child doesn't react to SIGTERM within KILL_GRACE.
         #[cfg(unix)]
         {
             std::thread::sleep(KILL_GRACE);
@@ -373,31 +328,25 @@ extern "C" {
 
 #[cfg(unix)]
 unsafe fn libc_kill(pid: i32, sig: i32) {
-    // Best-effort SIGKILL escalation; ignore the return value because the
-    // child may already have exited between try_wait() and now.
+    // Best-effort SIGKILL escalation; ignore the return value because the child may already have exited between try_wait() and now.
     let _ = unsafe { kill(pid, sig) };
 }
 
-// ---------------------------------------------------------------------------
-// Sink — Tauri-agnostic seam for output and status
+// --------------------------------------------------------------------------- Sink — Tauri-agnostic seam for output and status
 // ---------------------------------------------------------------------------
 
 /// Output callback type alias.
 pub type OutputCb = Arc<dyn Fn(&SessionId, String) + Send + Sync>;
-/// Status callback type alias. The `Option<u32>` is the PID; cleared on
-/// exit.
+/// Status callback type alias. The `Option<u32>` is the PID; cleared on exit.
 pub type StatusCb = Arc<dyn Fn(&SessionId, SessionStatus, Option<u32>, Option<String>) + Send + Sync>;
-/// Activity callback type alias. Fired by the per-session activity scanner
-/// (see [`crate::activity`]). Carries semantic events derived from the raw
+/// Activity callback type alias. Fired by the per-session activity scanner (see [`crate::activity`]). Carries semantic events derived from the raw
 /// PTY stream — title changes, attention cues, working/idle transitions.
 pub type ActivityCb = Arc<dyn Fn(&SessionId, ActivityEvent) + Send + Sync>;
 
 /// The pool talks to the rest of the app exclusively through this struct.
 ///
-/// In production (Phase 7), `output` will both `AppHandle::emit` a
-/// `session://output` event and `status` will both emit `session://status`
-/// AND call `config_store::update_session_status`. The pool does not know
-/// or care.
+/// In production (Phase 7), `output` will both `AppHandle::emit` a `session://output` event and `status` will both emit `session://status` AND call
+/// `config_store::update_session_status`. The pool does not know or care.
 #[derive(Clone)]
 pub struct PtySink {
     pub output: OutputCb,
@@ -412,20 +361,16 @@ impl PtySink {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming UTF-8 decoder
+// --------------------------------------------------------------------------- Streaming UTF-8 decoder
 // ---------------------------------------------------------------------------
 
-/// Tiny streaming UTF-8 decoder. Holds at most 3 trailing bytes (the maximum
-/// length of a partial UTF-8 character minus one).
+/// Tiny streaming UTF-8 decoder. Holds at most 3 trailing bytes (the maximum length of a partial UTF-8 character minus one).
 ///
-/// Design rule: **on each `feed`, return a `String` containing every fully
-/// decoded scalar; retain any trailing partial sequence for the next call**.
+/// Design rule: **on each `feed`, return a `String` containing every fully decoded scalar; retain any trailing partial sequence for the next call**.
 /// Invalid bytes are replaced with U+FFFD (REPLACEMENT CHARACTER).
 ///
-/// Visibility is `pub(crate)` rather than `pub`: the only external
-/// caller is `crate::sub_sessions`, and we don't want to commit to
-/// this type as part of the crate's public API surface.
+/// Visibility is `pub(crate)` rather than `pub`: the only external caller is `crate::sub_sessions`, and we don't want to commit to this type as part
+/// of the crate's public API surface.
 #[derive(Debug, Default)]
 pub(crate) struct Utf8Stream {
     pending: Vec<u8>,
@@ -446,9 +391,8 @@ impl Utf8Stream {
             &buf[..]
         };
 
-        // Walk Utf8Chunks: every chunk has a `valid()` prefix and an
-        // `invalid()` suffix. The trailing chunk's `invalid()` is the only
-        // candidate for "partial multibyte at end of buffer".
+        // Walk Utf8Chunks: every chunk has a `valid()` prefix and an `invalid()` suffix. The trailing chunk's `invalid()` is the only candidate for
+        // "partial multibyte at end of buffer".
         let mut out = String::with_capacity(slice.len());
         let mut chunks = slice.utf8_chunks().peekable();
         while let Some(chunk) = chunks.next() {
@@ -457,9 +401,8 @@ impl Utf8Stream {
             if inv.is_empty() {
                 continue;
             }
-            // If this is the final chunk AND the invalid tail is shorter
-            // than the maximum UTF-8 sequence length AND it could plausibly
-            // be the prefix of a valid sequence, hold it for next time.
+            // If this is the final chunk AND the invalid tail is shorter than the maximum UTF-8 sequence length AND it could plausibly be the prefix
+            // of a valid sequence, hold it for next time.
             if chunks.peek().is_none() && is_possible_partial(inv) {
                 self.pending = inv.to_vec();
             } else {
@@ -505,23 +448,20 @@ fn is_possible_partial(bytes: &[u8]) -> bool {
     bytes[1..].iter().all(|b| b & 0b1100_0000 == 0b1000_0000)
 }
 
-// ---------------------------------------------------------------------------
-// PtyPool
+// --------------------------------------------------------------------------- PtyPool
 // ---------------------------------------------------------------------------
 
 /// Per-session runtime state held inside the pool.
 struct SessionRuntime {
     pid: u32,
-    /// Writer over the PTY master — taken once at spawn, used by every
-    /// `write` call. Held in its own mutex so it never contends with
+    /// Writer over the PTY master — taken once at spawn, used by every `write` call. Held in its own mutex so it never contends with
     /// `wait`/`kill`/`resize`.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Independent resize handle.
     resize: Arc<dyn PtyResize>,
     /// Independent kill handle.
     killer: Arc<dyn PtyKiller>,
-    /// Sender side of the bounded output channel — dropping it tells the
-    /// drain task to finish.
+    /// Sender side of the bounded output channel — dropping it tells the drain task to finish.
     sender: mpsc::Sender<String>,
     /// Cancellation token for the drain task.
     cancel: CancellationToken,
@@ -529,8 +469,7 @@ struct SessionRuntime {
     drain: tokio::task::JoinHandle<()>,
     /// Wait-thread handle. Detached on Drop; explicitly joined by `kill`.
     wait_thread: Option<std::thread::JoinHandle<()>>,
-    /// Shared with the wait thread; flipped on `kill` so the wait thread
-    /// knows the exit was requested and shouldn't re-emit status.
+    /// Shared with the wait thread; flipped on `kill` so the wait thread knows the exit was requested and shouldn't re-emit status.
     killed: Arc<AtomicBool>,
     /// Backpressure counter — exposed for tests / observability.
     dropped_chunks: Arc<AtomicUsize>,
@@ -543,8 +482,7 @@ pub struct PtyPool {
 }
 
 impl PtyPool {
-    /// Construct a pool over the given spawner. The spawner is **always
-    /// injected**.
+    /// Construct a pool over the given spawner. The spawner is **always injected**.
     #[must_use]
     pub fn new(spawner: Arc<dyn PtySpawner>) -> Self {
         Self {
@@ -573,35 +511,28 @@ impl PtyPool {
         self.inner.lock().ok().and_then(|g| g.get(id).map(|rt| rt.pid))
     }
 
-    /// Atomic dropped-chunks counter for the given session — exposed for
-    /// observability and tests.
+    /// Atomic dropped-chunks counter for the given session — exposed for observability and tests.
     pub fn dropped_chunks(&self, id: &SessionId) -> Option<Arc<AtomicUsize>> {
         self.inner.lock().ok().and_then(|g| g.get(id).map(|rt| Arc::clone(&rt.dropped_chunks)))
     }
 
-    /// Spawn a fresh PTY child for `session`. Composes the platform shell
-    /// invocation `[shell, flag, session.composed_command]` and passes the
+    /// Spawn a fresh PTY child for `session`. Composes the platform shell invocation `[shell, flag, session.composed_command]` and passes the
     /// session's worktree as the discrete `cwd`.
     ///
-    /// The `size` is the initial PTY dimensions the child sees at startup.
-    /// Callers must measure the host terminal first — passing the wrong size
-    /// here is the exact race that caused the long-standing "splash screen
-    /// rendered at 80 cols then never re-laid-out" bug.
+    /// The `size` is the initial PTY dimensions the child sees at startup. Callers must measure the host terminal first — passing the wrong size here
+    /// is the exact race that caused the long-standing "splash screen rendered at 80 cols then never re-laid-out" bug.
     ///
     /// Returns the assigned PID.
     pub fn spawn(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
         self.spawn_internal(session, sink, size)
     }
 
-    /// Re-spawn a session from its **already-stored** `composed_command`.
-    /// This is the entry point Phase 7 uses for restart and restore. The
-    /// behaviour is identical to [`spawn`]; the distinct name documents the
-    /// "do not recompose at restart time" rule from DESIGN §5.4.
+    /// Re-spawn a session from its **already-stored** `composed_command`. This is the entry point Phase 7 uses for restart and restore. The behaviour
+    /// is identical to [`spawn`]; the distinct name documents the "do not recompose at restart time" rule from DESIGN §5.4.
     ///
     /// [`spawn`]: Self::spawn
     pub fn respawn_existing(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
-        // If a previous runtime entry exists (e.g. from a prior spawn that
-        // hasn't exited yet), tear it down first.
+        // If a previous runtime entry exists (e.g. from a prior spawn that hasn't exited yet), tear it down first.
         if self.contains(&session.id) {
             // Best-effort kill; if the child is already dead this is a no-op.
             let _ = self.kill_blocking(&session.id);
@@ -612,30 +543,21 @@ impl PtyPool {
     fn spawn_internal(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
         // ------- 1. Per-session spawn prep (telemetry env, temp dir).
         //
-        // We do this here — not in `commands/session.rs` — so every spawn
-        // path (create, restart, restore-on-launch) gets the same
-        // treatment without each call site having to remember. Mirror of
-        // the post-close cleanup that already lives next to `kill`.
+        // We do this here — not in `commands/session.rs` — so every spawn path (create, restart, restore-on-launch) gets the same treatment without
+        // each call site having to remember. Mirror of the post-close cleanup that already lives next to `kill`.
         let env = compose::env_for_tool(session.tool, &session.id);
-        // Tool-specific spawn prep is keyed off `session.tool`, NOT off
-        // "env is non-empty" — those concepts are independent. A future
-        // tool that needs env injection but no temp file (or vice
-        // versa) must not get Copilot's stale-OTel cleanup applied to
-        // it. Match on Tool explicitly.
+        // Tool-specific spawn prep is keyed off `session.tool`, NOT off "env is non-empty" — those concepts are independent. A future tool that needs
+        // env injection but no temp file (or vice versa) must not get Copilot's stale-OTel cleanup applied to it. Match on Tool explicitly.
         match session.tool {
             Tool::Copilot => {
-                // Copilot's OTel exporter writes to a per-session JSONL in
-                // a temp dir. Ensure the dir exists before the child opens
-                // the file, and remove any stale JSONL from a previous run
-                // so restart / restore-on-launch don't replay old spans
-                // and double-count totals.
+                // Copilot's OTel exporter writes to a per-session JSONL in a temp dir. Ensure the dir exists before the child opens the file, and
+                // remove any stale JSONL from a previous run so restart / restore-on-launch don't replay old spans and double-count totals.
                 let dir = compose::session_temp_dir(&session.id);
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     debug!(session_id = %session.id, error = %e, dir = %dir.display(), "session temp dir create failed");
                 }
-                // Single source of truth for the path is
-                // `compose::copilot_otel_path` — no string literal here.
-                // Best-effort removal; missing file is fine.
+                // Single source of truth for the path is `compose::copilot_otel_path` — no string literal here. Best-effort removal; missing file is
+                // fine.
                 let stale = compose::copilot_otel_path(&session.id);
                 match std::fs::remove_file(&stale) {
                     Ok(()) => {}
@@ -707,9 +629,8 @@ impl PtyPool {
             })
             .map_err(|e| Error::PtySpawnFailed(format!("spawn read thread failed: {e}")))?;
 
-        // ------- 5b. Activity tick task — emits Idle transitions when the
-        // PTY has been quiescent. Runs on the tokio runtime so it shares
-        // the existing CancellationToken plumbing for clean shutdown.
+        // ------- 5b. Activity tick task — emits Idle transitions when the PTY has been quiescent. Runs on the tokio runtime so it shares the
+        // existing CancellationToken plumbing for clean shutdown.
         let tick_cancel = cancel.clone();
         let tick_sink = sink.clone();
         let tick_id = session.id;
@@ -796,22 +717,16 @@ impl PtyPool {
         resize.resize(cols, rows)
     }
 
-    /// Kill the child, tear down its read/wait threads and drain task, and
-    /// remove the entry. Also deletes the session's temp dir on disk.
+    /// Kill the child, tear down its read/wait threads and drain task, and remove the entry. Also deletes the session's temp dir on disk.
     ///
-    /// Async because we await the drain-task join with a timeout. **Never
-    /// holds the pool lock across `.await`** (DESIGN/copilot-instructions).
+    /// Async because we await the drain-task join with a timeout. **Never holds the pool lock across `.await`** (DESIGN/copilot-instructions).
     ///
-    /// Returns [`KillOutcome::Reaped`] on the happy path (kill returned
-    /// `Ok` AND the wait thread joined within [`KILL_GRACE`]) so callers
-    /// can confirm the OS reaped the child. Returns
+    /// Returns [`KillOutcome::Reaped`] on the happy path (kill returned `Ok` AND the wait thread joined within [`KILL_GRACE`]) so callers can confirm
+    /// the OS reaped the child. Returns
     /// [`KillOutcome::Unconfirmed`] when the kill primitive returned an
-    /// error OR the wait thread did not join in time — both are rare,
-    /// but in either case the child **may** still be alive at the
-    /// recorded PID. The runtime entry is removed from the pool either
-    /// way (so the SessionId is free for a fresh respawn). Callers that
-    /// care about possible orphans (e.g. `park_session_for_switch_impl`)
-    /// should log loudly when they see `Unconfirmed`.
+    /// error OR the wait thread did not join in time — both are rare, but in either case the child **may** still be alive at the recorded PID. The
+    /// runtime entry is removed from the pool either way (so the SessionId is free for a fresh respawn). Callers that care about possible orphans
+    /// (e.g. `park_session_for_switch_impl`) should log loudly when they see `Unconfirmed`.
     pub async fn kill(&self, id: &SessionId) -> Result<KillOutcome, Error> {
         // 1. Remove the runtime entry under the lock; everything else happens with no
         //    lock held.
@@ -859,9 +774,7 @@ impl PtyPool {
                 Ok(Ok(Ok(()))),
             )
         } else {
-            // No wait thread to join (e.g. constructed without one in
-            // some test paths). Treat as confirmed reaped — there's
-            // nothing to verify.
+            // No wait thread to join (e.g. constructed without one in some test paths). Treat as confirmed reaped — there's nothing to verify.
             true
         };
 
@@ -900,9 +813,8 @@ impl PtyPool {
         }
     }
 
-    /// Synchronous best-effort kill used by `respawn_existing` (where we
-    /// can't `.await` because we're in the synchronous spawn path) and
-    /// from `Drop` (no async context available there at all).
+    /// Synchronous best-effort kill used by `respawn_existing` (where we can't `.await` because we're in the synchronous spawn path) and from `Drop`
+    /// (no async context available there at all).
     fn kill_blocking(&self, id: &SessionId) -> Result<(), Error> {
         let rt = {
             let mut guard = self.inner.lock().map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
@@ -931,8 +843,7 @@ impl Drop for PtyPool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Read / wait loops (free functions so they're easy to unit-test)
+// --------------------------------------------------------------------------- Read / wait loops (free functions so they're easy to unit-test)
 // ---------------------------------------------------------------------------
 
 fn pty_read_loop(
@@ -951,9 +862,8 @@ fn pty_read_loop(
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF
             Ok(n) => {
-                // Activity scan first — the scanner needs raw bytes (OSC
-                // sequences are pure ASCII so they survive UTF-8 decode,
-                // but we want byte-accurate timing). Lock → take → drop.
+                // Activity scan first — the scanner needs raw bytes (OSC sequences are pure ASCII so they survive UTF-8 decode, but we want
+                // byte-accurate timing). Lock → take → drop.
                 let events = match scanner.lock() {
                     Ok(mut g) => g.feed_bytes(&buf[..n]),
                     Err(_) => Vec::new(),
@@ -1004,8 +914,7 @@ fn pty_wait_loop(id: SessionId, waiter: Box<dyn PtyWaiter>, sink: PtySink, kille
     let result = waiter.wait();
 
     if killed.load(Ordering::SeqCst) {
-        // Sink has already been notified by `kill` (or will be by Phase 7's
-        // close handler). Don't double-emit.
+        // Sink has already been notified by `kill` (or will be by Phase 7's close handler). Don't double-emit.
         return;
     }
 
@@ -1016,16 +925,13 @@ fn pty_wait_loop(id: SessionId, waiter: Box<dyn PtyWaiter>, sink: PtySink, kille
     (sink.status)(&id, status, None, None);
 }
 
-// ---------------------------------------------------------------------------
-// Orphan cleanup
+// --------------------------------------------------------------------------- Orphan cleanup
 // ---------------------------------------------------------------------------
 
-/// Scan `<os-temp>/arborist/` for per-session directories whose UUID is **not**
-/// in `persisted_session_ids` and whose mtime is older than
+/// Scan `<os-temp>/arborist/` for per-session directories whose UUID is **not** in `persisted_session_ids` and whose mtime is older than
 /// [`ORPHAN_AGE_THRESHOLD`]. Returns the number deleted.
 ///
-/// Restore-safety: a stale-mtime dir whose UUID **is** still persisted is
-/// **kept**, so a Phase 7 restart never races temp-file deletion against
+/// Restore-safety: a stale-mtime dir whose UUID **is** still persisted is **kept**, so a Phase 7 restart never races temp-file deletion against
 /// rematerialisation (DESIGN §5.6 / Phase 6 spec).
 pub fn cleanup_orphans(persisted_session_ids: &[SessionId]) -> Result<usize, Error> {
     let root = compose::session_temp_dir(&SessionId::new());
@@ -1051,8 +957,7 @@ pub fn cleanup_orphans(persisted_session_ids: &[SessionId]) -> Result<usize, Err
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        // Only touch UUID-named dirs — don't accidentally nuke unrelated
-        // siblings.
+        // Only touch UUID-named dirs — don't accidentally nuke unrelated siblings.
         if uuid::Uuid::parse_str(name).is_err() {
             continue;
         }
@@ -1072,8 +977,7 @@ pub fn cleanup_orphans(persisted_session_ids: &[SessionId]) -> Result<usize, Err
     Ok(deleted)
 }
 
-// ---------------------------------------------------------------------------
-// Tests (unit-level — integration tests live in tests/pty_pool.rs)
+// --------------------------------------------------------------------------- Tests (unit-level — integration tests live in tests/pty_pool.rs)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1135,14 +1039,11 @@ mod tests {
         assert!(!is_possible_partial(&[]));
     }
 
-    /// Build a probe builder seeded with the supplied env, then strip
-    /// `ARBORIST_*` keys and return the remaining keys. Mirrors production
-    /// by feeding the strip helper an iterator of owned `OsString`s — the
-    /// same shape `std::env::vars_os()` produces.
+    /// Build a probe builder seeded with the supplied env, then strip `ARBORIST_*` keys and return the remaining keys. Mirrors production by feeding
+    /// the strip helper an iterator of owned `OsString`s — the same shape `std::env::vars_os()` produces.
     fn keys_after_strip(seed: &[(&str, &str)], strip_keys: &[&str]) -> Vec<String> {
         let mut b = CommandBuilder::new("/bin/true");
-        // Replace the auto-inherited env with a known-good set so the
-        // assertion isn't perturbed by the actual host environment.
+        // Replace the auto-inherited env with a known-good set so the assertion isn't perturbed by the actual host environment.
         b.env_clear();
         for (k, v) in seed {
             b.env(*k, *v);
@@ -1178,9 +1079,8 @@ mod tests {
 
     #[test]
     fn strip_arborist_env_is_case_insensitive() {
-        // On Windows env-var names are case-insensitive, so any casing of
-        // the prefix is the same variable and must be stripped. Unix
-        // matches the same behaviour for namespace-hygiene consistency.
+        // On Windows env-var names are case-insensitive, so any casing of the prefix is the same variable and must be stripped. Unix matches the same
+        // behaviour for namespace-hygiene consistency.
         let keys = keys_after_strip(
             &[
                 ("Arborist_Build_Branch", "main"),
@@ -1195,8 +1095,7 @@ mod tests {
 
     #[test]
     fn strip_arborist_env_ignores_short_or_empty_keys() {
-        // Keys shorter than the prefix can't match; ensure the length
-        // guard doesn't underflow / panic.
+        // Keys shorter than the prefix can't match; ensure the length guard doesn't underflow / panic.
         let keys = keys_after_strip(&[("AR", "x"), ("A", "y")], &["AR", "A"]);
         assert!(keys.iter().any(|k| k == "AR"));
         assert!(keys.iter().any(|k| k == "A"));
@@ -1211,14 +1110,10 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn strip_arborist_env_production_path_strips_real_env_var() {
-        // Exercise the production wrapper that reads `std::env::vars_os()`,
-        // ensuring the OsString-based iteration path actually removes a
-        // matching key from the resulting CommandBuilder. Use a
-        // unique-per-test key so concurrent tests can't false-positive
-        // (std::env mutations are process-global). Marked `#[serial(env)]`
-        // so the test suite serializes any other env-mutating tests against
-        // this one — `std::env::set_var`/`remove_var` are process-global
-        // and inherently racy with concurrent reads.
+        // Exercise the production wrapper that reads `std::env::vars_os()`, ensuring the OsString-based iteration path actually removes a matching
+        // key from the resulting CommandBuilder. Use a unique-per-test key so concurrent tests can't false-positive (std::env mutations are
+        // process-global). Marked `#[serial(env)]` so the test suite serializes any other env-mutating tests against this one —
+        // `std::env::set_var`/`remove_var` are process-global and inherently racy with concurrent reads.
         struct EnvProbe(&'static str);
         impl Drop for EnvProbe {
             fn drop(&mut self) {
@@ -1246,10 +1141,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn strip_arborist_env_strips_non_utf8_keys() {
-        // Env-var names on Unix are arbitrary `OsStr` byte sequences, not
-        // guaranteed UTF-8. A key whose leading bytes are `ARBORIST_` but
-        // whose trailing bytes are non-UTF-8 must still be stripped — the
-        // earlier `to_str()`-gated impl would silently leak such keys.
+        // Env-var names on Unix are arbitrary `OsStr` byte sequences, not guaranteed UTF-8. A key whose leading bytes are `ARBORIST_` but whose
+        // trailing bytes are non-UTF-8 must still be stripped — the earlier `to_str()`-gated impl would silently leak such keys.
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
 

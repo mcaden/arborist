@@ -1,8 +1,7 @@
 //! Command-string → executable-path resolution.
 //!
-//! Used by the icon extractor to find the **right** executable to
-//! query for an icon, given just the user-typed command string. The
-//! captured PID is unreliable for icon purposes:
+//! Used by the icon extractor to find the **right** executable to query for an icon, given just the user-typed command string. The captured PID is
+//! unreliable for icon purposes:
 //!
 //! - Terminal sub-sessions on Windows are wrapped in `cmd /c <cmd>`, so the PID
 //!   belongs to `cmd.exe` — the user typed `pwsh` and expects pwsh's icon.
@@ -10,10 +9,8 @@
 //!   `gh.cmd`, npm-installed CLI shims) all show `cmd.exe`'s generic shell icon
 //!   if you ask the OS for the script file's icon directly.
 //!
-//! The resolution is intentionally a pure function of the command
-//! string + cwd + PATH/PATHEXT. No subprocess-spawning, no
-//! window-enumeration. Failures return `None` and the frontend falls
-//! back to its emoji glyph.
+//! The resolution is intentionally a pure function of the command string + cwd + PATH/PATHEXT. No subprocess-spawning, no window-enumeration.
+//! Failures return `None` and the frontend falls back to its emoji glyph.
 //!
 //! ## Resolution pipeline
 //!
@@ -30,20 +27,17 @@
 
 use std::path::{Path, PathBuf};
 
-/// End-to-end resolution: `command` string → absolute executable path
-/// suitable for icon extraction. `cwd` is used for relative-path
-/// resolution. Returns `None` if every step in the pipeline fails.
+/// End-to-end resolution: `command` string → absolute executable path suitable for icon extraction. `cwd` is used for relative-path resolution.
+/// Returns `None` if every step in the pipeline fails.
 #[must_use]
 pub fn resolve_command_executable(command: &str, cwd: &Path) -> Option<PathBuf> {
     resolve_command_executable_detailed(command, cwd).map(|(p, _)| p)
 }
 
-/// Like [`resolve_command_executable`] but also reports whether the
-/// returned path was reached via [`unwrap_script_wrapper`]. Callers
-/// that branch on "did we follow a script shim" (e.g.
+/// Like [`resolve_command_executable`] but also reports whether the returned path was reached via [`unwrap_script_wrapper`]. Callers that branch on
+/// "did we follow a script shim" (e.g.
 /// [`resolve_command_icon_path`], which only suppresses interpreter
-/// icons when the user *didn't* type the interpreter directly) use
-/// this richer return.
+/// icons when the user *didn't* type the interpreter directly) use this richer return.
 #[must_use]
 pub fn resolve_command_executable_detailed(command: &str, cwd: &Path) -> Option<(PathBuf, bool)> {
     let program = parse_program(command)?;
@@ -54,11 +48,8 @@ pub fn resolve_command_executable_detailed(command: &str, cwd: &Path) -> Option<
     Some((resolved, false))
 }
 
-/// Parse the leading program token from a shell-style command line.
-/// Honours `"…"` and `'…'` quoting (not backslash escapes — those
-/// are path separators on Windows). Skips leading shell-style env
-/// prefixes (`env`, `KEY=value`) so `env FOO=1 pwsh` returns
-/// `Some("pwsh")`.
+/// Parse the leading program token from a shell-style command line. Honours `"…"` and `'…'` quoting (not backslash escapes — those are path
+/// separators on Windows). Skips leading shell-style env prefixes (`env`, `KEY=value`) so `env FOO=1 pwsh` returns `Some("pwsh")`.
 #[must_use]
 pub fn parse_program(command: &str) -> Option<String> {
     for t in ShellTokens::new(command) {
@@ -98,9 +89,8 @@ fn existing_with_pathext(path: &Path) -> Option<PathBuf> {
         return Some(path.to_path_buf());
     }
     if cfg!(target_os = "windows") {
-        // Re-try with each PATHEXT suffix only if the path has no
-        // extension — `code` → `code.cmd`/`code.exe`, but
-        // `Code.exe` → `Code.exe.cmd` would be nonsense.
+        // Re-try with each PATHEXT suffix only if the path has no extension — `code` → `code.cmd`/`code.exe`, but `Code.exe` → `Code.exe.cmd` would
+        // be nonsense.
         if path.extension().is_none() {
             for ext in pathext_entries() {
                 let with_ext: PathBuf = format!("{}{}", path.display(), ext).into();
@@ -131,10 +121,8 @@ fn pathext_entries() -> Vec<String> {
         .unwrap_or_else(|| vec![".COM".into(), ".EXE".into(), ".BAT".into(), ".CMD".into()])
 }
 
-/// True for filenames that look like shell-script shims (rather than
-/// real binaries). When the OS is asked for the icon of one of these,
-/// it returns a generic "script" icon — useless for sidebar
-/// branding.
+/// True for filenames that look like shell-script shims (rather than real binaries). When the OS is asked for the icon of one of these, it returns a
+/// generic "script" icon — useless for sidebar branding.
 #[must_use]
 pub fn is_script_wrapper(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
@@ -143,17 +131,13 @@ pub fn is_script_wrapper(path: &Path) -> bool {
     matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat" | "ps1" | "sh")
 }
 
-/// If `path` is a script wrapper, peek inside (read the first ~8KB)
-/// and look for an executable reference. Returns the first one that
-/// resolves to an existing file.
+/// If `path` is a script wrapper, peek inside (read the first ~8KB) and look for an executable reference. Returns the first one that resolves to an
+/// existing file.
 ///
-/// The heuristic is intentionally simple: tokenise the script, look
-/// for tokens ending in `.exe` (Windows) or shebang interpreters
-/// (Unix), expand `%~dp0`-style references relative to the script's
-/// directory, and return the first existing match.
+/// The heuristic is intentionally simple: tokenise the script, look for tokens ending in `.exe` (Windows) or shebang interpreters (Unix), expand
+/// `%~dp0`-style references relative to the script's directory, and return the first existing match.
 ///
-/// On Unix, also handles `#!/usr/bin/env <prog>` shebangs by re-running
-/// `resolve_executable` against the named program.
+/// On Unix, also handles `#!/usr/bin/env <prog>` shebangs by re-running `resolve_executable` against the named program.
 #[must_use]
 pub fn unwrap_script_wrapper(path: &Path) -> Option<PathBuf> {
     if !is_script_wrapper(path) {
@@ -178,8 +162,7 @@ pub fn unwrap_script_wrapper(path: &Path) -> Option<PathBuf> {
         }
     }
 
-    // Look for `.exe` references in the body. Scan all whitespace-
-    // and quote-delimited tokens.
+    // Look for `.exe` references in the body. Scan all whitespace- and quote-delimited tokens.
     for token in script_tokens(&content) {
         let lower = token.to_ascii_lowercase();
         if !lower.ends_with(".exe") {
@@ -212,9 +195,8 @@ fn same_canonical(a: &Path, b: &Path) -> bool {
     matches!((ca, cb), (Some(x), Some(y)) if x == y)
 }
 
-/// Expand cmd.exe-style `%~dp0` (script directory) references in a
-/// path token. Other `%VAR%` substitutions are left intact and
-/// will simply fail the `is_file()` check downstream.
+/// Expand cmd.exe-style `%~dp0` (script directory) references in a path token. Other `%VAR%` substitutions are left intact and will simply fail the
+/// `is_file()` check downstream.
 fn expand_script_refs(token: &str, script_dir: &Path) -> PathBuf {
     let stripped = token.trim_matches(|c| c == '"' || c == '\'');
     let with_dp0 = stripped.replace("%~dp0", &format!("{}\\", script_dir.display()));
@@ -227,9 +209,7 @@ fn expand_script_refs(token: &str, script_dir: &Path) -> PathBuf {
     }
 }
 
-/// Tokenise script content into whitespace- and quote-delimited
-/// fragments. Less strict than `ShellTokens` because we're scavenging,
-/// not executing.
+/// Tokenise script content into whitespace- and quote-delimited fragments. Less strict than `ShellTokens` because we're scavenging, not executing.
 fn script_tokens(content: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -263,11 +243,8 @@ fn script_tokens(content: &str) -> Vec<String> {
     out
 }
 
-/// Quote-aware token iterator: splits on whitespace but keeps
-/// `"…"` and `'…'` runs together. Just enough for parsing the leading
-/// program of a user-supplied command line — not a full POSIX
-/// parser. Backslash escapes are not interpreted (they're path
-/// separators on Windows).
+/// Quote-aware token iterator: splits on whitespace but keeps `"…"` and `'…'` runs together. Just enough for parsing the leading program of a
+/// user-supplied command line — not a full POSIX parser. Backslash escapes are not interpreted (they're path separators on Windows).
 pub struct ShellTokens<'a> {
     input: &'a str,
     pos: usize,
@@ -319,8 +296,7 @@ impl Iterator for ShellTokens<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Icon-oriented helpers
+// --------------------------------------------------------------------------- Icon-oriented helpers
 // ---------------------------------------------------------------------------
 
 /// Like [`resolve_command_executable`] but tuned for icon extraction:
@@ -334,10 +310,8 @@ impl Iterator for ShellTokens<'_> {
 ///    npm/pip-installed-CLI case where the wrapper hands us back the
 ///    interpreter and its icon is useless branding for the actual tool.
 ///
-/// Direct user invocations (`pwsh`, `node`, `cmd`, `bash`, …) are
-/// **not** suppressed — the user explicitly named that runtime as
-/// their custom-process command, so showing its real icon is exactly
-/// what they want.
+/// Direct user invocations (`pwsh`, `node`, `cmd`, `bash`, …) are **not** suppressed — the user explicitly named that runtime as their custom-process
+/// command, so showing its real icon is exactly what they want.
 ///
 /// Returns `None` in three cases:
 /// 1. [`resolve_command_executable_detailed`] returned `None`.
@@ -347,9 +321,8 @@ impl Iterator for ShellTokens<'_> {
 #[must_use]
 pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
     let (resolved, was_unwrapped) = resolve_command_executable_detailed(command, cwd)?;
-    // Prefer a sibling main-app exe in the parent directory if the
-    // resolved path is a `bin/<stem>.exe` launcher. The launcher
-    // typically carries no icon resource — its parent does.
+    // Prefer a sibling main-app exe in the parent directory if the resolved path is a `bin/<stem>.exe` launcher. The launcher typically carries no
+    // icon resource — its parent does.
     let candidate = unwrap_bin_launcher_for_icon(&resolved).unwrap_or(resolved);
     let name = candidate.file_name()?.to_string_lossy().to_ascii_lowercase();
     if was_unwrapped && is_interpreter_basename(&name) {
@@ -358,20 +331,13 @@ pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
     Some(candidate)
 }
 
-/// Hard cap on how many entries [`unwrap_bin_launcher_for_icon`] will
-/// scan in the parent directory before giving up. Realistic app dirs
-/// have well under 100 top-level entries; the cap keeps a pathological
-/// case (a launcher installed under, say, a network share with
-/// thousands of sibling files) from blocking the icon resolution
-/// thread for seconds. 4096 is large enough that no legitimate vendor
-/// install layout will hit it.
+/// Hard cap on how many entries [`unwrap_bin_launcher_for_icon`] will scan in the parent directory before giving up. Realistic app dirs have well
+/// under 100 top-level entries; the cap keeps a pathological case (a launcher installed under, say, a network share with thousands of sibling files)
+/// from blocking the icon resolution thread for seconds. 4096 is large enough that no legitimate vendor install layout will hit it.
 const MAX_APP_DIR_SCAN_ENTRIES: usize = 4096;
 
-/// If `path` looks like `<root>/bin/<stem>.exe` (a CLI launcher under
-/// a `bin/` subdirectory), look for a sibling `<root>/<stem>.exe` and
-/// return it. This is the "VS Code launcher" pattern: `bin/code.exe`
-/// is a thin shim that exec's the main `..\Code.exe` (which has the
-/// branded icon resource).
+/// If `path` looks like `<root>/bin/<stem>.exe` (a CLI launcher under a `bin/` subdirectory), look for a sibling `<root>/<stem>.exe` and return it.
+/// This is the "VS Code launcher" pattern: `bin/code.exe` is a thin shim that exec's the main `..\Code.exe` (which has the branded icon resource).
 ///
 /// Match rules:
 /// * Parent directory must be named `bin` (case-insensitive). We intentionally
@@ -385,8 +351,7 @@ const MAX_APP_DIR_SCAN_ENTRIES: usize = 4096;
 ///   avoid loops when `bin/code.exe` happens to also exist as
 ///   `<root>/code.exe`).
 ///
-/// Returns `None` when the heuristic does not apply or the parent dir
-/// is unreadable / contains no matching exe within
+/// Returns `None` when the heuristic does not apply or the parent dir is unreadable / contains no matching exe within
 /// [`MAX_APP_DIR_SCAN_ENTRIES`] entries.
 #[must_use]
 fn unwrap_bin_launcher_for_icon(path: &Path) -> Option<PathBuf> {
@@ -424,16 +389,11 @@ fn unwrap_bin_launcher_for_icon(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// True if `basename_lc` is a known generic language-runtime/interpreter
-/// executable name (lower-cased, with extension as on disk). Matches
-/// the user-visible launcher binaries that appear *inside* npm/pip
-/// CLI shims after [`unwrap_script_wrapper`] follows them.
+/// True if `basename_lc` is a known generic language-runtime/interpreter executable name (lower-cased, with extension as on disk). Matches the
+/// user-visible launcher binaries that appear *inside* npm/pip CLI shims after [`unwrap_script_wrapper`] follows them.
 ///
-/// Kept conservative on purpose — being wrong here means we either
-/// (a) miss a useful icon (false positive: harmless, falls back to
-/// SVG glyph), or (b) show the runtime's icon for a third-party CLI
-/// (false negative: ugly but not broken). When in doubt, *include*
-/// the name here.
+/// Kept conservative on purpose — being wrong here means we either (a) miss a useful icon (false positive: harmless, falls back to SVG glyph), or (b)
+/// show the runtime's icon for a third-party CLI (false negative: ugly but not broken). When in doubt, *include* the name here.
 #[must_use]
 pub fn is_interpreter_basename(basename_lc: &str) -> bool {
     matches!(
@@ -460,11 +420,8 @@ pub fn is_interpreter_basename(basename_lc: &str) -> bool {
             | "java.exe"
             | "javaw"
             | "javaw.exe"
-            // Shell hosts — same logic: showing cmd's / pwsh's icon
-            // for `pwsh -c whatever` is worse than falling back to
-            // the SVG. PowerShell ships under two basenames:
-            // `pwsh` (PowerShell 7+, cross-platform) and
-            // `powershell` (Windows PowerShell 5.x, legacy).
+            // Shell hosts — same logic: showing cmd's / pwsh's icon for `pwsh -c whatever` is worse than falling back to the SVG. PowerShell ships
+            // under two basenames: `pwsh` (PowerShell 7+, cross-platform) and `powershell` (Windows PowerShell 5.x, legacy).
             | "cmd"
             | "cmd.exe"
             | "pwsh"
@@ -477,8 +434,7 @@ pub fn is_interpreter_basename(basename_lc: &str) -> bool {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Tests
+// --------------------------------------------------------------------------- Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -580,8 +536,7 @@ mod tests {
     #[test]
     fn unwrap_script_wrapper_handles_unix_shebang() {
         let tmp = tempfile::tempdir().unwrap();
-        // `target` is an existing executable that the shebang names.
-        // We just need a valid file.
+        // `target` is an existing executable that the shebang names. We just need a valid file.
         let target = tmp.path().join("python3");
         std::fs::write(&target, b"binary").unwrap();
         let script = tmp.path().join("foo.sh");
@@ -610,8 +565,7 @@ mod tests {
             "java",
             "cmd.exe",
             "bash",
-            // PowerShell hosts: showing pwsh's terminal icon for a
-            // user's `pwsh -c …` command would be misleading.
+            // PowerShell hosts: showing pwsh's terminal icon for a user's `pwsh -c …` command would be misleading.
             "pwsh",
             "pwsh.exe",
             "powershell",
@@ -649,11 +603,8 @@ mod tests {
         );
     }
 
-    /// Regression: when the user *directly* names an interpreter as
-    /// their custom-process command (e.g. typed `pwsh` in the
-    /// Settings UI), the icon resolver must return its real path —
-    /// the interpreter blacklist exists for unwrapped script shims,
-    /// not direct invocations.
+    /// Regression: when the user *directly* names an interpreter as their custom-process command (e.g. typed `pwsh` in the Settings UI), the icon
+    /// resolver must return its real path — the interpreter blacklist exists for unwrapped script shims, not direct invocations.
     #[test]
     fn resolve_command_icon_path_allows_direct_interpreter_invocation() {
         let dir = tempfile::tempdir().unwrap();
@@ -661,8 +612,7 @@ mod tests {
         let pwsh = dir.path().join("pwsh.exe");
         std::fs::File::create(&pwsh).unwrap();
 
-        // Direct path → no script unwrap → must NOT be filtered, even
-        // though `pwsh.exe` is in `is_interpreter_basename`.
+        // Direct path → no script unwrap → must NOT be filtered, even though `pwsh.exe` is in `is_interpreter_basename`.
         let icon = resolve_command_icon_path(pwsh.to_str().unwrap(), dir.path()).expect("direct interpreter invocation must yield its real exe path");
         assert_eq!(
             icon.canonicalize().unwrap(),
@@ -671,10 +621,8 @@ mod tests {
         );
     }
 
-    /// Regression: a wrapper that unwraps to a *non-interpreter* (the
-    /// VS Code `code.cmd` → `Code.exe` case) must still yield an
-    /// icon path. Pairs with [`unwrap_script_wrapper_finds_referenced_exe`]
-    /// but exercises the full icon-path filter.
+    /// Regression: a wrapper that unwraps to a *non-interpreter* (the VS Code `code.cmd` → `Code.exe` case) must still yield an icon path. Pairs with
+    /// [`unwrap_script_wrapper_finds_referenced_exe`] but exercises the full icon-path filter.
     #[test]
     fn resolve_command_icon_path_passes_unwrapped_non_interpreter_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -707,10 +655,8 @@ mod tests {
         assert!(was_unwrapped2, "shim invocations report unwrap=true");
     }
 
-    /// Regression: VS Code 1.69+ ships `bin/code.exe` as a thin CLI
-    /// launcher with no embedded icon resource; the branded icon
-    /// lives on the parent-dir `Code.exe`. The icon resolver must
-    /// walk that one level up.
+    /// Regression: VS Code 1.69+ ships `bin/code.exe` as a thin CLI launcher with no embedded icon resource; the branded icon lives on the parent-dir
+    /// `Code.exe`. The icon resolver must walk that one level up.
     #[test]
     fn resolve_command_icon_path_walks_up_from_bin_launcher() {
         let dir = tempfile::tempdir().unwrap();
@@ -718,8 +664,7 @@ mod tests {
         std::fs::create_dir(&bin).unwrap();
         let launcher = bin.join("code.exe");
         std::fs::write(&launcher, b"thin launcher").unwrap();
-        // Note: capitalisation differs (Code.exe vs code.exe) — the
-        // walk-up is case-insensitive on stem comparison.
+        // Note: capitalisation differs (Code.exe vs code.exe) — the walk-up is case-insensitive on stem comparison.
         let main_exe = dir.path().join("Code.exe");
         std::fs::write(&main_exe, b"branded ui exe").unwrap();
 
@@ -731,8 +676,7 @@ mod tests {
         );
     }
 
-    /// Negative: a `bin/foo.exe` whose parent dir contains no
-    /// matching exe should resolve to itself (no spurious walk-up).
+    /// Negative: a `bin/foo.exe` whose parent dir contains no matching exe should resolve to itself (no spurious walk-up).
     #[test]
     fn resolve_command_icon_path_keeps_bin_launcher_when_no_parent_match() {
         let dir = tempfile::tempdir().unwrap();
@@ -751,9 +695,8 @@ mod tests {
         );
     }
 
-    /// Negative: do not match arbitrary subdir names — only literal
-    /// `bin`. Matching `cli/code.exe` could regress fine cases (e.g.
-    /// the `cli` exe really is the user-facing binary).
+    /// Negative: do not match arbitrary subdir names — only literal `bin`. Matching `cli/code.exe` could regress fine cases (e.g. the `cli` exe
+    /// really is the user-facing binary).
     #[test]
     fn resolve_command_icon_path_does_not_walk_up_from_non_bin_subdir() {
         let dir = tempfile::tempdir().unwrap();

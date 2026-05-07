@@ -2,26 +2,17 @@
 //!
 //! ## Context
 //!
-//! In Tauri v2, every command callable from the WebView — including
-//! application-defined commands — is gated by a capability declaration that
-//! references a permission file (see
-//! <https://v2.tauri.app/security/permissions/>). Adding a new
-//! `#[tauri::command]` without registering the matching permission in
-//! `capabilities/main.json` causes the `invoke()` call to be rejected at
-//! runtime with no compile-time warning. We have already paid that bill
-//! once during Phase 3 development; this test exists to keep paying down
-//! the debt by failing loudly the next time.
+//! In Tauri v2, every command callable from the WebView — including application-defined commands — is gated by a capability declaration that
+//! references a permission file (see <https://v2.tauri.app/security/permissions/>). Adding a new `#[tauri::command]` without registering the matching
+//! permission in `capabilities/main.json` causes the `invoke()` call to be rejected at runtime with no compile-time warning. We have already paid
+//! that bill once during Phase 3 development; this test exists to keep paying down the debt by failing loudly the next time.
 //!
 //! ## What we test (and what we don't)
 //!
-//! Ideally we would build a `tauri::test::mock_app()` with a stripped-down
-//! capability that *omits* `allow-ping`, invoke `ping`, and assert the
-//! invocation is rejected. In Tauri 2.x the public `tauri::test` surface
-//! does not yet expose a way to override the embedded capability set per
-//! test build (the capability JSON is baked into the binary via
-//! `tauri::generate_context!` at compile time). Rather than ship a fake
-//! test that looks meaningful but isn't, we settle for a structural
-//! assertion on the checked-in capability file:
+//! Ideally we would build a `tauri::test::mock_app()` with a stripped-down capability that *omits* `allow-ping`, invoke `ping`, and assert the
+//! invocation is rejected. In Tauri 2.x the public `tauri::test` surface does not yet expose a way to override the embedded capability set per test
+//! build (the capability JSON is baked into the binary via `tauri::generate_context!` at compile time). Rather than ship a fake test that looks
+//! meaningful but isn't, we settle for a structural assertion on the checked-in capability file:
 //!
 //! * `core:default` is present (the catch-all for built-in core APIs).
 //! * `allow-ping` is present (the permission that gates the `ping` application
@@ -29,12 +20,10 @@
 //! * The corresponding `permissions/allow-ping.toml` file exists and declares
 //!   `commands.allow = ["ping"]`.
 //!
-//! Together these prove (a) the production build will accept `ping`
-//! invocations, and (b) deleting either the capability entry or the
-//! permission file fails CI rather than silently breaking the WebView.
+//! Together these prove (a) the production build will accept `ping` invocations, and (b) deleting either the capability entry or the permission file
+//! fails CI rather than silently breaking the WebView.
 //!
-//! When `tauri::test` grows ergonomic capability overrides, replace the
-//! structural assertions below with a true negative round-trip. Tracked
+//! When `tauri::test` grows ergonomic capability overrides, replace the structural assertions below with a true negative round-trip. Tracked
 //! informally as a Phase-3 follow-up.
 
 use std::path::PathBuf;
@@ -148,8 +137,7 @@ fn allow_ping_permission_file_declares_ping_command() {
     let path = manifest_dir().join("permissions").join("allow-ping.toml");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
 
-    // Cheap structural check — avoids pulling toml as a dev-dependency just
-    // for this test. We assert the load-bearing tokens are present.
+    // Cheap structural check — avoids pulling toml as a dev-dependency just for this test. We assert the load-bearing tokens are present.
     assert!(
         raw.contains("identifier = \"allow-ping\""),
         "permission identifier must remain `allow-ping`",
@@ -229,9 +217,8 @@ fn allow_worktrees_list_permission_file_declares_worktrees_command() {
 
 #[test]
 fn main_capability_grants_workspace_validate() {
-    // Covered by the consolidated identifier check in
-    // `main_capability_allows_core_default_and_ping`; this test asserts the
-    // permission file independently.
+    // Covered by the consolidated identifier check in `main_capability_allows_core_default_and_ping`; this test asserts the permission file
+    // independently.
     let path = manifest_dir().join("permissions").join("allow-workspace-validate.toml");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
@@ -246,8 +233,7 @@ fn main_capability_grants_workspace_validate() {
 
 #[test]
 fn allow_workspace_validate_permission_file_declares_command() {
-    // Same intent as above test; kept distinct so a regression in either
-    // file/identifier is reported with a precise failure name.
+    // Same intent as above test; kept distinct so a regression in either file/identifier is reported with a precise failure name.
     let path = manifest_dir().join("permissions").join("allow-workspace-validate.toml");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(raw.contains("workspace_validate"));
