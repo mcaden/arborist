@@ -12,13 +12,15 @@ use std::time::Duration;
 
 use arborist_lib::app_launcher::{AppPool, AppSpawner, RealAppSpawner};
 use arborist_lib::commands::session::{session_close_impl, session_create_impl, AppContext};
-use arborist_lib::commands::subsession::{close_for_parent_impl, restore_all_sub_sessions_impl, subsession_create_impl, subsession_relaunch_impl};
+use arborist_lib::commands::subsession::{
+    close_for_parent_impl, restore_all_sub_sessions_impl, subsession_close_impl, subsession_create_impl, subsession_relaunch_impl,
+};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
-    CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
-    SessionId, SessionStatus, SubSessionCreateArgs, SubSessionStatus, Tool,
+    ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets,
+    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeTab, WorktreeTabId,
 };
 use arborist_lib::window_focus::RecordingFocuser;
 use portable_pty::{ExitStatus, PtySize};
@@ -664,4 +666,91 @@ async fn relaunch_refreshes_composed_command_from_current_def() {
     assert_eq!(persisted[0].id, sub.id);
     assert_eq!(persisted[0].composed_command, "bash -i");
     assert_eq!(persisted[0].label, "Bash");
+}
+
+// --------------------------------------------------------------------------- subsession_close active_child_id cleanup + best-effort persistence
+// (PR #65 review-7 + review-8) ---------------------------------------------------------------------------
+
+/// Helper: insert a worktree tab with `active_child_id = child` directly into config (bypasses `worktree_tab_open_impl` to avoid a SubAppContext on
+/// the test side and keep the test focused on the close-path invariant). Returns the synthesised tab id.
+fn seed_tab_with_active_child(h: &Harness, path: &Path, child: ChildId) -> WorktreeTabId {
+    let tab_id = WorktreeTabId::new();
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.worktree_tabs.push(WorktreeTab {
+                id: tab_id,
+                path: path.to_path_buf(),
+                name: "wt".into(),
+                branch: None,
+                label: "wt".into(),
+                tab_index: 0,
+                active_child_id: Some(child),
+            });
+            cfg.worktree_tab_order.push(tab_id);
+            true
+        })
+        .expect("seed worktree tab");
+    tab_id
+}
+
+/// Normal-path regression for PR #65 review-7: closing a sub-session must clear any worktree tab's `active_child_id` that points at the closing
+/// sub. Mirrors the equivalent test for top-level sessions in `tests/session_lifecycle_fake.rs`.
+#[tokio::test]
+async fn subsession_close_clears_worktree_tab_active_child_id_pointing_at_closed_subsession() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+    let sub = create_sub(&h, parent).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    let tab_id = seed_tab_with_active_child(&h, h.worktree.path(), ChildId::SubSession(sub.id));
+
+    // Close via the public command path.
+    subsession_close_impl(&h.ctx, Arc::clone(&h.sub_ctx), sub.id, SubSessionCloseIntent::TabOnly)
+        .await
+        .expect("close ok");
+
+    let cfg = h.ctx.store().load_config();
+    let tab = cfg
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .expect("tab still present after sub close");
+    assert_eq!(
+        tab.active_child_id, None,
+        "active_child_id pointing at closed sub-session must be cleared"
+    );
+    assert!(
+        cfg.last_open_sub_sessions.iter().all(|r| r.id != sub.id),
+        "persisted last_open_sub_sessions must drop the closed sub"
+    );
+}
+
+/// PR #65 review-8 fix: if `save_config_with` fails after the kill + in-memory removal, `subsession_close_impl` must still return `Ok` because the
+/// close has already happened (PTY killed, runtime gone, in-memory store cleared). Returning `Err` would surface "close failed" for an actually-
+/// completed close AND make retry impossible (sub no longer exists in the store, so a retry would NotFound). The persistence anomaly is the
+/// accepted trade-off and is documented in the swallow site's comment.
+#[tokio::test]
+async fn subsession_close_returns_ok_when_config_cleanup_fails_after_runtime_teardown() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+    let sub = create_sub(&h, parent).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    // Force every subsequent `write_atomic` to fail by replacing the config file with a directory of the same name. Same trick as
+    // `create_rolls_back_inmemory_on_persist_failure` above (line ~518) — `tmp.persist()` cannot rename a NamedTempFile over a directory on either
+    // OS, so the post-teardown `save_config_with` will trip Err inside the closure path.
+    let cfg_path = h.config_dir.path().join("config.json");
+    std::fs::remove_file(&cfg_path).ok();
+    std::fs::create_dir(&cfg_path).expect("replace config.json with dir");
+
+    // Close must still succeed — the kill + in-memory removal already happened, and the documented best-effort cleanup contract says we log+continue
+    // rather than make the close non-retryable for the user.
+    subsession_close_impl(&h.ctx, Arc::clone(&h.sub_ctx), sub.id, SubSessionCloseIntent::TabOnly)
+        .await
+        .expect("close must return Ok despite config cleanup failure");
+
+    // Runtime teardown actually happened: in-memory store is empty for this sub, and the PTY child is gone from the pool.
+    assert!(h.sub_ctx.store.get(&sub.id).is_none(), "in-memory store must drop the sub");
+    assert!(!h.sub_pool.contains(&sub.id), "PTY pool must drop the sub");
 }

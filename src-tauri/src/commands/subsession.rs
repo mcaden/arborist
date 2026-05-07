@@ -197,18 +197,31 @@ pub async fn subsession_close_impl(
         },
     }
     sub_ctx.store.remove(&id);
-    // Atomic config cleanup: drop the sub-session from `last_open_sub_sessions` AND clear any worktree-tab `active_child_id` referencing it.
-    // Combined into one `save_config_with` to take the write lock once. Errors propagate (intentional behaviour change vs. the old
-    // `let _ = remove_last_open_sub_session(...)` swallow): a config-write failure now fails the close so the frontend retains the tab and the user
-    // can retry, rather than producing a "closed in memory but visible after restart" anomaly. The in-memory store removal above is reversible by
-    // re-issuing `subsession_create`; the persisted-state divergence the old swallow created is not.
-    ctx.store()
-        .save_config_with(PartialAppConfig::default(), |cfg| {
-            cfg.last_open_sub_sessions.retain(|r| r.id != id);
-            clear_active_child_in_config(cfg, ChildId::SubSession(id));
-            true
-        })
-        .map_err(AppError::from)?;
+    // Best-effort config cleanup AFTER the irreversible kill + in-memory removal above. We *log and continue* instead of propagating, by design:
+    //
+    //   * Returning `Err` here would surface "close failed" to the frontend even though the sub-session is already gone (PTY killed, runtime
+    //     dropped). Worse, the close is non-retryable from the user's perspective — re-issuing `subsession_close` would now hit a NotFound because
+    //     the in-memory store no longer contains the record.
+    //   * Round-7's `?` propagation tried to prevent a "closed in memory but visible after restart" anomaly. That reasoning was incomplete:
+    //     `restore_all_sub_sessions_impl`'s `forget_sub_session` only fires for *orphan* / *closing-parent* records, not for sub-sessions whose
+    //     parent session is still present. So if this write fails AND the parent is alive, the sub *can* genuinely re-spawn on next launch.
+    //     That's a real failure mode of best-effort persistence — we accept it because the alternative (Err on a completed close) is worse UX
+    //     and equally non-recoverable.
+    //   * Stale `WorktreeTab.active_child_id` pointers can likewise survive on write failure; they're cleaned up the next time the tab's active
+    //     child changes (or by future restore-time reconciliation, which is not implemented today).
+    if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
+        cfg.last_open_sub_sessions.retain(|r| r.id != id);
+        clear_active_child_in_config(cfg, ChildId::SubSession(id));
+        true
+    }) {
+        warn!(
+            sub_session_id = %id,
+            error = %e,
+            "subsession_close: best-effort config cleanup failed; close still completed (in-memory state cleared, kill complete). \
+             Stale `last_open_sub_sessions` row may re-spawn on next launch if parent session is still alive; stale `active_child_id` \
+             may persist on a worktree tab until the next focus change.",
+        );
+    }
     Ok(())
 }
 

@@ -319,7 +319,9 @@ pub fn worktree_tab_set_active_child_impl(
 ) -> Result<(), AppError> {
     let _switch = session::acquire_switch_read(ctx)?;
 
-    // Validate the child belongs to this worktree tab (if applicable). Done before the write lock so we can return descriptive errors.
+    // Pre-check: validate child existence/belonging *outside* the config write lock so we can return descriptive errors fast and avoid even loading
+    // the config-write path when the call is obviously invalid (wrong worktree, missing child). Re-validation inside the closure (below) closes the
+    // TOCTOU race a concurrent close opens here, so this pre-check is purely a UX/efficiency optimisation — never the sole defence.
     if let Some(ref child) = args.child_id {
         let cfg = ctx.store().load_config();
         let tab = cfg
@@ -329,51 +331,92 @@ pub fn worktree_tab_set_active_child_impl(
             .ok_or_else(|| AppError::new("NotFound", format!("worktree tab {} not found", args.id)))?;
         let tab_path = tab.path.clone();
         let sessions = ctx.store().load_sessions();
-        match child {
-            ChildId::Session(sid) => {
-                let session = sessions
-                    .get(sid)
-                    .ok_or_else(|| AppError::new("NotFound", format!("session {sid} not found")))?;
-                if session.worktree_path != tab_path {
-                    return Err(AppError::new(
-                        "InvalidArgument",
-                        format!("session {sid} worktree path does not match worktree tab {}", args.id),
-                    ));
-                }
-            }
-            ChildId::SubSession(ssid) => {
-                // Resolve the sub-session in the live in-memory store, then verify its parent session belongs to this worktree.
-                let sub = sub_ctx
-                    .store
-                    .get(ssid)
-                    .ok_or_else(|| AppError::new("NotFound", format!("sub-session {ssid} not found")))?;
-                let parent = sessions
-                    .get(&sub.parent_session_id)
-                    .ok_or_else(|| AppError::new("NotFound", format!("sub-session {ssid} parent session not found")))?;
-                if parent.worktree_path != tab_path {
-                    return Err(AppError::new(
-                        "InvalidArgument",
-                        format!("sub-session {ssid} parent worktree path does not match worktree tab {}", args.id),
-                    ));
-                }
-            }
-        }
+        validate_active_child_belongs_to_tab(args.id, &tab_path, &sessions, &sub_ctx.store, *child)?;
     }
 
+    // Mutation under the config write lock. We re-validate the child inside the closure to close the TOCTOU race the pre-check above leaves open: a
+    // concurrent `session_close_locked` / `subsession_close_impl` can remove the child between the pre-check and here. Without this re-check we'd
+    // happily write `tab.active_child_id = Some(stale_id)` after the close path's `clear_active_child_in_config` ran, leaving a dangling pointer
+    // persisted to disk (PR #65 review-8). The re-validation runs against `load_sessions()` *while we hold `ConfigStore::write_lock`*, so no
+    // production writer to `sessions.json` can race us; sub-session removal in `SubSessionStore` is independent of `write_lock`, so a tiny window
+    // remains for sub-session children where `sub_ctx.store.remove` happens concurrently — that residual race is closed by the matching
+    // `clear_active_child_in_config` call inside `subsession_close_impl`'s own `save_config_with`, which is serialised by `write_lock` against ours.
+    let mut validation_error: Option<AppError> = None;
     let mut found = false;
     ctx.store()
         .save_config_with(PartialAppConfig::default(), |cfg| {
+            let Some(tab) = cfg.worktree_tabs.iter().find(|t| t.id == args.id) else {
+                // Tab was removed between the pre-check and here. Leave `found = false` and surface NotFound below.
+                return false;
+            };
+            let tab_path = tab.path.clone();
+
+            if let Some(child) = args.child_id {
+                let sessions = ctx.store().load_sessions();
+                if let Err(err) = validate_active_child_belongs_to_tab(args.id, &tab_path, &sessions, &sub_ctx.store, child) {
+                    validation_error = Some(err);
+                    return false;
+                }
+            }
+
+            // Validation passed — apply the mutation.
             if let Some(tab) = cfg.worktree_tabs.iter_mut().find(|t| t.id == args.id) {
                 tab.active_child_id = args.child_id;
                 found = true;
-                true
-            } else {
-                false
+                return true;
             }
+            false
         })
         .map_err(AppError::from)?;
+    if let Some(err) = validation_error {
+        return Err(err);
+    }
     if !found {
         return Err(AppError::new("NotFound", format!("worktree tab {} not found", args.id)));
+    }
+    Ok(())
+}
+
+/// Validation helper shared by [`worktree_tab_set_active_child_impl`]'s pre-check and its in-closure re-check (PR #65 review-8). Centralising the
+/// logic here means the two paths cannot drift out of sync — adding a new validation rule (e.g. checking sub-session status) only has to be done in
+/// one place.
+///
+/// Returns `Ok(())` if `child` exists and belongs to the worktree at `tab_path`. Error codes preserve the pre-existing distinctions:
+/// - `NotFound` when the child (or its parent, for sub-sessions) is missing from the live store
+/// - `InvalidArgument` when the child exists but its worktree path doesn't match
+fn validate_active_child_belongs_to_tab(
+    tab_id: WorktreeTabId,
+    tab_path: &std::path::Path,
+    sessions: &std::collections::BTreeMap<SessionId, crate::types::Session>,
+    sub_store: &crate::sub_sessions::SubSessionStore,
+    child: ChildId,
+) -> Result<(), AppError> {
+    match child {
+        ChildId::Session(sid) => {
+            let session = sessions
+                .get(&sid)
+                .ok_or_else(|| AppError::new("NotFound", format!("session {sid} not found")))?;
+            if session.worktree_path != tab_path {
+                return Err(AppError::new(
+                    "InvalidArgument",
+                    format!("session {sid} worktree path does not match worktree tab {tab_id}"),
+                ));
+            }
+        }
+        ChildId::SubSession(ssid) => {
+            let sub = sub_store
+                .get(&ssid)
+                .ok_or_else(|| AppError::new("NotFound", format!("sub-session {ssid} not found")))?;
+            let parent = sessions
+                .get(&sub.parent_session_id)
+                .ok_or_else(|| AppError::new("NotFound", format!("sub-session {ssid} parent session not found")))?;
+            if parent.worktree_path != tab_path {
+                return Err(AppError::new(
+                    "InvalidArgument",
+                    format!("sub-session {ssid} parent worktree path does not match worktree tab {tab_id}"),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -574,5 +617,159 @@ mod tests {
         assert_eq!(cfg.worktree_tabs[0].active_child_id, None);
         assert_eq!(cfg.worktree_tabs[1].active_child_id, None);
         assert_eq!(cfg.worktree_tabs[2].active_child_id, None);
+    }
+
+    // ---- validate_active_child_belongs_to_tab (PR #65 review-8) ----
+
+    fn session_with(id: crate::types::SessionId, worktree: &str) -> crate::types::Session {
+        crate::types::Session {
+            id,
+            tool: crate::types::Tool::Claude,
+            worktree_path: PathBuf::from(worktree),
+            worktree_name: "wt".into(),
+            label: id.to_string(),
+            instruction_set_id: None,
+            composed_command: "echo".into(),
+            status: crate::types::SessionStatus::Running,
+            pid: None,
+            created_at: 0,
+            tab_index: 0,
+            temp_files: Vec::new(),
+            ai_session_id: None,
+        }
+    }
+
+    fn sub_with(id: crate::types::SubSessionId, parent: crate::types::SessionId) -> crate::types::SubSession {
+        crate::types::SubSession {
+            id,
+            parent_session_id: parent,
+            def_id: crate::types::CustomProcessDefId("def".into()),
+            kind: crate::types::CustomProcessKind::Terminal,
+            label: "sub".into(),
+            status: crate::types::SubSessionStatus::Running,
+            pid: None,
+            composed_command: "echo".into(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn validate_session_child_under_matching_tab_path_succeeds() {
+        let tab_id = WorktreeTabId::new();
+        let sid = crate::types::SessionId::new();
+        let mut sessions = std::collections::BTreeMap::new();
+        sessions.insert(sid, session_with(sid, "/repo/wt"));
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+
+        validate_active_child_belongs_to_tab(tab_id, std::path::Path::new("/repo/wt"), &sessions, &sub_store, ChildId::Session(sid))
+            .expect("session child under matching tab path is valid");
+    }
+
+    #[test]
+    fn validate_missing_session_returns_not_found() {
+        let tab_id = WorktreeTabId::new();
+        let sid = crate::types::SessionId::new();
+        let sessions = std::collections::BTreeMap::new();
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+
+        let err = validate_active_child_belongs_to_tab(tab_id, std::path::Path::new("/repo/wt"), &sessions, &sub_store, ChildId::Session(sid))
+            .expect_err("missing session must error");
+        assert_eq!(err.code, "NotFound");
+    }
+
+    #[test]
+    fn validate_session_under_different_worktree_returns_invalid_argument() {
+        // Preserve the pre-refactor distinction: missing → NotFound, mismatched path → InvalidArgument. Frontend / tests may differentiate on these.
+        let tab_id = WorktreeTabId::new();
+        let sid = crate::types::SessionId::new();
+        let mut sessions = std::collections::BTreeMap::new();
+        sessions.insert(sid, session_with(sid, "/repo/other"));
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+
+        let err = validate_active_child_belongs_to_tab(tab_id, std::path::Path::new("/repo/wt"), &sessions, &sub_store, ChildId::Session(sid))
+            .expect_err("path mismatch must error");
+        assert_eq!(err.code, "InvalidArgument");
+    }
+
+    #[test]
+    fn validate_subsession_with_matching_parent_path_succeeds() {
+        let tab_id = WorktreeTabId::new();
+        let parent_id = crate::types::SessionId::new();
+        let sub_id = crate::types::SubSessionId::new();
+        let mut sessions = std::collections::BTreeMap::new();
+        sessions.insert(parent_id, session_with(parent_id, "/repo/wt"));
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+        sub_store.insert(sub_with(sub_id, parent_id)).unwrap();
+
+        validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::SubSession(sub_id),
+        )
+        .expect("sub-session under matching parent worktree is valid");
+    }
+
+    #[test]
+    fn validate_missing_subsession_returns_not_found() {
+        let tab_id = WorktreeTabId::new();
+        let sub_id = crate::types::SubSessionId::new();
+        let sessions = std::collections::BTreeMap::new();
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+
+        let err = validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::SubSession(sub_id),
+        )
+        .expect_err("missing sub must error");
+        assert_eq!(err.code, "NotFound");
+    }
+
+    #[test]
+    fn validate_subsession_with_missing_parent_returns_not_found() {
+        // Sub-session present in store but its parent session has been removed: the dangling sub is itself a bug elsewhere, but `set_active_child`
+        // must still reject it as `NotFound` on the parent rather than panic or report something misleading.
+        let tab_id = WorktreeTabId::new();
+        let parent_id = crate::types::SessionId::new();
+        let sub_id = crate::types::SubSessionId::new();
+        let sessions = std::collections::BTreeMap::new();
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+        sub_store.insert(sub_with(sub_id, parent_id)).unwrap();
+
+        let err = validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::SubSession(sub_id),
+        )
+        .expect_err("missing parent must error");
+        assert_eq!(err.code, "NotFound");
+        assert!(err.message.contains("parent"), "error must mention parent: {}", err.message);
+    }
+
+    #[test]
+    fn validate_subsession_under_different_parent_worktree_returns_invalid_argument() {
+        let tab_id = WorktreeTabId::new();
+        let parent_id = crate::types::SessionId::new();
+        let sub_id = crate::types::SubSessionId::new();
+        let mut sessions = std::collections::BTreeMap::new();
+        sessions.insert(parent_id, session_with(parent_id, "/repo/other"));
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+        sub_store.insert(sub_with(sub_id, parent_id)).unwrap();
+
+        let err = validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::SubSession(sub_id),
+        )
+        .expect_err("parent path mismatch must error");
+        assert_eq!(err.code, "InvalidArgument");
     }
 }
