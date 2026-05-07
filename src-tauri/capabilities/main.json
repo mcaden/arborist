@@ -16,6 +16,7 @@
     "allow-worktree-create",
     "allow-subsession",
     "allow-subsession-icon",
+    "allow-worktree-tab",
     "dialog:allow-open"
   ]
 }

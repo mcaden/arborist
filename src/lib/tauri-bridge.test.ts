@@ -166,6 +166,9 @@ describe('configGet', () => {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
     };
     invokeMock.mockResolvedValueOnce(cfg);
 
@@ -193,6 +196,9 @@ describe('configSet', () => {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
     };
     invokeMock.mockResolvedValueOnce(merged);
     const patch: PartialAppConfig = { prelaunchCommands: ['nvm use'] };
@@ -328,6 +334,9 @@ describe('workspaceSwitch', () => {
     activeSessionId: 'sid-restored',
     customProcesses: [],
     lastOpenSubSessions: [],
+    worktreeTabs: [],
+    worktreeTabOrder: [],
+    activeWorktreeTabId: null,
   };
   const restoredSession: SessionView = {
     id: 'sid-restored',

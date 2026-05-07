@@ -121,6 +121,32 @@ impl std::fmt::Display for InstructionSetId {
     }
 }
 
+/// Stable identifier for a [`WorktreeTab`]. Backed by a UUID v4. Distinct from [`SessionId`] / [`SubSessionId`] at the type level to prevent
+/// accidental cross-use.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct WorktreeTabId(pub Uuid);
+
+impl WorktreeTabId {
+    /// Generate a fresh random worktree-tab ID.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for WorktreeTabId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for WorktreeTabId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 // --------------------------------------------------------------------------- Enums
 // ---------------------------------------------------------------------------
 
@@ -256,6 +282,57 @@ impl From<&Session> for SessionView {
     }
 }
 
+// --------------------------------------------------------------------------- Worktree tab (parent of sessions + sub-sessions in the sidebar)
+
+/// A discriminated child identifier that can reference either a full AI-agent [`Session`] or a custom-process [`SubSession`] — the two kinds of
+/// children that live under a [`WorktreeTab`].
+///
+/// MIRROR: `src/types/arborist.ts::ChildId`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(tag = "kind", content = "id", rename_all = "camelCase")]
+pub enum ChildId {
+    Session(SessionId),
+    SubSession(SubSessionId),
+}
+
+impl std::fmt::Display for ChildId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Session(id) => write!(f, "session:{id}"),
+            Self::SubSession(id) => write!(f, "subsession:{id}"),
+        }
+    }
+}
+
+/// First-class worktree tab record. In the sidebar hierarchy a worktree tab is the **parent**; AI-agent sessions and custom-process sub-sessions
+/// are its children (grouped by matching `worktree_path`).
+///
+/// Persisted in [`AppConfig::worktree_tabs`] (introduced in `configVersion = 5`). The worktree tab–session link is derived at runtime by matching
+/// `WorktreeTab.path == Session.worktree_path`; there is no stored foreign key on `Session`.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreeTab`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeTab {
+    pub id: WorktreeTabId,
+    /// Canonical worktree path on disk.
+    pub path: PathBuf,
+    /// Display name — typically the directory basename.
+    pub name: String,
+    /// Git branch checked out in this worktree, resolved best-effort at creation time. May be `None` for detached HEAD or resolution failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Sidebar label, deduplicated across worktree tabs (for the rare case of two worktrees with the same basename in different repos).
+    pub label: String,
+    /// Top-level sidebar position. Authoritative order lives in `AppConfig.worktree_tab_order`; this field is a convenience for serialization
+    /// round-trips and sorting.
+    pub tab_index: usize,
+    /// Last-focused child (agent session or custom-process sub-session). When `None`, focusing the tab shows the worktree dashboard placeholder.
+    /// Set by `worktree_tab_set_active_child`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_child_id: Option<ChildId>,
+}
+
 // --------------------------------------------------------------------------- Worktree discovery
 // ---------------------------------------------------------------------------
 
@@ -305,11 +382,11 @@ pub struct DefaultInstructionSets {
 /// * `2` — added `active_session_id` (Phase 7).
 /// * `3` — added `workspace_root` (single-workspace model, Roadmap §1).
 /// * `4` — added `ai_launch_commands` (per-agent CLI launch override),
-///   `custom_processes`, and `last_open_sub_sessions` (context-menu / sub-tab
-///   feature). Migration seeds the built-in custom-process defs (`shell`,
-///   `open-folder`, `vscode`) additively — only IDs not already present are
-///   inserted, never overwriting a user-edited def.
-pub const CONFIG_VERSION_CURRENT: u32 = 4;
+///   `custom_processes`, and `last_open_sub_sessions` (context-menu / sub-tab feature). Migration seeds the built-in custom-process defs (`shell`,
+///   `open-folder`, `vscode`) additively — only IDs not already present are inserted, never overwriting a user-edited def.
+/// * `5` — added `worktree_tabs`, `worktree_tab_order`, and `active_worktree_tab_id` (Issue #44: worktree-as-parent-tab). Migration synthesises
+///   one [`WorktreeTab`] per unique canonical `Session.worktree_path` in `sessions.json`, preserving tab order.
+pub const CONFIG_VERSION_CURRENT: u32 = 5;
 
 /// Per-agent CLI launch command override. Each field is a verbatim shell snippet (e.g. `"npx claude --model sonnet"`) interpolated into the composed
 /// command in place of the bare program token. Empty string means "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
@@ -364,6 +441,21 @@ pub struct AppConfig {
     /// user click. Records whose `defId` no longer exists in `custom_processes` are silently dropped at restore time.
     #[serde(default)]
     pub last_open_sub_sessions: Vec<SubSessionRecord>,
+    /// First-class worktree tab records. Each represents a top-level
+    /// sidebar tab; AI sessions and custom-process sub-sessions group
+    /// underneath by matching `WorktreeTab.path == Session.worktree_path`.
+    /// Added in `configVersion = 5` (Issue #44).
+    #[serde(default)]
+    pub worktree_tabs: Vec<WorktreeTab>,
+    /// Top-level sidebar ordering over worktree tab IDs. Authoritative
+    /// order for the sidebar; individual `WorktreeTab.tab_index` fields
+    /// are secondary / derived. Added in `configVersion = 5`.
+    #[serde(default)]
+    pub worktree_tab_order: Vec<WorktreeTabId>,
+    /// The most recently focused worktree tab. Drives which parent tab
+    /// is highlighted on launch. Added in `configVersion = 5`.
+    #[serde(default)]
+    pub active_worktree_tab_id: Option<WorktreeTabId>,
 }
 
 impl Default for AppConfig {
@@ -382,6 +474,9 @@ impl Default for AppConfig {
             active_session_id: None,
             custom_processes: Vec::new(),
             last_open_sub_sessions: Vec::new(),
+            worktree_tabs: Vec::new(),
+            worktree_tab_order: Vec::new(),
+            active_worktree_tab_id: None,
         }
     }
 }
@@ -443,6 +538,15 @@ pub struct PartialAppConfig {
     /// Replace the entire `lastOpenSubSessions` list. Absence leaves it untouched.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_open_sub_sessions: Option<Vec<SubSessionRecord>>,
+    /// Replace the worktree tabs list. Absence leaves it untouched.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub worktree_tabs: Option<Vec<WorktreeTab>>,
+    /// Replace the worktree tab order. Absence leaves it untouched.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub worktree_tab_order: Option<Vec<WorktreeTabId>>,
+    /// Tri-state: absent → leave alone; `null` → clear; `"<uuid>"` → set.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
+    pub active_worktree_tab_id: Option<Option<WorktreeTabId>>,
 }
 
 /// serde adapter for `Option<Option<T>>`: distinguishes "absent" from "present-but-null". JSON has no native `Some(None)`, so we serialise
@@ -793,6 +897,75 @@ pub struct SubSessionExitedEvent {
 #[serde(rename_all = "camelCase")]
 pub struct SubSessionRestoredEvent {
     pub sub_session: SubSession,
+}
+
+// ---------------------------------------------------------------------------
+// Worktree tab command argument shapes (Issue #44)
+// ---------------------------------------------------------------------------
+
+/// Arguments for `worktree_tab_open`. The backend canonicalises `path`,
+/// checks it exists on disk, and returns an existing tab if one matches
+/// the canonical path (idempotent) or creates a new one.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabOpenArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeTabOpenArgs {
+    pub path: String,
+}
+
+/// Arguments for `worktree_tab_close`. Cascades close to all child
+/// sessions and sub-sessions under the tab.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabCloseArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeTabCloseArgs {
+    pub id: WorktreeTabId,
+}
+
+/// Arguments for `worktree_tab_focus`.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabFocusArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeTabFocusArgs {
+    pub id: WorktreeTabId,
+}
+
+/// Arguments for `worktree_tab_reorder`. The full ordered list replaces
+/// the persisted `worktree_tab_order` and updates each tab's `tab_index`.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabReorderArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeTabReorderArgs {
+    pub ids: Vec<WorktreeTabId>,
+}
+
+/// Arguments for `worktree_tab_set_active_child`. `child_id` of `None`
+/// clears the active child, causing the worktree dashboard to show.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabSetActiveChildArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeTabSetActiveChildArgs {
+    pub id: WorktreeTabId,
+    #[serde(default)]
+    pub child_id: Option<ChildId>,
+}
+
+/// Result of `worktree_tab_close`. Reports any errors encountered while
+/// cascading close to child sessions/sub-sessions without failing the
+/// whole operation.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabCloseResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeTabCloseResult {
+    /// Per-child errors that occurred during cascade close.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_errors: Vec<String>,
 }
 
 /// Arguments for `workspace_validate` (Roadmap §1.1).
@@ -1243,6 +1416,9 @@ mod tests {
                 label: "Shell".to_owned(),
                 composed_command: "sh -i".to_owned(),
             }],
+            worktree_tabs: vec![],
+            worktree_tab_order: vec![],
+            active_worktree_tab_id: None,
         };
         let fixture = json!({
             "configVersion": 4,
@@ -1282,7 +1458,10 @@ mod tests {
                     "label": "Shell",
                     "composedCommand": "sh -i"
                 }
-            ]
+            ],
+            "worktreeTabs": [],
+            "worktreeTabOrder": [],
+            "activeWorktreeTabId": null
         });
         (value, fixture)
     }
@@ -1372,6 +1551,9 @@ mod tests {
             active_session_id: None,
             custom_processes: None,
             last_open_sub_sessions: None,
+            worktree_tabs: None,
+            worktree_tab_order: None,
+            active_worktree_tab_id: None,
         };
         let fixture = json!({
             "defaultInstructionSets": { "claude": "claude-default" },

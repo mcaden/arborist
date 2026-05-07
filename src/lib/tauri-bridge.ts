@@ -47,6 +47,13 @@ import type {
   WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
+  WorktreeTab,
+  WorktreeTabCloseResult,
+  WorktreeTabOpenArgs,
+  WorktreeTabCloseArgs,
+  WorktreeTabFocusArgs,
+  WorktreeTabReorderArgs,
+  WorktreeTabSetActiveChildArgs,
 } from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
@@ -439,4 +446,32 @@ export function onSubSessionExited(cb: (payload: SubSessionExitedEvent) => void)
  */
 export function onSubSessionRestored(cb: (payload: SubSessionRestoredEvent) => void): Promise<UnlistenFn> {
   return listen<SubSessionRestoredEvent>('subsession://restored', (event) => cb(event.payload));
+}
+
+// ---------------------------------------------------------------------------
+// Worktree tab commands (Issue #44)
+// ---------------------------------------------------------------------------
+
+export function worktreeTabOpen(args: WorktreeTabOpenArgs): Promise<WorktreeTab> {
+  return invoke<WorktreeTab>('worktree_tab_open', { args });
+}
+
+export function worktreeTabClose(args: WorktreeTabCloseArgs): Promise<WorktreeTabCloseResult> {
+  return invoke<WorktreeTabCloseResult>('worktree_tab_close', { args });
+}
+
+export function worktreeTabFocus(args: WorktreeTabFocusArgs): Promise<void> {
+  return invoke<void>('worktree_tab_focus', { args });
+}
+
+export function worktreeTabList(): Promise<WorktreeTab[]> {
+  return invoke<WorktreeTab[]>('worktree_tab_list');
+}
+
+export function worktreeTabReorder(args: WorktreeTabReorderArgs): Promise<void> {
+  return invoke<void>('worktree_tab_reorder', { args });
+}
+
+export function worktreeTabSetActiveChild(args: WorktreeTabSetActiveChildArgs): Promise<void> {
+  return invoke<void>('worktree_tab_set_active_child', { args });
 }

@@ -45,8 +45,8 @@ use tracing::{debug, warn};
 
 use crate::store_layout::StoreLayout;
 use crate::types::{
-    AppConfig, AppError, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, InstructionSet, InstructionSetId, PartialAppConfig,
-    PartialDefaultInstructionSets, Session, SessionId, SessionStatus, SubSessionRecord, Tool, CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, InstructionSet, InstructionSetId, PartialAppConfig,
+    PartialDefaultInstructionSets, Session, SessionId, SessionStatus, SubSessionRecord, Tool, WorktreeTab, WorktreeTabId, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -214,6 +214,13 @@ impl ConfigStore {
         // user who edited / deleted a built-in does not get it silently re-injected on every launch.
         if cfg.config_version < 4 {
             seed_default_custom_processes(&mut cfg.custom_processes);
+        }
+        // v4→v5: synthesise WorktreeTab records from persisted sessions (Issue #44). Each unique canonical worktree_path gets one tab; tab order
+        // mirrors the old session tab order (first occurrence of each worktree path wins). The active worktree tab is derived from the old
+        // active_session_id's worktree path.
+        if cfg.config_version < 5 && cfg.worktree_tabs.is_empty() {
+            let sessions = self.load_sessions();
+            migrate_v4_to_v5(&mut cfg, &sessions);
         }
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
@@ -672,6 +679,15 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(records) = patch.last_open_sub_sessions {
         cfg.last_open_sub_sessions = records;
     }
+    if let Some(tabs) = patch.worktree_tabs {
+        cfg.worktree_tabs = tabs;
+    }
+    if let Some(order) = patch.worktree_tab_order {
+        cfg.worktree_tab_order = order;
+    }
+    if let Some(active) = patch.active_worktree_tab_id {
+        cfg.active_worktree_tab_id = active;
+    }
     Ok(())
 }
 
@@ -1011,6 +1027,78 @@ pub fn seed_default_custom_processes(defs: &mut Vec<CustomProcessDef>) {
             defs.push(built_in);
         }
     }
+}
+
+/// v4→v5 migration (Issue #44): synthesise [`WorktreeTab`] records from existing sessions. Each unique canonical `worktree_path` gets one tab.
+/// Tab order mirrors the old session `tab_order` (first occurrence of each path wins its position). The `active_worktree_tab_id` is derived from the
+/// old `active_session_id`'s worktree path, and the matching tab's `active_child_id` is set to that session so the user lands on the same terminal
+/// they had focused before migration.
+fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>) {
+    use crate::compose;
+
+    // Build ordered list of unique canonical worktree paths, following the old tab_order for position. Fall back to session iteration order for
+    // sessions that weren't in tab_order.
+    let mut seen_paths: BTreeMap<PathBuf, WorktreeTabId> = BTreeMap::new();
+    let mut ordered_tabs: Vec<WorktreeTab> = Vec::new();
+
+    // Helper: process a session's worktree path, creating a tab if unseen.
+    let mut ensure_tab = |session: &Session| {
+        let canonical = dunce::canonicalize(&session.worktree_path).unwrap_or_else(|_| session.worktree_path.clone());
+        if seen_paths.contains_key(&canonical) {
+            return;
+        }
+        let tab_id = WorktreeTabId::new();
+        let name = canonical
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "worktree".into());
+        // Deduplicate label across already-created tabs.
+        let existing_labels: Vec<&str> = ordered_tabs.iter().map(|t| t.label.as_str()).collect();
+        let label = compose::dedupe_label(&existing_labels, &name);
+        let tab_index = ordered_tabs.len();
+        ordered_tabs.push(WorktreeTab {
+            id: tab_id,
+            path: canonical.clone(),
+            name,
+            branch: None, // best-effort — skip during migration (no git commands)
+            label,
+            tab_index,
+            active_child_id: None,
+        });
+        seen_paths.insert(canonical, tab_id);
+    };
+
+    // Walk tab_order first (preserves user's ordering), then pick up any stragglers.
+    for sid in &cfg.tab_order {
+        if let Some(session) = sessions.get(sid) {
+            ensure_tab(session);
+        }
+    }
+    for session in sessions.values() {
+        ensure_tab(session);
+    }
+
+    // Derive active_worktree_tab_id from old active_session_id, and set that tab's active_child_id.
+    if let Some(active_sid) = cfg.active_session_id {
+        if let Some(session) = sessions.get(&active_sid) {
+            let canonical = dunce::canonicalize(&session.worktree_path).unwrap_or_else(|_| session.worktree_path.clone());
+            if let Some(&tab_id) = seen_paths.get(&canonical) {
+                cfg.active_worktree_tab_id = Some(tab_id);
+                if let Some(tab) = ordered_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.active_child_id = Some(ChildId::Session(active_sid));
+                }
+            }
+        }
+    }
+
+    cfg.worktree_tab_order = ordered_tabs.iter().map(|t| t.id).collect();
+    cfg.worktree_tabs = ordered_tabs;
+
+    tracing::info!(
+        tab_count = cfg.worktree_tabs.len(),
+        session_count = sessions.len(),
+        "v4→v5 migration: synthesised worktree tabs from existing sessions",
+    );
 }
 
 /// The full ordered list of built-in defs, regardless of whether they are already present in any particular config. Test-only callers may use this

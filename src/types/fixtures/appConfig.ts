@@ -45,4 +45,7 @@ export const appConfigFixture = {
       composedCommand: 'sh -i',
     },
   ],
+  worktreeTabs: [],
+  worktreeTabOrder: [],
+  activeWorktreeTabId: null,
 } as const satisfies AppConfig;

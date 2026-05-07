@@ -13,6 +13,7 @@
 
 pub mod session;
 pub mod subsession;
+pub mod worktree_tab;
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -25,7 +26,8 @@ use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
     SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
     SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs,
-    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab,
+    WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -542,6 +544,45 @@ pub fn build_production_sub_sink(app: tauri::AppHandle, store: Arc<crate::sub_se
     });
 
     crate::sub_sessions::SubPtySink::new(output, status, exited, restored)
+}
+
+// --------------------------------------------------------------------------- Worktree tab commands (Issue #44)
+
+#[tauri::command]
+pub async fn worktree_tab_open(app: tauri::AppHandle, args: WorktreeTabOpenArgs) -> Result<WorktreeTab, AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_open_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_close(app: tauri::AppHandle, args: WorktreeTabCloseArgs) -> Result<WorktreeTabCloseResult, AppError> {
+    let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
+    worktree_tab::worktree_tab_close_impl(&ctx, sub_ctx, args.id).await
+}
+
+#[tauri::command]
+pub async fn worktree_tab_focus(app: tauri::AppHandle, args: WorktreeTabFocusArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_focus_impl(&ctx, args.id)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_list(app: tauri::AppHandle) -> Result<Vec<WorktreeTab>, AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_list_impl(&ctx)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_reorder(app: tauri::AppHandle, args: WorktreeTabReorderArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_reorder_impl(&ctx, args.ids)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_set_active_child(app: tauri::AppHandle, args: WorktreeTabSetActiveChildArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_set_active_child_impl(&ctx, args)
 }
 
 #[cfg(test)]

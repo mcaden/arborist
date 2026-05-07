@@ -97,6 +97,10 @@ fn main_capability_allows_core_default_and_ping() {
         identifiers.contains(&"allow-subsession"),
         "main capability must include allow-subsession so subsession_* commands are callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-worktree-tab"),
+        "main capability must include allow-worktree-tab so worktree_tab_* commands are callable; got {identifiers:?}",
+    );
 }
 
 #[test]
@@ -269,4 +273,24 @@ fn allow_workspace_switch_permission_file_declares_command() {
         raw.contains("\"workspace_switch\""),
         "permission must allow the `workspace_switch` command",
     );
+}
+
+#[test]
+fn allow_worktree_tab_permission_file_declares_commands() {
+    let path = manifest_dir().join("permissions").join("allow-worktree-tab.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktree-tab\""),
+        "permission identifier must remain `allow-worktree-tab`"
+    );
+    for cmd in [
+        "worktree_tab_open",
+        "worktree_tab_close",
+        "worktree_tab_focus",
+        "worktree_tab_list",
+        "worktree_tab_reorder",
+        "worktree_tab_set_active_child",
+    ] {
+        assert!(raw.contains(&format!("\"{cmd}\"")), "permission must allow the `{cmd}` command");
+    }
 }

@@ -279,6 +279,12 @@ pub fn run() {
             commands::subsession_resize,
             commands::subsession_relaunch,
             commands::subsession_icon,
+            commands::worktree_tab_open,
+            commands::worktree_tab_close,
+            commands::worktree_tab_focus,
+            commands::worktree_tab_list,
+            commands::worktree_tab_reorder,
+            commands::worktree_tab_set_active_child,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arborist");

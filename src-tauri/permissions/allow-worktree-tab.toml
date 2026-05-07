@@ -1,0 +1,13 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-worktree-tab"
+description = "Allows the frontend to manage worktree tabs: open, close, focus, list, reorder, and set active child."
+commands.allow = [
+    "worktree_tab_open",
+    "worktree_tab_close",
+    "worktree_tab_focus",
+    "worktree_tab_list",
+    "worktree_tab_reorder",
+    "worktree_tab_set_active_child",
+]

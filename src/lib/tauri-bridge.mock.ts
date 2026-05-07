@@ -74,6 +74,9 @@ const defaultAppConfig = (): AppConfig => ({
   activeSessionId: null,
   customProcesses: [],
   lastOpenSubSessions: [],
+  worktreeTabs: [],
+  worktreeTabOrder: [],
+  activeWorktreeTabId: null,
 });
 
 export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
@@ -123,6 +126,15 @@ export const onSubSessionExited: Mock<typeof realBridge.onSubSessionExited> = vi
 
 export const onSubSessionRestored: Mock<typeof realBridge.onSubSessionRestored> = vi.fn(() => Promise.resolve(noopUnlisten));
 
+// ---- Worktree tab commands (Issue #44) ----
+
+export const worktreeTabOpen: Mock<typeof realBridge.worktreeTabOpen> = vi.fn(rejectNotImplemented);
+export const worktreeTabClose: Mock<typeof realBridge.worktreeTabClose> = vi.fn(() => Promise.resolve({ childErrors: [] }));
+export const worktreeTabFocus: Mock<typeof realBridge.worktreeTabFocus> = vi.fn(() => Promise.resolve());
+export const worktreeTabList: Mock<typeof realBridge.worktreeTabList> = vi.fn(() => Promise.resolve([]));
+export const worktreeTabReorder: Mock<typeof realBridge.worktreeTabReorder> = vi.fn(() => Promise.resolve());
+export const worktreeTabSetActiveChild: Mock<typeof realBridge.worktreeTabSetActiveChild> = vi.fn(() => Promise.resolve());
+
 // Re-export the bridge's argument-shape interfaces so consumers importing
 // from the mock get identical types.
 export type { SessionCreateArgs, SessionIdArg, SessionCloseArgs, SessionCloseResult, SessionResizeArgs, SessionInputArgs } from './tauri-bridge';
@@ -164,6 +176,12 @@ export function resetBridgeMocks(): void {
   onSubSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSubSessionExited.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSubSessionRestored.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  worktreeTabOpen.mockReset().mockImplementation(rejectNotImplemented);
+  worktreeTabClose.mockReset().mockImplementation(() => Promise.resolve({ childErrors: [] }));
+  worktreeTabFocus.mockReset().mockImplementation(() => Promise.resolve());
+  worktreeTabList.mockReset().mockImplementation(() => Promise.resolve([]));
+  worktreeTabReorder.mockReset().mockImplementation(() => Promise.resolve());
+  worktreeTabSetActiveChild.mockReset().mockImplementation(() => Promise.resolve());
 }
 
 // Compile-time guard: this module must export every member of the real
@@ -204,5 +222,11 @@ const _shapeCheck = {
   onSubSessionStatus,
   onSubSessionExited,
   onSubSessionRestored,
+  worktreeTabOpen,
+  worktreeTabClose,
+  worktreeTabFocus,
+  worktreeTabList,
+  worktreeTabReorder,
+  worktreeTabSetActiveChild,
 } satisfies typeof realBridge;
 void _shapeCheck;

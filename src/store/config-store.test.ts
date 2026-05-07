@@ -24,6 +24,9 @@ const SAMPLE: AppConfig = {
   activeSessionId: null,
   customProcesses: [],
   lastOpenSubSessions: [],
+  worktreeTabs: [],
+  worktreeTabOrder: [],
+  activeWorktreeTabId: null,
 };
 
 function resetStore(): void {
@@ -42,6 +45,9 @@ function resetStore(): void {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
     },
     status: 'idle',
     error: null,

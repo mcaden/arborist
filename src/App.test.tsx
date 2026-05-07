@@ -148,6 +148,9 @@ describe('App boot sequence', () => {
               activeSessionId: null,
               customProcesses: [],
               lastOpenSubSessions: [],
+              worktreeTabs: [],
+              worktreeTabOrder: [],
+              activeWorktreeTabId: null,
             });
         }),
     );
@@ -236,6 +239,9 @@ describe('App boot sequence', () => {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
     });
     render(<App />);
     await waitFor(() => {

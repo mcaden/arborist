@@ -38,6 +38,9 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     activeSessionId: null,
     customProcesses: [],
     lastOpenSubSessions: [],
+    worktreeTabs: [],
+    worktreeTabOrder: [],
+    activeWorktreeTabId: null,
     ...overrides,
   };
 }
