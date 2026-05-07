@@ -162,8 +162,8 @@ npm run test:watch       # vitest in watch mode
 
 # Two terminals for Rust (cargo-watch is optional but recommended)
 cargo install cargo-watch
-cargo watch -x check -x clippy
-cargo watch -x 'test --workspace'
+cargo watch -x 'clippy --all-targets --features test-helpers -- -D warnings'
+cargo watch -x 'test --workspace --features test-helpers'
 ```
 
 Editor recommendations:
@@ -216,7 +216,7 @@ merged — never on `main` (per `.github/copilot-instructions.md`).
   ```
 - For ad-hoc PTY experiments, run the test child directly:
   ```sh
-  cargo run -p arborist --bin arborist-test-child
+  cargo run -p arborist --features test-helpers --bin arborist-test-child
   ```
 
 ### Persistent state

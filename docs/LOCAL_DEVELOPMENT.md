@@ -99,8 +99,8 @@ npm run dev:typecheck    # tsc --noEmit --watch
 npm run test:watch       # vitest watch
 
 # Rust (requires cargo-watch: cargo install cargo-watch)
-cargo watch -x check -x clippy
-cargo watch -x 'test --workspace'
+cargo watch -x 'clippy --all-targets --features test-helpers -- -D warnings'
+cargo watch -x 'test --workspace --features test-helpers'
 ```
 
 Recommended VS Code extensions: `rust-analyzer`, `ESLint`, `Prettier - Code formatter`, `Tailwind CSS IntelliSense`. Set `editor.formatOnSave: true` and `rust-analyzer.check.command = "clippy"`.
@@ -138,7 +138,7 @@ cargo run -p arborist --example config_smoke
 Poke the PTY test child interactively (echoes stdin, exits on `quit`):
 
 ```sh
-cargo run -p arborist --bin arborist-test-child
+cargo run -p arborist --features test-helpers --bin arborist-test-child
 ```
 
 ### Persistent state

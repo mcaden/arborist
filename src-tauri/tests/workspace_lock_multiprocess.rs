@@ -6,7 +6,7 @@
 //! process.
 //!
 //! The locker binary path is provided by Cargo via `env!("CARGO_BIN_EXE_arborist-test-locker")`. The binary requires the `test-helpers` feature:
-//! `cargo test --features test-helpers`.
+//! `cargo test --workspace --features test-helpers`.
 
 #![cfg(feature = "test-helpers")]
 

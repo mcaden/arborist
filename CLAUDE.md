@@ -69,7 +69,7 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets --features 
 ```sh
 RUST_LOG=arborist_lib=debug npm run tauri:dev   # verbose backend tracing
 cargo run -p arborist --example config_smoke    # config-store end-to-end without Tauri
-cargo run -p arborist --bin arborist-test-child # poke the PTY test child interactively
+cargo run -p arborist --features test-helpers --bin arborist-test-child # poke the PTY test child interactively
 ```
 
 ## Architecture
