@@ -16,13 +16,10 @@ use std::time::{Duration, Instant};
 
 use arborist_lib::compose::{copilot_otel_path, session_temp_dir};
 use arborist_lib::pty_pool::{
-    cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink,
-    PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, DEFAULT_PTY_SIZE,
-    OUTPUT_CHANNEL_CAPACITY,
+    cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET,
+    DEFAULT_PTY_SIZE, OUTPUT_CHANNEL_CAPACITY,
 };
-use arborist_lib::types::{
-    InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool,
-};
+use arborist_lib::types::{InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool};
 use portable_pty::{ExitStatus, PtySize};
 use uuid::Uuid;
 
@@ -101,11 +98,7 @@ fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
 
 /// Block (with a budget) until `pred(joined_output)` is true. Returns the
 /// joined output on success.
-fn wait_for<F: FnMut(&str) -> bool>(
-    log: &OutputLog,
-    mut pred: F,
-    budget: Duration,
-) -> Option<String> {
+fn wait_for<F: FnMut(&str) -> bool>(log: &OutputLog, mut pred: F, budget: Duration) -> Option<String> {
     let start = Instant::now();
     loop {
         let joined = log.lock().unwrap().concat();
@@ -119,11 +112,7 @@ fn wait_for<F: FnMut(&str) -> bool>(
     }
 }
 
-fn wait_for_status<F: Fn(&[(SessionStatus, Option<u32>)]) -> bool>(
-    log: &StatusLog,
-    pred: F,
-    budget: Duration,
-) -> bool {
+fn wait_for_status<F: Fn(&[(SessionStatus, Option<u32>)]) -> bool>(log: &StatusLog, pred: F, budget: Duration) -> bool {
     let start = Instant::now();
     loop {
         if pred(&log.lock().unwrap()) {
@@ -137,10 +126,7 @@ fn wait_for_status<F: Fn(&[(SessionStatus, Option<u32>)]) -> bool>(
 }
 
 fn rt() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -169,12 +155,7 @@ fn spawn_banner_then_quit_yields_exited_status() {
     assert!(pid > 0);
 
     assert!(
-        wait_for(
-            &outs,
-            |s| s.contains("ARBORIST-TEST-CHILD READY"),
-            Duration::from_secs(5)
-        )
-        .is_some(),
+        wait_for(&outs, |s| s.contains("ARBORIST-TEST-CHILD READY"), Duration::from_secs(5)).is_some(),
         "banner not seen: {:?}",
         outs.lock().unwrap()
     );
@@ -258,9 +239,7 @@ fn nonzero_exit_yields_error_status() {
     assert!(
         wait_for_status(
             &stats,
-            |s| s
-                .iter()
-                .any(|(st, pid)| matches!(st, SessionStatus::Error) && pid.is_none()),
+            |s| s.iter().any(|(st, pid)| matches!(st, SessionStatus::Error) && pid.is_none()),
             Duration::from_secs(5)
         ),
         "no Error status: {:?}",
@@ -305,16 +284,12 @@ fn respawn_existing_yields_a_new_pid() {
 
     let rt = rt();
     let _g = rt.enter();
-    let pid1 = pool
-        .spawn(&session, sink.clone(), DEFAULT_PTY_SIZE)
-        .expect("spawn 1");
+    let pid1 = pool.spawn(&session, sink.clone(), DEFAULT_PTY_SIZE).expect("spawn 1");
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready 1");
     rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
 
     let (sink2, outs2, _stats2) = recording_sink();
-    let pid2 = pool
-        .respawn_existing(&session, sink2, DEFAULT_PTY_SIZE)
-        .expect("respawn");
+    let pid2 = pool.respawn_existing(&session, sink2, DEFAULT_PTY_SIZE).expect("respawn");
     assert_ne!(pid1, pid2, "respawn should yield a new pid");
     assert!(
         wait_for(&outs2, |s| s.contains("READY"), Duration::from_secs(5)).is_some(),
@@ -373,33 +348,16 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
     pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
     // Assert: the spawner saw a ChildCommand with the three OTel env keys.
-    let cmd = spawner_for_assert
-        .last_cmd
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("spawner received a command");
+    let cmd = spawner_for_assert.last_cmd.lock().unwrap().clone().expect("spawner received a command");
     let env: std::collections::HashMap<String, std::ffi::OsString> = cmd.env.into_iter().collect();
     let expected_path = copilot_otel_path(&session.id).into_os_string();
-    assert_eq!(
-        env.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
-        Some(&expected_path),
-    );
-    assert_eq!(
-        env.get("COPILOT_OTEL_ENABLED"),
-        Some(&std::ffi::OsString::from("true"))
-    );
-    assert_eq!(
-        env.get("OTEL_BSP_SCHEDULE_DELAY"),
-        Some(&std::ffi::OsString::from("1000"))
-    );
+    assert_eq!(env.get("COPILOT_OTEL_FILE_EXPORTER_PATH"), Some(&expected_path),);
+    assert_eq!(env.get("COPILOT_OTEL_ENABLED"), Some(&std::ffi::OsString::from("true")));
+    assert_eq!(env.get("OTEL_BSP_SCHEDULE_DELAY"), Some(&std::ffi::OsString::from("1000")));
 
     // Assert: the temp dir still exists, and the stale file is gone.
     assert!(temp.exists(), "session temp dir must exist after prep");
-    assert!(
-        !stale.exists(),
-        "stale otel.jsonl must be removed before spawn"
-    );
+    assert!(!stale.exists(), "stale otel.jsonl must be removed before spawn");
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();
@@ -409,11 +367,7 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
     // it. This is the Copilot equivalent of the system-prompt.md cleanup
     // covered by `kill_terminates_child_and_removes_entry_and_temp_dir`,
     // and is the regression assertion for the temp-cleanup-verify todo.
-    assert!(
-        !temp.exists(),
-        "session_temp_dir must be removed by kill: {}",
-        temp.display(),
-    );
+    assert!(!temp.exists(), "session_temp_dir must be removed by kill: {}", temp.display(),);
 }
 
 #[test]
@@ -436,17 +390,9 @@ fn pool_spawn_prep_is_noop_for_claude_session() {
     let _g = rt.enter();
     pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
-    let cmd = spawner_for_assert
-        .last_cmd
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("spawner received a command");
+    let cmd = spawner_for_assert.last_cmd.lock().unwrap().clone().expect("spawner received a command");
     assert!(cmd.env.is_empty(), "Claude must not get any extra env");
-    assert!(
-        !temp.exists(),
-        "Claude spawn must not create the OTel temp dir"
-    );
+    assert!(!temp.exists(), "Claude spawn must not create the OTel temp dir");
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();
@@ -509,9 +455,7 @@ impl PtyKiller for FakeKiller {
     fn kill(&self) -> Result<(), arborist_lib::types::Error> {
         self.eof_flag.store(true, Ordering::Relaxed);
         if self.fail {
-            Err(arborist_lib::types::Error::PtyKillFailed(
-                "simulated kill failure".into(),
-            ))
+            Err(arborist_lib::types::Error::PtyKillFailed("simulated kill failure".into()))
         } else {
             Ok(())
         }
@@ -549,11 +493,7 @@ impl PtyWaiter for FakeWaiter {
 #[derive(Clone)]
 enum FakeMode {
     /// Use a scripted reader with the given chunks, sleeping `pause` between.
-    Scripted {
-        chunks: Vec<Vec<u8>>,
-        pause: Duration,
-        exit_code: u32,
-    },
+    Scripted { chunks: Vec<Vec<u8>>, pause: Duration, exit_code: u32 },
     /// Use a parked reader that never returns until killed.
     Parked,
     /// Park reader; auto-exit waiter after `delay`.
@@ -584,12 +524,7 @@ impl FakeSpawner {
 }
 
 impl PtySpawner for FakeSpawner {
-    fn spawn(
-        &self,
-        cmd: ChildCommand,
-        cwd: &Path,
-        _size: PtySize,
-    ) -> Result<SpawnedChild, arborist_lib::types::Error> {
+    fn spawn(&self, cmd: ChildCommand, cwd: &Path, _size: PtySize) -> Result<SpawnedChild, arborist_lib::types::Error> {
         *self.last_cwd.lock().unwrap() = Some(cwd.to_path_buf());
         *self.last_cmd.lock().unwrap() = Some(cmd);
         let pid = self.next_pid.fetch_add(1, Ordering::Relaxed) as u32;
@@ -597,47 +532,17 @@ impl PtySpawner for FakeSpawner {
         *self.last_eof.lock().unwrap() = Some(Arc::clone(&eof));
 
         let mode = self.mode.lock().unwrap().clone();
-        let (reader, exit_code, auto_exit, fail_kill): (
-            Box<dyn Read + Send>,
-            u32,
-            Option<Duration>,
-            bool,
-        ) = match mode {
-            FakeMode::Scripted {
-                chunks,
-                pause,
-                exit_code,
-            } => {
+        let (reader, exit_code, auto_exit, fail_kill): (Box<dyn Read + Send>, u32, Option<Duration>, bool) = match mode {
+            FakeMode::Scripted { chunks, pause, exit_code } => {
                 let r = ScriptedReader {
                     chunks: chunks.into_iter(),
                     pause,
                 };
                 (Box::new(r), exit_code, None, false)
             }
-            FakeMode::Parked => (
-                Box::new(ParkedReader {
-                    eof: Arc::clone(&eof),
-                }),
-                0,
-                None,
-                false,
-            ),
-            FakeMode::AutoExit { delay, exit_code } => (
-                Box::new(ParkedReader {
-                    eof: Arc::clone(&eof),
-                }),
-                exit_code,
-                Some(delay),
-                false,
-            ),
-            FakeMode::ParkedKillFails => (
-                Box::new(ParkedReader {
-                    eof: Arc::clone(&eof),
-                }),
-                0,
-                None,
-                true,
-            ),
+            FakeMode::Parked => (Box::new(ParkedReader { eof: Arc::clone(&eof) }), 0, None, false),
+            FakeMode::AutoExit { delay, exit_code } => (Box::new(ParkedReader { eof: Arc::clone(&eof) }), exit_code, Some(delay), false),
+            FakeMode::ParkedKillFails => (Box::new(ParkedReader { eof: Arc::clone(&eof) }), 0, None, true),
         };
 
         Ok(SpawnedChild {
@@ -811,10 +716,7 @@ fn utf8_character_split_across_reads_emerges_intact() {
         outs.lock().unwrap()
     );
     let joined = outs.lock().unwrap().concat();
-    assert!(
-        !joined.contains('\u{FFFD}'),
-        "no replacement char expected: {joined:?}"
-    );
+    assert!(!joined.contains('\u{FFFD}'), "no replacement char expected: {joined:?}");
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();
@@ -842,9 +744,7 @@ fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
     assert!(
         wait_for_status(
             &stats,
-            |s| s
-                .iter()
-                .any(|(st, pid)| matches!(st, SessionStatus::Exited) && pid.is_none()),
+            |s| s.iter().any(|(st, pid)| matches!(st, SessionStatus::Exited) && pid.is_none()),
             Duration::from_secs(3)
         ),
         "no Exited+pid:None status: {:?}",
@@ -885,10 +785,7 @@ fn cleanup_orphans_deletes_only_unpersisted_stale_dirs() {
     let deleted = cleanup_orphans(&[persisted_id]).expect("cleanup");
 
     assert!(young.exists(), "young dir was incorrectly deleted");
-    assert!(
-        persisted.exists(),
-        "persisted-old dir was incorrectly deleted"
-    );
+    assert!(persisted.exists(), "persisted-old dir was incorrectly deleted");
     assert!(!orphan.exists(), "orphan-old dir was not deleted");
     assert!(deleted >= 1, "deleted count was {deleted}");
 
@@ -908,28 +805,21 @@ fn set_mtime(path: &Path, when: std::time::SystemTime) {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
         .unwrap();
-    let times = std::fs::FileTimes::new()
-        .set_modified(when)
-        .set_accessed(when);
+    let times = std::fs::FileTimes::new().set_modified(when).set_accessed(when);
     f.set_times(times).unwrap();
 }
 
 #[cfg(not(windows))]
 fn set_mtime(path: &Path, when: std::time::SystemTime) {
     let f = std::fs::OpenOptions::new().read(true).open(path).unwrap();
-    let times = std::fs::FileTimes::new()
-        .set_modified(when)
-        .set_accessed(when);
+    let times = std::fs::FileTimes::new().set_modified(when).set_accessed(when);
     f.set_times(times).unwrap();
 }
 
 // Sanity: ensure the test child path constant points at something on disk.
 #[test]
 fn test_child_binary_exists() {
-    assert!(
-        Path::new(TEST_CHILD_PATH).exists(),
-        "missing: {TEST_CHILD_PATH}"
-    );
+    assert!(Path::new(TEST_CHILD_PATH).exists(), "missing: {TEST_CHILD_PATH}");
 }
 
 // Sanity: ensure SessionId helpers are usable in tests too.
@@ -1007,10 +897,7 @@ fn kill_returns_unconfirmed_when_killer_errors() {
                 "Unconfirmed must carry the recorded PID so the caller can log it for human cleanup"
             );
         }
-        other => panic!(
-            "expected Unconfirmed when killer.kill() returns Err; got {:?}",
-            other
-        ),
+        other => panic!("expected Unconfirmed when killer.kill() returns Err; got {:?}", other),
     }
 
     // Even on Unconfirmed, the runtime entry must be evicted so the

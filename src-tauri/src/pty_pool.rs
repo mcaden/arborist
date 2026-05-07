@@ -210,9 +210,7 @@ where
     let prefix_bytes = ARBORIST_ENV_PREFIX.as_bytes();
     for k in keys {
         let key_bytes = k.as_ref().as_encoded_bytes();
-        if key_bytes.len() >= prefix_bytes.len()
-            && key_bytes[..prefix_bytes.len()].eq_ignore_ascii_case(prefix_bytes)
-        {
+        if key_bytes.len() >= prefix_bytes.len() && key_bytes[..prefix_bytes.len()].eq_ignore_ascii_case(prefix_bytes) {
             builder.env_remove(k.as_ref());
         }
     }
@@ -278,9 +276,7 @@ impl PtySpawner for PortablePtySpawner {
         // child doesn't keep the pty alive after it exits.
         drop(pair.slave);
 
-        let pid = child
-            .process_id()
-            .ok_or_else(|| Error::PtySpawnFailed("child has no pid".into()))?;
+        let pid = child.process_id().ok_or_else(|| Error::PtySpawnFailed("child has no pid".into()))?;
 
         let reader = pair
             .master
@@ -319,10 +315,7 @@ struct PortableResize {
 
 impl PtyResize for PortableResize {
     fn resize(&self, cols: u16, rows: u16) -> Result<(), Error> {
-        let guard = self
-            .master
-            .lock()
-            .map_err(|_| Error::PtyResizeFailed("master mutex poisoned".into()))?;
+        let guard = self.master.lock().map_err(|_| Error::PtyResizeFailed("master mutex poisoned".into()))?;
         guard
             .resize(PtySize {
                 cols,
@@ -340,9 +333,7 @@ struct PortableWaiter {
 
 impl PtyWaiter for PortableWaiter {
     fn wait(mut self: Box<Self>) -> Result<ExitStatus, Error> {
-        self.child
-            .wait()
-            .map_err(|e| Error::Internal(format!("wait failed: {e}")))
+        self.child.wait().map_err(|e| Error::Internal(format!("wait failed: {e}")))
     }
 }
 
@@ -355,13 +346,8 @@ struct PortableKiller {
 impl PtyKiller for PortableKiller {
     fn kill(&self) -> Result<(), Error> {
         {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::PtyKillFailed("killer mutex poisoned".into()))?;
-            guard
-                .kill()
-                .map_err(|e| Error::PtyKillFailed(format!("kill failed: {e}")))?;
+            let mut guard = self.inner.lock().map_err(|_| Error::PtyKillFailed("killer mutex poisoned".into()))?;
+            guard.kill().map_err(|e| Error::PtyKillFailed(format!("kill failed: {e}")))?;
         }
 
         // Unix-only SIGKILL escalation if the child doesn't react to SIGTERM
@@ -398,8 +384,7 @@ unsafe fn libc_kill(pid: i32, sig: i32) {
 pub type OutputCb = Arc<dyn Fn(&SessionId, String) + Send + Sync>;
 /// Status callback type alias. The `Option<u32>` is the PID; cleared on
 /// exit.
-pub type StatusCb =
-    Arc<dyn Fn(&SessionId, SessionStatus, Option<u32>, Option<String>) + Send + Sync>;
+pub type StatusCb = Arc<dyn Fn(&SessionId, SessionStatus, Option<u32>, Option<String>) + Send + Sync>;
 /// Activity callback type alias. Fired by the per-session activity scanner
 /// (see [`crate::activity`]). Carries semantic events derived from the raw
 /// PTY stream — title changes, attention cues, working/idle transitions.
@@ -421,11 +406,7 @@ pub struct PtySink {
 impl PtySink {
     #[must_use]
     pub fn new(output: OutputCb, status: StatusCb, activity: ActivityCb) -> Self {
-        Self {
-            output,
-            status,
-            activity,
-        }
+        Self { output, status, activity }
     }
 }
 
@@ -582,27 +563,18 @@ impl PtyPool {
 
     /// True if the given session is currently tracked by the pool.
     pub fn contains(&self, id: &SessionId) -> bool {
-        self.inner
-            .lock()
-            .map(|g| g.contains_key(id))
-            .unwrap_or(false)
+        self.inner.lock().map(|g| g.contains_key(id)).unwrap_or(false)
     }
 
     /// PID of the given session, if it's live in the pool.
     pub fn pid_of(&self, id: &SessionId) -> Option<u32> {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|g| g.get(id).map(|rt| rt.pid))
+        self.inner.lock().ok().and_then(|g| g.get(id).map(|rt| rt.pid))
     }
 
     /// Atomic dropped-chunks counter for the given session — exposed for
     /// observability and tests.
     pub fn dropped_chunks(&self, id: &SessionId) -> Option<Arc<AtomicUsize>> {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|g| g.get(id).map(|rt| Arc::clone(&rt.dropped_chunks)))
+        self.inner.lock().ok().and_then(|g| g.get(id).map(|rt| Arc::clone(&rt.dropped_chunks)))
     }
 
     /// Spawn a fresh PTY child for `session`. Composes the platform shell
@@ -625,12 +597,7 @@ impl PtyPool {
     /// "do not recompose at restart time" rule from DESIGN §5.4.
     ///
     /// [`spawn`]: Self::spawn
-    pub fn respawn_existing(
-        &self,
-        session: &Session,
-        sink: PtySink,
-        size: PtySize,
-    ) -> Result<u32, Error> {
+    pub fn respawn_existing(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
         // If a previous runtime entry exists (e.g. from a prior spawn that
         // hasn't exited yet), tear it down first.
         if self.contains(&session.id) {
@@ -640,12 +607,7 @@ impl PtyPool {
         self.spawn_internal(session, sink, size)
     }
 
-    fn spawn_internal(
-        &self,
-        session: &Session,
-        sink: PtySink,
-        size: PtySize,
-    ) -> Result<u32, Error> {
+    fn spawn_internal(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
         // ------- 1. Per-session spawn prep (telemetry env, temp dir).
         //
         // We do this here — not in `commands/session.rs` — so every spawn
@@ -739,14 +701,7 @@ impl PtyPool {
         std::thread::Builder::new()
             .name(format!("arborist-pty-read-{pid}"))
             .spawn(move || {
-                pty_read_loop(
-                    read_id,
-                    reader,
-                    read_tx,
-                    read_dropped,
-                    read_scanner,
-                    read_sink,
-                );
+                pty_read_loop(read_id, reader, read_tx, read_dropped, read_scanner, read_sink);
             })
             .map_err(|e| Error::PtySpawnFailed(format!("spawn read thread failed: {e}")))?;
 
@@ -791,10 +746,7 @@ impl PtyPool {
 
         // ------- 7. Insert runtime entry
         {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
+            let mut guard = self.inner.lock().map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
             guard.insert(
                 session.id,
                 SessionRuntime {
@@ -821,36 +773,22 @@ impl PtyPool {
     /// Write bytes to the PTY master.
     pub fn write(&self, id: &SessionId, data: &[u8]) -> Result<(), Error> {
         let writer = {
-            let guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
-            let rt = guard
-                .get(id)
-                .ok_or_else(|| Error::NotFound(format!("session {id} not in pty pool")))?;
+            let guard = self.inner.lock().map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
+            let rt = guard.get(id).ok_or_else(|| Error::NotFound(format!("session {id} not in pty pool")))?;
             Arc::clone(&rt.writer)
         };
-        let mut writer_guard = writer
-            .lock()
-            .map_err(|_| Error::Internal("pty writer mutex poisoned".into()))?;
+        let mut writer_guard = writer.lock().map_err(|_| Error::Internal("pty writer mutex poisoned".into()))?;
         writer_guard
             .write_all(data)
             .map_err(|e| Error::PtyWriteFailed(format!("write failed: {e}")))?;
-        writer_guard
-            .flush()
-            .map_err(|e| Error::PtyWriteFailed(format!("flush failed: {e}")))
+        writer_guard.flush().map_err(|e| Error::PtyWriteFailed(format!("flush failed: {e}")))
     }
 
     /// Resize the PTY of session `id`.
     pub fn resize(&self, id: &SessionId, cols: u16, rows: u16) -> Result<(), Error> {
         let resize = {
-            let guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
-            let rt = guard
-                .get(id)
-                .ok_or_else(|| Error::NotFound(format!("session {id} not in pty pool")))?;
+            let guard = self.inner.lock().map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
+            let rt = guard.get(id).ok_or_else(|| Error::NotFound(format!("session {id} not in pty pool")))?;
             Arc::clone(&rt.resize)
         };
         resize.resize(cols, rows)
@@ -876,10 +814,7 @@ impl PtyPool {
         // 1. Remove the runtime entry under the lock; everything else
         //    happens with no lock held.
         let rt = {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
+            let mut guard = self.inner.lock().map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
             guard.remove(id)
         };
         let Some(rt) = rt else {
@@ -919,11 +854,7 @@ impl PtyPool {
         //    join means the OS reaped the child within `KILL_GRACE`.
         let wait_joined = if let Some(handle) = rt.wait_thread {
             matches!(
-                timeout(
-                    KILL_GRACE,
-                    tokio::task::spawn_blocking(move || handle.join()),
-                )
-                .await,
+                timeout(KILL_GRACE, tokio::task::spawn_blocking(move || handle.join()),).await,
                 Ok(Ok(Ok(()))),
             )
         } else {
@@ -974,10 +905,7 @@ impl PtyPool {
     /// from `Drop` (no async context available there at all).
     fn kill_blocking(&self, id: &SessionId) -> Result<(), Error> {
         let rt = {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
+            let mut guard = self.inner.lock().map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
             guard.remove(id)
         };
         let Some(rt) = rt else {
@@ -996,11 +924,7 @@ impl PtyPool {
 impl Drop for PtyPool {
     fn drop(&mut self) {
         // Best-effort: kill all live children.
-        let ids: Vec<SessionId> = self
-            .inner
-            .lock()
-            .map(|g| g.keys().copied().collect())
-            .unwrap_or_default();
+        let ids: Vec<SessionId> = self.inner.lock().map(|g| g.keys().copied().collect()).unwrap_or_default();
         for id in ids {
             let _ = self.kill_blocking(&id);
         }
@@ -1076,12 +1000,7 @@ fn pty_read_loop(
     }
 }
 
-fn pty_wait_loop(
-    id: SessionId,
-    waiter: Box<dyn PtyWaiter>,
-    sink: PtySink,
-    killed: Arc<AtomicBool>,
-) {
+fn pty_wait_loop(id: SessionId, waiter: Box<dyn PtyWaiter>, sink: PtySink, killed: Arc<AtomicBool>) {
     let result = waiter.wait();
 
     if killed.load(Ordering::SeqCst) {
@@ -1119,10 +1038,7 @@ pub fn cleanup_orphans(persisted_session_ids: &[SessionId]) -> Result<usize, Err
         return Ok(0);
     }
 
-    let persisted: std::collections::HashSet<String> = persisted_session_ids
-        .iter()
-        .map(|id| id.0.to_string())
-        .collect();
+    let persisted: std::collections::HashSet<String> = persisted_session_ids.iter().map(|id| id.0.to_string()).collect();
 
     let now = SystemTime::now();
     let mut deleted = 0usize;
@@ -1233,9 +1149,7 @@ mod tests {
         }
         let owned: Vec<std::ffi::OsString> = strip_keys.iter().map(|s| (*s).into()).collect();
         strip_arborist_env_keys(&mut b, owned);
-        b.iter_full_env_as_str()
-            .map(|(k, _)| k.to_string())
-            .collect()
+        b.iter_full_env_as_str().map(|(k, _)| k.to_string()).collect()
     }
 
     #[test]
@@ -1251,18 +1165,13 @@ mod tests {
         );
         assert!(keys.iter().any(|k| k == "PATH"));
         assert!(keys.iter().any(|k| k == "HOME"));
-        assert!(!keys
-            .iter()
-            .any(|k| k.to_ascii_uppercase().starts_with("ARBORIST_")));
+        assert!(!keys.iter().any(|k| k.to_ascii_uppercase().starts_with("ARBORIST_")));
     }
 
     #[test]
     fn strip_arborist_env_preserves_lookalike_keys() {
         // Names that *contain* but don't *start with* the prefix must survive.
-        let keys = keys_after_strip(
-            &[("MY_ARBORIST_VAR", "x"), ("ARBORISH_DEV", "x")],
-            &["MY_ARBORIST_VAR", "ARBORISH_DEV"],
-        );
+        let keys = keys_after_strip(&[("MY_ARBORIST_VAR", "x"), ("ARBORISH_DEV", "x")], &["MY_ARBORIST_VAR", "ARBORISH_DEV"]);
         assert!(keys.iter().any(|k| k == "MY_ARBORIST_VAR"));
         assert!(keys.iter().any(|k| k == "ARBORISH_DEV"));
     }
@@ -1279,12 +1188,7 @@ mod tests {
                 ("ARBORIST_FOO", "x"),
                 ("PATH", "/usr/bin"),
             ],
-            &[
-                "Arborist_Build_Branch",
-                "arborist_dev_port",
-                "ARBORIST_FOO",
-                "PATH",
-            ],
+            &["Arborist_Build_Branch", "arborist_dev_port", "ARBORIST_FOO", "PATH"],
         );
         assert_eq!(keys, vec!["PATH".to_string()]);
     }
@@ -1328,10 +1232,7 @@ mod tests {
         let mut b = CommandBuilder::new("/bin/true");
         // Don't env_clear here — we need the inherited env to include our key.
         strip_arborist_env(&mut b);
-        let remaining: Vec<String> = b
-            .iter_full_env_as_str()
-            .map(|(k, _)| k.to_string())
-            .collect();
+        let remaining: Vec<String> = b.iter_full_env_as_str().map(|(k, _)| k.to_string()).collect();
         assert!(
             !remaining.iter().any(|k| k == key),
             "production strip_arborist_env failed to remove {key} via vars_os(); remaining keys with ARBORIST prefix: {:?}",
@@ -1365,9 +1266,6 @@ mod tests {
         assert!(b.get_env(&bad).is_some(), "test setup: env not seeded");
 
         strip_arborist_env_keys(&mut b, vec![bad.clone()]);
-        assert!(
-            b.get_env(&bad).is_none(),
-            "non-UTF-8 ARBORIST_* key was not stripped"
-        );
+        assert!(b.get_env(&bad).is_none(), "non-UTF-8 ARBORIST_* key was not stripped");
     }
 }

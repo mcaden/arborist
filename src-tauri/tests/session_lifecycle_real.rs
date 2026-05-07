@@ -22,15 +22,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arborist_lib::commands::session::{
-    session_close_impl, session_create_impl, session_input_impl, AppContext,
-};
+use arborist_lib::commands::session::{session_close_impl, session_create_impl, session_input_impl, AppContext};
 use arborist_lib::compose::CLAUDE_OVERRIDE_ENV;
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
 use arborist_lib::types::{
-    InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
-    SessionId, SessionInputArgs, SessionStatus, Tool,
+    InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs, SessionStatus, Tool,
 };
 use tempfile::TempDir;
 
@@ -48,12 +45,10 @@ fn build_sink(captured: Arc<Captured>, store: ConfigStore) -> PtySink {
         out.output.lock().unwrap().push_str(&data);
     });
     let st = Arc::clone(&captured);
-    let status = Arc::new(
-        move |id: &SessionId, status: SessionStatus, pid: Option<u32>, _msg: Option<String>| {
-            let _ = store.update_session_status(id, status, pid);
-            st.statuses.lock().unwrap().push(status);
-        },
-    );
+    let status = Arc::new(move |id: &SessionId, status: SessionStatus, pid: Option<u32>, _msg: Option<String>| {
+        let _ = store.update_session_status(id, status, pid);
+        st.statuses.lock().unwrap().push(status);
+    });
     PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
@@ -84,11 +79,7 @@ async fn real_spawner_drives_create_input_close_round_trip() {
     let worktree = TempDir::new().unwrap();
 
     let instruction_id = InstructionSetId("claude-default".into());
-    std::fs::write(
-        instructions_dir.path().join("claude-default.md"),
-        "# real-spawner test instructions",
-    )
-    .unwrap();
+    std::fs::write(instructions_dir.path().join("claude-default.md"), "# real-spawner test instructions").unwrap();
 
     let store = ConfigStore::open(config_dir.path()).unwrap();
     store
@@ -123,13 +114,7 @@ async fn real_spawner_drives_create_input_close_round_trip() {
 
     // The test child prints a banner; wait for it to drain through the sink.
     let saw_banner = wait_until(
-        || {
-            captured
-                .output
-                .lock()
-                .unwrap()
-                .contains("ARBORIST-TEST-CHILD READY")
-        },
+        || captured.output.lock().unwrap().contains("ARBORIST-TEST-CHILD READY"),
         Duration::from_secs(5),
     );
     assert!(
@@ -147,15 +132,8 @@ async fn real_spawner_drives_create_input_close_round_trip() {
         },
     )
     .unwrap();
-    let saw_echo = wait_until(
-        || captured.output.lock().unwrap().contains("echo: hello"),
-        Duration::from_secs(5),
-    );
-    assert!(
-        saw_echo,
-        "expected echo of input; got {:?}",
-        captured.output.lock().unwrap()
-    );
+    let saw_echo = wait_until(|| captured.output.lock().unwrap().contains("echo: hello"), Duration::from_secs(5));
+    assert!(saw_echo, "expected echo of input; got {:?}", captured.output.lock().unwrap());
 
     // Close. The pool kills the child and removes the persisted record;
     // tearDown should be clean within a couple of seconds even on Windows.

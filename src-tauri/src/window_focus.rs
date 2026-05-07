@@ -64,9 +64,7 @@ pub trait WindowFocuser: Send + Sync + 'static {
     /// (window destroyed); the caller is expected to fall back to a
     /// re-find or to [`focus_pid`] on the same runtime.
     fn focus_hwnd(&self, _hwnd: usize) -> Result<(), Error> {
-        Err(Error::Unsupported(
-            "focus_hwnd not implemented for this platform".into(),
-        ))
+        Err(Error::Unsupported("focus_hwnd not implemented for this platform".into()))
     }
 
     /// Asks the OS to politely close a specific window (Windows:
@@ -77,9 +75,7 @@ pub trait WindowFocuser: Send + Sync + 'static {
     ///
     /// Default impl returns [`Error::Unsupported`].
     fn post_close_message(&self, _hwnd: usize) -> Result<(), Error> {
-        Err(Error::Unsupported(
-            "post_close_message not implemented for this platform".into(),
-        ))
+        Err(Error::Unsupported("post_close_message not implemented for this platform".into()))
     }
 }
 
@@ -119,19 +115,11 @@ impl RecordingFocuser {
     }
     /// Queue a result for the next `focus_hwnd` call.
     pub fn queue_hwnd(&self, result: Result<(), Error>) {
-        self.inner
-            .lock()
-            .unwrap()
-            .next_hwnd_results
-            .push_back(result);
+        self.inner.lock().unwrap().next_hwnd_results.push_back(result);
     }
     /// Queue a result for the next `post_close_message` call.
     pub fn queue_close(&self, result: Result<(), Error>) {
-        self.inner
-            .lock()
-            .unwrap()
-            .next_close_results
-            .push_back(result);
+        self.inner.lock().unwrap().next_close_results.push_back(result);
     }
     pub fn calls(&self) -> Vec<u32> {
         self.inner.lock().unwrap().calls.clone()
@@ -328,9 +316,7 @@ mod platform {
             let current_tid = GetCurrentThreadId();
             let _ = target_tid; // currently unused — we attach to the foreground thread, which is sufficient
 
-            let attached_fg = foreground_tid != 0
-                && foreground_tid != current_tid
-                && AttachThreadInput(current_tid, foreground_tid, 1) != 0;
+            let attached_fg = foreground_tid != 0 && foreground_tid != current_tid && AttachThreadInput(current_tid, foreground_tid, 1) != 0;
 
             BringWindowToTop(hwnd);
             // SetForegroundWindow returns 0 on failure but doesn't set
@@ -406,20 +392,14 @@ mod platform {
         // if this signature ever widens (e.g. a label or process name),
         // route the value through a separate `-e "set p to <…>"` line
         // and reference it by variable instead of interpolating.
-        let script = format!(
-            "tell application \"System Events\" to set frontmost of (first process whose unix id is {pid}) to true"
-        );
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    Error::ToolMissing("osascript".into())
-                } else {
-                    Error::Internal(format!("osascript spawn: {e}"))
-                }
-            })?;
+        let script = format!("tell application \"System Events\" to set frontmost of (first process whose unix id is {pid}) to true");
+        let output = Command::new("osascript").arg("-e").arg(&script).output().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::ToolMissing("osascript".into())
+            } else {
+                Error::Internal(format!("osascript spawn: {e}"))
+            }
+        })?;
         if output.status.success() {
             return Ok(());
         }
@@ -433,9 +413,7 @@ mod platform {
             )));
         }
         if stderr.contains("-1728") || stderr.to_lowercase().contains("can\u{2019}t get") {
-            return Err(Error::NotFound(format!(
-                "no process with pid {pid}: {stderr}"
-            )));
+            return Err(Error::NotFound(format!("no process with pid {pid}: {stderr}")));
         }
         Err(Error::Internal(format!("osascript: {stderr}")))
     }
@@ -450,9 +428,7 @@ mod platform {
         // Wayland session detection: WAYLAND_DISPLAY is set and there's
         // no XWayland fallback we can usefully target via wmctrl.
         if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_none() {
-            return Err(Error::Unsupported(
-                "Wayland does not allow programmatic window focus".into(),
-            ));
+            return Err(Error::Unsupported("Wayland does not allow programmatic window focus".into()));
         }
         let listing = Command::new("wmctrl").arg("-lp").output().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -462,10 +438,7 @@ mod platform {
             }
         })?;
         if !listing.status.success() {
-            return Err(Error::Internal(format!(
-                "wmctrl -lp: {}",
-                String::from_utf8_lossy(&listing.stderr)
-            )));
+            return Err(Error::Internal(format!("wmctrl -lp: {}", String::from_utf8_lossy(&listing.stderr))));
         }
         let text = String::from_utf8_lossy(&listing.stdout);
         // wmctrl -lp output: "<id> <desktop> <pid> <host> <title>".
@@ -482,10 +455,7 @@ mod platform {
             .find_map(|line| {
                 let mut parts = line.split_whitespace();
                 let id = parts.next()?;
-                if !id.starts_with("0x")
-                    || id.len() < 3
-                    || !id[2..].chars().all(|c| c.is_ascii_hexdigit())
-                {
+                if !id.starts_with("0x") || id.len() < 3 || !id[2..].chars().all(|c| c.is_ascii_hexdigit()) {
                     return None;
                 }
                 let desktop = parts.next()?;
@@ -571,10 +541,7 @@ mod tests {
         }
         let f = OnlyPid;
         assert!(matches!(f.focus_hwnd(0x1234), Err(Error::Unsupported(_))));
-        assert!(matches!(
-            f.post_close_message(0x1234),
-            Err(Error::Unsupported(_))
-        ));
+        assert!(matches!(f.post_close_message(0x1234), Err(Error::Unsupported(_))));
     }
 
     #[test]
@@ -613,9 +580,6 @@ mod tests {
     fn real_focuser_post_close_rejects_null_and_invalid_handles() {
         let f = RealFocuser;
         assert!(matches!(f.post_close_message(0), Err(Error::NotFound(_))));
-        assert!(matches!(
-            f.post_close_message(0xDEAD_BEEF),
-            Err(Error::NotFound(_))
-        ));
+        assert!(matches!(f.post_close_message(0xDEAD_BEEF), Err(Error::NotFound(_))));
     }
 }

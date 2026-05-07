@@ -46,9 +46,7 @@ export function MainArea(): JSX.Element {
   // points to one for the active parent, else the parent session itself.
   // We lookup the candidate sub-session by id to confirm it is (still) a
   // terminal kind — application kinds never swap the viewport.
-  const activeSub = activeSubForActiveParent
-    ? allSubs.find((s) => s.id === activeSubForActiveParent)
-    : undefined;
+  const activeSub = activeSubForActiveParent ? allSubs.find((s) => s.id === activeSubForActiveParent) : undefined;
   const visibleSubId = activeSub && activeSub.kind === 'terminal' ? activeSub.id : undefined;
 
   // All terminal sub-sessions get mounted (hidden) so their xterm

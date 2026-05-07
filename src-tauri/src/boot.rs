@@ -180,9 +180,7 @@ where
                 // so the lossy form is safe to inspect.
                 let lossy = arg.to_string_lossy();
                 if lossy == "--workspace" || lossy.starts_with("--workspace=") {
-                    return Err(BootError::Cli(
-                        "--workspace value is not valid UTF-8".into(),
-                    ));
+                    return Err(BootError::Cli("--workspace value is not valid UTF-8".into()));
                 }
                 continue;
             }
@@ -192,27 +190,19 @@ where
                 return Err(BootError::Cli("--workspace= requires a value".into()));
             }
             if out.workspace.is_some() {
-                return Err(BootError::Cli(
-                    "--workspace specified more than once".into(),
-                ));
+                return Err(BootError::Cli("--workspace specified more than once".into()));
             }
             out.workspace = Some(PathBuf::from(value));
         } else if s == "--workspace" {
-            let next = args
-                .next()
-                .ok_or_else(|| BootError::Cli("--workspace requires a path argument".into()))?;
+            let next = args.next().ok_or_else(|| BootError::Cli("--workspace requires a path argument".into()))?;
             let next_str = next
                 .to_str()
                 .ok_or_else(|| BootError::Cli("--workspace value is not valid UTF-8".into()))?;
             if next_str.is_empty() || next_str.starts_with("--") {
-                return Err(BootError::Cli(
-                    "--workspace requires a path argument (got flag-like value)".into(),
-                ));
+                return Err(BootError::Cli("--workspace requires a path argument (got flag-like value)".into()));
             }
             if out.workspace.is_some() {
-                return Err(BootError::Cli(
-                    "--workspace specified more than once".into(),
-                ));
+                return Err(BootError::Cli("--workspace specified more than once".into()));
             }
             out.workspace = Some(PathBuf::from(next_str));
         }
@@ -229,10 +219,7 @@ pub fn hint_file_path(app_data_dir: &Path, branch: &str) -> PathBuf {
     if is_canonical_build(branch) {
         app_data_dir.join(HINT_FILE_NAME)
     } else {
-        app_data_dir
-            .join("branches")
-            .join(branch.trim())
-            .join(HINT_FILE_NAME)
+        app_data_dir.join("branches").join(branch.trim()).join(HINT_FILE_NAME)
     }
 }
 
@@ -331,15 +318,13 @@ pub fn resolve_boot_workspace(
     }
     if let Some(p) = read_legacy_workspace_root(app_data_dir) {
         match canonicalise_existing(&p) {
-            Ok(canon) => {
-                match validate_repo_root(canon.as_path(), git_runner, BootSource::Legacy) {
-                    Ok(()) => return Ok(Some((canon.into_inner(), BootSource::Legacy))),
-                    Err(e) => warn!(
-                        path = ?canon, error = %e,
-                        "legacy workspace_root is no longer a git repository; ignoring"
-                    ),
-                }
-            }
+            Ok(canon) => match validate_repo_root(canon.as_path(), git_runner, BootSource::Legacy) {
+                Ok(()) => return Ok(Some((canon.into_inner(), BootSource::Legacy))),
+                Err(e) => warn!(
+                    path = ?canon, error = %e,
+                    "legacy workspace_root is no longer a git repository; ignoring"
+                ),
+            },
             Err(_) => warn!(path = ?p, "legacy workspace_root no longer exists; ignoring"),
         }
     }
@@ -347,11 +332,9 @@ pub fn resolve_boot_workspace(
 }
 
 fn canonicalise_existing(p: &Path) -> Result<crate::store_layout::CanonicalPath, BootError> {
-    let canon = crate::store_layout::CanonicalPath::canonicalise(p).map_err(|source| {
-        BootError::Canonicalise {
-            path: p.to_path_buf(),
-            source,
-        }
+    let canon = crate::store_layout::CanonicalPath::canonicalise(p).map_err(|source| BootError::Canonicalise {
+        path: p.to_path_buf(),
+        source,
     })?;
     if !canon.as_path().is_dir() {
         return Err(BootError::InvalidWorkspace(canon.into_inner()));
@@ -396,11 +379,7 @@ fn canonicalise_existing(p: &Path) -> Result<crate::store_layout::CanonicalPath,
 ///   working tree, or otherwise non-primary).
 /// * [`BootError::NotARepository`] (with the underlying error in
 ///   `reason`) if `git_toplevel` itself errors.
-fn validate_repo_root(
-    canon: &Path,
-    git_runner: &dyn GitRunner,
-    origin: BootSource,
-) -> Result<(), BootError> {
+fn validate_repo_root(canon: &Path, git_runner: &dyn GitRunner, origin: BootSource) -> Result<(), BootError> {
     match git_runner.git_toplevel(canon) {
         Ok(Some(toplevel)) if toplevel == *canon => {
             // Reject linked worktrees / submodule working trees: their
@@ -494,11 +473,10 @@ pub fn bind_workspace(
 
     initialise_workspace_dir(&layout)?;
 
-    let store =
-        ConfigStore::from_layout(layout.clone()).map_err(|source| BootError::ConfigStore {
-            dir: layout.workspace_dir().to_path_buf(),
-            source,
-        })?;
+    let store = ConfigStore::from_layout(layout.clone()).map_err(|source| BootError::ConfigStore {
+        dir: layout.workspace_dir().to_path_buf(),
+        source,
+    })?;
 
     Ok(WorkspaceBinding {
         workspace_root: canon.into_inner(),
@@ -550,10 +528,7 @@ pub fn into_scope(binding: WorkspaceBinding) -> WorkspaceScope {
 ///   `WorkspaceScope` swap so a failure can abort cleanly with the
 ///   old workspace still bound (drop the new binding → release the
 ///   new OS lock).
-pub fn ensure_workspace_root_in_config(
-    store: &ConfigStore,
-    canonical: &Path,
-) -> Result<(), crate::types::Error> {
+pub fn ensure_workspace_root_in_config(store: &ConfigStore, canonical: &Path) -> Result<(), crate::types::Error> {
     let cfg = store.load_config();
     if cfg.workspace_root.as_deref() == Some(canonical) {
         return Ok(());
@@ -640,10 +615,7 @@ pub fn show_workspace_root_persist_dialog(workspace_dir: &Path, reason: &str) {
         .set_level(rfd::MessageLevel::Error)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
-    info!(
-        ?workspace_dir,
-        reason, "boot refused: failed to persist workspace_root into config.json"
-    );
+    info!(?workspace_dir, reason, "boot refused: failed to persist workspace_root into config.json");
 }
 
 /// Boot-time workspace resolution + binding orchestration. This is the
@@ -714,9 +686,7 @@ mod tests {
             Ok(vec![])
         }
         fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error> {
-            Ok(Some(
-                dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
-            ))
+            Ok(Some(dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())))
         }
         fn create_worktree(&self, _: &Path, _: &Path, _: &str) -> Result<PathBuf, Error> {
             unimplemented!("not used in boot tests")
@@ -839,12 +809,7 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let value = OsString::from_vec(vec![0xFF, 0xFE, 0xFD]);
-        let err = parse_cli_args::<_, OsString>([
-            OsString::from("arborist"),
-            OsString::from("--workspace"),
-            value,
-        ])
-        .unwrap_err();
+        let err = parse_cli_args::<_, OsString>([OsString::from("arborist"), OsString::from("--workspace"), value]).unwrap_err();
         match err {
             BootError::Cli(msg) => assert!(msg.contains("--workspace value is not valid UTF-8")),
             other => panic!("expected BootError::Cli, got {other:?}"),
@@ -883,12 +848,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let ws = td.path().join("ws");
         write_hint(td.path(), "feature/y", &ws).unwrap();
-        assert!(td
-            .path()
-            .join("branches")
-            .join("feature/y")
-            .join("last-workspace.json")
-            .exists());
+        assert!(td.path().join("branches").join("feature/y").join("last-workspace.json").exists());
     }
 
     #[test]
@@ -915,15 +875,8 @@ mod tests {
     #[test]
     fn read_legacy_extracts_workspace_root() {
         let td = TempDir::new().unwrap();
-        std::fs::write(
-            td.path().join("config.json"),
-            r#"{"workspaceRoot":"/some/path"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            read_legacy_workspace_root(td.path()).as_deref(),
-            Some(Path::new("/some/path"))
-        );
+        std::fs::write(td.path().join("config.json"), r#"{"workspaceRoot":"/some/path"}"#).unwrap();
+        assert_eq!(read_legacy_workspace_root(td.path()).as_deref(), Some(Path::new("/some/path")));
     }
 
     #[test]
@@ -953,20 +906,14 @@ mod tests {
         write_hint(td.path(), "main", &ws_hint).unwrap();
         std::fs::write(
             td.path().join("config.json"),
-            format!(
-                r#"{{"workspaceRoot":{:?}}}"#,
-                ws_legacy.to_string_lossy().replace('\\', "/")
-            ),
+            format!(r#"{{"workspaceRoot":{:?}}}"#, ws_legacy.to_string_lossy().replace('\\', "/")),
         )
         .unwrap();
         let args = CliArgs {
             workspace: Some(ws_cli.clone()),
         };
         let resolved = resolve_boot_workspace(&args, td.path(), "main", &YesRunner).unwrap();
-        assert_eq!(
-            resolved,
-            Some((dunce::canonicalize(&ws_cli).unwrap(), BootSource::Cli))
-        );
+        assert_eq!(resolved, Some((dunce::canonicalize(&ws_cli).unwrap(), BootSource::Cli)));
     }
 
     #[test]
@@ -976,12 +923,8 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::create_dir_all(ws.join(".git")).unwrap();
         write_hint(td.path(), "main", &ws).unwrap();
-        let resolved =
-            resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
-        assert_eq!(
-            resolved,
-            Some((dunce::canonicalize(&ws).unwrap(), BootSource::Hint))
-        );
+        let resolved = resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
+        assert_eq!(resolved, Some((dunce::canonicalize(&ws).unwrap(), BootSource::Hint)));
     }
 
     #[test]
@@ -992,25 +935,17 @@ mod tests {
         std::fs::create_dir_all(ws.join(".git")).unwrap();
         std::fs::write(
             td.path().join("config.json"),
-            format!(
-                r#"{{"workspaceRoot":{:?}}}"#,
-                ws.to_string_lossy().replace('\\', "/")
-            ),
+            format!(r#"{{"workspaceRoot":{:?}}}"#, ws.to_string_lossy().replace('\\', "/")),
         )
         .unwrap();
-        let resolved =
-            resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
-        assert_eq!(
-            resolved,
-            Some((dunce::canonicalize(&ws).unwrap(), BootSource::Legacy))
-        );
+        let resolved = resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
+        assert_eq!(resolved, Some((dunce::canonicalize(&ws).unwrap(), BootSource::Legacy)));
     }
 
     #[test]
     fn resolve_returns_none_when_nothing_resolves() {
         let td = TempDir::new().unwrap();
-        let resolved =
-            resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
+        let resolved = resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
         assert_eq!(resolved, None);
     }
 
@@ -1018,8 +953,7 @@ mod tests {
     fn resolve_skips_hint_when_target_missing() {
         let td = TempDir::new().unwrap();
         write_hint(td.path(), "main", &td.path().join("missing-ws")).unwrap();
-        let resolved =
-            resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
+        let resolved = resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &YesRunner).unwrap();
         assert_eq!(resolved, None);
     }
 
@@ -1044,14 +978,10 @@ mod tests {
         let td = TempDir::new().unwrap();
         let ws = td.path().join("not-a-repo");
         std::fs::create_dir_all(&ws).unwrap();
-        let args = CliArgs {
-            workspace: Some(ws.clone()),
-        };
+        let args = CliArgs { workspace: Some(ws.clone()) };
         let err = resolve_boot_workspace(&args, td.path(), "main", &NoRunner).unwrap_err();
         match err {
-            BootError::NotARepository {
-                workspace, origin, ..
-            } => {
+            BootError::NotARepository { workspace, origin, .. } => {
                 assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
                 // CLI-sourced rejections must be tagged so lib.rs can
                 // route to stderr/log instead of a native dialog
@@ -1072,12 +1002,9 @@ mod tests {
         let ws = td.path().join("not-a-repo");
         std::fs::create_dir_all(&ws).unwrap();
         let app_data = td.path().join("app-data");
-        let err =
-            bind_workspace(&ws, &app_data, "main", &NoRunner, BootSource::Picker).unwrap_err();
+        let err = bind_workspace(&ws, &app_data, "main", &NoRunner, BootSource::Picker).unwrap_err();
         match err {
-            BootError::NotARepository {
-                workspace, origin, ..
-            } => {
+            BootError::NotARepository { workspace, origin, .. } => {
                 assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
                 assert_eq!(origin, BootSource::Picker);
             }
@@ -1096,12 +1023,8 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         write_hint(td.path(), "main", &ws).unwrap();
 
-        let resolved =
-            resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &NoRunner).unwrap();
-        assert_eq!(
-            resolved, None,
-            "non-repo hint must silently fall through, not hard-fail"
-        );
+        let resolved = resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &NoRunner).unwrap();
+        assert_eq!(resolved, None, "non-repo hint must silently fall through, not hard-fail");
     }
 
     #[test]
@@ -1111,19 +1034,12 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(
             td.path().join("config.json"),
-            format!(
-                r#"{{"workspaceRoot":{:?}}}"#,
-                ws.to_string_lossy().replace('\\', "/")
-            ),
+            format!(r#"{{"workspaceRoot":{:?}}}"#, ws.to_string_lossy().replace('\\', "/")),
         )
         .unwrap();
 
-        let resolved =
-            resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &NoRunner).unwrap();
-        assert_eq!(
-            resolved, None,
-            "non-repo legacy workspace_root must silently fall through, not hard-fail"
-        );
+        let resolved = resolve_boot_workspace(&CliArgs::default(), td.path(), "main", &NoRunner).unwrap();
+        assert_eq!(resolved, None, "non-repo legacy workspace_root must silently fall through, not hard-fail");
     }
 
     // ----- bind_workspace ---------------------------------------------
@@ -1137,8 +1053,7 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::create_dir_all(ws.join(".git")).unwrap();
 
-        let binding =
-            bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap();
+        let binding = bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap();
         assert_eq!(binding.workspace_root, dunce::canonicalize(&ws).unwrap());
         // Seeded marker should exist.
         assert!(binding.layout.workspace_meta_path().exists());
@@ -1163,8 +1078,7 @@ mod tests {
         // assertion to Windows.
         #[cfg(target_os = "windows")]
         {
-            let err =
-                bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap_err();
+            let err = bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap_err();
             match err {
                 BootError::Contention { .. } => {}
                 other => panic!("expected Contention, got {other:?}"),
@@ -1177,14 +1091,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let app_data = td.path().join("app-data");
         std::fs::create_dir_all(&app_data).unwrap();
-        let err = bind_workspace(
-            &td.path().join("missing"),
-            &app_data,
-            "main",
-            &YesRunner,
-            BootSource::Picker,
-        )
-        .unwrap_err();
+        let err = bind_workspace(&td.path().join("missing"), &app_data, "main", &YesRunner, BootSource::Picker).unwrap_err();
         match err {
             BootError::Canonicalise { .. } => {}
             other => panic!("expected Canonicalise, got {other:?}"),
@@ -1205,8 +1112,7 @@ mod tests {
         let ws = td.path().join("not-a-repo");
         std::fs::create_dir_all(&ws).unwrap();
 
-        let err =
-            bind_workspace(&ws, &app_data, "main", &NoRunner, BootSource::Picker).unwrap_err();
+        let err = bind_workspace(&ws, &app_data, "main", &NoRunner, BootSource::Picker).unwrap_err();
         match err {
             BootError::NotARepository { workspace, .. } => {
                 assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
@@ -1217,8 +1123,7 @@ mod tests {
         // No side-effects: lock/seed must NOT have run for a rejected
         // path. (Otherwise we'd leave a stray .lock under app_data_dir
         // for a workspace that was never actually bound.)
-        let layout = StoreRoot::new(&app_data, "main")
-            .for_workspace(&crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap());
+        let layout = StoreRoot::new(&app_data, "main").for_workspace(&crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap());
         assert!(
             !layout.lock_path().exists(),
             "lock file must not be created when bind_workspace rejects the path"
@@ -1240,20 +1145,13 @@ mod tests {
         std::fs::create_dir_all(&app_data).unwrap();
         let ws = td.path().join("linked-worktree");
         std::fs::create_dir_all(&ws).unwrap();
-        std::fs::write(
-            ws.join(".git"),
-            "gitdir: /some/primary/repo/.git/worktrees/branch\n",
-        )
-        .unwrap();
+        std::fs::write(ws.join(".git"), "gitdir: /some/primary/repo/.git/worktrees/branch\n").unwrap();
 
         // YesRunner pretends the path IS the toplevel — same signal a
         // real `git rev-parse` would emit inside a linked worktree.
-        let err =
-            bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap_err();
+        let err = bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap_err();
         match err {
-            BootError::NotARepository {
-                workspace, reason, ..
-            } => {
+            BootError::NotARepository { workspace, reason, .. } => {
                 assert_eq!(workspace, dunce::canonicalize(&ws).unwrap());
                 assert!(
                     reason.contains("linked git worktree"),
@@ -1265,8 +1163,7 @@ mod tests {
 
         // No side-effects: a rejected worktree path must not leave a
         // lock or any seeded state under app_data_dir.
-        let layout = StoreRoot::new(&app_data, "main")
-            .for_workspace(&crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap());
+        let layout = StoreRoot::new(&app_data, "main").for_workspace(&crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap());
         assert!(
             !layout.lock_path().exists(),
             "lock file must not be created when bind_workspace rejects a linked worktree"
@@ -1284,9 +1181,7 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::create_dir_all(ws.join(".git")).unwrap();
 
-        let args = CliArgs {
-            workspace: Some(ws.clone()),
-        };
+        let args = CliArgs { workspace: Some(ws.clone()) };
         let binding = boot_select_workspace(&args, &app_data, "main", &YesRunner)
             .unwrap()
             .expect("should bind, not cancel");
@@ -1297,10 +1192,7 @@ mod tests {
 
         // workspace_root populated in the workspace's own config.json.
         let cfg = binding.store.load_config();
-        assert_eq!(
-            cfg.workspace_root.as_deref(),
-            Some(dunce::canonicalize(&ws).unwrap().as_path())
-        );
+        assert_eq!(cfg.workspace_root.as_deref(), Some(dunce::canonicalize(&ws).unwrap().as_path()));
     }
 
     /// Regression for round-9 review feedback (PR #32): if
@@ -1336,11 +1228,8 @@ mod tests {
         std::fs::create_dir_all(layout.workspace_dir()).unwrap();
         std::fs::create_dir_all(layout.settings_path()).unwrap();
 
-        let args = CliArgs {
-            workspace: Some(ws.clone()),
-        };
-        let err = boot_select_workspace(&args, &app_data, "main", &YesRunner)
-            .expect_err("boot must abort on persist failure");
+        let args = CliArgs { workspace: Some(ws.clone()) };
+        let err = boot_select_workspace(&args, &app_data, "main", &YesRunner).expect_err("boot must abort on persist failure");
 
         match err {
             BootError::WorkspaceRootPersist { dir, source: _ } => {

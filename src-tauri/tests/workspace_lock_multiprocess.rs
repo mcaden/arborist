@@ -128,10 +128,7 @@ fn spawn_locker_and_wait_ready(lock_path: &std::path::Path) -> Child {
 fn release_child(mut child: Child, lock_path: &std::path::Path) {
     drop(child.stdin.take());
     let status = child.wait().expect("locker wait");
-    assert!(
-        status.success(),
-        "locker exited with non-zero status: {status:?}"
-    );
+    assert!(status.success(), "locker exited with non-zero status: {status:?}");
 
     let start = Instant::now();
     loop {

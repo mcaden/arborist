@@ -173,8 +173,7 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
 
     // Block on the seed lock so concurrent first-launchers serialise
     // through the marker re-check below.
-    let _seed_lock =
-        WorkspaceLockGuard::acquire_blocking(layout.seed_lock_path()).map_err(SeedError::Lock)?;
+    let _seed_lock = WorkspaceLockGuard::acquire_blocking(layout.seed_lock_path()).map_err(SeedError::Lock)?;
 
     // Lock-then-recheck: the predecessor may already have written the
     // marker while we were waiting on the lock.
@@ -203,17 +202,9 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
     let dest_config = layout.settings_path();
     let strip_session_fields = !layout.root().is_canonical();
     if !dest_config.exists() {
-        if let Some(canonical_src) = layout
-            .root()
-            .canonical_workspace_settings_path(layout.workspace())
-        {
+        if let Some(canonical_src) = layout.root().canonical_workspace_settings_path(layout.workspace()) {
             if canonical_src.exists() {
-                copy_config_atomic(
-                    &canonical_src,
-                    &dest_config,
-                    &workspace_dir,
-                    strip_session_fields,
-                )?;
+                copy_config_atomic(&canonical_src, &dest_config, &workspace_dir, strip_session_fields)?;
                 outcomes.push(SeedOutcome::SeededConfigFromCanonical);
             }
         }
@@ -233,9 +224,7 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
     let dest_sessions = layout.sessions_path();
     if layout.root().is_canonical() && !dest_sessions.exists() {
         let legacy = layout.root().legacy_sessions_path();
-        if legacy.exists()
-            && legacy_workspace_root_matches(&layout.root().legacy_config_path(), layout)
-        {
+        if legacy.exists() && legacy_workspace_root_matches(&layout.root().legacy_config_path(), layout) {
             copy_atomic(&legacy, &dest_sessions, &workspace_dir)?;
             outcomes.push(SeedOutcome::SeededSessionsFromLegacy);
         }
@@ -352,8 +341,7 @@ fn copy_atomic(src: &Path, dest: &Path, dir: &Path) -> io::Result<()> {
     use std::io::Write as _;
     tmp.write_all(&bytes)?;
     tmp.flush()?;
-    tmp.persist(dest)
-        .map_err(|e: tempfile::PersistError| e.error)?;
+    tmp.persist(dest).map_err(|e: tempfile::PersistError| e.error)?;
     Ok(())
 }
 
@@ -367,12 +355,7 @@ fn copy_atomic(src: &Path, dest: &Path, dir: &Path) -> io::Result<()> {
 /// in, garbage out" to the config-store loader (which quarantines bad
 /// files at load time) than to silently lose every other setting in
 /// the source.
-fn copy_config_atomic(
-    src: &Path,
-    dest: &Path,
-    dir: &Path,
-    strip_session_fields: bool,
-) -> io::Result<()> {
+fn copy_config_atomic(src: &Path, dest: &Path, dir: &Path, strip_session_fields: bool) -> io::Result<()> {
     let bytes = fs::read(src)?;
     let payload = if strip_session_fields {
         match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -380,8 +363,7 @@ fn copy_config_atomic(
                 map.remove("lastOpenSessions");
                 map.remove("tabOrder");
                 map.remove("activeSessionId");
-                serde_json::to_vec_pretty(&serde_json::Value::Object(map))
-                    .map_err(io::Error::other)?
+                serde_json::to_vec_pretty(&serde_json::Value::Object(map)).map_err(io::Error::other)?
             }
             _ => bytes,
         }
@@ -392,16 +374,12 @@ fn copy_config_atomic(
     use std::io::Write as _;
     tmp.write_all(&payload)?;
     tmp.flush()?;
-    tmp.persist(dest)
-        .map_err(|e: tempfile::PersistError| e.error)?;
+    tmp.persist(dest).map_err(|e: tempfile::PersistError| e.error)?;
     Ok(())
 }
 
 fn write_marker_create_new(layout: &StoreLayout, dest: &Path) -> io::Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let meta = WorkspaceMeta {
         workspace: layout.workspace().as_path().to_path_buf(),
         branch: layout.root().branch().to_owned(),
@@ -413,10 +391,7 @@ fn write_marker_create_new(layout: &StoreLayout, dest: &Path) -> io::Result<()> 
     // outcome. We deliberately don't go through a temp-file rename
     // here because we *want* the loser to fail; an atomic rename
     // (which `tempfile::persist` does) would silently overwrite.
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dest)?;
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).open(dest)?;
     use std::io::Write as _;
     f.write_all(&bytes)?;
     f.flush()?;
@@ -499,29 +474,19 @@ mod tests {
         let report = initialise_workspace_dir(&branch_layout).unwrap();
 
         assert!(!report.already_seeded);
-        assert_eq!(
-            report.outcomes,
-            vec![SeedOutcome::SeededConfigFromCanonical]
-        );
+        assert_eq!(report.outcomes, vec![SeedOutcome::SeededConfigFromCanonical]);
         assert!(branch_layout.settings_path().exists());
-        assert!(
-            !branch_layout.sessions_path().exists(),
-            "branch build must never seed sessions",
-        );
+        assert!(!branch_layout.sessions_path().exists(), "branch build must never seed sessions",);
 
         // Strip assertion: session-list fields must be absent in the
         // seeded copy. Other fields must survive.
-        let seeded: serde_json::Value =
-            serde_json::from_slice(&fs::read(branch_layout.settings_path()).unwrap()).unwrap();
+        let seeded: serde_json::Value = serde_json::from_slice(&fs::read(branch_layout.settings_path()).unwrap()).unwrap();
         let obj = seeded.as_object().expect("seeded config is an object");
         assert!(
             !obj.contains_key("lastOpenSessions"),
             "lastOpenSessions must be stripped from branch-seeded config"
         );
-        assert!(
-            !obj.contains_key("tabOrder"),
-            "tabOrder must be stripped from branch-seeded config"
-        );
+        assert!(!obj.contains_key("tabOrder"), "tabOrder must be stripped from branch-seeded config");
         assert!(
             !obj.contains_key("activeSessionId"),
             "activeSessionId must be stripped from branch-seeded config"
@@ -565,24 +530,15 @@ mod tests {
         );
 
         let report = initialise_workspace_dir(&layout).unwrap();
-        assert!(report
-            .outcomes
-            .contains(&SeedOutcome::SeededConfigFromLegacy));
-        assert!(
-            !layout.sessions_path().exists(),
-            "branch build must never seed sessions"
-        );
+        assert!(report.outcomes.contains(&SeedOutcome::SeededConfigFromLegacy));
+        assert!(!layout.sessions_path().exists(), "branch build must never seed sessions");
 
-        let seeded: serde_json::Value =
-            serde_json::from_slice(&fs::read(layout.settings_path()).unwrap()).unwrap();
+        let seeded: serde_json::Value = serde_json::from_slice(&fs::read(layout.settings_path()).unwrap()).unwrap();
         let obj = seeded.as_object().expect("seeded config is an object");
         assert!(!obj.contains_key("lastOpenSessions"));
         assert!(!obj.contains_key("tabOrder"));
         assert!(!obj.contains_key("activeSessionId"));
-        assert_eq!(
-            obj.get("instructionSetsDir").and_then(|v| v.as_str()),
-            Some("/y")
-        );
+        assert_eq!(obj.get("instructionSetsDir").and_then(|v| v.as_str()), Some("/y"));
         assert_eq!(
             obj.get("workspaceRoot").and_then(|v| v.as_str()),
             Some(workspace_canon.as_path().to_string_lossy().as_ref()),
@@ -617,24 +573,16 @@ mod tests {
 
         let report = initialise_workspace_dir(&layout).unwrap();
         assert!(!report.already_seeded);
-        assert!(report
-            .outcomes
-            .contains(&SeedOutcome::SeededConfigFromLegacy));
-        assert!(report
-            .outcomes
-            .contains(&SeedOutcome::SeededSessionsFromLegacy));
+        assert!(report.outcomes.contains(&SeedOutcome::SeededConfigFromLegacy));
+        assert!(report.outcomes.contains(&SeedOutcome::SeededSessionsFromLegacy));
         assert!(layout.settings_path().exists());
         assert!(layout.sessions_path().exists());
 
         // Canonical build must preserve session-list fields verbatim
         // because it also seeded the paired sessions.json.
-        let seeded: serde_json::Value =
-            serde_json::from_slice(&fs::read(layout.settings_path()).unwrap()).unwrap();
+        let seeded: serde_json::Value = serde_json::from_slice(&fs::read(layout.settings_path()).unwrap()).unwrap();
         let obj = seeded.as_object().unwrap();
-        assert!(
-            obj.contains_key("lastOpenSessions"),
-            "canonical seed must NOT strip lastOpenSessions"
-        );
+        assert!(obj.contains_key("lastOpenSessions"), "canonical seed must NOT strip lastOpenSessions");
         assert!(obj.contains_key("tabOrder"));
         assert!(obj.contains_key("activeSessionId"));
     }
@@ -678,16 +626,11 @@ mod tests {
         let root = StoreRoot::new(app_data.path().to_path_buf(), "main".to_owned());
         let layout = root.for_workspace(&workspace_canon);
 
-        touch_json(
-            &root.legacy_config_path(),
-            &serde_json::json!({"configVersion": 4}),
-        );
+        touch_json(&root.legacy_config_path(), &serde_json::json!({"configVersion": 4}));
         fs::write(root.legacy_sessions_path(), b"{}").unwrap();
 
         let report = initialise_workspace_dir(&layout).unwrap();
-        assert!(report
-            .outcomes
-            .contains(&SeedOutcome::SeededConfigFromLegacy));
+        assert!(report.outcomes.contains(&SeedOutcome::SeededConfigFromLegacy));
         assert!(!layout.sessions_path().exists());
     }
 
@@ -702,10 +645,7 @@ mod tests {
         let root = StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
         let layout = root.for_workspace(&canon(workspace.path()));
 
-        touch_json(
-            &root.legacy_config_path(),
-            &serde_json::json!({"configVersion": 4}),
-        );
+        touch_json(&root.legacy_config_path(), &serde_json::json!({"configVersion": 4}));
 
         let report = initialise_workspace_dir(&layout).unwrap();
         assert_eq!(report.outcomes, vec![SeedOutcome::Fresh]);

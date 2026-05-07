@@ -23,12 +23,10 @@ pub mod vscode_owner;
 pub mod window_focus;
 
 pub use types::{
-    AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
-    PartialAppConfig, PartialDefaultInstructionSets, Session, SessionCreateArgs, SessionId,
-    SessionIdArg, SessionInputArgs, SessionMetricsEvent, SessionOutputEvent, SessionResizeArgs,
-    SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs,
-    WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeInfo,
-    CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
+    SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionMetricsEvent, SessionOutputEvent, SessionResizeArgs, SessionStatus,
+    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    WorktreeInfo, CONFIG_VERSION_CURRENT,
 };
 
 use tracing_appender::non_blocking::WorkerGuard;
@@ -65,17 +63,12 @@ pub fn init_tracing(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
             .with_ansi(false)
             .with_filter(make_env_filter());
 
-        let _ = tracing_subscriber::registry()
-            .with(console_layer)
-            .with(file_layer)
-            .try_init();
+        let _ = tracing_subscriber::registry().with(console_layer).with(file_layer).try_init();
 
         tracing::info!(path = %dir.display(), "file logging initialised");
         Some(guard)
     } else {
-        let _ = tracing_subscriber::registry()
-            .with(console_layer)
-            .try_init();
+        let _ = tracing_subscriber::registry().with(console_layer).try_init();
 
         None
     }
@@ -161,12 +154,7 @@ pub fn run() {
             // AppContext below so the in-app commands share it.
             let boot_git_runner = git::RealGitRunner;
 
-            let binding = match boot::boot_select_workspace(
-                &cli_args,
-                &app_data_dir,
-                BUILD_BRANCH,
-                &boot_git_runner,
-            ) {
+            let binding = match boot::boot_select_workspace(&cli_args, &app_data_dir, BUILD_BRANCH, &boot_git_runner) {
                 Ok(Some(b)) => b,
                 Ok(None) => {
                     tracing::info!("user cancelled workspace picker; exiting");
@@ -178,11 +166,7 @@ pub fn run() {
                     drop(log_guard);
                     std::process::exit(1);
                 }
-                Err(boot::BootError::NotARepository {
-                    workspace,
-                    reason,
-                    origin,
-                }) => {
+                Err(boot::BootError::NotARepository { workspace, reason, origin }) => {
                     // Only the user-driven picker arm justifies a native
                     // dialog. CLI / hint / legacy failures are surfaced
                     // via stderr + tracing::error so headless or
@@ -235,17 +219,12 @@ pub fn run() {
             // currently-bound store, even after a switch.
             let scope = boot::into_scope(binding);
             let workspace_handle = std::sync::Arc::new(std::sync::RwLock::new(scope));
-            let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(
-                pty_pool::PortablePtySpawner,
-            )));
-            let sink =
-                commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
+            let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(pty_pool::PortablePtySpawner)));
+            let sink = commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
             let metrics_emit = commands::build_production_metrics_emit(app.handle().clone());
-            let ai_session_discover =
-                commands::build_production_ai_session_discover(workspace_handle.clone());
+            let ai_session_discover = commands::build_production_ai_session_discover(workspace_handle.clone());
             let turn_emit = commands::build_production_turn_emit(app.handle().clone());
-            let git_runner: std::sync::Arc<dyn git::GitRunner> =
-                std::sync::Arc::new(git::RealGitRunner);
+            let git_runner: std::sync::Arc<dyn git::GitRunner> = std::sync::Arc::new(git::RealGitRunner);
             let ctx = std::sync::Arc::new(commands::AppContext::with_workspace(
                 pool,
                 workspace_handle,
@@ -264,23 +243,15 @@ pub fn run() {
             // Phase 2: parallel sub-session pool + store + sink. Lives
             // alongside the existing AppContext so existing tests don't
             // need to know about it.
-            let sub_pool = std::sync::Arc::new(sub_sessions::SubPtyPool::new(std::sync::Arc::new(
-                pty_pool::PortablePtySpawner,
-            )));
+            let sub_pool = std::sync::Arc::new(sub_sessions::SubPtyPool::new(std::sync::Arc::new(pty_pool::PortablePtySpawner)));
             let sub_store = std::sync::Arc::new(sub_sessions::SubSessionStore::new());
-            let sub_sink =
-                commands::build_production_sub_sink(app.handle().clone(), sub_store.clone());
+            let sub_sink = commands::build_production_sub_sink(app.handle().clone(), sub_store.clone());
             // Phase 3: application sub-tabs. Their pool reuses the same
             // sink (output is no-op for apps, status / exited flow into
             // the same Tauri events as terminal sub-tabs).
-            let app_pool = std::sync::Arc::new(app_launcher::AppPool::new(std::sync::Arc::new(
-                app_launcher::RealAppSpawner,
-            )));
-            let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> =
-                std::sync::Arc::new(window_focus::RealFocuser);
-            let icon_cache = std::sync::Arc::new(process_icon::IconCache::new(
-                std::sync::Arc::new(process_icon::RealIconExtractor),
-            ));
+            let app_pool = std::sync::Arc::new(app_launcher::AppPool::new(std::sync::Arc::new(app_launcher::RealAppSpawner)));
+            let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> = std::sync::Arc::new(window_focus::RealFocuser);
+            let icon_cache = std::sync::Arc::new(process_icon::IconCache::new(std::sync::Arc::new(process_icon::RealIconExtractor)));
             let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
                 sub_pool, sub_store, sub_sink, app_pool, focuser, icon_cache,
             ));
@@ -303,16 +274,10 @@ pub fn run() {
             {
                 let store = ctx_for_backfill.store();
                 let cache = sub_ctx.icon_cache.clone();
-                if let Err(err) =
-                    store.save_config_with(types::PartialAppConfig::default(), move |cfg| {
-                        let cwd = cfg
-                            .workspace_root
-                            .clone()
-                            .filter(|p| p.is_dir())
-                            .unwrap_or_else(std::env::temp_dir);
-                        icon_backfill::backfill_icons(cfg, &cache, &cwd)
-                    })
-                {
+                if let Err(err) = store.save_config_with(types::PartialAppConfig::default(), move |cfg| {
+                    let cwd = cfg.workspace_root.clone().filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir);
+                    icon_backfill::backfill_icons(cfg, &cache, &cwd)
+                }) {
                     tracing::warn!(
                         %err,
                         "startup icon backfill: failed to persist refreshed config"
@@ -379,9 +344,6 @@ mod tests {
     #[test]
     fn title_on_feature_branch_includes_name() {
         assert_eq!(window_title_for_branch("feature/x"), "Arborist - feature/x");
-        assert_eq!(
-            window_title_for_branch("  branch-name  "),
-            "Arborist - branch-name"
-        );
+        assert_eq!(window_title_for_branch("  branch-name  "), "Arborist - branch-name");
     }
 }

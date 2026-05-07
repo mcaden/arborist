@@ -239,53 +239,25 @@ mod platform {
     extern "system" {
         fn OpenProcess(access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
         fn CloseHandle(handle: HANDLE) -> BOOL;
-        fn QueryFullProcessImageNameW(
-            handle: HANDLE,
-            flags: DWORD,
-            buf: *mut u16,
-            size: *mut DWORD,
-        ) -> BOOL;
+        fn QueryFullProcessImageNameW(handle: HANDLE, flags: DWORD, buf: *mut u16, size: *mut DWORD) -> BOOL;
     }
 
     #[link(name = "shell32")]
     extern "system" {
-        fn SHGetFileInfoW(
-            path: *const u16,
-            file_attrs: DWORD,
-            psfi: *mut ShFileInfoW,
-            cb: UINT,
-            flags: UINT,
-        ) -> isize;
+        fn SHGetFileInfoW(path: *const u16, file_attrs: DWORD, psfi: *mut ShFileInfoW, cb: UINT, flags: UINT) -> isize;
     }
 
     #[link(name = "user32")]
     extern "system" {
         fn DestroyIcon(icon: HICON) -> BOOL;
-        fn DrawIconEx(
-            hdc: HDC,
-            x: i32,
-            y: i32,
-            icon: HICON,
-            cx: i32,
-            cy: i32,
-            frame_index: UINT,
-            brush: HMODULE,
-            flags: UINT,
-        ) -> BOOL;
+        fn DrawIconEx(hdc: HDC, x: i32, y: i32, icon: HICON, cx: i32, cy: i32, frame_index: UINT, brush: HMODULE, flags: UINT) -> BOOL;
     }
 
     #[link(name = "gdi32")]
     extern "system" {
         fn CreateCompatibleDC(hdc: HDC) -> HDC;
         fn DeleteDC(hdc: HDC) -> BOOL;
-        fn CreateDIBSection(
-            hdc: HDC,
-            bmi: *const BitmapInfo,
-            usage: UINT,
-            bits: *mut *mut c_void,
-            section: HANDLE,
-            offset: DWORD,
-        ) -> HBITMAP;
+        fn CreateDIBSection(hdc: HDC, bmi: *const BitmapInfo, usage: UINT, bits: *mut *mut c_void, section: HANDLE, offset: DWORD) -> HBITMAP;
         fn DeleteObject(obj: HBITMAP) -> BOOL;
         fn SelectObject(hdc: HDC, obj: HBITMAP) -> HBITMAP;
     }
@@ -370,8 +342,7 @@ mod platform {
         };
         let mut bits: *mut c_void = ptr::null_mut();
         // SAFETY: hdc valid; bmi valid; bits is &mut.
-        let dib =
-            unsafe { CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0) };
+        let dib = unsafe { CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0) };
         if dib.is_null() || bits.is_null() {
             // SAFETY: hdc was created successfully.
             unsafe { DeleteDC(hdc) };
@@ -380,8 +351,7 @@ mod platform {
         // SAFETY: hdc and dib are both valid GDI handles.
         let prev = unsafe { SelectObject(hdc, dib) };
         // SAFETY: hdc valid; icon valid; size literal.
-        let drew =
-            unsafe { DrawIconEx(hdc, 0, 0, icon, size, size, 0, ptr::null_mut(), DI_NORMAL) };
+        let drew = unsafe { DrawIconEx(hdc, 0, 0, icon, size, size, 0, ptr::null_mut(), DI_NORMAL) };
         // Restore the original bitmap before deleting the DIB.
         // SAFETY: prev was returned by SelectObject above.
         if !prev.is_null() {
@@ -475,12 +445,9 @@ mod platform {
             return None;
         }
         // Ask plutil for the icon file name (preinstalled on macOS).
-        let icon_name = run_capture(
-            "plutil",
-            &["-extract", "CFBundleIconFile", "raw", plist.to_str()?],
-        )?
-        .trim()
-        .to_string();
+        let icon_name = run_capture("plutil", &["-extract", "CFBundleIconFile", "raw", plist.to_str()?])?
+            .trim()
+            .to_string();
         if icon_name.is_empty() {
             return None;
         }
@@ -501,11 +468,7 @@ mod platform {
         };
         // Convert .icns → PNG via `sips` (preinstalled). Write to a
         // tempfile so we don't have to parse stdout.
-        let tmp = tempfile::Builder::new()
-            .prefix("arborist-icon-")
-            .suffix(".png")
-            .tempfile()
-            .ok()?;
+        let tmp = tempfile::Builder::new().prefix("arborist-icon-").suffix(".png").tempfile().ok()?;
         // Pass paths as `OsStr` so we don't silently fail on bundles
         // whose names aren't valid UTF-8. `Command::arg` accepts
         // `AsRef<OsStr>`, so the OS path is forwarded verbatim.
@@ -527,12 +490,7 @@ mod platform {
     fn find_app_bundle(exe: &Path) -> Option<PathBuf> {
         let mut p = exe.parent();
         while let Some(dir) = p {
-            if dir
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|s| s.ends_with(".app"))
-                .unwrap_or(false)
-            {
+            if dir.file_name().and_then(|s| s.to_str()).map(|s| s.ends_with(".app")).unwrap_or(false) {
                 return Some(dir.to_path_buf());
             }
             p = dir.parent();
@@ -733,11 +691,7 @@ mod platform {
         let sizes = ["256x256", "128x128", "64x64", "48x48", "32x32"];
         for base in &bases {
             for size in &sizes {
-                let p = base
-                    .join("hicolor")
-                    .join(size)
-                    .join("apps")
-                    .join(format!("{name}.png"));
+                let p = base.join("hicolor").join(size).join("apps").join(format!("{name}.png"));
                 if p.is_file() {
                     if let Ok(b) = fs::read(&p) {
                         return Some(b);
@@ -787,8 +741,7 @@ mod platform {
 
         #[test]
         fn exec_matches_basename_handles_env_prefix() {
-            let desktop =
-                "[Desktop Entry]\nExec=env MOZ_USE_XINPUT2=1 /usr/lib/firefox/firefox %u\n";
+            let desktop = "[Desktop Entry]\nExec=env MOZ_USE_XINPUT2=1 /usr/lib/firefox/firefox %u\n";
             assert!(exec_matches_basename(desktop, "firefox"));
         }
 
@@ -838,9 +791,7 @@ mod platform {
             // also resolves to false. Either way: rejected.
             assert!(!is_within_allowed_root(Path::new("/etc/shadow")));
             assert!(!is_within_allowed_root(Path::new("/dev/zero")));
-            assert!(!is_within_allowed_root(Path::new(
-                "/tmp/arborist-test-not-an-icon-root"
-            )));
+            assert!(!is_within_allowed_root(Path::new("/tmp/arborist-test-not-an-icon-root")));
         }
 
         #[test]
@@ -849,9 +800,7 @@ mod platform {
             // containers, minimal images). We can only positively
             // assert acceptance when the OS actually has an XDG icon
             // tree to canonicalise against.
-            let real_root = allowed_icon_roots()
-                .into_iter()
-                .find(|r| r.is_dir() && r.canonicalize().is_ok());
+            let real_root = allowed_icon_roots().into_iter().find(|r| r.is_dir() && r.canonicalize().is_ok());
             let Some(root) = real_root else {
                 eprintln!("skipping: no XDG icon root present on this host");
                 return;
@@ -1015,10 +964,6 @@ mod tests {
         for pid in 0..(MAX_CACHED_ICONS as u32 + 8) {
             assert!(cache.data_uri_for(pid).is_some());
         }
-        assert_eq!(
-            cache.cached_count(),
-            MAX_CACHED_ICONS,
-            "cache must stop growing at the configured cap"
-        );
+        assert_eq!(cache.cached_count(), MAX_CACHED_ICONS, "cache must stop growing at the configured cap");
     }
 }

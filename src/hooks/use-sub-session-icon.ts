@@ -26,7 +26,5 @@ export function useSubSessionIcon(id: SubSessionId | undefined): string | undefi
   const defId = sub?.defId;
   // Subscribe to a single field so we don't re-render on every
   // unrelated config update.
-  return useConfigStore((s) =>
-    defId ? s.config.customProcesses.find((d) => d.id === defId)?.iconDataUri : undefined,
-  );
+  return useConfigStore((s) => (defId ? s.config.customProcesses.find((d) => d.id === defId)?.iconDataUri : undefined));
 }

@@ -101,11 +101,7 @@ pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation,
         Tool::Copilot => build_copilot(inputs, quoter),
     };
 
-    let mut parts: Vec<String> = inputs
-        .prelaunch_commands
-        .iter()
-        .map(String::clone)
-        .collect();
+    let mut parts: Vec<String> = inputs.prelaunch_commands.iter().map(String::clone).collect();
     parts.push(cli_cmd);
     let composed_command = parts.join(" && ");
 
@@ -227,13 +223,9 @@ pub fn validate_worktree(path: &Path) -> Result<PathBuf, Error> {
     if !path.exists() {
         return Err(Error::WorktreeMissing(path.to_path_buf()));
     }
-    let canonical = dunce::canonicalize(path)
-        .map_err(|e| Error::InvalidPath(format!("{}: {e}", path.display())))?;
+    let canonical = dunce::canonicalize(path).map_err(|e| Error::InvalidPath(format!("{}: {e}", path.display())))?;
     if !canonical.is_dir() {
-        return Err(Error::InvalidPath(format!(
-            "{} is not a directory",
-            canonical.display()
-        )));
+        return Err(Error::InvalidPath(format!("{} is not a directory", canonical.display())));
     }
     Ok(canonical)
 }
@@ -291,10 +283,7 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
         Tool::Copilot => {
             let path = copilot_otel_path(session_id);
             vec![
-                (
-                    "COPILOT_OTEL_FILE_EXPORTER_PATH".to_owned(),
-                    path.into_os_string(),
-                ),
+                ("COPILOT_OTEL_FILE_EXPORTER_PATH".to_owned(), path.into_os_string()),
                 ("COPILOT_OTEL_ENABLED".to_owned(), "true".into()),
                 ("OTEL_BSP_SCHEDULE_DELAY".to_owned(), "1000".into()),
             ]
@@ -355,10 +344,7 @@ pub fn with_resume(composed_command: &str, _tool: Tool, ai_session_id: &str) -> 
 /// without auditing every shell context the resulting command flows
 /// through (`cmd.exe /c`, `.cmd` shim → CRT re-parse, `sh -c`).
 fn is_shell_safe_token(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 // ---------------------------------------------------------------------------
@@ -533,11 +519,7 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
     let temp_path = dir.join("system-prompt.md");
 
     let header = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
-    let body = format!(
-        "{header}\n---\n{contents}",
-        header = header,
-        contents = contents,
-    );
+    let body = format!("{header}\n---\n{contents}", header = header, contents = contents,);
 
     let cli_cmd = format!(
         "{program} --system-prompt {quoted}",
@@ -676,29 +658,14 @@ mod tests {
 
     #[test]
     fn claude_compose_no_prelaunch() {
-        let wt = PathBuf::from(if cfg!(windows) {
-            "C:\\repos\\my-feature"
-        } else {
-            "/repos/my-feature"
-        });
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\repos\\my-feature" } else { "/repos/my-feature" });
         let is = instr_set(Tool::Claude);
         let body = "# Instructions\nBe helpful.\n";
-        let r = compose_command(&inputs(
-            Tool::Claude,
-            &wt,
-            "my-feature",
-            Some(&is),
-            &[],
-            Some(body),
-        ))
-        .expect("compose");
+        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", Some(&is), &[], Some(body))).expect("compose");
 
         let expected_path = session_temp_dir(&fixed_id()).join("system-prompt.md");
         let quoted = host_quote(&expected_path.to_string_lossy());
-        assert_eq!(
-            r.composed_command,
-            format!("claude --system-prompt {quoted}")
-        );
+        assert_eq!(r.composed_command, format!("claude --system-prompt {quoted}"));
 
         assert_eq!(r.temp_files.len(), 1);
         assert_eq!(r.temp_files[0].path, expected_path);
@@ -719,19 +686,9 @@ mod tests {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Claude);
         let pre = vec!["nvm use 20".to_owned(), "source .env".to_owned()];
-        let r = compose_command(&inputs(
-            Tool::Claude,
-            &wt,
-            "wt",
-            Some(&is),
-            &pre,
-            Some("body"),
-        ))
-        .expect("compose");
+        let r = compose_command(&inputs(Tool::Claude, &wt, "wt", Some(&is), &pre, Some("body"))).expect("compose");
 
-        assert!(r
-            .composed_command
-            .starts_with("nvm use 20 && source .env && claude --system-prompt "));
+        assert!(r.composed_command.starts_with("nvm use 20 && source .env && claude --system-prompt "));
     }
 
     #[test]
@@ -761,13 +718,8 @@ mod tests {
 
     #[test]
     fn claude_compose_without_instruction_set_drops_system_prompt() {
-        let wt = PathBuf::from(if cfg!(windows) {
-            "C:\\repos\\my-feature"
-        } else {
-            "/repos/my-feature"
-        });
-        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", None, &[], None))
-            .expect("compose");
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\repos\\my-feature" } else { "/repos/my-feature" });
+        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", None, &[], None)).expect("compose");
 
         assert_eq!(r.composed_command, "claude");
         assert!(r.temp_files.is_empty());
@@ -780,8 +732,7 @@ mod tests {
     fn claude_compose_without_instruction_set_keeps_prelaunch() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let pre = vec!["nvm use 20".to_owned()];
-        let r =
-            compose_command(&inputs(Tool::Claude, &wt, "wt", None, &pre, None)).expect("compose");
+        let r = compose_command(&inputs(Tool::Claude, &wt, "wt", None, &pre, None)).expect("compose");
         assert_eq!(r.composed_command, "nvm use 20 && claude");
         assert!(r.temp_files.is_empty());
     }
@@ -792,15 +743,7 @@ mod tests {
     fn copilot_compose_no_prelaunch() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Copilot);
-        let r = compose_command(&inputs(
-            Tool::Copilot,
-            &wt,
-            "wt",
-            Some(&is),
-            &[],
-            Some("ignored"),
-        ))
-        .expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), &[], Some("ignored"))).expect("compose");
 
         // Modern `copilot` starts in interactive mode by default. The legacy
         // `--interactive <string>` flag was removed and now triggers a
@@ -821,28 +764,15 @@ mod tests {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Copilot);
         let pre = vec!["echo hi".to_owned(), "true".to_owned()];
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), &pre, Some("")))
-            .expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), &pre, Some(""))).expect("compose");
         assert_eq!(r.composed_command, "echo hi && true && copilot");
     }
 
     #[test]
     fn copilot_compose_does_not_leak_worktree_path_when_path_contains_spaces() {
-        let wt = PathBuf::from(if cfg!(windows) {
-            "C:\\my repos\\feature"
-        } else {
-            "/my repos/feature"
-        });
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\my repos\\feature" } else { "/my repos/feature" });
         let is = instr_set(Tool::Copilot);
-        let r = compose_command(&inputs(
-            Tool::Copilot,
-            &wt,
-            "feature",
-            Some(&is),
-            &[],
-            Some(""),
-        ))
-        .expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "feature", Some(&is), &[], Some(""))).expect("compose");
         // Bare `copilot` — no worktree path, no `--interactive`, regardless
         // of how spicy the path looks. This is the regression test for the
         // pre-removal behaviour where we used to interpolate the path into
@@ -861,9 +791,7 @@ mod tests {
         let r = compose_command(&i).expect("compose");
         // Override is inserted verbatim in place of the bare `claude`
         // token; the `--system-prompt` flag is still appended.
-        assert!(r
-            .composed_command
-            .starts_with("npx claude --model sonnet --system-prompt "));
+        assert!(r.composed_command.starts_with("npx claude --model sonnet --system-prompt "));
     }
 
     #[test]
@@ -910,11 +838,7 @@ mod tests {
     fn with_resume_appends_after_system_prompt() {
         let base = "claude --system-prompt /tmp/x.txt";
         let out = with_resume(base, Tool::Claude, "uuid-1");
-        assert_eq!(
-            out,
-            format!("{base} --resume uuid-1"),
-            "resume must be appended after existing flags"
-        );
+        assert_eq!(out, format!("{base} --resume uuid-1"), "resume must be appended after existing flags");
     }
 
     #[test]
@@ -937,10 +861,7 @@ mod tests {
         let out = with_resume("copilot", Tool::Copilot, uuid);
         assert_eq!(out, format!("copilot --resume {uuid}"));
         assert!(!out.contains('"'), "no double quotes around safe id: {out}");
-        assert!(
-            !out.contains('\''),
-            "no single quotes around safe id: {out}"
-        );
+        assert!(!out.contains('\''), "no single quotes around safe id: {out}");
     }
 
     #[test]
@@ -1030,10 +951,7 @@ mod tests {
                 decoded_cmd.push(c);
             } else {
                 // Any bare `%`, `!`, or `^` here means the encoder failed.
-                assert!(
-                    !matches!(c, '%' | '!'),
-                    "{c:?} not caret-escaped in {inner:?}"
-                );
+                assert!(!matches!(c, '%' | '!'), "{c:?} not caret-escaped in {inner:?}");
                 decoded_cmd.push(c);
             }
         }
@@ -1160,10 +1078,7 @@ mod tests {
         assert_eq!(p1, p2);
         // Path layout: <os-temp>/arborist/<uuid>/
         assert!(p1.ends_with(id.0.to_string()));
-        assert_eq!(
-            p1.parent().and_then(|p| p.file_name()),
-            Some(std::ffi::OsStr::new("arborist"))
-        );
+        assert_eq!(p1.parent().and_then(|p| p.file_name()), Some(std::ffi::OsStr::new("arborist")));
     }
 
     // --- validate_worktree_name (Roadmap §2.3) ---------------------------
@@ -1202,15 +1117,9 @@ mod tests {
     #[case("foo\x7fbar", "control characters")]
     #[case("feature/.hidden", "start with '.'")]
     #[case("feature/foo.lock/bar", ".lock")]
-    fn validate_worktree_name_rejects_invalid_inputs(
-        #[case] name: &str,
-        #[case] reason_substring: &str,
-    ) {
+    fn validate_worktree_name_rejects_invalid_inputs(#[case] name: &str, #[case] reason_substring: &str) {
         let err = validate_worktree_name(name).expect_err("should reject");
-        assert!(
-            err.contains(reason_substring),
-            "error {err:?} did not mention {reason_substring:?}",
-        );
+        assert!(err.contains(reason_substring), "error {err:?} did not mention {reason_substring:?}",);
     }
 
     #[test]
@@ -1232,22 +1141,15 @@ mod tests {
     fn env_for_tool_copilot_returns_otel_keys() {
         let id = fixed_id();
         let env = env_for_tool(Tool::Copilot, &id);
-        let map: std::collections::HashMap<String, std::ffi::OsString> =
-            env.iter().cloned().collect();
+        let map: std::collections::HashMap<String, std::ffi::OsString> = env.iter().cloned().collect();
 
         // Path is deterministic and matches the single-source-of-truth helper.
         let expected = copilot_otel_path(&id).into_os_string();
         assert_eq!(map.get("COPILOT_OTEL_FILE_EXPORTER_PATH"), Some(&expected),);
-        assert_eq!(
-            map.get("COPILOT_OTEL_ENABLED"),
-            Some(&std::ffi::OsString::from("true"))
-        );
+        assert_eq!(map.get("COPILOT_OTEL_ENABLED"), Some(&std::ffi::OsString::from("true")));
         // Standard OTel SDK env var; literal "1000" (ms) tightens batch
         // flush from the 5s default to ~1Hz.
-        assert_eq!(
-            map.get("OTEL_BSP_SCHEDULE_DELAY"),
-            Some(&std::ffi::OsString::from("1000")),
-        );
+        assert_eq!(map.get("OTEL_BSP_SCHEDULE_DELAY"), Some(&std::ffi::OsString::from("1000")),);
         assert_eq!(env.len(), 3, "exactly three env vars for Copilot");
     }
 
@@ -1255,10 +1157,8 @@ mod tests {
     fn env_for_tool_copilot_path_changes_with_session_id() {
         let a = SessionId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
         let b = SessionId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap());
-        let path_a: std::collections::HashMap<_, _> =
-            env_for_tool(Tool::Copilot, &a).into_iter().collect();
-        let path_b: std::collections::HashMap<_, _> =
-            env_for_tool(Tool::Copilot, &b).into_iter().collect();
+        let path_a: std::collections::HashMap<_, _> = env_for_tool(Tool::Copilot, &a).into_iter().collect();
+        let path_b: std::collections::HashMap<_, _> = env_for_tool(Tool::Copilot, &b).into_iter().collect();
         assert_ne!(
             path_a.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
             path_b.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),

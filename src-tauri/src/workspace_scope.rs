@@ -71,11 +71,7 @@ impl WorkspaceScope {
     /// Production constructor: bind a store + workspace path to a
     /// concretely-acquired OS lock.
     #[must_use]
-    pub fn new(
-        workspace_root: Option<PathBuf>,
-        store: ConfigStore,
-        lock: WorkspaceLockGuard,
-    ) -> Self {
+    pub fn new(workspace_root: Option<PathBuf>, store: ConfigStore, lock: WorkspaceLockGuard) -> Self {
         Self {
             workspace_root,
             store,

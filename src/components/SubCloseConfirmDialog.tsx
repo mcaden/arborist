@@ -19,11 +19,7 @@
 
 import { useEffect, useRef } from 'react';
 
-import {
-  usePendingSubClose,
-  useSubSessionActions,
-  useSubSessionById,
-} from '@/store/sub-session-store';
+import { usePendingSubClose, useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 
 export function SubCloseConfirmDialog(): JSX.Element | null {
   const pendingId = usePendingSubClose();
@@ -68,19 +64,14 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
     try {
       await actions.close(pendingId, intent);
     } catch (error: unknown) {
-      const detail =
-        error instanceof Error && error.message.length > 0 ? error.message : String(error);
+      const detail = error instanceof Error && error.message.length > 0 ? error.message : String(error);
       alertMessage = `Close request failed:\n\n${detail}`;
     } finally {
       // close() auto-clears pendingClose on the success path; ensure
       // it's also cleared on rollback so the dialog disappears.
       actions.cancelClose();
     }
-    if (
-      alertMessage !== null &&
-      typeof window !== 'undefined' &&
-      typeof window.alert === 'function'
-    ) {
+    if (alertMessage !== null && typeof window !== 'undefined' && typeof window.alert === 'function') {
       window.alert(alertMessage);
     }
   };
@@ -99,8 +90,7 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
         Close sub-session &ldquo;{sub.label}&rdquo;?
       </h2>
       <p className="mb-4 max-w-md text-sm text-slate-600 dark:text-slate-300">
-        You can close just the Arborist tab and leave the application running, or also ask the
-        application to close its window.
+        You can close just the Arborist tab and leave the application running, or also ask the application to close its window.
       </p>
       <div className="flex flex-wrap justify-end gap-2">
         <button

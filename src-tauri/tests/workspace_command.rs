@@ -53,17 +53,8 @@ impl GitRunner for FakeGitRunner {
     fn git_toplevel(&self, _: &Path) -> Result<Option<PathBuf>, Error> {
         Ok(self.toplevel.lock().unwrap().clone())
     }
-    fn create_worktree(
-        &self,
-        repo_root: &Path,
-        relative_path: &Path,
-        branch: &str,
-    ) -> Result<PathBuf, Error> {
-        *self.last_create.lock().unwrap() = Some((
-            repo_root.to_path_buf(),
-            relative_path.to_path_buf(),
-            branch.to_owned(),
-        ));
+    fn create_worktree(&self, repo_root: &Path, relative_path: &Path, branch: &str) -> Result<PathBuf, Error> {
+        *self.last_create.lock().unwrap() = Some((repo_root.to_path_buf(), relative_path.to_path_buf(), branch.to_owned()));
         match &*self.create_outcome.lock().unwrap() {
             Ok(()) => {
                 let joined = repo_root.join(relative_path);
@@ -133,13 +124,7 @@ fn workspace_validate_rejects_relative_path() {
 fn workspace_validate_rejects_missing_path() {
     let store = TempDir::new().unwrap();
     let ctx = build_ctx(FakeGitRunner::new(), &store);
-    let out = workspace_validate_impl(
-        &ctx,
-        Path::new("/this/does/not/exist/arborist-test-xyz"),
-        None,
-        "",
-    )
-    .unwrap();
+    let out = workspace_validate_impl(&ctx, Path::new("/this/does/not/exist/arborist-test-xyz"), None, "").unwrap();
     assert!(!out.valid);
 }
 
@@ -180,11 +165,7 @@ fn workspace_validate_rejects_linked_worktree() {
     let store = TempDir::new().unwrap();
     let dir = TempDir::new().unwrap();
     // Simulate a linked worktree on disk: `.git` is a *file*, not a dir.
-    std::fs::write(
-        dir.path().join(".git"),
-        "gitdir: /some/primary/repo/.git/worktrees/branch\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join(".git"), "gitdir: /some/primary/repo/.git/worktrees/branch\n").unwrap();
     let runner = FakeGitRunner::new();
     // git_toplevel still returns the path itself — the runner can't
     // tell the difference, just like the real `git rev-parse`.
@@ -264,8 +245,7 @@ fn workspace_validate_reports_held_lock_as_already_open_windows() {
     let layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
         .for_workspace(&arborist_lib::store_layout::CanonicalPath::assume_canonical(canon));
     std::fs::create_dir_all(layout.workspace_dir()).unwrap();
-    let _holder = arborist_lib::workspace_lock::WorkspaceLockGuard::acquire(layout.lock_path())
-        .expect("hold the lock from the test process");
+    let _holder = arborist_lib::workspace_lock::WorkspaceLockGuard::acquire(layout.lock_path()).expect("hold the lock from the test process");
 
     let out = workspace_validate_impl(&ctx, dir.path(), Some(app_data_dir.path()), "main").unwrap();
     assert!(out.valid);
@@ -331,10 +311,7 @@ fn worktree_create_refuses_to_clobber_existing_directory() {
 
     let err = worktree_create_impl(&ctx, "feat-x").expect_err("must err");
     assert!(format!("{err:?}").contains("already exists"));
-    assert!(
-        runner.last_create.lock().unwrap().is_none(),
-        "must not invoke runner"
-    );
+    assert!(runner.last_create.lock().unwrap().is_none(), "must not invoke runner");
 }
 
 #[test]
@@ -360,14 +337,8 @@ use std::sync::RwLock;
 /// Build a `Arc<AppContext>` whose `WorkspaceScope` is bound to a real
 /// in-process `WorkspaceLockGuard` rooted at `workspace_a`. Returns the
 /// AppContext and the path that's been canonicalised + locked.
-fn build_switch_ctx(
-    git: Arc<dyn GitRunner>,
-    app_data_dir: &Path,
-    workspace_a: &Path,
-    branch: &str,
-) -> (Arc<AppContext>, PathBuf) {
-    let canon =
-        dunce::canonicalize(workspace_a).expect("canonicalise initial workspace for test ctx");
+fn build_switch_ctx(git: Arc<dyn GitRunner>, app_data_dir: &Path, workspace_a: &Path, branch: &str) -> (Arc<AppContext>, PathBuf) {
+    let canon = dunce::canonicalize(workspace_a).expect("canonicalise initial workspace for test ctx");
     let layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir, branch)
         .for_workspace(&arborist_lib::store_layout::CanonicalPath::assume_canonical(canon.clone()));
     std::fs::create_dir_all(layout.workspace_dir()).unwrap();
@@ -398,12 +369,7 @@ async fn workspace_switch_happy_path_swaps_and_returns_state() {
     runner.set_repo_root(ws_a.path()); // initial set; for_repo_root currently returns one value
                                        // but our switch validates against ws_b — we'll re-set.
 
-    let (ctx, ws_a_canon) = build_switch_ctx(
-        Arc::clone(&runner) as Arc<dyn GitRunner>,
-        app_data_dir.path(),
-        ws_a.path(),
-        "main",
-    );
+    let (ctx, ws_a_canon) = build_switch_ctx(Arc::clone(&runner) as Arc<dyn GitRunner>, app_data_dir.path(), ws_a.path(), "main");
 
     // Re-point the runner at ws_b so workspace_validate_impl accepts it.
     runner.set_repo_root(ws_b.path());
@@ -424,11 +390,7 @@ async fn workspace_switch_happy_path_swaps_and_returns_state() {
         Some(canon_b.clone()),
         "result.config must reflect the NEW workspace's persisted root"
     );
-    assert!(
-        result.sessions.is_empty(),
-        "fresh workspace B has no sessions; got {:?}",
-        result.sessions
-    );
+    assert!(result.sessions.is_empty(), "fresh workspace B has no sessions; got {:?}", result.sessions);
 
     // The bound workspace_root snapshot must reflect ws_b.
     let bound = ctx
@@ -446,20 +408,14 @@ async fn workspace_switch_happy_path_swaps_and_returns_state() {
 
     // The OLD lock has been dropped; we can re-acquire it.
     let old_layout = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
-        .for_workspace(
-            &arborist_lib::store_layout::CanonicalPath::assume_canonical(ws_a_canon.clone()),
-        );
-    let _re = WorkspaceLockGuard::acquire(old_layout.lock_path())
-        .expect("old workspace lock must be free after switch");
+        .for_workspace(&arborist_lib::store_layout::CanonicalPath::assume_canonical(ws_a_canon.clone()));
+    let _re = WorkspaceLockGuard::acquire(old_layout.lock_path()).expect("old workspace lock must be free after switch");
 
     // Switch barrier is releasable again so subsequent commands are not
     // blocked. After the switch returns, the write guard is dropped and
     // `try_write` succeeds (no lifecycle handlers in flight in this
     // test).
-    assert!(
-        ctx.switch_lock.try_write().is_ok(),
-        "switch_lock should be free after a completed switch",
-    );
+    assert!(ctx.switch_lock.try_write().is_ok(), "switch_lock should be free after a completed switch",);
 
     // PR5: `restored` is **not reset to false** — it is latched to
     // `true` after the inline restore that ran as part of this
@@ -479,12 +435,7 @@ async fn workspace_switch_no_op_when_target_equals_current() {
     let runner = FakeGitRunner::new();
     runner.set_repo_root(ws.path());
 
-    let (ctx, ws_canon) = build_switch_ctx(
-        Arc::clone(&runner) as Arc<dyn GitRunner>,
-        app_data_dir.path(),
-        ws.path(),
-        "main",
-    );
+    let (ctx, ws_canon) = build_switch_ctx(Arc::clone(&runner) as Arc<dyn GitRunner>, app_data_dir.path(), ws.path(), "main");
 
     let result = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws.path())
         .await
@@ -507,12 +458,7 @@ async fn workspace_switch_refuses_invalid_target() {
     let runner = FakeGitRunner::new();
     runner.set_repo_root(ws.path()); // for the initial scope
 
-    let (ctx, _) = build_switch_ctx(
-        Arc::clone(&runner) as Arc<dyn GitRunner>,
-        app_data_dir.path(),
-        ws.path(),
-        "main",
-    );
+    let (ctx, _) = build_switch_ctx(Arc::clone(&runner) as Arc<dyn GitRunner>, app_data_dir.path(), ws.path(), "main");
 
     // Drop the runner's repo-root so workspace_validate_impl rejects.
     runner.clear_repo_root();
@@ -525,10 +471,7 @@ async fn workspace_switch_refuses_invalid_target() {
 
     // Barrier is releasable again on failure (write guard dropped on
     // function return regardless of error path).
-    assert!(
-        ctx.switch_lock.try_write().is_ok(),
-        "switch_lock should be free after a failed switch",
-    );
+    assert!(ctx.switch_lock.try_write().is_ok(), "switch_lock should be free after a failed switch",);
 }
 
 #[tokio::test]
@@ -538,21 +481,14 @@ async fn workspace_switch_returns_locked_when_target_is_held() {
     let ws_b = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(ws_a.path());
-    let (ctx, _) = build_switch_ctx(
-        Arc::clone(&runner) as Arc<dyn GitRunner>,
-        app_data_dir.path(),
-        ws_a.path(),
-        "main",
-    );
+    let (ctx, _) = build_switch_ctx(Arc::clone(&runner) as Arc<dyn GitRunner>, app_data_dir.path(), ws_a.path(), "main");
 
     // Pre-acquire ws_b's lock via the same layout so the switch races
     // against an in-process holder.
     runner.set_repo_root(ws_b.path());
     let canon_b = dunce::canonicalize(ws_b.path()).unwrap();
     let layout_b = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
-        .for_workspace(
-            &arborist_lib::store_layout::CanonicalPath::assume_canonical(canon_b.clone()),
-        );
+        .for_workspace(&arborist_lib::store_layout::CanonicalPath::assume_canonical(canon_b.clone()));
     std::fs::create_dir_all(layout_b.workspace_dir()).unwrap();
 
     // Note: on Unix, fs2 per-process flock semantics may allow same-process
@@ -560,8 +496,7 @@ async fn workspace_switch_returns_locked_when_target_is_held() {
     // is per-handle. Cross-process contention is exercised by the
     // arborist-test-locker integration test.
     if cfg!(target_os = "windows") {
-        let _holder =
-            WorkspaceLockGuard::acquire(layout_b.lock_path()).expect("pre-acquire ws_b lock");
+        let _holder = WorkspaceLockGuard::acquire(layout_b.lock_path()).expect("pre-acquire ws_b lock");
 
         let err = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_b.path())
             .await
@@ -612,12 +547,7 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
     let ws_b = make_repo_tempdir();
     let runner = FakeGitRunner::new();
     runner.set_repo_root(ws_a.path());
-    let (ctx, ws_a_canon) = build_switch_ctx(
-        Arc::clone(&runner) as Arc<dyn GitRunner>,
-        app_data_dir.path(),
-        ws_a.path(),
-        "main",
-    );
+    let (ctx, ws_a_canon) = build_switch_ctx(Arc::clone(&runner) as Arc<dyn GitRunner>, app_data_dir.path(), ws_a.path(), "main");
 
     // Seed two sessions in workspace A's store + matching config keys.
     // No PTY: park's pool.kill is a no-op for sessions not in the pool.
@@ -647,17 +577,10 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
     // ❗ The crucial assertion: A's records must STILL be on disk under
     // its branch-scoped workspace dir, untouched by the park.
     let layout_a = arborist_lib::store_layout::StoreRoot::new(app_data_dir.path(), "main")
-        .for_workspace(
-            &arborist_lib::store_layout::CanonicalPath::assume_canonical(ws_a_canon.clone()),
-        );
-    let store_a_after =
-        ConfigStore::from_layout(layout_a.clone()).expect("re-open A's store after switch");
+        .for_workspace(&arborist_lib::store_layout::CanonicalPath::assume_canonical(ws_a_canon.clone()));
+    let store_a_after = ConfigStore::from_layout(layout_a.clone()).expect("re-open A's store after switch");
     let a_sessions = store_a_after.load_sessions();
-    assert_eq!(
-        a_sessions.len(),
-        2,
-        "park must preserve A's session records; got {a_sessions:?}"
-    );
+    assert_eq!(a_sessions.len(), 2, "park must preserve A's session records; got {a_sessions:?}");
     assert!(a_sessions.contains_key(&s1.id));
     assert!(a_sessions.contains_key(&s2.id));
     let a_cfg = store_a_after.load_config();
@@ -718,14 +641,8 @@ fn restore_drops_session_when_worktree_directory_is_missing() {
         "stale-worktree session must be removed from sessions.json"
     );
     let cfg = ctx.store().load_config();
-    assert!(
-        cfg.last_open_sessions.is_empty(),
-        "stale id must be trimmed from last_open_sessions"
-    );
-    assert!(
-        cfg.tab_order.is_empty(),
-        "stale id must be trimmed from tab_order"
-    );
+    assert!(cfg.last_open_sessions.is_empty(), "stale id must be trimmed from last_open_sessions");
+    assert!(cfg.tab_order.is_empty(), "stale id must be trimmed from tab_order");
     assert_eq!(
         cfg.active_session_id, None,
         "active_session_id pointing at the dropped session must be cleared"

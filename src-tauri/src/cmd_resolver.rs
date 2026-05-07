@@ -68,11 +68,7 @@ pub fn parse_program(command: &str) -> Option<String> {
         if t == "env" {
             continue;
         }
-        if !t.starts_with('/')
-            && !t.starts_with('\\')
-            && !t.contains(['\\', '/'])
-            && t.contains('=')
-        {
+        if !t.starts_with('/') && !t.starts_with('\\') && !t.contains(['\\', '/']) && t.contains('=') {
             // KEY=value env prefix — skip.
             continue;
         }
@@ -134,12 +130,7 @@ fn search_path(program: &str) -> Option<PathBuf> {
 fn pathext_entries() -> Vec<String> {
     std::env::var("PATHEXT")
         .ok()
-        .map(|s| {
-            s.split(';')
-                .filter(|e| !e.is_empty())
-                .map(String::from)
-                .collect()
-        })
+        .map(|s| s.split(';').filter(|e| !e.is_empty()).map(String::from).collect())
         .unwrap_or_else(|| vec![".COM".into(), ".EXE".into(), ".BAT".into(), ".CMD".into()])
 }
 
@@ -152,10 +143,7 @@ pub fn is_script_wrapper(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
         return false;
     };
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "cmd" | "bat" | "ps1" | "sh"
-    )
+    matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat" | "ps1" | "sh")
 }
 
 /// If `path` is a script wrapper, peek inside (read the first ~8KB)
@@ -369,10 +357,7 @@ pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
     // resolved path is a `bin/<stem>.exe` launcher. The launcher
     // typically carries no icon resource — its parent does.
     let candidate = unwrap_bin_launcher_for_icon(&resolved).unwrap_or(resolved);
-    let name = candidate
-        .file_name()?
-        .to_string_lossy()
-        .to_ascii_lowercase();
+    let name = candidate.file_name()?.to_string_lossy().to_ascii_lowercase();
     if was_unwrapped && is_interpreter_basename(&name) {
         return None;
     }
@@ -418,16 +403,10 @@ fn unwrap_bin_launcher_for_icon(path: &Path) -> Option<PathBuf> {
         return None;
     }
     let app_dir = bin_dir.parent()?;
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())?
-        .to_ascii_lowercase();
+    let stem = path.file_stem().and_then(|s| s.to_str())?.to_ascii_lowercase();
     let launcher_canonical = path.canonicalize().ok();
 
-    for entry in std::fs::read_dir(app_dir)
-        .ok()?
-        .take(MAX_APP_DIR_SCAN_ENTRIES)
-    {
+    for entry in std::fs::read_dir(app_dir).ok()?.take(MAX_APP_DIR_SCAN_ENTRIES) {
         let entry = entry.ok()?;
         let entry_path = entry.path();
         let is_exe = entry_path
@@ -437,10 +416,7 @@ fn unwrap_bin_launcher_for_icon(path: &Path) -> Option<PathBuf> {
         if !is_exe {
             continue;
         }
-        let entry_stem = entry_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(str::to_ascii_lowercase);
+        let entry_stem = entry_path.file_stem().and_then(|s| s.to_str()).map(str::to_ascii_lowercase);
         if entry_stem.as_deref() != Some(&stem) {
             continue;
         }
@@ -525,10 +501,7 @@ mod tests {
             parse_program("\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -nop"),
             Some("C:\\Program Files\\PowerShell\\7\\pwsh.exe".into())
         );
-        assert_eq!(
-            parse_program("'/usr/local/bin/code'"),
-            Some("/usr/local/bin/code".into())
-        );
+        assert_eq!(parse_program("'/usr/local/bin/code'"), Some("/usr/local/bin/code".into()));
     }
 
     #[test]
@@ -563,10 +536,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let exe = tmp.path().join("foo.exe");
         std::fs::write(&exe, b"binary").unwrap();
-        assert_eq!(
-            resolve_executable(exe.to_str().unwrap(), tmp.path()),
-            Some(exe)
-        );
+        assert_eq!(resolve_executable(exe.to_str().unwrap(), tmp.path()), Some(exe));
     }
 
     #[test]
@@ -588,11 +558,7 @@ mod tests {
         std::fs::write(&real_exe, b"binary").unwrap();
         let cmd = bin_dir.join("code.cmd");
         let mut f = std::fs::File::create(&cmd).unwrap();
-        writeln!(
-            f,
-            "@echo off\r\nSETLOCAL\r\n\"%~dp0..\\Code.exe\" --foo %*\r\n"
-        )
-        .unwrap();
+        writeln!(f, "@echo off\r\nSETLOCAL\r\n\"%~dp0..\\Code.exe\" --foo %*\r\n").unwrap();
 
         let resolved = unwrap_script_wrapper(&cmd).expect("should resolve to Code.exe");
         assert_eq!(
@@ -626,16 +592,9 @@ mod tests {
         let target = tmp.path().join("python3");
         std::fs::write(&target, b"binary").unwrap();
         let script = tmp.path().join("foo.sh");
-        std::fs::write(
-            &script,
-            format!("#!/usr/bin/env {}\necho hi\n", target.display()),
-        )
-        .unwrap();
+        std::fs::write(&script, format!("#!/usr/bin/env {}\necho hi\n", target.display())).unwrap();
         assert_eq!(
-            unwrap_script_wrapper(&script)
-                .unwrap()
-                .canonicalize()
-                .unwrap(),
+            unwrap_script_wrapper(&script).unwrap().canonicalize().unwrap(),
             target.canonicalize().unwrap()
         );
     }
@@ -668,10 +627,7 @@ mod tests {
             assert!(is_interpreter_basename(name), "expected {name} to match");
         }
         for name in ["code.exe", "explorer.exe", "vim", "claude.exe"] {
-            assert!(
-                !is_interpreter_basename(name),
-                "expected {name} to NOT match"
-            );
+            assert!(!is_interpreter_basename(name), "expected {name} to NOT match");
         }
     }
 
@@ -714,8 +670,7 @@ mod tests {
 
         // Direct path → no script unwrap → must NOT be filtered, even
         // though `pwsh.exe` is in `is_interpreter_basename`.
-        let icon = resolve_command_icon_path(pwsh.to_str().unwrap(), dir.path())
-            .expect("direct interpreter invocation must yield its real exe path");
+        let icon = resolve_command_icon_path(pwsh.to_str().unwrap(), dir.path()).expect("direct interpreter invocation must yield its real exe path");
         assert_eq!(
             icon.canonicalize().unwrap(),
             pwsh.canonicalize().unwrap(),
@@ -739,12 +694,8 @@ mod tests {
         writeln!(f, r#"@"%~dp0..\Code.exe" %*"#).unwrap();
         drop(f);
 
-        let icon = resolve_command_icon_path(wrapper.to_str().unwrap(), dir.path())
-            .expect("non-interpreter unwrap targets must resolve for icons");
-        assert_eq!(
-            icon.canonicalize().unwrap(),
-            real_exe.canonicalize().unwrap()
-        );
+        let icon = resolve_command_icon_path(wrapper.to_str().unwrap(), dir.path()).expect("non-interpreter unwrap targets must resolve for icons");
+        assert_eq!(icon.canonicalize().unwrap(), real_exe.canonicalize().unwrap());
     }
 
     #[test]
@@ -752,16 +703,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("plain.exe");
         std::fs::File::create(&exe).unwrap();
-        let (_p, was_unwrapped) =
-            resolve_command_executable_detailed(exe.to_str().unwrap(), dir.path()).unwrap();
+        let (_p, was_unwrapped) = resolve_command_executable_detailed(exe.to_str().unwrap(), dir.path()).unwrap();
         assert!(!was_unwrapped, "direct exe invocations are not unwrapped");
 
         let wrapper = dir.path().join("shim.cmd");
         let mut f = std::fs::File::create(&wrapper).unwrap();
         writeln!(f, r#"@"%~dp0plain.exe" %*"#).unwrap();
         drop(f);
-        let (_p2, was_unwrapped2) =
-            resolve_command_executable_detailed(wrapper.to_str().unwrap(), dir.path()).unwrap();
+        let (_p2, was_unwrapped2) = resolve_command_executable_detailed(wrapper.to_str().unwrap(), dir.path()).unwrap();
         assert!(was_unwrapped2, "shim invocations report unwrap=true");
     }
 
@@ -781,8 +730,7 @@ mod tests {
         let main_exe = dir.path().join("Code.exe");
         std::fs::write(&main_exe, b"branded ui exe").unwrap();
 
-        let icon = resolve_command_icon_path(launcher.to_str().unwrap(), dir.path())
-            .expect("bin/launcher should walk up to the parent main exe");
+        let icon = resolve_command_icon_path(launcher.to_str().unwrap(), dir.path()).expect("bin/launcher should walk up to the parent main exe");
         assert_eq!(
             icon.canonicalize().unwrap(),
             main_exe.canonicalize().unwrap(),

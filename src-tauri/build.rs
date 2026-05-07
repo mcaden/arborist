@@ -48,9 +48,7 @@ fn detect_branch() -> String {
             }
         }
     }
-    let out = git_command()
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output();
+    let out = git_command().args(["rev-parse", "--abbrev-ref", "HEAD"]).output();
     if let Ok(out) = out {
         if out.status.success() {
             if let Ok(s) = String::from_utf8(out.stdout) {
@@ -91,10 +89,7 @@ fn main() {
 
     // Re-run when HEAD moves. In a linked worktree `.git` is a file, so resolve
     // the real HEAD path via `git rev-parse --git-path HEAD`.
-    if let Ok(out) = git_command()
-        .args(["rev-parse", "--git-path", "HEAD"])
-        .output()
-    {
+    if let Ok(out) = git_command().args(["rev-parse", "--git-path", "HEAD"]).output() {
         if out.status.success() {
             if let Ok(p) = String::from_utf8(out.stdout) {
                 let p = p.trim();

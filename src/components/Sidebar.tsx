@@ -6,20 +6,8 @@
 // session store; the *focused* tab index is purely local UI state and lives
 // here.
 
-import {
-  DndContext,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-  arrayMove,
-} from '@dnd-kit/sortable';
+import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { CloseConfirmDialog } from './CloseConfirmDialog';
@@ -39,9 +27,7 @@ export function Sidebar(): JSX.Element {
   const activeId = useActiveSessionId();
   const actions = useSessionActions();
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'customProcesses'>(
-    'general',
-  );
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'customProcesses'>('general');
 
   // Single-menu invariant: at most one TabContextMenu open across all
   // tabs. The triggering button is captured so we can restore focus on
@@ -302,9 +288,7 @@ export function Sidebar(): JSX.Element {
           }}
         />
       )}
-      {settingsOpen ? (
-        <SettingsDialog onClose={() => setSettingsOpen(false)} initialTab={settingsInitialTab} />
-      ) : null}
+      {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} initialTab={settingsInitialTab} /> : null}
     </aside>
   );
 }
@@ -321,33 +305,16 @@ interface ParentTabGroupProps {
   onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
 }
 
-function ParentTabGroup({
-  id,
-  isActive,
-  isFocused,
-  onFocusableMounted,
-  onOpenContextMenu,
-}: ParentTabGroupProps): JSX.Element {
+function ParentTabGroup({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: ParentTabGroupProps): JSX.Element {
   const subSessions = useSubSessionsForParent(id);
   return (
     <>
-      <SidebarTab
-        id={id}
-        isActive={isActive}
-        isFocused={isFocused}
-        onFocusableMounted={onFocusableMounted}
-        onOpenContextMenu={onOpenContextMenu}
-      />
+      <SidebarTab id={id} isActive={isActive} isFocused={isFocused} onFocusableMounted={onFocusableMounted} onOpenContextMenu={onOpenContextMenu} />
       {subSessions.length > 0 && (
         <li role="presentation">
           <ul role="group" aria-label="Sub-sessions" className="flex flex-col gap-0.5">
             {subSessions.map((sub) => (
-              <SidebarSubTab
-                key={sub.id}
-                parentId={id}
-                subSessionId={sub.id}
-                parentIsActive={isActive}
-              />
+              <SidebarSubTab key={sub.id} parentId={id} subSessionId={sub.id} parentIsActive={isActive} />
             ))}
           </ul>
         </li>

@@ -349,9 +349,7 @@ export function onSessionStatus(cb: (payload: SessionStatusEvent) => void): Prom
   return listen<SessionStatusEvent>('session://status', (event) => cb(event.payload));
 }
 
-export function onSessionActivity(
-  cb: (payload: SessionActivityEvent) => void,
-): Promise<UnlistenFn> {
+export function onSessionActivity(cb: (payload: SessionActivityEvent) => void): Promise<UnlistenFn> {
   return listen<SessionActivityEvent>('session://activity', (event) => cb(event.payload));
 }
 
@@ -425,15 +423,11 @@ export function subSessionIcon(id: SubSessionId): Promise<string | null> {
   return invoke<string | null>('subsession_icon', { args: { id } });
 }
 
-export function onSubSessionStatus(
-  cb: (payload: SubSessionStatusEvent) => void,
-): Promise<UnlistenFn> {
+export function onSubSessionStatus(cb: (payload: SubSessionStatusEvent) => void): Promise<UnlistenFn> {
   return listen<SubSessionStatusEvent>('subsession://status', (event) => cb(event.payload));
 }
 
-export function onSubSessionExited(
-  cb: (payload: SubSessionExitedEvent) => void,
-): Promise<UnlistenFn> {
+export function onSubSessionExited(cb: (payload: SubSessionExitedEvent) => void): Promise<UnlistenFn> {
   return listen<SubSessionExitedEvent>('subsession://exited', (event) => cb(event.payload));
 }
 
@@ -443,8 +437,6 @@ export function onSubSessionExited(
  * `SubSession` payload so the frontend store can hydrate the row in a
  * single update without an extra `subsession_list` round-trip.
  */
-export function onSubSessionRestored(
-  cb: (payload: SubSessionRestoredEvent) => void,
-): Promise<UnlistenFn> {
+export function onSubSessionRestored(cb: (payload: SubSessionRestoredEvent) => void): Promise<UnlistenFn> {
   return listen<SubSessionRestoredEvent>('subsession://restored', (event) => cb(event.payload));
 }

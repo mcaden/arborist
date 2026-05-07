@@ -87,12 +87,7 @@ pub trait GitRunner: Send + Sync {
     /// `.worktrees/<branch>`). Returns the canonical absolute path of the
     /// new worktree on success; otherwise an [`Error::Internal`] carrying
     /// the captured stderr.
-    fn create_worktree(
-        &self,
-        repo_root: &Path,
-        relative_path: &Path,
-        branch: &str,
-    ) -> Result<PathBuf, Error>;
+    fn create_worktree(&self, repo_root: &Path, relative_path: &Path, branch: &str) -> Result<PathBuf, Error>;
 
     /// Run `git -C <repo_root> worktree remove --force <worktree_path>`.
     /// `--force` is used because the user has explicitly confirmed
@@ -196,12 +191,7 @@ impl GitRunner for RealGitRunner {
         Ok(Some(canon))
     }
 
-    fn create_worktree(
-        &self,
-        repo_root: &Path,
-        relative_path: &Path,
-        branch: &str,
-    ) -> Result<PathBuf, Error> {
+    fn create_worktree(&self, repo_root: &Path, relative_path: &Path, branch: &str) -> Result<PathBuf, Error> {
         if !repo_root.is_dir() {
             return Err(Error::WorktreeMissing(repo_root.to_path_buf()));
         }
@@ -219,21 +209,13 @@ impl GitRunner for RealGitRunner {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             return Err(Error::Internal(format!(
                 "git worktree add failed: {}",
-                if stderr.is_empty() {
-                    "<no stderr>".to_owned()
-                } else {
-                    stderr
-                }
+                if stderr.is_empty() { "<no stderr>".to_owned() } else { stderr }
             )));
         }
         // The new worktree lives at <repo_root>/<relative_path>.
         let new_path = repo_root.join(relative_path);
-        dunce::canonicalize(&new_path).map_err(|e| {
-            Error::Internal(format!(
-                "worktree created but canonicalization failed: {}: {e}",
-                new_path.display()
-            ))
-        })
+        dunce::canonicalize(&new_path)
+            .map_err(|e| Error::Internal(format!("worktree created but canonicalization failed: {}: {e}", new_path.display())))
     }
 
     fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error> {
@@ -252,11 +234,7 @@ impl GitRunner for RealGitRunner {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             return Err(Error::Internal(format!(
                 "git worktree remove failed: {}",
-                if stderr.is_empty() {
-                    "<no stderr>".to_owned()
-                } else {
-                    stderr
-                }
+                if stderr.is_empty() { "<no stderr>".to_owned() } else { stderr }
             )));
         }
         Ok(())
@@ -302,10 +280,7 @@ pub(crate) fn parse_porcelain(input: &str) -> Vec<WorktreeInfo> {
             if let Some(branch_ref) = line.strip_prefix("branch ") {
                 // Strip the conventional `refs/heads/` prefix to surface a
                 // friendly branch name. Anything else is passed through.
-                let name = branch_ref
-                    .strip_prefix("refs/heads/")
-                    .unwrap_or(branch_ref)
-                    .to_owned();
+                let name = branch_ref.strip_prefix("refs/heads/").unwrap_or(branch_ref).to_owned();
                 p.branch = Some(name);
             } else if line == "detached" {
                 p.branch = None;
@@ -444,9 +419,7 @@ locked migrating to slow disk
     fn real_runner_returns_empty_for_non_repo_directory() {
         let dir = tempfile::TempDir::new().unwrap();
         let runner = RealGitRunner;
-        let out = runner
-            .list_worktrees(dir.path())
-            .expect("non-repo must degrade gracefully");
+        let out = runner.list_worktrees(dir.path()).expect("non-repo must degrade gracefully");
         // Empty even though `git` is on PATH: the command exits non-zero
         // because it isn't a repository.
         assert!(out.is_empty());
@@ -505,11 +478,7 @@ locked migrating to slow disk
                 .args(args)
                 .output()
                 .expect("git invocation");
-            assert!(
-                s.status.success(),
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&s.stderr)
-            );
+            assert!(s.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&s.stderr));
         };
         run(&["init", "-q", "-b", "main"]);
         run(&["config", "user.email", "test@arborist.local"]);
@@ -554,8 +523,7 @@ locked migrating to slow disk
             // belt-and-braces, but the predicate is the load-bearing
             // invariant: even if env-strip is ever bypassed, we MUST NOT
             // delete a worktree that doesn't belong to our tempdir.
-            let canon_temp =
-                dunce::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
+            let canon_temp = dunce::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
             let inside_temp = |p: &Path| -> bool {
                 let cp = dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
                 cp.starts_with(&canon_temp)
@@ -601,11 +569,7 @@ locked migrating to slow disk
                         std::thread::sleep(std::time::Duration::from_millis(25));
                     }
                     if !ok {
-                        eprintln!(
-                            "WorktreeCleanup: failed to remove {} from {}",
-                            wt.path.display(),
-                            repo.display()
-                        );
+                        eprintln!("WorktreeCleanup: failed to remove {} from {}", wt.path.display(), repo.display());
                     }
                 }
                 let _ = clean_test_git_command()
@@ -669,12 +633,7 @@ locked migrating to slow disk
     #[test]
     fn real_runner_git_toplevel_none_for_missing_dir() {
         let runner = RealGitRunner;
-        assert_eq!(
-            runner
-                .git_toplevel(Path::new("/no/such/path/arborist-test"))
-                .unwrap(),
-            None
-        );
+        assert_eq!(runner.git_toplevel(Path::new("/no/such/path/arborist-test")).unwrap(), None);
     }
 
     #[test]
@@ -703,11 +662,7 @@ locked migrating to slow disk
     fn real_runner_create_worktree_errors_on_missing_repo() {
         let runner = RealGitRunner;
         let err = runner
-            .create_worktree(
-                Path::new("/no/such/repo/arborist-test"),
-                Path::new(".worktrees/x"),
-                "x",
-            )
+            .create_worktree(Path::new("/no/such/repo/arborist-test"), Path::new(".worktrees/x"), "x")
             .expect_err("must error");
         assert!(matches!(err, Error::WorktreeMissing(_)), "got {err:?}");
     }
@@ -721,13 +676,7 @@ locked migrating to slow disk
         let cmd = git_command();
         let removed: Vec<String> = cmd
             .get_envs()
-            .filter_map(|(k, v)| {
-                if v.is_none() {
-                    Some(k.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(k, v)| if v.is_none() { Some(k.to_string_lossy().into_owned()) } else { None })
             .collect();
         for var in [
             "GIT_DIR",
@@ -739,10 +688,7 @@ locked migrating to slow disk
             "GIT_NAMESPACE",
             "GIT_PREFIX",
         ] {
-            assert!(
-                removed.iter().any(|r| r == var),
-                "git_command() must remove {var}; got {removed:?}"
-            );
+            assert!(removed.iter().any(|r| r == var), "git_command() must remove {var}; got {removed:?}");
         }
     }
 
@@ -755,13 +701,7 @@ locked migrating to slow disk
         let cmd = clean_test_git_command();
         let removed: Vec<String> = cmd
             .get_envs()
-            .filter_map(|(k, v)| {
-                if v.is_none() {
-                    Some(k.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(k, v)| if v.is_none() { Some(k.to_string_lossy().into_owned()) } else { None })
             .collect();
         for var in [
             "GIT_DIR",

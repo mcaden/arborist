@@ -467,11 +467,7 @@ pub struct PartialAppConfig {
     pub instruction_sets_dir: Option<PathBuf>,
     /// Tri-state: absent → leave alone; `null` → clear; `"<path>"` → set.
     /// Mirrors the encoding used for `active_session_id`.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "double_option"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
     pub workspace_root: Option<Option<PathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub worktree_roots: Option<Vec<PathBuf>>,
@@ -488,11 +484,7 @@ pub struct PartialAppConfig {
     /// Tri-state: absent → leave alone; `null` → clear; `"<uuid>"` → set.
     /// Encoded with the `double_option` helper so JSON `null` is preserved
     /// as `Some(None)` rather than collapsing to "field absent".
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "double_option"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
     pub active_session_id: Option<Option<SessionId>>,
     /// Replace the entire `customProcesses` list. Absence leaves it
     /// untouched. The Settings dialog (Phase 6) sends the full edited list
@@ -1381,10 +1373,7 @@ mod tests {
 
     fn app_config_fixture() -> (AppConfig, Value) {
         let mut overrides = BTreeMap::new();
-        overrides.insert(
-            "/repo/feature-x".to_owned(),
-            vec!["nvm use".to_owned(), "asdf reshim".to_owned()],
-        );
+        overrides.insert("/repo/feature-x".to_owned(), vec!["nvm use".to_owned(), "asdf reshim".to_owned()]);
         let value = AppConfig {
             config_version: 4,
             default_instruction_sets: DefaultInstructionSets {
@@ -1402,15 +1391,9 @@ mod tests {
                 claude_icon_data_uri: None,
                 copilot_icon_data_uri: None,
             },
-            last_open_sessions: vec![SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            )],
-            tab_order: vec![SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            )],
-            active_session_id: Some(SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            )),
+            last_open_sessions: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
+            tab_order: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
+            active_session_id: Some(SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))),
             custom_processes: vec![CustomProcessDef {
                 id: CustomProcessDefId::new("shell"),
                 name: "Shell".to_owned(),
@@ -1421,12 +1404,8 @@ mod tests {
                 icon_data_uri: None,
             }],
             last_open_sub_sessions: vec![SubSessionRecord {
-                id: SubSessionId(
-                    Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
-                ),
-                parent_session_id: SessionId(
-                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-                ),
+                id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
+                parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
                 def_id: CustomProcessDefId::new("shell"),
                 kind: CustomProcessKind::Terminal,
                 label: "Shell".to_owned(),
@@ -1499,12 +1478,8 @@ mod tests {
 
     fn sub_session_fixture() -> (SubSession, Value) {
         let value = SubSession {
-            id: SubSessionId(
-                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
-            ),
-            parent_session_id: SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            ),
+            id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
+            parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -1529,12 +1504,8 @@ mod tests {
 
     fn sub_session_record_fixture() -> (SubSessionRecord, Value) {
         let value = SubSessionRecord {
-            id: SubSessionId(
-                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
-            ),
-            parent_session_id: SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            ),
+            id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
+            parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -1593,14 +1564,8 @@ mod tests {
         let view = SessionView::from(&sample_session());
         let serialized: Value = serde_json::to_value(&view).expect("serialize");
         let obj = serialized.as_object().expect("object");
-        assert!(
-            !obj.contains_key("composedCommand"),
-            "SessionView must not expose composedCommand"
-        );
-        assert!(
-            !obj.contains_key("tempFiles"),
-            "SessionView must not expose tempFiles"
-        );
+        assert!(!obj.contains_key("composedCommand"), "SessionView must not expose composedCommand");
+        assert!(!obj.contains_key("tempFiles"), "SessionView must not expose tempFiles");
     }
 
     #[test]
@@ -1651,14 +1616,8 @@ mod tests {
 
     #[test]
     fn custom_process_kind_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_value(CustomProcessKind::Terminal).expect("v"),
-            json!("terminal")
-        );
-        assert_eq!(
-            serde_json::to_value(CustomProcessKind::Application).expect("v"),
-            json!("application")
-        );
+        assert_eq!(serde_json::to_value(CustomProcessKind::Terminal).expect("v"), json!("terminal"));
+        assert_eq!(serde_json::to_value(CustomProcessKind::Application).expect("v"), json!("application"));
     }
 
     #[test]
@@ -1675,12 +1634,8 @@ mod tests {
 
     #[test]
     fn sub_session_id_is_transparent_string() {
-        let id =
-            SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"));
-        assert_eq!(
-            serde_json::to_value(id).expect("v"),
-            json!("11111111-1111-1111-1111-111111111111")
-        );
+        let id = SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"));
+        assert_eq!(serde_json::to_value(id).expect("v"), json!("11111111-1111-1111-1111-111111111111"));
     }
 
     #[test]
@@ -1718,12 +1673,10 @@ mod tests {
         let absent: PartialAppConfig = serde_json::from_value(json!({})).expect("absent");
         assert_eq!(absent.workspace_root, None);
 
-        let cleared: PartialAppConfig =
-            serde_json::from_value(json!({ "workspaceRoot": null })).expect("clear");
+        let cleared: PartialAppConfig = serde_json::from_value(json!({ "workspaceRoot": null })).expect("clear");
         assert_eq!(cleared.workspace_root, Some(None));
 
-        let set: PartialAppConfig =
-            serde_json::from_value(json!({ "workspaceRoot": "/repo" })).expect("set");
+        let set: PartialAppConfig = serde_json::from_value(json!({ "workspaceRoot": "/repo" })).expect("set");
         assert_eq!(set.workspace_root, Some(Some(PathBuf::from("/repo"))));
 
         let serialised = serde_json::to_value(&cleared).expect("ser");
@@ -1737,8 +1690,7 @@ mod tests {
         assert_eq!(absent.active_session_id, None);
 
         // null: deserialised as `Some(None)` → "clear".
-        let cleared: PartialAppConfig =
-            serde_json::from_value(json!({ "activeSessionId": null })).expect("clear");
+        let cleared: PartialAppConfig = serde_json::from_value(json!({ "activeSessionId": null })).expect("clear");
         assert_eq!(cleared.active_session_id, Some(None));
 
         // string: deserialised as `Some(Some(uuid))` → "set".
@@ -1748,9 +1700,7 @@ mod tests {
         .expect("set");
         assert_eq!(
             set.active_session_id,
-            Some(Some(SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")
-            )))
+            Some(Some(SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))))
         );
 
         // Round-trip: Some(None) serialises to null.
@@ -1763,14 +1713,8 @@ mod tests {
 
     #[test]
     fn tool_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_value(Tool::Claude).expect("v"),
-            json!("claude")
-        );
-        assert_eq!(
-            serde_json::to_value(Tool::Copilot).expect("v"),
-            json!("copilot")
-        );
+        assert_eq!(serde_json::to_value(Tool::Claude).expect("v"), json!("claude"));
+        assert_eq!(serde_json::to_value(Tool::Copilot).expect("v"), json!("copilot"));
     }
 
     #[test]
@@ -1788,19 +1732,13 @@ mod tests {
     #[test]
     fn session_id_is_transparent_string() {
         let id = SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"));
-        assert_eq!(
-            serde_json::to_value(id).expect("v"),
-            json!("550e8400-e29b-41d4-a716-446655440000")
-        );
+        assert_eq!(serde_json::to_value(id).expect("v"), json!("550e8400-e29b-41d4-a716-446655440000"));
     }
 
     #[test]
     fn instruction_set_id_is_transparent_string() {
         let id = InstructionSetId::new("claude-default");
-        assert_eq!(
-            serde_json::to_value(&id).expect("v"),
-            json!("claude-default")
-        );
+        assert_eq!(serde_json::to_value(&id).expect("v"), json!("claude-default"));
     }
 
     #[test]
@@ -1816,10 +1754,7 @@ mod tests {
     fn error_codes_are_stable() {
         // Frontend may branch on these strings — keep them stable across phases.
         assert_eq!(Error::InvalidPath("p".into()).code(), "InvalidPath");
-        assert_eq!(
-            Error::WorktreeMissing(std::path::PathBuf::from("/x")).code(),
-            "WorktreeMissing"
-        );
+        assert_eq!(Error::WorktreeMissing(std::path::PathBuf::from("/x")).code(), "WorktreeMissing");
         assert_eq!(Error::NotFound("p".into()).code(), "NotFound");
         assert_eq!(Error::Io(std::io::Error::other("e")).code(), "Io");
         assert_eq!(Error::Internal("e".into()).code(), "Internal");
@@ -1836,19 +1771,10 @@ mod tests {
             "InstructionFileMissing"
         );
         assert_eq!(Error::ToolMismatch("x".into()).code(), "ToolMismatch");
-        assert_eq!(
-            Error::InvalidCustomProcessDef("x".into()).code(),
-            "InvalidCustomProcessDef"
-        );
+        assert_eq!(Error::InvalidCustomProcessDef("x".into()).code(), "InvalidCustomProcessDef");
         assert_eq!(Error::ToolMissing("wmctrl".into()).code(), "ToolMissing");
-        assert_eq!(
-            Error::NotApplicable("no PTY".into()).code(),
-            "NotApplicable"
-        );
-        assert_eq!(
-            Error::PermissionDenied("Accessibility".into()).code(),
-            "PermissionDenied"
-        );
+        assert_eq!(Error::NotApplicable("no PTY".into()).code(), "NotApplicable");
+        assert_eq!(Error::PermissionDenied("Accessibility".into()).code(), "PermissionDenied");
         assert_eq!(Error::Unsupported("Wayland".into()).code(), "Unsupported");
         assert_eq!(Error::AppSpawnFailed("e".into()).code(), "AppSpawnFailed");
     }
@@ -1863,9 +1789,7 @@ mod tests {
     #[test]
     fn session_output_event_roundtrip() {
         let value = SessionOutputEvent {
-            session_id: SessionId(
-                Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid"),
-            ),
+            session_id: SessionId(Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid")),
             data: "hello from PTY".to_owned(),
         };
         let fixture = json!({
@@ -1878,9 +1802,7 @@ mod tests {
     #[test]
     fn session_status_event_roundtrip() {
         let value = SessionStatusEvent {
-            session_id: SessionId(
-                Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid"),
-            ),
+            session_id: SessionId(Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid")),
             status: SessionStatus::Running,
             message: None,
         };

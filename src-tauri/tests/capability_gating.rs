@@ -46,10 +46,8 @@ fn manifest_dir() -> PathBuf {
 #[test]
 fn main_capability_allows_core_default_and_ping() {
     let path = manifest_dir().join("capabilities").join("main.json");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
 
     let permissions = value
         .get("permissions")
@@ -114,11 +112,8 @@ fn main_capability_allows_core_default_and_ping() {
 
 #[test]
 fn allow_subsession_permission_file_declares_subsession_commands() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-subsession.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-subsession.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-subsession\""),
         "permission identifier must remain `allow-subsession`",
@@ -133,35 +128,25 @@ fn allow_subsession_permission_file_declares_subsession_commands() {
         "subsession_relaunch",
     ] {
         let needle = format!("\"{cmd}\"");
-        assert!(
-            raw.contains(&needle),
-            "allow-subsession must declare {cmd}; raw permission file:\n{raw}",
-        );
+        assert!(raw.contains(&needle), "allow-subsession must declare {cmd}; raw permission file:\n{raw}",);
     }
 }
 
 #[test]
 fn allow_subsession_icon_permission_file_declares_command() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-subsession-icon.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-subsession-icon.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-subsession-icon\""),
         "permission identifier must remain `allow-subsession-icon`",
     );
-    assert!(
-        raw.contains("\"subsession_icon\""),
-        "permission must allow the `subsession_icon` command",
-    );
+    assert!(raw.contains("\"subsession_icon\""), "permission must allow the `subsession_icon` command",);
 }
 
 #[test]
 fn allow_ping_permission_file_declares_ping_command() {
     let path = manifest_dir().join("permissions").join("allow-ping.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
 
     // Cheap structural check — avoids pulling toml as a dev-dependency just
     // for this test. We assert the load-bearing tokens are present.
@@ -169,38 +154,25 @@ fn allow_ping_permission_file_declares_ping_command() {
         raw.contains("identifier = \"allow-ping\""),
         "permission identifier must remain `allow-ping`",
     );
-    assert!(
-        raw.contains("\"ping\""),
-        "permission must allow the `ping` command",
-    );
+    assert!(raw.contains("\"ping\""), "permission must allow the `ping` command",);
 }
 
 #[test]
 fn allow_config_permission_file_declares_config_commands() {
     let path = manifest_dir().join("permissions").join("allow-config.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-config\""),
         "permission identifier must remain `allow-config`",
     );
-    assert!(
-        raw.contains("\"config_get\""),
-        "permission must allow the `config_get` command",
-    );
-    assert!(
-        raw.contains("\"config_set\""),
-        "permission must allow the `config_set` command",
-    );
+    assert!(raw.contains("\"config_get\""), "permission must allow the `config_get` command",);
+    assert!(raw.contains("\"config_set\""), "permission must allow the `config_set` command",);
 }
 
 #[test]
 fn allow_instructions_permission_file_declares_instructions_command() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-instructions.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-instructions.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-instructions\""),
         "permission identifier must remain `allow-instructions`",
@@ -213,11 +185,8 @@ fn allow_instructions_permission_file_declares_instructions_command() {
 
 #[test]
 fn allow_session_permission_file_declares_session_commands() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-session.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-session.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-session\""),
         "permission identifier must remain `allow-session`",
@@ -232,45 +201,30 @@ fn allow_session_permission_file_declares_session_commands() {
         "session_restart",
     ] {
         let needle = format!("\"{cmd}\"");
-        assert!(
-            raw.contains(&needle),
-            "allow-session must declare {cmd}; raw permission file:\n{raw}",
-        );
+        assert!(raw.contains(&needle), "allow-session must declare {cmd}; raw permission file:\n{raw}",);
     }
 }
 
 #[test]
 fn allow_frontend_ready_permission_file_declares_frontend_ready_command() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-frontend-ready.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-frontend-ready.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-frontend-ready\""),
         "permission identifier must remain `allow-frontend-ready`",
     );
-    assert!(
-        raw.contains("\"frontend_ready\""),
-        "permission must allow the `frontend_ready` command",
-    );
+    assert!(raw.contains("\"frontend_ready\""), "permission must allow the `frontend_ready` command",);
 }
 
 #[test]
 fn allow_worktrees_list_permission_file_declares_worktrees_command() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-worktrees-list.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-worktrees-list.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-worktrees-list\""),
         "permission identifier must remain `allow-worktrees-list`",
     );
-    assert!(
-        raw.contains("\"worktrees_list\""),
-        "permission must allow the `worktrees_list` command",
-    );
+    assert!(raw.contains("\"worktrees_list\""), "permission must allow the `worktrees_list` command",);
 }
 
 #[test]
@@ -278,11 +232,8 @@ fn main_capability_grants_workspace_validate() {
     // Covered by the consolidated identifier check in
     // `main_capability_allows_core_default_and_ping`; this test asserts the
     // permission file independently.
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-workspace-validate.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-workspace-validate.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-workspace-validate\""),
         "permission identifier must remain `allow-workspace-validate`",
@@ -297,48 +248,33 @@ fn main_capability_grants_workspace_validate() {
 fn allow_workspace_validate_permission_file_declares_command() {
     // Same intent as above test; kept distinct so a regression in either
     // file/identifier is reported with a precise failure name.
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-workspace-validate.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-workspace-validate.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(raw.contains("workspace_validate"));
 }
 
 #[test]
 fn main_capability_grants_worktree_create() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-worktree-create.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-worktree-create.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-worktree-create\""),
         "permission identifier must remain `allow-worktree-create`",
     );
-    assert!(
-        raw.contains("\"worktree_create\""),
-        "permission must allow the `worktree_create` command",
-    );
+    assert!(raw.contains("\"worktree_create\""), "permission must allow the `worktree_create` command",);
 }
 
 #[test]
 fn allow_worktree_create_permission_file_declares_command() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-worktree-create.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-worktree-create.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(raw.contains("worktree_create"));
 }
 
 #[test]
 fn allow_workspace_switch_permission_file_declares_command() {
-    let path = manifest_dir()
-        .join("permissions")
-        .join("allow-workspace-switch.toml");
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let path = manifest_dir().join("permissions").join("allow-workspace-switch.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
         raw.contains("identifier = \"allow-workspace-switch\""),
         "permission identifier must remain `allow-workspace-switch`",

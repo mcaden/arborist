@@ -304,24 +304,16 @@ impl AppSpawner for RealAppSpawner {
         }
 
         let mut command = build_shell_command(trimmed);
-        command
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         configure_detach(&mut command);
 
-        let child = command
-            .spawn()
-            .map_err(|e| Error::AppSpawnFailed(format!("spawn `{trimmed}`: {e}")))?;
+        let child = command.spawn().map_err(|e| Error::AppSpawnFailed(format!("spawn `{trimmed}`: {e}")))?;
         let pid = child.id();
         let shared: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(Some(child)));
 
         Ok(SpawnedApp {
             pid,
-            waiter: Box::new(RealWaiter {
-                child: Arc::clone(&shared),
-            }),
+            waiter: Box::new(RealWaiter { child: Arc::clone(&shared) }),
             killer: Arc::new(RealKiller { child: shared }),
         })
     }
@@ -332,8 +324,7 @@ impl AppSpawner for RealAppSpawner {
 /// the executable name).
 fn first_token_if_simple(cmd: &str) -> Option<String> {
     const META: &[char] = &[
-        '|', '&', ';', '<', '>', '(', ')', '$', '`', '\\', '"', '\'', '*', '?', '[', ']', '{', '}',
-        '~', '=',
+        '|', '&', ';', '<', '>', '(', ')', '$', '`', '\\', '"', '\'', '*', '?', '[', ']', '{', '}', '~', '=',
     ];
     if cmd.contains(META) {
         return None;
@@ -348,11 +339,7 @@ fn first_token_if_simple(cmd: &str) -> Option<String> {
 fn which_in_path(tool: &str) -> Option<PathBuf> {
     let p = Path::new(tool);
     if p.is_absolute() || tool.contains('/') || tool.contains('\\') {
-        return if p.is_file() {
-            Some(p.to_owned())
-        } else {
-            None
-        };
+        return if p.is_file() { Some(p.to_owned()) } else { None };
     }
     let path_var = std::env::var_os("PATH")?;
     #[cfg(target_os = "windows")]
@@ -428,18 +415,12 @@ impl AppWaiter for RealWaiter {
         // Take the Child out of the shared slot so `kill` can't race
         // `wait` (Linux/macOS kill-after-wait is harmless but Windows
         // requires a still-valid handle for TerminateProcess).
-        let mut child_opt = self
-            .child
-            .lock()
-            .map_err(|_| Error::Internal("app child mutex poisoned".into()))?
-            .take();
+        let mut child_opt = self.child.lock().map_err(|_| Error::Internal("app child mutex poisoned".into()))?.take();
         let Some(mut child) = child_opt.take() else {
             // Already killed elsewhere; treat as natural exit.
             return Ok(true);
         };
-        let status = child
-            .wait()
-            .map_err(|e| Error::AppSpawnFailed(format!("wait: {e}")))?;
+        let status = child.wait().map_err(|e| Error::AppSpawnFailed(format!("wait: {e}")))?;
         Ok(status.success())
     }
 }
@@ -462,10 +443,7 @@ struct RealKiller {
 
 impl AppKiller for RealKiller {
     fn kill(&self) -> Result<(), Error> {
-        let mut guard = self
-            .child
-            .lock()
-            .map_err(|_| Error::Internal("app child mutex poisoned".into()))?;
+        let mut guard = self.child.lock().map_err(|_| Error::Internal("app child mutex poisoned".into()))?;
         if let Some(child) = guard.as_mut() {
             // start_kill / kill returns Err if already exited — benign.
             let _ = child.kill();
@@ -584,11 +562,7 @@ impl AppPool {
         sink: AppPoolSink,
         owner_resolver: Option<Arc<dyn OwnerResolver>>,
     ) -> Result<u32, Error> {
-        let SpawnedApp {
-            pid,
-            waiter,
-            killer,
-        } = self.spawner.spawn(&cmd, &cwd)?;
+        let SpawnedApp { pid, waiter, killer } = self.spawner.spawn(&cmd, &cwd)?;
 
         let killed = Arc::new(AtomicBool::new(false));
         let re_targeted = Arc::new(AtomicBool::new(false));
@@ -601,10 +575,7 @@ impl AppPool {
         // worker loops always observe the entry. See "Ordering
         // invariant" above.
         {
-            let mut g = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            let mut g = self.inner.lock().map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
             g.insert(
                 id,
                 AppRuntime {
@@ -645,16 +616,8 @@ impl AppPool {
         let wait_weak = weak_inner.clone();
         let wait_thread = match std::thread::Builder::new()
             .name(format!("arborist-app-wait-{pid}"))
-            .spawn(move || {
-                app_wait_loop(
-                    wait_id,
-                    waiter,
-                    wait_sink,
-                    wait_killed,
-                    wait_resolver_done,
-                    wait_weak,
-                )
-            }) {
+            .spawn(move || app_wait_loop(wait_id, waiter, wait_sink, wait_killed, wait_resolver_done, wait_weak))
+        {
             Ok(t) => t,
             Err(e) => {
                 // Roll back the registration and best-effort kill the
@@ -664,9 +627,7 @@ impl AppPool {
                     g.remove(&id);
                 }
                 let _ = killer.kill();
-                return Err(Error::AppSpawnFailed(format!(
-                    "spawn app wait thread failed: {e}"
-                )));
+                return Err(Error::AppSpawnFailed(format!("spawn app wait thread failed: {e}")));
             }
         };
 
@@ -683,16 +644,8 @@ impl AppPool {
             let res_weak = weak_inner.clone();
             match std::thread::Builder::new()
                 .name(format!("arborist-app-resolve-{pid}"))
-                .spawn(move || {
-                    resolver_loop(
-                        res_id,
-                        resolver,
-                        res_sink,
-                        res_weak,
-                        res_killed,
-                        res_resolver_done,
-                    )
-                }) {
+                .spawn(move || resolver_loop(res_id, resolver, res_sink, res_weak, res_killed, res_resolver_done))
+            {
                 Ok(t) => Some(t),
                 Err(e) => {
                     tracing::warn!(sub_session_id = %id, error = %e, "spawn app resolver thread failed");
@@ -723,10 +676,7 @@ impl AppPool {
     /// tests + diagnostics only.
     #[must_use]
     pub fn contains(&self, id: &SubSessionId) -> bool {
-        self.inner
-            .lock()
-            .map(|g| g.contains_key(id))
-            .unwrap_or(false)
+        self.inner.lock().map(|g| g.contains_key(id)).unwrap_or(false)
     }
 
     /// Live PID for `id`, if known. `None` if the runtime has been
@@ -741,10 +691,7 @@ impl AppPool {
     /// the runtime from the pool. Idempotent (`Ok` if the id is unknown).
     pub fn kill(&self, id: &SubSessionId) -> Result<(), Error> {
         let removed = {
-            let mut g = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            let mut g = self.inner.lock().map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
             g.remove(id)
         };
         if let Some(rt) = removed {
@@ -785,29 +732,17 @@ impl AppPool {
     /// Returns `Err(Error::NotFound)` when no runtime is registered
     /// for `id` (the caller should treat this as a no-op — the
     /// sub-tab is already gone).
-    pub fn focus(
-        &self,
-        id: &SubSessionId,
-        fallback: &dyn crate::window_focus::WindowFocuser,
-    ) -> Result<(), Error> {
+    pub fn focus(&self, id: &SubSessionId, fallback: &dyn crate::window_focus::WindowFocuser) -> Result<(), Error> {
         // Snapshot pid + window_target under the lock and drop the
         // guard before any focus syscall — focus_hwnd / focus_pid can
         // call into Win32, which we never want to do while holding
         // the pool mutex.
         let snapshot = {
-            let g = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            let g = self.inner.lock().map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
             let Some(rt) = g.get(id) else {
                 return Err(Error::NotFound(format!("no runtime for sub-session {id}")));
             };
-            (
-                rt.pid,
-                rt.window_target
-                    .as_ref()
-                    .map(|wt| (wt.hwnd, wt.refinder.clone())),
-            )
+            (rt.pid, rt.window_target.as_ref().map(|wt| (wt.hwnd, wt.refinder.clone())))
         };
         let pid = snapshot.0;
 
@@ -853,27 +788,16 @@ impl AppPool {
     ///   when no `window_target` is known and we can't act.
     /// * `Err(Error::Unsupported)` when the platform doesn't
     ///   support window-handle close (non-Windows today).
-    pub fn request_window_close(
-        &self,
-        id: &SubSessionId,
-        focuser: &dyn crate::window_focus::WindowFocuser,
-    ) -> Result<(), Error> {
+    pub fn request_window_close(&self, id: &SubSessionId, focuser: &dyn crate::window_focus::WindowFocuser) -> Result<(), Error> {
         let snapshot = {
-            let g = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            let g = self.inner.lock().map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
             let Some(rt) = g.get(id) else {
                 return Err(Error::NotFound(format!("no runtime for sub-session {id}")));
             };
-            rt.window_target
-                .as_ref()
-                .map(|wt| (wt.hwnd, wt.refinder.clone()))
+            rt.window_target.as_ref().map(|wt| (wt.hwnd, wt.refinder.clone()))
         };
         let Some((hwnd, refinder)) = snapshot else {
-            return Err(Error::NotFound(format!(
-                "no window target known for sub-session {id}"
-            )));
+            return Err(Error::NotFound(format!("no window target known for sub-session {id}")));
         };
         match focuser.post_close_message(hwnd) {
             Ok(()) => Ok(()),
@@ -884,9 +808,7 @@ impl AppPool {
                         return focuser.post_close_message(fresh);
                     }
                 }
-                Err(Error::NotFound(format!(
-                    "window for sub-session {id} no longer exists"
-                )))
+                Err(Error::NotFound(format!("window for sub-session {id} no longer exists")))
             }
             Err(other) => Err(other),
         }
@@ -1162,9 +1084,7 @@ mod tests {
 
     impl AppSpawner for FakeAppSpawner {
         fn spawn(&self, _cmd: &str, _cwd: &Path) -> Result<SpawnedApp, Error> {
-            let pid = self
-                .next_pid
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let pid = self.next_pid.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let app = Arc::new(FakeApp {
                 exit_signal: Arc::new((StdMutex::new(None), std::sync::Condvar::new())),
                 killed: AtomicBool::new(false),
@@ -1241,9 +1161,7 @@ mod tests {
         let (sink, status_obs, exit_obs) = collect_sink();
         let id = SubSessionId::default();
 
-        let pid = pool
-            .spawn(id, "code .".to_owned(), PathBuf::from("."), sink, None)
-            .expect("spawn");
+        let pid = pool.spawn(id, "code .".to_owned(), PathBuf::from("."), sink, None).expect("spawn");
         assert!(pid >= 2000);
         assert!(pool.contains(&id));
 
@@ -1256,13 +1174,8 @@ mod tests {
         );
 
         let statuses = status_obs.lock().unwrap().clone();
-        assert!(matches!(
-            statuses.first(),
-            Some((SubSessionStatus::Running, Some(_)))
-        ));
-        assert!(statuses
-            .iter()
-            .any(|(s, _)| matches!(s, SubSessionStatus::Exited)));
+        assert!(matches!(statuses.first(), Some((SubSessionStatus::Running, Some(_)))));
+        assert!(statuses.iter().any(|(s, _)| matches!(s, SubSessionStatus::Exited)));
         assert!(!exit_obs.lock().unwrap().is_empty());
     }
 
@@ -1272,17 +1185,10 @@ mod tests {
         let pool = AppPool::new(spawner.clone());
         let (sink, status_obs, _) = collect_sink();
         let id = SubSessionId::default();
-        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
-            .expect("spawn");
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None).expect("spawn");
         spawner.child(0).signal_exit(false);
         wait_until(
-            || {
-                status_obs
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|(s, _)| matches!(s, SubSessionStatus::Error))
-            },
+            || status_obs.lock().unwrap().iter().any(|(s, _)| matches!(s, SubSessionStatus::Error)),
             Duration::from_secs(2),
             "should observe Error",
         );
@@ -1294,29 +1200,17 @@ mod tests {
         let pool = AppPool::new(spawner.clone());
         let (sink, status_obs, exit_obs) = collect_sink();
         let id = SubSessionId::default();
-        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
-            .expect("spawn");
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None).expect("spawn");
         // Prime: only Running observed so far.
-        wait_until(
-            || !status_obs.lock().unwrap().is_empty(),
-            Duration::from_secs(2),
-            "Running",
-        );
+        wait_until(|| !status_obs.lock().unwrap().is_empty(), Duration::from_secs(2), "Running");
         pool.kill(&id).expect("kill");
-        wait_until(
-            || !pool.contains(&id),
-            Duration::from_secs(2),
-            "pool should drop entry on kill",
-        );
+        wait_until(|| !pool.contains(&id), Duration::from_secs(2), "pool should drop entry on kill");
         // Give the wait thread a beat to finish (it should have aborted
         // status emission via the killed guard).
         std::thread::sleep(Duration::from_millis(50));
         let statuses = status_obs.lock().unwrap().clone();
         assert_eq!(
-            statuses
-                .iter()
-                .filter(|(s, _)| !matches!(s, SubSessionStatus::Running))
-                .count(),
+            statuses.iter().filter(|(s, _)| !matches!(s, SubSessionStatus::Running)).count(),
             0,
             "no post-Running status should be emitted after kill, got {statuses:?}"
         );
@@ -1329,16 +1223,10 @@ mod tests {
         let pool = AppPool::new(spawner.clone());
         let (sink, _, _) = collect_sink();
         let id = SubSessionId::default();
-        let pid = pool
-            .spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
-            .unwrap();
+        let pid = pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None).unwrap();
         assert_eq!(pool.pid(&id), Some(pid));
         spawner.child(0).signal_exit(true);
-        wait_until(
-            || pool.pid(&id).is_none(),
-            Duration::from_secs(2),
-            "pid should clear after exit",
-        );
+        wait_until(|| pool.pid(&id).is_none(), Duration::from_secs(2), "pid should clear after exit");
     }
 
     #[test]
@@ -1347,13 +1235,8 @@ mod tests {
         let pool = AppPool::new(spawner.clone());
         let (sink, status_obs, exit_obs) = collect_sink();
         let id = SubSessionId::default();
-        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
-            .expect("spawn");
-        wait_until(
-            || !status_obs.lock().unwrap().is_empty(),
-            Duration::from_secs(2),
-            "Running",
-        );
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None).expect("spawn");
+        wait_until(|| !status_obs.lock().unwrap().is_empty(), Duration::from_secs(2), "Running");
         let killed_before = spawner.child(0).was_killed();
         pool.detach(&id);
         assert!(!pool.contains(&id), "detach removes from pool");
@@ -1368,10 +1251,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(80));
         let statuses = status_obs.lock().unwrap().clone();
         assert_eq!(
-            statuses
-                .iter()
-                .filter(|(s, _)| !matches!(s, SubSessionStatus::Running))
-                .count(),
+            statuses.iter().filter(|(s, _)| !matches!(s, SubSessionStatus::Running)).count(),
             0,
             "no post-Running status after detach, got {statuses:?}"
         );
@@ -1438,12 +1318,7 @@ mod tests {
     impl FakeLivenessProbe {
         fn new_pair() -> (Box<Self>, Arc<(StdMutex<bool>, std::sync::Condvar)>) {
             let signal = Arc::new((StdMutex::new(false), std::sync::Condvar::new()));
-            (
-                Box::new(FakeLivenessProbe {
-                    signal: Arc::clone(&signal),
-                }),
-                signal,
-            )
+            (Box::new(FakeLivenessProbe { signal: Arc::clone(&signal) }), signal)
         }
     }
 
@@ -1541,21 +1416,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(120));
         let post = status_obs.lock().unwrap().clone();
         assert!(
-            !post
-                .iter()
-                .any(|(s, _)| matches!(s, SubSessionStatus::Exited)),
+            !post.iter().any(|(s, _)| matches!(s, SubSessionStatus::Exited)),
             "launcher exit must be suppressed after retarget; got {post:?}"
         );
-        assert!(
-            exit_obs.lock().unwrap().is_empty(),
-            "no exited event after retarget+launcher-exit"
-        );
+        assert!(exit_obs.lock().unwrap().is_empty(), "no exited event after retarget+launcher-exit");
         // Entry must still be in the pool (liveness thread owns the
         // exit emission now).
-        assert!(
-            pool.contains(&id),
-            "entry must remain in pool after launcher exits if retargeted"
-        );
+        assert!(pool.contains(&id), "entry must remain in pool after launcher exits if retargeted");
 
         // pool.kill MUST hit the NEW killer, not the launcher's.
         pool.kill(&id).expect("kill");
@@ -1597,11 +1464,7 @@ mod tests {
             liveness: probe,
             window_target: None,
         });
-        wait_until(
-            || pool.pid(&id) == Some(new_pid),
-            Duration::from_secs(2),
-            "pool.pid should flip",
-        );
+        wait_until(|| pool.pid(&id) == Some(new_pid), Duration::from_secs(2), "pool.pid should flip");
 
         // Launcher exits — suppressed.
         spawner.child(0).signal_exit(true);
@@ -1626,16 +1489,10 @@ mod tests {
             Duration::from_secs(2),
             "Exited(None) emitted after rediscovered owner dies",
         );
-        assert!(
-            !exit_obs.lock().unwrap().is_empty(),
-            "exited event after rediscovered owner dies"
-        );
+        assert!(!exit_obs.lock().unwrap().is_empty(), "exited event after rediscovered owner dies");
         // We did NOT call pool.kill — killer must not have been
         // invoked.
-        assert!(
-            !killed_flag.load(Ordering::SeqCst),
-            "natural death must not invoke killer"
-        );
+        assert!(!killed_flag.load(Ordering::SeqCst), "natural death must not invoke killer");
     }
 
     #[test]
@@ -1673,9 +1530,7 @@ mod tests {
             "pool should drop entry on natural exit when resolver returned None",
         );
         let statuses = status_obs.lock().unwrap().clone();
-        assert!(statuses
-            .iter()
-            .any(|(s, _)| matches!(s, SubSessionStatus::Exited)));
+        assert!(statuses.iter().any(|(s, _)| matches!(s, SubSessionStatus::Exited)));
         assert!(!exit_obs.lock().unwrap().is_empty());
     }
 
@@ -1712,10 +1567,7 @@ mod tests {
         // No Exited / Error event yet — wait thread is in grace,
         // entry is still in pool.
         std::thread::sleep(Duration::from_millis(200));
-        assert!(
-            pool.contains(&id),
-            "entry must remain while wait thread is in resolver grace"
-        );
+        assert!(pool.contains(&id), "entry must remain while wait thread is in resolver grace");
         assert!(
             !status_obs
                 .lock()
@@ -1725,10 +1577,7 @@ mod tests {
             "no Exited/Error during grace; got {:?}",
             status_obs.lock().unwrap()
         );
-        assert!(
-            exit_obs.lock().unwrap().is_empty(),
-            "no exited callback during grace"
-        );
+        assert!(exit_obs.lock().unwrap().is_empty(), "no exited callback during grace");
 
         // Now the resolver finally finds the rediscovered owner.
         let new_pid = 90_001;
@@ -1761,14 +1610,8 @@ mod tests {
                 .any(|(s, _)| matches!(s, SubSessionStatus::Exited | SubSessionStatus::Error)),
             "launcher exit suppressed after late retarget; got {statuses:?}"
         );
-        assert!(
-            exit_obs.lock().unwrap().is_empty(),
-            "no exited callback after late retarget"
-        );
-        assert!(
-            pool.contains(&id),
-            "entry remains because liveness owns final exit"
-        );
+        assert!(exit_obs.lock().unwrap().is_empty(), "no exited callback after late retarget");
+        assert!(pool.contains(&id), "entry remains because liveness owns final exit");
         // Sanity: the Running events for both pids fired in order.
         let running_pids: Vec<_> = statuses
             .iter()
@@ -1827,17 +1670,11 @@ mod tests {
                 .any(|(s, _)| matches!(s, SubSessionStatus::Exited | SubSessionStatus::Error)),
             "kill during grace must suppress wait-thread emission; got {statuses:?}"
         );
-        assert!(
-            exit_obs.lock().unwrap().is_empty(),
-            "no exited callback after kill during grace"
-        );
+        assert!(exit_obs.lock().unwrap().is_empty(), "no exited callback after kill during grace");
         // Don't assert a tight upper bound on kill latency — CI
         // schedulers can stall threads. Just ensure it didn't sit for
         // the full grace window.
-        assert!(
-            start.elapsed() < RESOLVER_GRACE_DEADLINE,
-            "kill returned within grace window"
-        );
+        assert!(start.elapsed() < RESOLVER_GRACE_DEADLINE, "kill returned within grace window");
     }
 
     /// **Regression for the pre-registration race**: with a waiter
@@ -1868,9 +1705,7 @@ mod tests {
                     }
                 }
                 Ok(SpawnedApp {
-                    pid: self
-                        .next_pid
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                    pid: self.next_pid.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
                     waiter: Box::new(InstantWaiter),
                     killer: Arc::new(NoopKiller),
                 })
@@ -1885,8 +1720,7 @@ mod tests {
 
         // No owner_resolver — `resolver_done` is `true` synchronously
         // so the wait thread skips the grace window entirely.
-        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None)
-            .expect("spawn");
+        pool.spawn(id, "x".to_owned(), PathBuf::from("."), sink, None).expect("spawn");
 
         // Entry must clear and Exited must fire even though the
         // waiter returned before the wait thread was scheduled.
@@ -1897,9 +1731,7 @@ mod tests {
         );
         let statuses = status_obs.lock().unwrap().clone();
         assert!(
-            statuses
-                .iter()
-                .any(|(s, _)| matches!(s, SubSessionStatus::Exited)),
+            statuses.iter().any(|(s, _)| matches!(s, SubSessionStatus::Exited)),
             "Exited must fire after immediate-exit waiter; got {statuses:?}"
         );
         assert!(
@@ -1936,20 +1768,13 @@ mod tests {
             liveness: probe,
             window_target: None,
         });
-        wait_until(
-            || pool.pid(&id) == Some(new_pid),
-            Duration::from_secs(2),
-            "retarget happened",
-        );
+        wait_until(|| pool.pid(&id) == Some(new_pid), Duration::from_secs(2), "retarget happened");
 
         // Closing the sub-tab uses detach (not kill). The
         // rediscovered editor process must NOT be killed.
         pool.detach(&id);
         std::thread::sleep(Duration::from_millis(40));
-        assert!(
-            !killed_flag.load(Ordering::SeqCst),
-            "detach must not invoke the rediscovered killer"
-        );
+        assert!(!killed_flag.load(Ordering::SeqCst), "detach must not invoke the rediscovered killer");
         assert!(resolver.was_called(), "resolver should have been invoked");
     }
 
@@ -1965,9 +1790,7 @@ mod tests {
     #[test]
     fn real_spawner_returns_tool_missing_for_unknown_simple_command() {
         let r = RealAppSpawner.spawn("definitely-not-a-real-binary-xyzzy", Path::new("."));
-        assert!(
-            matches!(r, Err(Error::ToolMissing(t)) if t == "definitely-not-a-real-binary-xyzzy")
-        );
+        assert!(matches!(r, Err(Error::ToolMissing(t)) if t == "definitely-not-a-real-binary-xyzzy"));
     }
 
     #[test]
@@ -1992,16 +1815,9 @@ mod tests {
         let cwd = std::env::temp_dir();
         pool.spawn(id, cmd, cwd, sink, None).expect("real spawn");
 
-        wait_until(
-            || !pool.contains(&id),
-            Duration::from_secs(5),
-            "real child should exit",
-        );
+        wait_until(|| !pool.contains(&id), Duration::from_secs(5), "real child should exit");
         let statuses = status_obs.lock().unwrap().clone();
-        assert!(matches!(
-            statuses.first(),
-            Some((SubSessionStatus::Running, Some(_)))
-        ));
+        assert!(matches!(statuses.first(), Some((SubSessionStatus::Running, Some(_)))));
         assert!(!exit_obs.lock().unwrap().is_empty());
     }
 
@@ -2046,9 +1862,7 @@ mod tests {
     fn spawn_with_window_target(pool: &AppPool, target: WindowTarget) -> (SubSessionId, u32) {
         let id = SubSessionId::default();
         let (sink, _s, _e) = collect_sink();
-        let runtime_pid = pool
-            .spawn(id, "noop".into(), PathBuf::from("."), sink, None)
-            .expect("spawn");
+        let runtime_pid = pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
         // Inject the window target directly so the test doesn't need to
         // drive a full resolver loop.
         {
@@ -2108,9 +1922,7 @@ mod tests {
         let pool = AppPool::new(spawner);
         let id = SubSessionId::default();
         let (sink, _s, _e) = collect_sink();
-        let pid = pool
-            .spawn(id, "noop".into(), PathBuf::from("."), sink, None)
-            .expect("spawn");
+        let pid = pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
 
         let focuser = crate::window_focus::RecordingFocuser::new();
         pool.focus(&id, &focuser).expect("focus");
@@ -2195,9 +2007,7 @@ mod tests {
         let pool = AppPool::new(spawner);
         let id = SubSessionId::default();
         let (sink, _s, _e) = collect_sink();
-        let _ = pool
-            .spawn(id, "noop".into(), PathBuf::from("."), sink, None)
-            .expect("spawn");
+        let _ = pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
         let focuser = crate::window_focus::RecordingFocuser::new();
         let res = pool.request_window_close(&id, &focuser);
         assert!(matches!(res, Err(Error::NotFound(_))));

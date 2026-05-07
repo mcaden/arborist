@@ -30,16 +30,13 @@ use portable_pty::PtySize;
 use tracing::{debug, info, warn};
 
 use crate::compose::{self, ComposeInputs};
-use crate::config_store::{
-    discover_instructions, list_instructions_for, ConfigStore, MAX_INSTRUCTION_FILE_BYTES,
-};
+use crate::config_store::{discover_instructions, list_instructions_for, ConfigStore, MAX_INSTRUCTION_FILE_BYTES};
 use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
 use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
-    AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult,
-    SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs,
-    SessionStatus, SessionView, Tool,
+    AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult, SessionCreateArgs, SessionId, SessionInputArgs,
+    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, Tool,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -274,15 +271,7 @@ impl AppContext {
         ai_session_discover: AiSessionDiscoveryCb,
         turn_emit: TurnCb,
     ) -> Self {
-        Self::with_workspace_internal(
-            pool,
-            workspace,
-            sink,
-            git_runner,
-            metrics_emit,
-            ai_session_discover,
-            turn_emit,
-        )
+        Self::with_workspace_internal(pool, workspace, sink, git_runner, metrics_emit, ai_session_discover, turn_emit)
     }
 
     fn with_workspace_internal(
@@ -381,11 +370,7 @@ impl AppContext {
     /// impossible because the swap is not idempotent).
     #[must_use]
     pub fn store(&self) -> ConfigStore {
-        self.workspace
-            .read()
-            .expect("workspace lock poisoned")
-            .store
-            .clone()
+        self.workspace.read().expect("workspace lock poisoned").store.clone()
     }
 }
 
@@ -434,10 +419,7 @@ fn validate_pty_dims(cols: u16, rows: u16) -> Result<(), AppError> {
 /// Create a new session, materialise its temp files, persist it, and spawn
 /// the PTY child. Returns the [`SessionView`] the frontend can stash in its
 /// store.
-pub fn session_create_impl(
-    ctx: &AppContext,
-    args: SessionCreateArgs,
-) -> Result<SessionView, AppError> {
+pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<SessionView, AppError> {
     let _switch = acquire_switch_read(ctx)?;
     validate_pty_dims(args.cols, args.rows)?;
 
@@ -449,10 +431,7 @@ pub fn session_create_impl(
     //    so an over-eager wizard can't trigger a NotFound for a `none`
     //    sentinel.
     let cfg = ctx.store().load_config();
-    let id_opt = args
-        .instruction_set_id
-        .as_ref()
-        .filter(|id| !id.as_str().is_empty());
+    let id_opt = args.instruction_set_id.as_ref().filter(|id| !id.as_str().is_empty());
     let set_opt = match id_opt {
         Some(id) => Some(lookup_instruction_set(&cfg, id, args.tool)?),
         None => None,
@@ -468,10 +447,7 @@ pub fn session_create_impl(
 
     // 4. Derive a non-colliding label from the worktree basename.
     let existing_sessions = ctx.store().load_sessions();
-    let existing_labels: Vec<&str> = existing_sessions
-        .values()
-        .map(|s| s.label.as_str())
-        .collect();
+    let existing_labels: Vec<&str> = existing_sessions.values().map(|s| s.label.as_str()).collect();
     let basename = worktree
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -520,12 +496,7 @@ pub fn session_create_impl(
     //    Claude has no equivalent flag to pre-allocate against; its
     //    `ai_session_id` continues to be discovered from the transcript
     //    after the first user prompt.
-    let tab_index = ctx
-        .store()
-        .load_config()
-        .tab_order
-        .len()
-        .min(usize::MAX - 1);
+    let tab_index = ctx.store().load_config().tab_order.len().min(usize::MAX - 1);
     let preallocated_ai_id = match args.tool {
         Tool::Copilot => Some(uuid::Uuid::new_v4().to_string()),
         Tool::Claude => None,
@@ -636,11 +607,7 @@ pub fn session_list_impl(ctx: &AppContext) -> Result<Vec<SessionView>, AppError>
 // session_close
 // ---------------------------------------------------------------------------
 
-pub async fn session_close_impl(
-    ctx: &AppContext,
-    id: SessionId,
-    delete_worktree: bool,
-) -> Result<SessionCloseResult, AppError> {
+pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree: bool) -> Result<SessionCloseResult, AppError> {
     // Reject if a workspace switch is queued/active. Held for the full
     // lifetime of this call (including across `pool.kill().await`) so
     // the switch's `write().await` cannot proceed until our teardown
@@ -670,9 +637,7 @@ pub async fn session_close_impl(
         match ctx.store().try_load_sessions() {
             Ok(map) => match map.get(&id) {
                 Some(s) => WorktreeDeleteIntent::Path(s.worktree_path.clone()),
-                None => WorktreeDeleteIntent::Refused(format!(
-                    "session {id} not found in store; cannot determine worktree to delete"
-                )),
+                None => WorktreeDeleteIntent::Refused(format!("session {id} not found in store; cannot determine worktree to delete")),
             },
             Err(e) => WorktreeDeleteIntent::Refused(format!(
                 "could not read sessions snapshot reliably; refusing to attempt worktree deletion: {e}"
@@ -702,12 +667,7 @@ pub async fn session_close_impl(
 
     // 4. Trim AppConfig ordering & active selection.
     let cfg = ctx.store().load_config();
-    let new_last: Vec<SessionId> = cfg
-        .last_open_sessions
-        .iter()
-        .copied()
-        .filter(|s| s != &id)
-        .collect();
+    let new_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| s != &id).collect();
     let new_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
     let active_patch: Option<Option<SessionId>> = match cfg.active_session_id {
         Some(active) if active == id => Some(new_order.first().copied()),
@@ -855,21 +815,14 @@ enum WorktreeDeleteIntent {
 /// touch the configured `workspace_root` itself (i.e. the main checkout),
 /// any path that is not contained under the workspace root, or any path
 /// still claimed by another live session.
-fn delete_worktree_after_close(
-    ctx: &AppContext,
-    id: &SessionId,
-    worktree_path: &Path,
-    workspace_root: &Option<PathBuf>,
-) -> Result<(), AppError> {
+fn delete_worktree_after_close(ctx: &AppContext, id: &SessionId, worktree_path: &Path, workspace_root: &Option<PathBuf>) -> Result<(), AppError> {
     // Require an explicit workspace root. Without it we have neither a
     // safe `-C` directory to invoke git from (running git inside the
     // worktree we're about to delete fails on Windows because the OS
     // locks a process's CWD) nor a basis for the containment check below.
-    let root = workspace_root.as_ref().ok_or_else(|| {
-        AppError::from(Error::Internal(
-            "cannot delete worktree without a configured workspace root".to_owned(),
-        ))
-    })?;
+    let root = workspace_root
+        .as_ref()
+        .ok_or_else(|| AppError::from(Error::Internal("cannot delete worktree without a configured workspace root".to_owned())))?;
     if !root.is_dir() {
         return Err(AppError::from(Error::WorktreeMissing(root.clone())));
     }
@@ -886,12 +839,8 @@ fn delete_worktree_after_close(
             worktree_path.display()
         )))
     })?;
-    let canon_root = dunce::canonicalize(root).map_err(|e| {
-        AppError::from(Error::Internal(format!(
-            "cannot canonicalize workspace root {}: {e}",
-            root.display()
-        )))
-    })?;
+    let canon_root = dunce::canonicalize(root)
+        .map_err(|e| AppError::from(Error::Internal(format!("cannot canonicalize workspace root {}: {e}", root.display()))))?;
 
     // Safety 1: never remove the main worktree.
     if canon_wt == canon_root {
@@ -925,12 +874,10 @@ fn delete_worktree_after_close(
             "refusing to delete worktree because the sessions snapshot could not be read reliably: {e}"
         )))
     })?;
-    let still_in_use = sessions
-        .values()
-        .any(|s| match dunce::canonicalize(&s.worktree_path) {
-            Ok(other) => other == canon_wt,
-            Err(_) => true,
-        });
+    let still_in_use = sessions.values().any(|s| match dunce::canonicalize(&s.worktree_path) {
+        Ok(other) => other == canon_wt,
+        Err(_) => true,
+    });
     if still_in_use {
         return Err(AppError::from(Error::Internal(format!(
             "refusing to delete worktree still in use by another session: {}",
@@ -940,9 +887,7 @@ fn delete_worktree_after_close(
 
     let repo_root: PathBuf = root.clone();
 
-    ctx.git_runner
-        .remove_worktree(&repo_root, worktree_path)
-        .map_err(AppError::from)?;
+    ctx.git_runner.remove_worktree(&repo_root, worktree_path).map_err(AppError::from)?;
     info!(
         session_id = %id,
         worktree = %worktree_path.display(),
@@ -964,9 +909,7 @@ pub fn session_focus_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppErro
     let _switch = acquire_switch_read(ctx)?;
     let sessions = ctx.store().load_sessions();
     if !sessions.contains_key(&id) {
-        return Err(AppError::from(Error::NotFound(format!(
-            "session {id} not found"
-        ))));
+        return Err(AppError::from(Error::NotFound(format!("session {id} not found"))));
     }
     ctx.store()
         .save_config(PartialAppConfig {
@@ -982,11 +925,7 @@ pub fn session_focus_impl(ctx: &AppContext, id: SessionId) -> Result<(), AppErro
 // ---------------------------------------------------------------------------
 
 pub fn session_resize_impl(ctx: &AppContext, args: SessionResizeArgs) -> Result<(), AppError> {
-    let SessionResizeArgs {
-        session_id,
-        cols,
-        rows,
-    } = args;
+    let SessionResizeArgs { session_id, cols, rows } = args;
 
     // Skip silently if a workspace switch is queued or active. The next
     // `ResizeObserver` event after the switch completes will re-fire
@@ -1075,24 +1014,18 @@ pub fn session_resize_impl(ctx: &AppContext, args: SessionResizeArgs) -> Result<
                 // failure (the user can retry once they've fixed
                 // whatever caused the spawn to fail).
                 let msg = format!("Failed to start restored session: {e}");
-                let _ = ctx
-                    .store()
-                    .update_session_status(&session.id, SessionStatus::Error, None);
+                let _ = ctx.store().update_session_status(&session.id, SessionStatus::Error, None);
                 (ctx.sink.status)(&session.id, SessionStatus::Error, None, Some(msg));
                 return Err(AppError::from(e));
             }
         }
     }
 
-    ctx.pool
-        .resize(&session_id, cols, rows)
-        .map_err(AppError::from)
+    ctx.pool.resize(&session_id, cols, rows).map_err(AppError::from)
 }
 
 pub fn session_input_impl(ctx: &AppContext, args: SessionInputArgs) -> Result<(), AppError> {
-    ctx.pool
-        .write(&args.session_id, args.data.as_bytes())
-        .map_err(AppError::from)
+    ctx.pool.write(&args.session_id, args.data.as_bytes()).map_err(AppError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,13 +1048,9 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // Error so the overlay re-renders with context (Roadmap §4.3).
     if !session.worktree_path.is_dir() {
         let msg = stale_worktree_message(&session.worktree_path);
-        let _ = ctx
-            .store()
-            .update_session_status(&id, SessionStatus::Error, None);
+        let _ = ctx.store().update_session_status(&id, SessionStatus::Error, None);
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
-        return Err(AppError::from(Error::WorktreeMissing(
-            session.worktree_path.clone(),
-        )));
+        return Err(AppError::from(Error::WorktreeMissing(session.worktree_path.clone())));
     }
 
     // Re-materialise temp files in case they were deleted (e.g. by a prior
@@ -1130,9 +1059,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // DESIGN §5.4 — *never* recompose at restart time.
     if let Err(e) = materialise_temp_files(&session.temp_files) {
         let msg = format!("Failed to prepare session temp files: {e}");
-        let _ = ctx
-            .store()
-            .update_session_status(&id, SessionStatus::Error, None);
+        let _ = ctx.store().update_session_status(&id, SessionStatus::Error, None);
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
         return Err(e);
     }
@@ -1210,9 +1137,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
         },
     ) {
         let msg = format!("Failed to restart session: {e}");
-        let _ = ctx
-            .store()
-            .update_session_status(&id, SessionStatus::Error, None);
+        let _ = ctx.store().update_session_status(&id, SessionStatus::Error, None);
         (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
         return Err(AppError::from(e));
     }
@@ -1221,10 +1146,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // this after respawn means a failed restart (above) leaves the prior
     // ai_session_id intact and resumable.
     if matches!(session.tool, Tool::Copilot) {
-        if let Err(e) = ctx
-            .store()
-            .update_session_ai_session_id(&id, restart_ai_id.clone())
-        {
+        if let Err(e) = ctx.store().update_session_ai_session_id(&id, restart_ai_id.clone()) {
             warn!(session_id = %id, error = ?e, "restart: failed to persist rotated ai_session_id");
         }
     }
@@ -1260,9 +1182,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
 /// so the entire restore loop is bounded by the same barrier as every
 /// other workspace-mutating handler.
 pub fn frontend_ready_impl(ctx: &AppContext) -> bool {
-    ctx.restored
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
+    ctx.restored.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok()
 }
 
 /// Phase 7 helper — acquire a read guard on [`AppContext::switch_lock`]
@@ -1294,15 +1214,11 @@ pub fn frontend_ready_impl(ctx: &AppContext) -> bool {
 /// between the load and the `try_read` where the switch could
 /// acquire write and the handler still see a stale "no pending"
 /// reading.
-pub(crate) fn acquire_switch_read(
-    ctx: &AppContext,
-) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, AppError> {
-    let guard = ctx.switch_lock.try_read().map_err(|_| {
-        AppError::new(
-            "WorkspaceSwitchInProgress",
-            "A workspace switch is in progress; retry once it completes.",
-        )
-    })?;
+pub(crate) fn acquire_switch_read(ctx: &AppContext) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, AppError> {
+    let guard = ctx
+        .switch_lock
+        .try_read()
+        .map_err(|_| AppError::new("WorkspaceSwitchInProgress", "A workspace switch is in progress; retry once it completes."))?;
     if ctx.switch_pending.load(Ordering::SeqCst) > 0 {
         drop(guard);
         return Err(AppError::new(
@@ -1329,11 +1245,7 @@ fn stale_worktree_message(path: &std::path::Path) -> String {
 /// On any I/O failure we conservatively return `true` so the worst case
 /// is the CLI reports its own "no such session" error, which is no worse
 /// than today's behaviour.
-fn ai_session_transcript_exists(
-    tool: Tool,
-    worktree_path: &std::path::Path,
-    ai_session_id: &str,
-) -> bool {
+fn ai_session_transcript_exists(tool: Tool, worktree_path: &std::path::Path, ai_session_id: &str) -> bool {
     let Some(home) = crate::session_metrics::home_dir() else {
         return true;
     };
@@ -1343,10 +1255,7 @@ fn ai_session_transcript_exists(
             .join("projects")
             .join(crate::session_metrics::encode_cwd(worktree_path))
             .join(format!("{ai_session_id}.jsonl")),
-        Tool::Copilot => home
-            .join(".copilot")
-            .join("session-state")
-            .join(ai_session_id),
+        Tool::Copilot => home.join(".copilot").join("session-state").join(ai_session_id),
     };
     // `try_exists` distinguishes "definitely missing" from "couldn't tell"
     // (e.g. permission denied on a parent dir). `Path::is_file`/`is_dir`
@@ -1370,31 +1279,18 @@ fn ai_session_transcript_exists(
 ///
 /// No-op when nothing needs trimming, so the common path doesn't
 /// rewrite `config.json` on every launch.
-fn trim_unknown_session_refs_with_store(
-    store: &ConfigStore,
-    known: &std::collections::HashSet<SessionId>,
-) -> Result<(), Error> {
+fn trim_unknown_session_refs_with_store(store: &ConfigStore, known: &std::collections::HashSet<SessionId>) -> Result<(), Error> {
     let cfg = store.load_config();
     let mut patch = PartialAppConfig::default();
     let mut dirty = false;
 
-    let trimmed_last: Vec<SessionId> = cfg
-        .last_open_sessions
-        .iter()
-        .copied()
-        .filter(|s| known.contains(s))
-        .collect();
+    let trimmed_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| known.contains(s)).collect();
     if trimmed_last.len() != cfg.last_open_sessions.len() {
         patch.last_open_sessions = Some(trimmed_last);
         dirty = true;
     }
 
-    let trimmed_order: Vec<SessionId> = cfg
-        .tab_order
-        .iter()
-        .copied()
-        .filter(|s| known.contains(s))
-        .collect();
+    let trimmed_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| known.contains(s)).collect();
     if trimmed_order.len() != cfg.tab_order.len() {
         patch.tab_order = Some(trimmed_order);
         dirty = true;
@@ -1485,11 +1381,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
     // never visits it. The `restored` CAS guarantees this loop body
     // runs at most once per workspace binding, so there's no
     // double-spawn risk from re-entry either.
-    let pending_ids: std::collections::HashSet<SessionId> = ctx
-        .pending_spawn
-        .lock()
-        .map(|g| g.keys().copied().collect())
-        .unwrap_or_default();
+    let pending_ids: std::collections::HashSet<SessionId> = ctx.pending_spawn.lock().map(|g| g.keys().copied().collect()).unwrap_or_default();
 
     for (id, session) in sessions {
         if ctx.pool.contains(&id) || pending_ids.contains(&id) {
@@ -1519,14 +1411,8 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 continue;
             }
             let cfg = store.load_config();
-            let new_last: Vec<SessionId> = cfg
-                .last_open_sessions
-                .iter()
-                .copied()
-                .filter(|s| s != &id)
-                .collect();
-            let new_order: Vec<SessionId> =
-                cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
+            let new_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| s != &id).collect();
+            let new_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
             let active_patch: Option<Option<SessionId>> = match cfg.active_session_id {
                 Some(active) if active == id => Some(new_order.first().copied()),
                 _ => None,
@@ -1598,8 +1484,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             let should_splice = match session.tool {
                 Tool::Copilot => true,
                 Tool::Claude => {
-                    let exists =
-                        ai_session_transcript_exists(session.tool, &session.worktree_path, aid);
+                    let exists = ai_session_transcript_exists(session.tool, &session.worktree_path, aid);
                     if !exists {
                         warn!(
                             session_id = %id,
@@ -1612,16 +1497,11 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 }
             };
             if should_splice {
-                session_to_spawn.composed_command =
-                    compose::with_resume(&session.composed_command, session.tool, aid);
+                session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, aid);
             }
         }
 
-        match ctx
-            .pending_spawn
-            .lock()
-            .map(|mut g| g.insert(id, session_to_spawn))
-        {
+        match ctx.pending_spawn.lock().map(|mut g| g.insert(id, session_to_spawn)) {
             Ok(_) => {
                 info!(
                     session_id = %id,
@@ -1650,10 +1530,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
 /// failure (missing dir, not a repo, git unavailable) — graceful
 /// degradation lets the frontend always fall back to the manual "Browse…"
 /// button without surfacing an error toast.
-pub fn worktrees_list_impl(
-    ctx: &AppContext,
-    repo_root: &std::path::Path,
-) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {
+pub fn worktrees_list_impl(ctx: &AppContext, repo_root: &std::path::Path) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {
     if !repo_root.is_dir() {
         debug!(
             code = "GitUnavailable",
@@ -1662,9 +1539,7 @@ pub fn worktrees_list_impl(
         );
         return Ok(Vec::new());
     }
-    ctx.git_runner
-        .list_worktrees(repo_root)
-        .map_err(AppError::from)
+    ctx.git_runner.list_worktrees(repo_root).map_err(AppError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -1720,18 +1595,12 @@ pub fn workspace_validate_impl(
     if !canon.as_path().is_dir() {
         return Ok(invalid("path is not a directory"));
     }
-    let toplevel = ctx
-        .git_runner
-        .git_toplevel(canon.as_path())
-        .map_err(AppError::from)?;
+    let toplevel = ctx.git_runner.git_toplevel(canon.as_path()).map_err(AppError::from)?;
     let Some(toplevel) = toplevel else {
         return Ok(invalid("path is not a git repository"));
     };
     if toplevel != *canon.as_path() {
-        return Ok(invalid(&format!(
-            "path must be the repository root ({})",
-            toplevel.display()
-        )));
+        return Ok(invalid(&format!("path must be the repository root ({})", toplevel.display())));
     }
     // Reject linked git worktrees (and submodule working trees): they
     // have `.git` as a *file* (containing `gitdir: <path-into-primary>`),
@@ -1947,28 +1816,16 @@ pub async fn workspace_switch_impl_inner(
     if !validate.valid {
         return Err(AppError::new(
             "InvalidPath",
-            validate
-                .error
-                .unwrap_or_else(|| "workspace validation failed".to_owned()),
+            validate.error.unwrap_or_else(|| "workspace validation failed".to_owned()),
         ));
     }
-    let canonical = dunce::canonicalize(new_path).map_err(|e| {
-        AppError::new(
-            "InvalidPath",
-            format!("could not canonicalise workspace path: {e}"),
-        )
-    })?;
+    let canonical = dunce::canonicalize(new_path).map_err(|e| AppError::new("InvalidPath", format!("could not canonicalise workspace path: {e}")))?;
 
     // Step 3 — no-op fast path. We populate `config` and `sessions`
     // from the *current* (unchanged) store so the wire payload is
     // non-nullable; the frontend short-circuits adoption on the
     // `noOp` flag.
-    let current_root = ctx
-        .workspace
-        .read()
-        .expect("workspace lock poisoned")
-        .workspace_root
-        .clone();
+    let current_root = ctx.workspace.read().expect("workspace lock poisoned").workspace_root.clone();
     if current_root.as_ref() == Some(&canonical) {
         let config = ctx.store().load_config();
         let sessions = session_list_impl(ctx)?;
@@ -1982,29 +1839,16 @@ pub async fn workspace_switch_impl_inner(
 
     // Step 4 — acquire OS lock + ConfigStore for the new workspace.
     if let Err(e) = std::fs::create_dir_all(app_data_dir) {
-        return Err(AppError::new(
-            "Io",
-            format!("create_dir_all({}): {e}", app_data_dir.display()),
-        ));
+        return Err(AppError::new("Io", format!("create_dir_all({}): {e}", app_data_dir.display())));
     }
-    let binding = match crate::boot::bind_workspace(
-        &canonical,
-        app_data_dir,
-        branch,
-        ctx.git_runner.as_ref(),
-        crate::boot::BootSource::Picker,
-    ) {
+    let binding = match crate::boot::bind_workspace(&canonical, app_data_dir, branch, ctx.git_runner.as_ref(), crate::boot::BootSource::Picker) {
         Ok(b) => b,
         Err(crate::boot::BootError::Contention { branch, workspace }) => {
             return Err(AppError::new(
                 "WorkspaceLocked",
                 format!(
                     "Workspace is already open in another Arborist window (branch: {}, path: {}).",
-                    if branch.trim().is_empty() {
-                        "main"
-                    } else {
-                        &branch
-                    },
+                    if branch.trim().is_empty() { "main" } else { &branch },
                     workspace.display(),
                 ),
             ));
@@ -2022,17 +1866,11 @@ pub async fn workspace_switch_impl_inner(
             // does fire (e.g. the repo was deleted between steps).
             return Err(AppError::new(
                 "InvalidPath",
-                format!(
-                    "workspace path is not a git repository root ({}): {reason}",
-                    workspace.display()
-                ),
+                format!("workspace path is not a git repository root ({}): {reason}", workspace.display()),
             ));
         }
         Err(other) => {
-            return Err(AppError::new(
-                "Internal",
-                format!("workspace bind failed: {other}"),
-            ));
+            return Err(AppError::new("Internal", format!("workspace bind failed: {other}")));
         }
     };
 
@@ -2058,9 +1896,7 @@ pub async fn workspace_switch_impl_inner(
     if let Err(e) = crate::boot::ensure_workspace_root_in_config(&binding.store, &canonical) {
         return Err(AppError::new(
             "Internal",
-            format!(
-                "failed to persist workspace_root into new workspace's config.json before switch commit: {e}"
-            ),
+            format!("failed to persist workspace_root into new workspace's config.json before switch commit: {e}"),
         ));
     }
 
@@ -2182,15 +2018,11 @@ pub async fn workspace_switch_impl_inner(
 
 /// Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a
 /// fresh branch named `<name>`.
-pub fn worktree_create_impl(
-    ctx: &AppContext,
-    name: &str,
-) -> Result<crate::types::WorktreeCreateResult, AppError> {
+pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types::WorktreeCreateResult, AppError> {
     use crate::types::WorktreeCreateResult;
 
     // Validate the name with the same rules the frontend used (defence in depth).
-    let validated = compose::validate_worktree_name(name)
-        .map_err(|msg| AppError::from(Error::InvalidPath(msg)))?;
+    let validated = compose::validate_worktree_name(name).map_err(|msg| AppError::from(Error::InvalidPath(msg)))?;
 
     let cfg = ctx.store().load_config();
     let Some(workspace) = cfg.workspace_root.as_ref() else {
@@ -2208,10 +2040,7 @@ pub fn worktree_create_impl(
     // Use symlink_metadata so dangling symlinks/junctions are still treated
     // as "exists" (Roadmap critique #4).
     if std::fs::symlink_metadata(&absolute).is_ok() {
-        return Err(AppError::from(Error::InvalidPath(format!(
-            "{} already exists",
-            absolute.display()
-        ))));
+        return Err(AppError::from(Error::InvalidPath(format!("{} already exists", absolute.display()))));
     }
 
     // Containment guard (critique #3): ensure `<workspace>/.worktrees`
@@ -2230,19 +2059,11 @@ pub fn worktree_create_impl(
         // Create the .worktrees parent ourselves so `git worktree add` does
         // not have to, and so the canonicalize/containment check below has
         // something to resolve.
-        std::fs::create_dir_all(&worktrees_dir).map_err(|e| {
-            AppError::from(Error::Internal(format!(
-                "could not create {}: {e}",
-                worktrees_dir.display()
-            )))
-        })?;
+        std::fs::create_dir_all(&worktrees_dir)
+            .map_err(|e| AppError::from(Error::Internal(format!("could not create {}: {e}", worktrees_dir.display()))))?;
     }
-    let canon_worktrees = dunce::canonicalize(&worktrees_dir).map_err(|e| {
-        AppError::from(Error::Internal(format!(
-            "could not canonicalize {}: {e}",
-            worktrees_dir.display()
-        )))
-    })?;
+    let canon_worktrees = dunce::canonicalize(&worktrees_dir)
+        .map_err(|e| AppError::from(Error::Internal(format!("could not canonicalize {}: {e}", worktrees_dir.display()))))?;
     if !canon_worktrees.starts_with(&workspace) {
         return Err(AppError::from(Error::InvalidPath(format!(
             "{} resolves outside the workspace",
@@ -2270,11 +2091,7 @@ pub fn worktree_create_impl(
 
 /// Look up an instruction set by ID, validating that its tool matches the
 /// requested one.
-fn lookup_instruction_set(
-    cfg: &crate::types::AppConfig,
-    id: &crate::types::InstructionSetId,
-    tool: Tool,
-) -> Result<InstructionSet, AppError> {
+fn lookup_instruction_set(cfg: &crate::types::AppConfig, id: &crate::types::InstructionSetId, tool: Tool) -> Result<InstructionSet, AppError> {
     // Use the same discovery the frontend sees so behaviour is consistent
     // (in particular, oversize and symlink-out-of-dir filtering).
     let sets: Vec<InstructionSet> = if cfg.instruction_sets_dir.as_os_str().is_empty() {
@@ -2295,9 +2112,7 @@ fn lookup_instruction_set(
             }
             return Ok(s);
         }
-        return Err(AppError::from(Error::NotFound(format!(
-            "instruction set {id} not found"
-        ))));
+        return Err(AppError::from(Error::NotFound(format!("instruction set {id} not found"))));
     };
     if set.tool != tool {
         return Err(AppError::from(Error::ToolMismatch(format!(
@@ -2338,10 +2153,7 @@ fn materialise_temp_files(files: &[crate::types::TempFileSpec]) -> Result<(), Ap
 }
 
 fn now_unix_seconds() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 // Re-export some common path types so call sites don't have to remember the

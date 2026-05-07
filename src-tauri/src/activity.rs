@@ -63,11 +63,7 @@ const OSC_MAX_LEN: usize = 4096;
 // Pinned by the `activity_event_serde_uses_camelcase_field_keys`
 // regression test below.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ActivityEvent {
     /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
     Title { value: String },
@@ -100,10 +96,7 @@ pub enum ActivityEvent {
     /// Tracked by frontend in a per-session open-tool map; the icon
     /// flips to `runningTool` while the count > 0 and no permission is
     /// pending.
-    ToolStart {
-        tool_call_id: String,
-        tool_name: String,
-    },
+    ToolStart { tool_call_id: String, tool_name: String },
     /// Tool finished. Pairs with [`Self::ToolStart`] by `tool_call_id`.
     /// Emitted on `tool.execution_complete`.
     ToolEnd { tool_call_id: String, success: bool },
@@ -299,9 +292,7 @@ impl ActivityScanner {
             None => (payload.as_str(), ""),
         };
         match ps {
-            "0" | "2" => out.push(ActivityEvent::Title {
-                value: rest.to_owned(),
-            }),
+            "0" | "2" => out.push(ActivityEvent::Title { value: rest.to_owned() }),
             "9" => out.push(ActivityEvent::Attention),
             "777" if rest.starts_with("notify") => out.push(ActivityEvent::Attention),
             "133" => {
@@ -365,11 +356,7 @@ mod tests {
                     permission_kind: "shell".into(),
                     summary: Some("ls".into()),
                 },
-                &[
-                    "\"requestId\":\"r1\"",
-                    "\"permissionKind\":\"shell\"",
-                    "\"summary\":\"ls\"",
-                ],
+                &["\"requestId\":\"r1\"", "\"permissionKind\":\"shell\"", "\"summary\":\"ls\""],
                 &["request_id", "permission_kind"],
             ),
             (
@@ -381,31 +368,19 @@ mod tests {
                 &["request_id"],
             ),
             (
-                ActivityEvent::TurnEnd {
-                    duration_ms: Some(123),
-                },
+                ActivityEvent::TurnEnd { duration_ms: Some(123) },
                 &["\"durationMs\":123"],
                 &["duration_ms"],
             ),
-            (
-                ActivityEvent::CommandEnd { exit: Some(1) },
-                &["\"exit\":1"],
-                &[],
-            ),
+            (ActivityEvent::CommandEnd { exit: Some(1) }, &["\"exit\":1"], &[]),
         ];
         for (event, must_contain, must_not_contain) in cases {
             let json = serde_json::to_string(event).unwrap();
             for needle in *must_contain {
-                assert!(
-                    json.contains(needle),
-                    "{event:?} → {json} missing `{needle}`",
-                );
+                assert!(json.contains(needle), "{event:?} → {json} missing `{needle}`",);
             }
             for forbidden in *must_not_contain {
-                assert!(
-                    !json.contains(forbidden),
-                    "{event:?} → {json} contained snake_case `{forbidden}`",
-                );
+                assert!(!json.contains(forbidden), "{event:?} → {json} contained snake_case `{forbidden}`",);
             }
         }
     }
@@ -461,12 +436,7 @@ mod tests {
         let a = s.feed_bytes(b"\x1b]0;a\x1b");
         let b = s.feed_bytes(b"\\");
         assert_eq!(a, vec![ActivityEvent::Working]);
-        assert_eq!(
-            b,
-            vec![ActivityEvent::Title {
-                value: "a".to_owned()
-            }]
-        );
+        assert_eq!(b, vec![ActivityEvent::Title { value: "a".to_owned() }]);
     }
 
     #[test]
@@ -480,15 +450,7 @@ mod tests {
     fn bel_inside_osc_does_not_emit_attention() {
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]0;t\x07");
-        assert_eq!(
-            evs,
-            vec![
-                ActivityEvent::Working,
-                ActivityEvent::Title {
-                    value: "t".to_owned()
-                }
-            ]
-        );
+        assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::Title { value: "t".to_owned() }]);
     }
 
     #[test]
@@ -516,36 +478,21 @@ mod tests {
     fn osc_133_prompt_start() {
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]133;A\x07");
-        assert_eq!(
-            evs,
-            vec![ActivityEvent::Working, ActivityEvent::PromptStart]
-        );
+        assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::PromptStart]);
     }
 
     #[test]
     fn osc_133_command_end_with_exit() {
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]133;D;42\x07");
-        assert_eq!(
-            evs,
-            vec![
-                ActivityEvent::Working,
-                ActivityEvent::CommandEnd { exit: Some(42) },
-            ]
-        );
+        assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::CommandEnd { exit: Some(42) },]);
     }
 
     #[test]
     fn osc_133_command_end_without_exit() {
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]133;D\x07");
-        assert_eq!(
-            evs,
-            vec![
-                ActivityEvent::Working,
-                ActivityEvent::CommandEnd { exit: None },
-            ]
-        );
+        assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::CommandEnd { exit: None },]);
     }
 
     #[test]
@@ -591,10 +538,7 @@ mod tests {
         let start = t0();
         let _ = s.feed_bytes_at(b"x", start);
         // Just under threshold — no idle yet.
-        assert_eq!(
-            s.tick_at(start + IDLE_THRESHOLD - Duration::from_millis(1)),
-            None
-        );
+        assert_eq!(s.tick_at(start + IDLE_THRESHOLD - Duration::from_millis(1)), None);
         // At threshold — idle fires.
         assert_eq!(s.tick_at(start + IDLE_THRESHOLD), Some(ActivityEvent::Idle));
         // Already idle — second tick is a no-op.
@@ -646,14 +590,6 @@ mod tests {
     fn captured_claude_title_sequence() {
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]0;claude\x07");
-        assert_eq!(
-            evs,
-            vec![
-                ActivityEvent::Working,
-                ActivityEvent::Title {
-                    value: "claude".to_owned()
-                },
-            ]
-        );
+        assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::Title { value: "claude".to_owned() },]);
     }
 }

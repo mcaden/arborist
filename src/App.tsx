@@ -30,11 +30,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
-import {
-  subscribeToSubExited,
-  subscribeToSubRestored,
-  subscribeToSubStatus,
-} from '@/lib/sub-session-events';
+import { subscribeToSubExited, subscribeToSubRestored, subscribeToSubStatus } from '@/lib/sub-session-events';
 import { formatError, frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
@@ -91,9 +87,7 @@ function ErrorOverlay({ message }: { message: string }): JSX.Element {
       className="flex h-full w-full flex-col items-center justify-center gap-4 bg-white p-8 text-slate-900 dark:bg-slate-900 dark:text-slate-100"
     >
       <h1 className="text-lg font-semibold">Arborist failed to start</h1>
-      <p className="max-w-prose text-center text-sm text-slate-600 dark:text-slate-300">
-        {message}
-      </p>
+      <p className="max-w-prose text-center text-sm text-slate-600 dark:text-slate-300">{message}</p>
       <button
         type="button"
         onClick={() => window.location.reload()}
@@ -269,8 +263,7 @@ function ReadyAppShell(): JSX.Element {
 
   useEffect(() => {
     if (!isSwitching) return;
-    const previouslyFocused =
-      typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+    const previouslyFocused = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
     overlayRef.current?.focus();
     const trapFocus = (e: FocusEvent): void => {
       const overlay = overlayRef.current;
@@ -287,11 +280,7 @@ function ReadyAppShell(): JSX.Element {
       // attached and focusable. After a successful switch the old
       // session's tab is gone from the DOM, so there's nothing to
       // restore — let the browser pick the next focus target.
-      if (
-        previouslyFocused &&
-        typeof previouslyFocused.focus === 'function' &&
-        document.contains(previouslyFocused)
-      ) {
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function' && document.contains(previouslyFocused)) {
         previouslyFocused.focus();
       }
     };

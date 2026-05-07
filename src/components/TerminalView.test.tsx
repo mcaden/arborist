@@ -182,9 +182,7 @@ describe('TerminalView', () => {
       statusMessages: { s1: 'Worktree path no longer exists: /tmp/gone' },
     });
     render(<TerminalView sessionId="s1" isActive={true} />);
-    expect(screen.getByTestId('terminal-status-message')).toHaveTextContent(
-      'Worktree path no longer exists: /tmp/gone',
-    );
+    expect(screen.getByTestId('terminal-status-message')).toHaveTextContent('Worktree path no longer exists: /tmp/gone');
   });
 
   it('omits status message paragraph when none is present', () => {

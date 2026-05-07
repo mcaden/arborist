@@ -16,19 +16,13 @@ use std::time::Duration;
 
 use arborist_lib::app_launcher::{AppPool, AppSpawner, RealAppSpawner};
 use arborist_lib::commands::session::{session_close_impl, session_create_impl, AppContext};
-use arborist_lib::commands::subsession::{
-    close_for_parent_impl, restore_all_sub_sessions_impl, subsession_create_impl,
-    subsession_relaunch_impl,
-};
+use arborist_lib::commands::subsession::{close_for_parent_impl, restore_all_sub_sessions_impl, subsession_create_impl, subsession_relaunch_impl};
 use arborist_lib::config_store::ConfigStore;
-use arborist_lib::pty_pool::{
-    ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild,
-};
+use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
-    CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig,
-    PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionStatus,
-    SubSessionCreateArgs, SubSessionStatus, Tool,
+    CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
+    SessionId, SessionStatus, SubSessionCreateArgs, SubSessionStatus, Tool,
 };
 use arborist_lib::window_focus::RecordingFocuser;
 use portable_pty::{ExitStatus, PtySize};
@@ -76,16 +70,9 @@ impl FakeSpawner {
 }
 
 impl PtySpawner for FakeSpawner {
-    fn spawn(
-        &self,
-        _cmd: ChildCommand,
-        _cwd: &Path,
-        _size: PtySize,
-    ) -> Result<SpawnedChild, arborist_lib::types::Error> {
+    fn spawn(&self, _cmd: ChildCommand, _cwd: &Path, _size: PtySize) -> Result<SpawnedChild, arborist_lib::types::Error> {
         if self.flags.fail_spawn.load(Ordering::SeqCst) {
-            return Err(arborist_lib::types::Error::PtySpawnFailed(
-                "injected spawn failure".into(),
-            ));
+            return Err(arborist_lib::types::Error::PtySpawnFailed("injected spawn failure".into()));
         }
         let mut s = self.state.lock().unwrap();
         s.spawn_count += 1;
@@ -96,14 +83,10 @@ impl PtySpawner for FakeSpawner {
 
         Ok(SpawnedChild {
             pid,
-            reader: Box::new(ParkedReader {
-                eof: Arc::clone(&eof),
-            }),
+            reader: Box::new(ParkedReader { eof: Arc::clone(&eof) }),
             writer: Box::new(WriteCapture),
             resize: Arc::new(NoopResize),
-            waiter: Box::new(BlockingWaiter {
-                eof: Arc::clone(&eof),
-            }),
+            waiter: Box::new(BlockingWaiter { eof: Arc::clone(&eof) }),
             killer: Arc::new(EofKiller {
                 eof,
                 fails: Arc::clone(&self.flags.kill_fails),
@@ -151,9 +134,7 @@ impl PtyKiller for EofKiller {
         // signal is independent.
         self.eof.store(true, Ordering::Relaxed);
         if self.fails.load(Ordering::SeqCst) {
-            return Err(arborist_lib::types::Error::Internal(
-                "injected killer failure".into(),
-            ));
+            return Err(arborist_lib::types::Error::Internal("injected killer failure".into()));
         }
         Ok(())
     }
@@ -174,12 +155,7 @@ impl PtyWaiter for BlockingWaiter {
 // Capturing sinks
 // ---------------------------------------------------------------------------
 
-type StatusTuple = (
-    arborist_lib::types::SubSessionId,
-    SubSessionStatus,
-    Option<u32>,
-    Option<String>,
-);
+type StatusTuple = (arborist_lib::types::SubSessionId, SubSessionStatus, Option<u32>, Option<String>);
 
 #[derive(Default)]
 struct CapturedSubEvents {
@@ -190,10 +166,7 @@ struct CapturedSubEvents {
 fn make_sub_sink(events: Arc<CapturedSubEvents>) -> SubPtySink {
     let s = Arc::clone(&events);
     let status = Arc::new(
-        move |id: &arborist_lib::types::SubSessionId,
-              st: SubSessionStatus,
-              pid: Option<u32>,
-              msg: Option<String>| {
+        move |id: &arborist_lib::types::SubSessionId, st: SubSessionStatus, pid: Option<u32>, msg: Option<String>| {
             s.statuses.lock().unwrap().push((*id, st, pid, msg));
         },
     );
@@ -205,16 +178,14 @@ fn make_sub_sink(events: Arc<CapturedSubEvents>) -> SubPtySink {
 }
 
 fn make_parent_sink(store: ConfigStore) -> PtySink {
-    let status = Arc::new(
-        move |id: &SessionId, st: SessionStatus, pid: Option<u32>, _msg: Option<String>| {
-            if let Err(e) = store.update_session_status(id, st, pid) {
-                use arborist_lib::types::Error as E;
-                if !matches!(e, E::NotFound(_)) {
-                    panic!("unexpected status persist error: {e:?}");
-                }
+    let status = Arc::new(move |id: &SessionId, st: SessionStatus, pid: Option<u32>, _msg: Option<String>| {
+        if let Err(e) = store.update_session_status(id, st, pid) {
+            use arborist_lib::types::Error as E;
+            if !matches!(e, E::NotFound(_)) {
+                panic!("unexpected status persist error: {e:?}");
             }
-        },
-    );
+        }
+    });
     PtySink::new(Arc::new(|_, _| {}), status, Arc::new(|_, _| {}))
 }
 
@@ -241,11 +212,7 @@ fn build_harness() -> Harness {
     let worktree = TempDir::new().unwrap();
 
     let instruction_id = InstructionSetId("claude-default".into());
-    std::fs::write(
-        instructions_dir.path().join("claude-default.md"),
-        "# Claude\nbe helpful",
-    )
-    .unwrap();
+    std::fs::write(instructions_dir.path().join("claude-default.md"), "# Claude\nbe helpful").unwrap();
 
     let shell_def_id = CustomProcessDefId("shell".into());
     let shell_def = CustomProcessDef {
@@ -335,10 +302,7 @@ fn create_parent(h: &Harness) -> arborist_lib::types::SessionView {
     .expect("parent create ok")
 }
 
-fn create_sub(
-    h: &Harness,
-    parent: SessionId,
-) -> Result<arborist_lib::types::SubSession, arborist_lib::types::AppError> {
+fn create_sub(h: &Harness, parent: SessionId) -> Result<arborist_lib::types::SubSession, arborist_lib::types::AppError> {
     subsession_create_impl(
         &h.ctx,
         &h.sub_ctx,
@@ -371,14 +335,8 @@ async fn cascade_kills_terminal_subs_and_prunes_persistence() {
     let sub_a = create_sub(&h, parent).expect("sub a created");
     let sub_b = create_sub(&h, parent).expect("sub b created");
 
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub_a.id),
-        Duration::from_secs(2)
-    ));
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub_b.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub_a.id), Duration::from_secs(2)));
+    assert!(wait_until(|| h.sub_pool.contains(&sub_b.id), Duration::from_secs(2)));
     assert_eq!(h.sub_ctx.store.list_for(&parent).len(), 2);
     assert_eq!(h.ctx.store().load_config().last_open_sub_sessions.len(), 2);
 
@@ -387,18 +345,8 @@ async fn cascade_kills_terminal_subs_and_prunes_persistence() {
 
     assert!(!h.sub_pool.contains(&sub_a.id), "sub_a still in pool");
     assert!(!h.sub_pool.contains(&sub_b.id), "sub_b still in pool");
-    assert!(
-        h.sub_ctx.store.list_for(&parent).is_empty(),
-        "store not pruned"
-    );
-    assert!(
-        h.ctx
-            .store()
-            .load_config()
-            .last_open_sub_sessions
-            .is_empty(),
-        "persistence not pruned"
-    );
+    assert!(h.sub_ctx.store.list_for(&parent).is_empty(), "store not pruned");
+    assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty(), "persistence not pruned");
 }
 
 #[tokio::test]
@@ -406,10 +354,7 @@ async fn session_close_cascades_subs_via_tombstone() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Mark closing, cascade, close — mirrors the wrapper in commands/mod.rs.
     {
@@ -422,20 +367,13 @@ async fn session_close_cascades_subs_via_tombstone() {
         assert_eq!(err.code, "InvalidArgument");
 
         close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
-        session_close_impl(&h.ctx, parent, false)
-            .await
-            .expect("session close ok");
+        session_close_impl(&h.ctx, parent, false).await.expect("session close ok");
     }
 
     // Guard dropped: tombstone clears, parent + sub all gone.
     assert!(!h.ctx.is_parent_closing(&parent));
     assert!(h.sub_ctx.store.list_for(&parent).is_empty());
-    assert!(h
-        .ctx
-        .store()
-        .load_config()
-        .last_open_sub_sessions
-        .is_empty());
+    assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty());
     assert!(!h.ctx.store().load_sessions().contains_key(&parent));
 }
 
@@ -444,16 +382,11 @@ async fn restore_drops_orphan_records_when_parent_is_gone() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Close the parent (cascade first so we mirror the real wrapper).
     close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
-    session_close_impl(&h.ctx, parent, false)
-        .await
-        .expect("session close ok");
+    session_close_impl(&h.ctx, parent, false).await.expect("session close ok");
 
     // Manually re-add an orphan record (simulates a crash/rollback that
     // left a sub persisted under a now-gone parent).
@@ -472,17 +405,10 @@ async fn restore_drops_orphan_records_when_parent_is_gone() {
     restore_all_sub_sessions_impl(&h.ctx, &h.sub_ctx);
 
     assert!(
-        h.ctx
-            .store()
-            .load_config()
-            .last_open_sub_sessions
-            .is_empty(),
+        h.ctx.store().load_config().last_open_sub_sessions.is_empty(),
         "orphan should have been dropped from persistence"
     );
-    assert!(
-        h.sub_ctx.store.get(&orphan_id).is_none(),
-        "orphan should not appear in store"
-    );
+    assert!(h.sub_ctx.store.get(&orphan_id).is_none(), "orphan should not appear in store");
     assert!(
         h.sub_events.restored.lock().unwrap().is_empty(),
         "no restored event should fire for the orphan"
@@ -494,10 +420,7 @@ async fn restore_respawns_terminal_subs_under_extant_parent() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Simulate a fresh app launch: drop the in-memory store + pool but
     // keep persistence (mirrors what happens between runs of the app).
@@ -520,10 +443,7 @@ async fn restore_respawns_terminal_subs_under_extant_parent() {
     // shortly after the spawn — we just check the row is in the store.
     assert!(h.sub_ctx.store.get(&sub.id).is_some());
     // Pool repopulated: a new spawn happened under the same id.
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 }
 
 #[tokio::test]
@@ -531,10 +451,7 @@ async fn restore_rejects_records_under_closing_parent() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Drop the in-memory store but keep persistence (mirrors restart).
     h.sub_ctx.store.remove(&sub.id);
@@ -544,17 +461,10 @@ async fn restore_rejects_records_under_closing_parent() {
     restore_all_sub_sessions_impl(&h.ctx, &h.sub_ctx);
 
     assert!(
-        h.ctx
-            .store()
-            .load_config()
-            .last_open_sub_sessions
-            .is_empty(),
+        h.ctx.store().load_config().last_open_sub_sessions.is_empty(),
         "records under closing parent must be pruned"
     );
-    assert!(
-        h.sub_ctx.store.get(&sub.id).is_none(),
-        "no row should be inserted under a closing parent"
-    );
+    assert!(h.sub_ctx.store.get(&sub.id).is_none(), "no row should be inserted under a closing parent");
 }
 
 #[tokio::test]
@@ -562,22 +472,14 @@ async fn relaunch_swaps_terminal_pty_under_same_id() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
-    let returned = subsession_relaunch_impl(&h.ctx, &h.sub_ctx, sub.id)
-        .await
-        .expect("relaunch ok");
+    let returned = subsession_relaunch_impl(&h.ctx, &h.sub_ctx, sub.id).await.expect("relaunch ok");
 
     assert_eq!(returned.id, sub.id, "id must be stable across relaunch");
     // The kill path EOFs the old reader; the spawn path inserts a new
     // entry under the same id. Both observable as `contains`.
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
     // Persistence row still present and points at the same id.
     let persisted = h.ctx.store().load_config().last_open_sub_sessions;
     assert_eq!(persisted.len(), 1);
@@ -589,10 +491,7 @@ async fn relaunch_rejects_when_def_was_deleted() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // User deletes the def via Settings. Persisted sub record still
     // references the gone def id.
@@ -645,10 +544,7 @@ async fn create_rolls_back_inmemory_on_persist_failure() {
     std::fs::create_dir(&cfg_path).expect("replace config.json with dir");
 
     let result = create_sub(&h, parent);
-    assert!(
-        result.is_err(),
-        "subsession_create must surface persist failure to caller"
-    );
+    assert!(result.is_err(), "subsession_create must surface persist failure to caller");
 
     assert!(
         h.sub_ctx.store.list_for(&parent).is_empty(),
@@ -662,10 +558,7 @@ async fn create_rolls_back_inmemory_on_persist_failure() {
         .into_iter()
         .filter(|s| h.sub_pool.contains(&s.id))
         .collect();
-    assert!(
-        live_ids.is_empty(),
-        "no PTY child should remain in the pool after rollback"
-    );
+    assert!(live_ids.is_empty(), "no PTY child should remain in the pool after rollback");
 }
 
 /// CP-07 cascade orphan branch: when `pool.kill` returns
@@ -677,10 +570,7 @@ async fn cascade_kill_failure_leaves_orphan_visible() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Flip the killer to fail. Cascade hits this branch on the next
     // pool.kill call.
@@ -690,17 +580,9 @@ async fn cascade_kill_failure_leaves_orphan_visible() {
 
     // Orphan record kept in the in-memory store and on disk so the user
     // can see the runaway PID.
-    assert_eq!(
-        h.sub_ctx.store.list_for(&parent).len(),
-        1,
-        "in-memory store must keep the orphan visible"
-    );
+    assert_eq!(h.sub_ctx.store.list_for(&parent).len(), 1, "in-memory store must keep the orphan visible");
     let persisted = h.ctx.store().load_config().last_open_sub_sessions;
-    assert_eq!(
-        persisted.len(),
-        1,
-        "persisted slot must keep the orphan visible"
-    );
+    assert_eq!(persisted.len(), 1, "persisted slot must keep the orphan visible");
     assert_eq!(persisted[0].id, sub.id);
 
     // Cascade emitted a status=Error event with the recorded PID so the
@@ -710,10 +592,7 @@ async fn cascade_kill_failure_leaves_orphan_visible() {
         .iter()
         .filter(|(id, st, ..)| *id == sub.id && matches!(st, SubSessionStatus::Error))
         .collect();
-    assert!(
-        !error_evs.is_empty(),
-        "cascade must emit at least one status=Error event for the orphan"
-    );
+    assert!(!error_evs.is_empty(), "cascade must emit at least one status=Error event for the orphan");
 }
 
 /// On restore-on-launch the second pass re-spawns terminal subs. If the
@@ -727,10 +606,7 @@ async fn restore_spawn_failure_keeps_record() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Simulate fresh app launch: drop in-memory + pool, keep persistence.
     h.sub_ctx.store.remove(&sub.id);
@@ -751,11 +627,7 @@ async fn restore_spawn_failure_keeps_record() {
     // rows on a transient spawn failure would erase legitimate user
     // work.
     let persisted_after = h.ctx.store().load_config().last_open_sub_sessions;
-    assert_eq!(
-        persisted_after.len(),
-        1,
-        "persisted row must survive a restore-time spawn failure"
-    );
+    assert_eq!(persisted_after.len(), 1, "persisted row must survive a restore-time spawn failure");
     assert_eq!(persisted_after[0].id, sub.id);
 
     // In-memory row was inserted *before* the spawn attempt and stays
@@ -765,10 +637,7 @@ async fn restore_spawn_failure_keeps_record() {
         h.sub_ctx.store.get(&sub.id).is_some(),
         "in-memory sub row must remain visible after restore spawn failure"
     );
-    assert!(
-        !h.sub_pool.contains(&sub.id),
-        "no pool entry should exist after restore spawn failure"
-    );
+    assert!(!h.sub_pool.contains(&sub.id), "no pool entry should exist after restore spawn failure");
 
     // restored event fired (with status=Starting), then a status=Error
     // event flips the row to the visible failure state. Both must fire
@@ -782,10 +651,7 @@ async fn restore_spawn_failure_keeps_record() {
         .iter()
         .filter(|(id, st, ..)| *id == sub.id && matches!(st, SubSessionStatus::Error))
         .collect();
-    assert!(
-        !error_evs.is_empty(),
-        "restore must emit status=Error after spawn failure"
-    );
+    assert!(!error_evs.is_empty(), "restore must emit status=Error after spawn failure");
 }
 
 /// `subsession_relaunch_impl` must refresh `composed_command` from the
@@ -799,10 +665,7 @@ async fn relaunch_refreshes_composed_command_from_current_def() {
     let h = build_harness();
     let parent = create_parent(&h).id;
     let sub = create_sub(&h, parent).expect("sub created");
-    assert!(wait_until(
-        || h.sub_pool.contains(&sub.id),
-        Duration::from_secs(2)
-    ));
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Sanity: original composed_command matches the original def.
     assert_eq!(sub.composed_command, "sh -i");
@@ -827,19 +690,14 @@ async fn relaunch_refreshes_composed_command_from_current_def() {
         })
         .unwrap();
 
-    let returned = subsession_relaunch_impl(&h.ctx, &h.sub_ctx, sub.id)
-        .await
-        .expect("relaunch ok");
+    let returned = subsession_relaunch_impl(&h.ctx, &h.sub_ctx, sub.id).await.expect("relaunch ok");
 
     // Returned snapshot reflects the refreshed command + label.
     assert_eq!(
         returned.composed_command, "bash -i",
         "relaunch must use the current def's command, not the persisted one"
     );
-    assert_eq!(
-        returned.label, "Bash",
-        "relaunch must refresh the label too"
-    );
+    assert_eq!(returned.label, "Bash", "relaunch must refresh the label too");
 
     // Persistence reflects the refreshed command.
     let persisted = h.ctx.store().load_config().last_open_sub_sessions;

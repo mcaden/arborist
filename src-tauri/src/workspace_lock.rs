@@ -135,11 +135,7 @@ impl WorkspaceLockGuard {
             .truncate(false)
             .open(&lock_path)
             .map_err(LockError::Io)?;
-        let result = if blocking {
-            file.lock_exclusive()
-        } else {
-            file.try_lock_exclusive()
-        };
+        let result = if blocking { file.lock_exclusive() } else { file.try_lock_exclusive() };
         // SAFETY: code between a successful `lock_exclusive()` /
         // `try_lock_exclusive()` and the `Ok(Self { ... })` return
         // MUST NOT panic. If it did, the raw `file` would be dropped

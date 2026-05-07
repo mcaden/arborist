@@ -17,12 +17,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
-import type {
-  AppConfig,
-  CustomProcessDef,
-  PartialAppConfig,
-  SubSessionRecord,
-} from '@/types/arborist';
+import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
   configVersion: 4,
@@ -71,10 +66,7 @@ export interface ConfigStoreState {
 
 function stripUndefined(patch: PartialAppConfig): PartialAppConfig {
   const out: PartialAppConfig = {};
-  for (const [key, value] of Object.entries(patch) as [
-    keyof PartialAppConfig,
-    PartialAppConfig[keyof PartialAppConfig],
-  ][]) {
+  for (const [key, value] of Object.entries(patch) as [keyof PartialAppConfig, PartialAppConfig[keyof PartialAppConfig]][]) {
     if (value !== undefined) {
       // Safety: we're rebuilding the same shape we just destructured, so
       // the cast preserves type fidelity without re-checking each field.
@@ -122,25 +114,16 @@ export const useConfigStore = create<ConfigStoreState>((set) => ({
 // ---------------------------------------------------------------------------
 
 export const selectConfig = (s: ConfigStoreState): AppConfig => s.config;
-export const selectInstructionSetsDir = (s: ConfigStoreState): string =>
-  s.config.instructionSetsDir;
+export const selectInstructionSetsDir = (s: ConfigStoreState): string => s.config.instructionSetsDir;
 export const selectWorkspaceRoot = (s: ConfigStoreState): string | null => s.config.workspaceRoot;
-export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] =>
-  s.config.worktreeRoots;
-export const selectPrelaunchCommands = (s: ConfigStoreState): readonly string[] =>
-  s.config.prelaunchCommands;
-export const selectAiLaunchCommands = (s: ConfigStoreState): AppConfig['aiLaunchCommands'] =>
-  s.config.aiLaunchCommands;
-export const selectDefaultInstructionSets = (
-  s: ConfigStoreState,
-): AppConfig['defaultInstructionSets'] => s.config.defaultInstructionSets;
+export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] => s.config.worktreeRoots;
+export const selectPrelaunchCommands = (s: ConfigStoreState): readonly string[] => s.config.prelaunchCommands;
+export const selectAiLaunchCommands = (s: ConfigStoreState): AppConfig['aiLaunchCommands'] => s.config.aiLaunchCommands;
+export const selectDefaultInstructionSets = (s: ConfigStoreState): AppConfig['defaultInstructionSets'] => s.config.defaultInstructionSets;
 export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.config.tabOrder;
-export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] =>
-  s.config.lastOpenSessions;
-export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] =>
-  s.config.customProcesses;
-export const selectLastOpenSubSessions = (s: ConfigStoreState): readonly SubSessionRecord[] =>
-  s.config.lastOpenSubSessions;
+export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] => s.config.lastOpenSessions;
+export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] => s.config.customProcesses;
+export const selectLastOpenSubSessions = (s: ConfigStoreState): readonly SubSessionRecord[] => s.config.lastOpenSubSessions;
 export const selectStatus = (s: ConfigStoreState): HydrationStatus => s.status;
 export const selectError = (s: ConfigStoreState): string | null => s.error;
 

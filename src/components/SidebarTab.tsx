@@ -42,13 +42,7 @@ interface SidebarTabProps {
   onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
 }
 
-export function SidebarTab({
-  id,
-  isActive,
-  isFocused,
-  onFocusableMounted,
-  onOpenContextMenu,
-}: SidebarTabProps): JSX.Element | null {
+export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
   const hasUnread = useHasUnread(id);
   const displayStatus = useDisplayStatus(id);
@@ -64,11 +58,7 @@ export function SidebarTab({
   // re-render this row.
   const tool = session?.tool;
   const toolIconDataUri = useConfigStore((s) =>
-    tool === 'claude'
-      ? s.config.aiLaunchCommands.claudeIconDataUri
-      : tool === 'copilot'
-        ? s.config.aiLaunchCommands.copilotIconDataUri
-        : undefined,
+    tool === 'claude' ? s.config.aiLaunchCommands.claudeIconDataUri : tool === 'copilot' ? s.config.aiLaunchCommands.copilotIconDataUri : undefined,
   );
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -99,9 +89,7 @@ export function SidebarTab({
         role="tab"
         id={`session-tab-${id}`}
         aria-selected={isActive}
-        aria-label={`${session.tool} session ${session.label}${
-          hasUnread && !isActive ? ' (unread output)' : ''
-        }`}
+        aria-label={`${session.tool} session ${session.label}${hasUnread && !isActive ? ' (unread output)' : ''}`}
         tabIndex={isFocused ? 0 : -1}
         onClick={() => {
           // Clicking the parent tab is an explicit "show me the parent's
@@ -141,11 +129,7 @@ export function SidebarTab({
           <ToolIcon
             tool={session.tool}
             {...(toolIconDataUri !== undefined ? { iconDataUri: toolIconDataUri } : {})}
-            className={
-              isActive
-                ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300'
-                : 'h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400'
-            }
+            className={isActive ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300' : 'h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400'}
           />
           <span className="min-w-0 flex-1 truncate">{session.label}</span>
           <SessionStatusIndicator
@@ -157,11 +141,7 @@ export function SidebarTab({
             openPermissions={openPermissions}
           />
         </span>
-        <MetricsLine
-          metrics={session.status === 'running' ? metrics : undefined}
-          tool={session.tool}
-          isActive={isActive}
-        />
+        <MetricsLine metrics={session.status === 'running' ? metrics : undefined} tool={session.tool} isActive={isActive} />
       </button>
       <button
         type="button"
@@ -195,9 +175,7 @@ interface MetricsLineProps {
 }
 
 function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element {
-  const colour = isActive
-    ? 'text-sky-800/80 dark:text-sky-200/80'
-    : 'text-slate-500 dark:text-slate-400';
+  const colour = isActive ? 'text-sky-800/80 dark:text-sky-200/80' : 'text-slate-500 dark:text-slate-400';
 
   if (!metrics) {
     // Same height as a populated metrics line — preserves uniform tab
@@ -226,24 +204,15 @@ function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element
   const text = parts.join(' · ');
 
   const longParts: string[] = [];
-  if (
-    typeof metrics.contextTokensUsed === 'number' &&
-    typeof metrics.contextTokensLimit === 'number'
-  ) {
+  if (typeof metrics.contextTokensUsed === 'number' && typeof metrics.contextTokensLimit === 'number') {
     const suffix =
       tool === 'copilot'
         ? ' (Copilot-reported; excludes its system-prompt + tool overhead)'
         : ' (model nominal max; includes harness overhead in usage)';
-    longParts.push(
-      `Context ${metrics.contextTokensUsed.toLocaleString()} / ` +
-        `${metrics.contextTokensLimit.toLocaleString()} tokens${suffix}`,
-    );
+    longParts.push(`Context ${metrics.contextTokensUsed.toLocaleString()} / ` + `${metrics.contextTokensLimit.toLocaleString()} tokens${suffix}`);
   }
   if (typeof metrics.inputTokens === 'number' && typeof metrics.outputTokens === 'number') {
-    longParts.push(
-      `Session totals: ${metrics.inputTokens.toLocaleString()} in, ` +
-        `${metrics.outputTokens.toLocaleString()} out`,
-    );
+    longParts.push(`Session totals: ${metrics.inputTokens.toLocaleString()} in, ` + `${metrics.outputTokens.toLocaleString()} out`);
   }
   if (metrics.model) {
     longParts.push(`Model: ${metrics.model}`);
@@ -296,37 +265,22 @@ function SessionStatusIndicator({
   // dot is decorative — the parent tab's aria-label already conveys
   // unread state to assistive tech, so no role/aria-label here.
   if (status === 'idle') {
-    return hasUnread ? (
-      <span
-        aria-hidden="true"
-        data-testid="status-unread"
-        className="h-2 w-2 shrink-0 rounded-full bg-sky-500"
-      />
-    ) : null;
+    return hasUnread ? <span aria-hidden="true" data-testid="status-unread" className="h-2 w-2 shrink-0 rounded-full bg-sky-500" /> : null;
   }
 
   const iconClasses = statusIconClasses(status);
-  const tooltip = statusTooltip(
-    status,
-    lastTurnEndAt,
-    lastTurnDurationMs,
-    openTools,
-    openPermissions,
-  );
+  const tooltip = statusTooltip(status, lastTurnEndAt, lastTurnDurationMs, openTools, openPermissions);
 
   return (
     <span className="relative inline-flex shrink-0">
       <StatusIcon status={status} title={tooltip} className={iconClasses} />
-      {hasUnread &&
-        status !== 'attention' &&
-        status !== 'awaitingPermission' &&
-        status !== 'error' && (
-          <span
-            aria-hidden="true"
-            data-testid="status-unread"
-            className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 ring-1 ring-white dark:ring-slate-900"
-          />
-        )}
+      {hasUnread && status !== 'attention' && status !== 'awaitingPermission' && status !== 'error' && (
+        <span
+          aria-hidden="true"
+          data-testid="status-unread"
+          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 ring-1 ring-white dark:ring-slate-900"
+        />
+      )}
     </span>
   );
 }
@@ -379,8 +333,7 @@ function statusTooltip(
         // something they may want to inspect (`shell`, `edit`).
         const tools = openTools ? Object.values(openTools) : [];
         if (tools.length === 1) return `Running tool: ${tools[0]!.toolName}`;
-        if (tools.length > 1)
-          return `Running ${tools.length} tools: ${tools.map((t) => t.toolName).join(', ')}`;
+        if (tools.length > 1) return `Running ${tools.length} tools: ${tools.map((t) => t.toolName).join(', ')}`;
         return 'Running tool';
       }
       case 'awaitingPermission': {

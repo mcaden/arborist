@@ -28,12 +28,10 @@ use tauri::{Emitter, Manager};
 use crate::config_store::{list_instructions_for, ConfigStore};
 use crate::sub_sessions::SubAppContext;
 use crate::types::{
-    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult,
-    SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionOutputEvent,
-    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView,
-    SubSession, SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs,
-    SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult,
-    WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
+    SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
+    SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs,
+    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -55,10 +53,7 @@ pub async fn ping() -> Result<String, AppError> {
 /// rooted at the legacy `<app_data_dir>` (no isolation, no lock).
 /// Do not use from new code — call `AppContext::store()` instead.
 pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
-    let dir: PathBuf = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
+    let dir: PathBuf = app.path().app_data_dir().map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
     ConfigStore::open(dir).map_err(AppError::from)
 }
 
@@ -83,10 +78,7 @@ pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
 /// `switch_pending` bump and the actual `WorkspaceScope` swap. See
 /// [`session::acquire_switch_read`] for the full barrier protocol.
 #[tauri::command]
-pub async fn config_set(
-    app: tauri::AppHandle,
-    partial: PartialAppConfig,
-) -> Result<AppConfig, AppError> {
+pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Result<AppConfig, AppError> {
     let ctx = ctx_of(&app)?;
     // Workspace-switch barrier: refuse new writes against the old store
     // while a swap is queued. The read guard is held across
@@ -121,10 +113,7 @@ pub async fn config_set(
 /// useful default; OS temp is the last resort. Absolute commands
 /// (`C:\Program Files\...`, `/usr/bin/...`) ignore this entirely.
 fn backfill_cwd(cfg: &AppConfig) -> std::path::PathBuf {
-    cfg.workspace_root
-        .clone()
-        .filter(|p| p.is_dir())
-        .unwrap_or_else(std::env::temp_dir)
+    cfg.workspace_root.clone().filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir)
 }
 
 /// Discovers and returns the list of [`InstructionSet`]s available under the
@@ -149,10 +138,7 @@ fn ctx_of(app: &tauri::AppHandle) -> Result<Arc<AppContext>, AppError> {
 }
 
 #[tauri::command]
-pub async fn session_create(
-    app: tauri::AppHandle,
-    args: SessionCreateArgs,
-) -> Result<SessionView, AppError> {
+pub async fn session_create(app: tauri::AppHandle, args: SessionCreateArgs) -> Result<SessionView, AppError> {
     let ctx = ctx_of(&app)?;
     session::session_create_impl(&ctx, args)
 }
@@ -164,10 +150,7 @@ pub async fn session_list(app: tauri::AppHandle) -> Result<Vec<SessionView>, App
 }
 
 #[tauri::command]
-pub async fn session_close(
-    app: tauri::AppHandle,
-    args: SessionCloseArgs,
-) -> Result<SessionCloseResult, AppError> {
+pub async fn session_close(app: tauri::AppHandle, args: SessionCloseArgs) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     // Refuse the entire close (parent + sub-session cascade) while a
@@ -197,10 +180,7 @@ pub async fn session_focus(app: tauri::AppHandle, args: SessionIdArg) -> Result<
 }
 
 #[tauri::command]
-pub async fn session_resize(
-    app: tauri::AppHandle,
-    args: SessionResizeArgs,
-) -> Result<(), AppError> {
+pub async fn session_resize(app: tauri::AppHandle, args: SessionResizeArgs) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     session::session_resize_impl(&ctx, args)
 }
@@ -212,10 +192,7 @@ pub async fn session_input(app: tauri::AppHandle, args: SessionInputArgs) -> Res
 }
 
 #[tauri::command]
-pub async fn session_restart(
-    app: tauri::AppHandle,
-    args: SessionRestartArgs,
-) -> Result<(), AppError> {
+pub async fn session_restart(app: tauri::AppHandle, args: SessionRestartArgs) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     session::session_restart_impl(&ctx, args)
 }
@@ -292,12 +269,7 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
         subsession::restore_all_sub_sessions_impl(&ctx_for_task, &sub_ctx_for_task);
     })
     .await
-    .map_err(|join_err| {
-        AppError::new(
-            "Internal",
-            format!("restore_all_sessions task panicked: {join_err}"),
-        )
-    })?;
+    .map_err(|join_err| AppError::new("Internal", format!("restore_all_sessions task panicked: {join_err}")))?;
     Ok(())
 }
 
@@ -305,10 +277,7 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
 /// returns `Ok(vec![])` on discovery failures so the UI's "Browse…"
 /// fallback is never blocked by an error toast.
 #[tauri::command]
-pub async fn worktrees_list(
-    app: tauri::AppHandle,
-    repo_root: String,
-) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {
+pub async fn worktrees_list(app: tauri::AppHandle, repo_root: String) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {
     let ctx = ctx_of(&app)?;
     let path = PathBuf::from(repo_root);
     session::worktrees_list_impl(&ctx, &path)
@@ -317,27 +286,18 @@ pub async fn worktrees_list(
 /// Validate a candidate workspace root (Roadmap §1.1). Never errors for the
 /// "invalid path" case — the picker shows inline feedback.
 #[tauri::command]
-pub async fn workspace_validate(
-    app: tauri::AppHandle,
-    args: WorkspaceValidateArgs,
-) -> Result<WorkspaceValidateResult, AppError> {
+pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateArgs) -> Result<WorkspaceValidateResult, AppError> {
     use tauri::Manager as _;
     let ctx = ctx_of(&app)?;
     let path = PathBuf::from(args.path);
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
     session::workspace_validate_impl(&ctx, &path, Some(&app_data_dir), crate::BUILD_BRANCH)
 }
 
 /// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>`
 /// on a fresh branch named `<name>` (Roadmap §2.2).
 #[tauri::command]
-pub async fn worktree_create(
-    app: tauri::AppHandle,
-    args: WorktreeCreateArgs,
-) -> Result<WorktreeCreateResult, AppError> {
+pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) -> Result<WorktreeCreateResult, AppError> {
     let ctx = ctx_of(&app)?;
     session::worktree_create_impl(&ctx, &args.name)
 }
@@ -350,10 +310,7 @@ pub async fn worktree_create(
 /// everything in one render. Returns `AppError::WorkspaceLocked` if
 /// another Arborist instance holds the new workspace's lock.
 #[tauri::command]
-pub async fn workspace_switch(
-    app: tauri::AppHandle,
-    args: WorkspaceSwitchArgs,
-) -> Result<WorkspaceSwitchResult, AppError> {
+pub async fn workspace_switch(app: tauri::AppHandle, args: WorkspaceSwitchArgs) -> Result<WorkspaceSwitchResult, AppError> {
     let ctx = ctx_of(&app)?;
     let path = PathBuf::from(args.path);
     session::workspace_switch_impl(&ctx, &app, &path).await
@@ -392,10 +349,7 @@ pub async fn workspace_switch(
 /// races `session_close` (or, post-switch, if the session belongs to
 /// the old workspace). NotFound errors are intentionally swallowed.
 #[must_use]
-pub fn build_production_sink(
-    app: tauri::AppHandle,
-    workspace: Arc<RwLock<WorkspaceScope>>,
-) -> crate::pty_pool::PtySink {
+pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<WorkspaceScope>>) -> crate::pty_pool::PtySink {
     let app_for_output = app.clone();
     let output = Arc::new(move |session_id: &SessionId, data: String| {
         let payload = SessionOutputEvent {
@@ -410,10 +364,7 @@ pub fn build_production_sink(
     let app_for_status = app.clone();
     let workspace_for_status = workspace;
     let status = Arc::new(
-        move |session_id: &SessionId,
-              status: SessionStatus,
-              pid: Option<u32>,
-              message: Option<String>| {
+        move |session_id: &SessionId, status: SessionStatus, pid: Option<u32>, message: Option<String>| {
             // Re-resolve the current store on every callback so a
             // workspace switch in flight cannot cause a stale write
             // into the previously-bound store.
@@ -449,17 +400,15 @@ pub fn build_production_sink(
     );
 
     let app_for_activity = app;
-    let activity = Arc::new(
-        move |session_id: &SessionId, event: crate::activity::ActivityEvent| {
-            let payload = crate::types::SessionActivityEvent {
-                session_id: *session_id,
-                event,
-            };
-            if let Err(e) = app_for_activity.emit("session://activity", payload) {
-                tracing::debug!(session_id = %session_id, error = %e, "emit session://activity failed");
-            }
-        },
-    );
+    let activity = Arc::new(move |session_id: &SessionId, event: crate::activity::ActivityEvent| {
+        let payload = crate::types::SessionActivityEvent {
+            session_id: *session_id,
+            event,
+        };
+        if let Err(e) = app_for_activity.emit("session://activity", payload) {
+            tracing::debug!(session_id = %session_id, error = %e, "emit session://activity failed");
+        }
+    });
 
     crate::pty_pool::PtySink::new(output, status, activity)
 }
@@ -494,29 +443,25 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_me
 /// transient store error must not crash the watcher thread or surface
 /// to the UI.
 #[must_use]
-pub fn build_production_ai_session_discover(
-    workspace: Arc<RwLock<WorkspaceScope>>,
-) -> crate::session_metrics::AiSessionDiscoveryCb {
-    Arc::new(
-        move |session_id: crate::types::SessionId, ai_session_id: String| {
-            let store = match workspace.read() {
-                Ok(guard) => guard.store.clone(),
-                Err(_) => {
-                    tracing::error!(%session_id, "workspace lock poisoned; skipping ai session id persist");
-                    return;
-                }
-            };
-            match store.update_session_ai_session_id(&session_id, Some(ai_session_id.clone())) {
-                Ok(true) => {
-                    tracing::debug!(%session_id, %ai_session_id, "ai session id discovered");
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::debug!(%session_id, error = ?e, "failed to persist ai session id");
-                }
+pub fn build_production_ai_session_discover(workspace: Arc<RwLock<WorkspaceScope>>) -> crate::session_metrics::AiSessionDiscoveryCb {
+    Arc::new(move |session_id: crate::types::SessionId, ai_session_id: String| {
+        let store = match workspace.read() {
+            Ok(guard) => guard.store.clone(),
+            Err(_) => {
+                tracing::error!(%session_id, "workspace lock poisoned; skipping ai session id persist");
+                return;
             }
-        },
-    )
+        };
+        match store.update_session_ai_session_id(&session_id, Some(ai_session_id.clone())) {
+            Ok(true) => {
+                tracing::debug!(%session_id, %ai_session_id, "ai session id discovered");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::debug!(%session_id, error = ?e, "failed to persist ai session id");
+            }
+        }
+    })
 }
 
 /// Build the production turn-end emitter — fires a
@@ -550,59 +495,41 @@ fn sub_ctx_of(app: &tauri::AppHandle) -> Result<Arc<SubAppContext>, AppError> {
 }
 
 #[tauri::command]
-pub async fn subsession_create(
-    app: tauri::AppHandle,
-    args: SubSessionCreateArgs,
-) -> Result<SubSession, AppError> {
+pub async fn subsession_create(app: tauri::AppHandle, args: SubSessionCreateArgs) -> Result<SubSession, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_create_impl(&ctx, &sub_ctx, args)
 }
 
 #[tauri::command]
-pub async fn subsession_close(
-    app: tauri::AppHandle,
-    args: SubSessionCloseArgs,
-) -> Result<(), AppError> {
+pub async fn subsession_close(app: tauri::AppHandle, args: SubSessionCloseArgs) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_close_impl(&ctx, sub_ctx, args.id, args.intent).await
 }
 
 #[tauri::command]
-pub async fn subsession_focus(
-    app: tauri::AppHandle,
-    args: SubSessionIdArg,
-) -> Result<(), AppError> {
+pub async fn subsession_focus(app: tauri::AppHandle, args: SubSessionIdArg) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_focus_impl(&ctx, &sub_ctx, args.id)
 }
 
 #[tauri::command]
-pub async fn subsession_list(
-    app: tauri::AppHandle,
-    args: SubSessionListArgs,
-) -> Result<Vec<SubSession>, AppError> {
+pub async fn subsession_list(app: tauri::AppHandle, args: SubSessionListArgs) -> Result<Vec<SubSession>, AppError> {
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_list_impl(&sub_ctx, args.parent_session_id)
 }
 
 #[tauri::command]
-pub async fn subsession_input(
-    app: tauri::AppHandle,
-    args: SubSessionInputArgs,
-) -> Result<(), AppError> {
+pub async fn subsession_input(app: tauri::AppHandle, args: SubSessionInputArgs) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_input_impl(&ctx, &sub_ctx, args)
 }
 
 #[tauri::command]
-pub async fn subsession_resize(
-    app: tauri::AppHandle,
-    args: SubSessionResizeArgs,
-) -> Result<(), AppError> {
+pub async fn subsession_resize(app: tauri::AppHandle, args: SubSessionResizeArgs) -> Result<(), AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_resize_impl(&ctx, &sub_ctx, args)
@@ -613,10 +540,7 @@ pub async fn subsession_resize(
 /// external app; for a Terminal sub-tab it kills the old PTY and spawns
 /// a fresh one. The persisted record is unchanged (id stable).
 #[tauri::command]
-pub async fn subsession_relaunch(
-    app: tauri::AppHandle,
-    args: SubSessionIdArg,
-) -> Result<SubSession, AppError> {
+pub async fn subsession_relaunch(app: tauri::AppHandle, args: SubSessionIdArg) -> Result<SubSession, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_relaunch_impl(&ctx, &sub_ctx, args.id).await
@@ -635,10 +559,7 @@ pub async fn subsession_relaunch(
 /// Returning `Ok(None)` rather than an error keeps the frontend hook
 /// simple — there's no meaningful action it can take on a miss.
 #[tauri::command]
-pub async fn subsession_icon(
-    app: tauri::AppHandle,
-    args: SubSessionIdArg,
-) -> Result<Option<String>, AppError> {
+pub async fn subsession_icon(app: tauri::AppHandle, args: SubSessionIdArg) -> Result<Option<String>, AppError> {
     let sub_ctx = sub_ctx_of(&app)?;
     let pid = match sub_ctx.store.get(&args.id) {
         Some(s) => s.pid,
@@ -662,10 +583,7 @@ pub async fn subsession_icon(
 /// the current lifecycle state without requiring the frontend to maintain
 /// its own shadow copy.
 #[must_use]
-pub fn build_production_sub_sink(
-    app: tauri::AppHandle,
-    store: Arc<crate::sub_sessions::SubSessionStore>,
-) -> crate::sub_sessions::SubPtySink {
+pub fn build_production_sub_sink(app: tauri::AppHandle, store: Arc<crate::sub_sessions::SubSessionStore>) -> crate::sub_sessions::SubPtySink {
     let app_for_output = app.clone();
     let output = Arc::new(move |id: &crate::types::SubSessionId, data: String| {
         let payload = SessionOutputEvent {
@@ -680,10 +598,7 @@ pub fn build_production_sub_sink(
     let app_for_status = app.clone();
     let store_for_status = store;
     let status = Arc::new(
-        move |id: &crate::types::SubSessionId,
-              status: crate::types::SubSessionStatus,
-              pid: Option<u32>,
-              message: Option<String>| {
+        move |id: &crate::types::SubSessionId, status: crate::types::SubSessionStatus, pid: Option<u32>, message: Option<String>| {
             // Persist status into the in-memory store before emitting so
             // any `subsession_list` racing the event sees the new value.
             // NotFound is expected when the sub-session is closed before
@@ -707,20 +622,16 @@ pub fn build_production_sub_sink(
     );
 
     let app_for_exit = app.clone();
-    let exited = Arc::new(
-        move |id: &crate::types::SubSessionId, exit_code: Option<i32>| {
-            let payload = crate::types::SubSessionExitedEvent { id: *id, exit_code };
-            if let Err(e) = app_for_exit.emit("subsession://exited", payload) {
-                tracing::debug!(sub_session_id = %id, error = %e, "emit subsession://exited failed");
-            }
-        },
-    );
+    let exited = Arc::new(move |id: &crate::types::SubSessionId, exit_code: Option<i32>| {
+        let payload = crate::types::SubSessionExitedEvent { id: *id, exit_code };
+        if let Err(e) = app_for_exit.emit("subsession://exited", payload) {
+            tracing::debug!(sub_session_id = %id, error = %e, "emit subsession://exited failed");
+        }
+    });
 
     let app_for_restored = app;
     let restored = Arc::new(move |sub: &crate::types::SubSession| {
-        let payload = crate::types::SubSessionRestoredEvent {
-            sub_session: sub.clone(),
-        };
+        let payload = crate::types::SubSessionRestoredEvent { sub_session: sub.clone() };
         if let Err(e) = app_for_restored.emit("subsession://restored", payload) {
             tracing::debug!(sub_session_id = %sub.id, error = %e, "emit subsession://restored failed");
         }

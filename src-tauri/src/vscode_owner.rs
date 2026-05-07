@@ -41,9 +41,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::app_launcher::{
-    AppKiller, LivenessProbe, OwnerResolver, PidKiller, RetargetedOwner, WindowFinder, WindowTarget,
-};
+use crate::app_launcher::{AppKiller, LivenessProbe, OwnerResolver, PidKiller, RetargetedOwner, WindowFinder, WindowTarget};
 use crate::cmd_resolver::ShellTokens;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -55,14 +53,7 @@ const TITLE_SUFFIX: &str = " - Visual Studio Code";
 /// `def.command` after stripping any leading `env … VAR=val` prefix.
 /// Includes Windows-specific extensions and the official Insiders
 /// channel.
-const VSCODE_PROGRAM_NAMES: &[&str] = &[
-    "code",
-    "code.cmd",
-    "code.exe",
-    "code-insiders",
-    "code-insiders.cmd",
-    "code-insiders.exe",
-];
+const VSCODE_PROGRAM_NAMES: &[&str] = &["code", "code.cmd", "code.exe", "code-insiders", "code-insiders.cmd", "code-insiders.exe"];
 
 /// True when the `def.command` string launches VS Code (stable or
 /// Insiders, with or without an absolute path or `.cmd`/`.exe`
@@ -82,11 +73,7 @@ pub fn looks_like_vscode_command(command: &str) -> bool {
         if t == "env" {
             continue;
         }
-        if !t.starts_with('/')
-            && !t.starts_with('\\')
-            && !t.contains(['\\', '/'])
-            && t.contains('=')
-        {
+        if !t.starts_with('/') && !t.starts_with('\\') && !t.contains(['\\', '/']) && t.contains('=') {
             // Looks like `KEY=value` env prefix — keep skipping.
             continue;
         }
@@ -96,10 +83,7 @@ pub fn looks_like_vscode_command(command: &str) -> bool {
 }
 
 fn is_vscode_program_token(token: &str) -> bool {
-    let basename = std::path::Path::new(token)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(token);
+    let basename = std::path::Path::new(token).file_name().and_then(|s| s.to_str()).unwrap_or(token);
     let lower = basename.to_ascii_lowercase();
     VSCODE_PROGRAM_NAMES.iter().any(|n| n == &lower.as_str())
 }
@@ -134,10 +118,7 @@ impl VsCodeOwnerResolver {
     /// lowercases internally and matches case-insensitively against
     /// the window title.
     fn basename(&self) -> Option<String> {
-        self.worktree_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_owned())
+        self.worktree_path.file_name().and_then(|s| s.to_str()).map(|s| s.to_owned())
     }
 }
 
@@ -148,14 +129,11 @@ impl OwnerResolver for VsCodeOwnerResolver {
         loop {
             if let Some((pid, hwnd)) = self.find_now() {
                 let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
-                let liveness: Box<dyn LivenessProbe> =
-                    platform::liveness_probe(pid, basename.clone());
+                let liveness: Box<dyn LivenessProbe> = platform::liveness_probe(pid, basename.clone());
                 let window_target = Some(WindowTarget {
                     pid,
                     hwnd,
-                    refinder: Some(Arc::new(VsCodeWindowFinder {
-                        basename: basename.clone(),
-                    })),
+                    refinder: Some(Arc::new(VsCodeWindowFinder { basename: basename.clone() })),
                 });
                 return Some(RetargetedOwner {
                     pid,
@@ -451,9 +429,7 @@ mod tests {
         // structure (real Windows search runs but finds nothing) and
         // proves resolve() honours its deadline.
         let r = VsCodeOwnerResolverWithDeadline {
-            inner: VsCodeOwnerResolver::new(PathBuf::from(
-                "definitely-not-a-real-workspace-zzzqqq-arborist-test",
-            )),
+            inner: VsCodeOwnerResolver::new(PathBuf::from("definitely-not-a-real-workspace-zzzqqq-arborist-test")),
             deadline: Duration::from_millis(50),
         };
         let result = r.resolve();
@@ -475,14 +451,11 @@ mod tests {
             loop {
                 if let Some((pid, hwnd)) = self.inner.find_now() {
                     let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
-                    let liveness: Box<dyn LivenessProbe> =
-                        platform::liveness_probe(pid, basename.clone());
+                    let liveness: Box<dyn LivenessProbe> = platform::liveness_probe(pid, basename.clone());
                     let window_target = Some(WindowTarget {
                         pid,
                         hwnd,
-                        refinder: Some(Arc::new(VsCodeWindowFinder {
-                            basename: basename.clone(),
-                        })),
+                        refinder: Some(Arc::new(VsCodeWindowFinder { basename: basename.clone() })),
                     });
                     return Some(RetargetedOwner {
                         pid,
@@ -542,10 +515,7 @@ mod tests {
             "encode file",
             "/usr/bin/codium .",
         ] {
-            assert!(
-                !looks_like_vscode_command(cmd),
-                "expected non-match for {cmd:?}"
-            );
+            assert!(!looks_like_vscode_command(cmd), "expected non-match for {cmd:?}");
         }
     }
 }

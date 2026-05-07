@@ -69,14 +69,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 
-import {
-  formatError,
-  onSessionOutput,
-  sessionInput,
-  sessionResize,
-  subSessionInput,
-  subSessionResize,
-} from '@/lib/tauri-bridge';
+import { formatError, onSessionOutput, sessionInput, sessionResize, subSessionInput, subSessionResize } from '@/lib/tauri-bridge';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import type { SessionId, SubSessionId } from '@/types/arborist';
@@ -336,9 +329,7 @@ function ensureGlobalSubscriptions(): void {
   }
 
   if (subStoreUnsubscribe === null) {
-    let previousIds = new Set<SubSessionId>(
-      useSubSessionStore.getState().subSessions.map((s) => s.id),
-    );
+    let previousIds = new Set<SubSessionId>(useSubSessionStore.getState().subSessions.map((s) => s.id));
     subStoreUnsubscribe = useSubSessionStore.subscribe((state) => {
       const currentIds = new Set<SubSessionId>(state.subSessions.map((s) => s.id));
       for (const id of previousIds) {
@@ -355,13 +346,7 @@ function ensureGlobalSubscriptions(): void {
   // wrong cell metrics, leaving the renderer "squished" until the next
   // window resize. Guarded — the FontFaceSet API isn't available in older
   // WebViews and may not exist in jsdom.
-  if (
-    !fontsReadyAttached &&
-    typeof document !== 'undefined' &&
-    'fonts' in document &&
-    document.fonts &&
-    typeof document.fonts.ready === 'object'
-  ) {
+  if (!fontsReadyAttached && typeof document !== 'undefined' && 'fonts' in document && document.fonts && typeof document.fonts.ready === 'object') {
     fontsReadyAttached = true;
     void document.fonts.ready
       .then(() => {
@@ -401,10 +386,7 @@ function createEntry(id: string, ioKind: IoKind): RegistryEntry {
   term.loadAddon(fitAddon);
 
   term.onData((data) => {
-    const sendInput =
-      ioKind === 'session'
-        ? sessionInput({ sessionId: id, data })
-        : subSessionInput({ id: id as SubSessionId, data });
+    const sendInput = ioKind === 'session' ? sessionInput({ sessionId: id, data }) : subSessionInput({ id: id as SubSessionId, data });
     void sendInput.catch((err: unknown) => {
       const message = formatError(err);
       console.warn(`[use-terminal] ${ioKind} input(${id}) failed: ${message}`);
@@ -436,9 +418,7 @@ function getOrCreate(id: string, ioKind: IoKind): RegistryEntry {
     // spaces would be a load-bearing bug — both routes share the registry,
     // and the input/resize callbacks are baked into the entry on creation.
     // Surface it loudly rather than silently mis-routing input.
-    throw new Error(
-      `[use-terminal] id ${id} already registered as ${entry.ioKind}, requested ${ioKind}`,
-    );
+    throw new Error(`[use-terminal] id ${id} already registered as ${entry.ioKind}, requested ${ioKind}`);
   }
   return entry;
 }
@@ -635,9 +615,7 @@ function refitEntry(id: string, entry: RegistryEntry): void {
   entry.lastCols = cols;
   entry.lastRows = rows;
   const sendResize =
-    entry.ioKind === 'session'
-      ? sessionResize({ sessionId: id, cols, rows })
-      : subSessionResize({ id: id as SubSessionId, cols, rows });
+    entry.ioKind === 'session' ? sessionResize({ sessionId: id, cols, rows }) : subSessionResize({ id: id as SubSessionId, cols, rows });
   void sendResize.catch((err: unknown) => {
     const message = formatError(err);
     console.warn(`[use-terminal] ${entry.ioKind} resize(${id}) failed: ${message}`);
@@ -702,13 +680,7 @@ function attachToHost(id: string, entry: RegistryEntry, host: HTMLDivElement): v
     // belongs to the IME, not to the terminal. `keyCode === 229` is the
     // legacy Chromium/WebView signal for "still composing".
     if (event.isComposing || event.keyCode === 229) return;
-    if (
-      event.key === 'Enter' &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey
-    ) {
+    if (event.key === 'Enter' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       event.stopPropagation();
       // Dispatch through the same kind-aware switch the term.onData
@@ -903,10 +875,7 @@ function useTerminalInternal(id: string, ioKind: IoKind): UseTerminalApi {
     getOrCreate(id, ioKind);
   }, [id, ioKind]);
 
-  return useMemo(
-    () => ({ attach, detach, focus, refit, clear, getDimensions }),
-    [attach, detach, focus, refit, clear, getDimensions],
-  );
+  return useMemo(() => ({ attach, detach, focus, refit, clear, getDimensions }), [attach, detach, focus, refit, clear, getDimensions]);
 }
 
 /**
@@ -1025,8 +994,7 @@ export function measureInitialPtyDimensions(): InitialPtyDims {
     const probe = document.createElement('span');
     probe.textContent = PROBE_SAMPLE_TEXT;
     probe.style.cssText =
-      'position:absolute;left:-9999px;top:-9999px;visibility:hidden;' +
-      'white-space:pre;font-family:monospace;font-size:15px;line-height:normal;';
+      'position:absolute;left:-9999px;top:-9999px;visibility:hidden;' + 'white-space:pre;font-family:monospace;font-size:15px;line-height:normal;';
     document.body.appendChild(probe);
     cellWidth = probe.offsetWidth / PROBE_SAMPLE_TEXT.length;
     cellHeight = probe.offsetHeight;

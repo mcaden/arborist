@@ -289,10 +289,7 @@ impl StoreRoot {
     /// Returns `None` when this root **is** the canonical root — a
     /// canonical build seeding from itself makes no sense.
     #[must_use]
-    pub fn canonical_workspace_settings_path(
-        &self,
-        canonical_workspace: &CanonicalPath,
-    ) -> Option<PathBuf> {
+    pub fn canonical_workspace_settings_path(&self, canonical_workspace: &CanonicalPath) -> Option<PathBuf> {
         if self.is_canonical() {
             None
         } else {
@@ -347,10 +344,7 @@ impl StoreLayout {
     /// piece of state belonging to this (branch, workspace) tuple.
     #[must_use]
     pub fn workspace_dir(&self) -> PathBuf {
-        self.root
-            .branch_dir()
-            .join("workspaces")
-            .join(workspace_key(&self.workspace))
+        self.root.branch_dir().join("workspaces").join(workspace_key(&self.workspace))
     }
 
     /// `<workspace_dir>/config.json` — per-(branch, workspace) settings.
@@ -445,8 +439,7 @@ mod tests {
         let key = workspace_key(&cp("/some/workspace/path"));
         assert_eq!(key.len(), 16, "key must be exactly 16 hex chars");
         assert!(
-            key.chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            key.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
             "key must be lowercase hex only: {key}"
         );
     }
@@ -496,10 +489,7 @@ mod tests {
     fn branch_dir_trims_whitespace_around_branch() {
         let r = root("/data", "  settings-flush  ");
         assert_eq!(r.branch(), "settings-flush");
-        assert_eq!(
-            r.branch_dir(),
-            PathBuf::from("/data/branches/settings-flush"),
-        );
+        assert_eq!(r.branch_dir(), PathBuf::from("/data/branches/settings-flush"),);
     }
 
     #[test]
@@ -536,10 +526,7 @@ mod tests {
         // app_data_dir — that's where pre-isolation Arborist wrote.
         let r = root("/data", "feat");
         assert_eq!(r.legacy_config_path(), PathBuf::from("/data/config.json"));
-        assert_eq!(
-            r.legacy_sessions_path(),
-            PathBuf::from("/data/sessions.json")
-        );
+        assert_eq!(r.legacy_sessions_path(), PathBuf::from("/data/sessions.json"));
     }
 
     // ----- canonical_workspace_settings_path ----------------------------
@@ -571,20 +558,14 @@ mod tests {
     fn workspace_dir_for_canonical_omits_branch_segment() {
         let layout = root("/data", "main").for_workspace(&cp("/repos/x"));
         let key = workspace_key(&cp("/repos/x"));
-        assert_eq!(
-            layout.workspace_dir(),
-            PathBuf::from(format!("/data/workspaces/{key}")),
-        );
+        assert_eq!(layout.workspace_dir(), PathBuf::from(format!("/data/workspaces/{key}")),);
     }
 
     #[test]
     fn workspace_dir_for_branch_includes_branch_segment() {
         let layout = root("/data", "feat").for_workspace(&cp("/repos/x"));
         let key = workspace_key(&cp("/repos/x"));
-        assert_eq!(
-            layout.workspace_dir(),
-            PathBuf::from(format!("/data/branches/feat/workspaces/{key}")),
-        );
+        assert_eq!(layout.workspace_dir(), PathBuf::from(format!("/data/branches/feat/workspaces/{key}")),);
     }
 
     #[test]
@@ -593,10 +574,7 @@ mod tests {
         let dir = layout.workspace_dir();
         assert_eq!(layout.settings_path(), dir.join("config.json"));
         assert_eq!(layout.sessions_path(), dir.join("sessions.json"));
-        assert_eq!(
-            layout.workspace_meta_path(),
-            dir.join("workspace-meta.json")
-        );
+        assert_eq!(layout.workspace_meta_path(), dir.join("workspace-meta.json"));
         assert_eq!(layout.lock_path(), dir.join(".lock"));
         assert_eq!(layout.seed_lock_path(), dir.join(".config-seed.lock"));
     }
@@ -640,9 +618,6 @@ mod tests {
         // Directory should still exist and the inner path should be a
         // valid canonicalised form of the input.
         assert!(canon.as_path().is_dir());
-        assert!(
-            canon.as_path().is_absolute(),
-            "canonicalise must return an absolute path"
-        );
+        assert!(canon.as_path().is_absolute(), "canonicalise must return an absolute path");
     }
 }

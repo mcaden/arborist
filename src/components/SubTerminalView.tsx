@@ -109,9 +109,7 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
 
   const exitedSummary = (() => {
     if (status === 'error') {
-      return sub?.label
-        ? `“${sub.label}” ended with an error.`
-        : 'Sub-session ended with an error.';
+      return sub?.label ? `“${sub.label}” ended with an error.` : 'Sub-session ended with an error.';
     }
     return sub?.label ? `“${sub.label}” ended.` : 'Sub-session ended.';
   })();
@@ -125,9 +123,7 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
       <div
         ref={containerRef}
         data-testid="sub-terminal-host"
-        className={`min-h-0 flex-1 bg-black transition-opacity duration-150 ${
-          showExitedBar ? 'opacity-50' : ''
-        }`}
+        className={`min-h-0 flex-1 bg-black transition-opacity duration-150 ${showExitedBar ? 'opacity-50' : ''}`}
       />
       {showExitedBar && (
         <div
@@ -136,10 +132,7 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
           aria-label="Sub-session ended"
           className="mt-1 flex items-center gap-2 border-t border-slate-800 bg-black px-2 py-1 font-mono text-xs"
         >
-          <span
-            aria-hidden="true"
-            className={status === 'error' ? 'text-red-400' : 'text-slate-500'}
-          >
+          <span aria-hidden="true" className={status === 'error' ? 'text-red-400' : 'text-slate-500'}>
             ●
           </span>
           <span className="min-w-0 flex-1 truncate text-slate-400">{exitedSummary}</span>

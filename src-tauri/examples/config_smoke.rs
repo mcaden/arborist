@@ -27,10 +27,7 @@ fn main() {
 
     let store = ConfigStore::open(&dir).expect("open store");
     let cfg = store.load_config();
-    println!(
-        "[smoke] load_config returned defaults: configVersion={}",
-        cfg.config_version
-    );
+    println!("[smoke] load_config returned defaults: configVersion={}", cfg.config_version);
 
     let bad: Vec<_> = fs::read_dir(&dir)
         .expect("readdir")
@@ -38,11 +35,7 @@ fn main() {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.starts_with("config.json.bad-"))
         .collect();
-    assert_eq!(
-        bad.len(),
-        1,
-        "expected exactly one quarantine file, got {bad:?}"
-    );
+    assert_eq!(bad.len(), 1, "expected exactly one quarantine file, got {bad:?}");
     println!("[smoke] quarantine file present: {}", bad[0]);
     println!("[smoke] OK");
 }

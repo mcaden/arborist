@@ -22,8 +22,7 @@ use crate::commands::session::acquire_switch_read;
 use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
-    AppError, CustomProcessKind, Error, SubSession, SubSessionCloseIntent, SubSessionCreateArgs,
-    SubSessionId, SubSessionRecord, SubSessionStatus,
+    AppError, CustomProcessKind, Error, SubSession, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionId, SubSessionRecord, SubSessionStatus,
 };
 
 /// Create a new sub-session under `parent_session_id` using the
@@ -38,11 +37,7 @@ use crate::types::{
 /// Persists a [`SubSessionRecord`] into `AppConfig.lastOpenSubSessions`
 /// before spawning so a crash between spawn and persist doesn't lose
 /// the entry.
-pub fn subsession_create_impl(
-    ctx: &AppContext,
-    sub_ctx: &SubAppContext,
-    args: SubSessionCreateArgs,
-) -> Result<SubSession, AppError> {
+pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: SubSessionCreateArgs) -> Result<SubSession, AppError> {
     // Reject while a workspace switch is queued or active. Held for the
     // entire body so the switch can't see a half-spawned sub-session.
     let _switch = acquire_switch_read(ctx)?;
@@ -54,10 +49,7 @@ pub fn subsession_create_impl(
     if ctx.is_parent_closing(&args.parent_session_id) {
         return Err(AppError::new(
             "InvalidArgument",
-            format!(
-                "parent session {} is closing; refusing to create sub-session",
-                args.parent_session_id
-            ),
+            format!("parent session {} is closing; refusing to create sub-session", args.parent_session_id),
         ));
     }
 
@@ -66,12 +58,7 @@ pub fn subsession_create_impl(
         .custom_processes
         .iter()
         .find(|d| d.id == args.def_id)
-        .ok_or_else(|| {
-            AppError::new(
-                "NotFound",
-                format!("custom process def {:?} not found", args.def_id),
-            )
-        })?;
+        .ok_or_else(|| AppError::new("NotFound", format!("custom process def {:?} not found", args.def_id)))?;
     if !def.enabled {
         return Err(AppError::new(
             "InvalidArgument",
@@ -81,20 +68,15 @@ pub fn subsession_create_impl(
 
     // Look up the parent session for its worktree path.
     let sessions = ctx.store().load_sessions();
-    let parent = sessions.get(&args.parent_session_id).ok_or_else(|| {
-        AppError::new(
-            "NotFound",
-            format!("parent session {} not found", args.parent_session_id),
-        )
-    })?;
+    let parent = sessions
+        .get(&args.parent_session_id)
+        .ok_or_else(|| AppError::new("NotFound", format!("parent session {} not found", args.parent_session_id)))?;
 
     // Validate the parent worktree still exists before doing anything
     // destructive — otherwise the user gets a low-level PtySpawnFailed
     // instead of the dedicated `WorktreeMissing` error.
     if !parent.worktree_path.is_dir() {
-        return Err(AppError::from(Error::WorktreeMissing(
-            parent.worktree_path.clone(),
-        )));
+        return Err(AppError::from(Error::WorktreeMissing(parent.worktree_path.clone())));
     }
 
     // Compose once, store-and-reuse (DESIGN §5.4 mirror).
@@ -123,18 +105,12 @@ pub fn subsession_create_impl(
 
     // Branch on kind: terminal → SubPtyPool, application → AppPool.
     let spawn_result = match def.kind {
-        CustomProcessKind::Terminal => {
+        CustomProcessKind::Terminal => sub_ctx.pool.spawn_terminal(sub.id, composed_command, cwd, sub_ctx.sink.clone()),
+        CustomProcessKind::Application => {
             sub_ctx
-                .pool
-                .spawn_terminal(sub.id, composed_command, cwd, sub_ctx.sink.clone())
+                .app_pool
+                .spawn(sub.id, composed_command, cwd.clone(), sub_ctx.sink.clone(), owner_resolver_for(def, &cwd))
         }
-        CustomProcessKind::Application => sub_ctx.app_pool.spawn(
-            sub.id,
-            composed_command,
-            cwd.clone(),
-            sub_ctx.sink.clone(),
-            owner_resolver_for(def, &cwd),
-        ),
     };
 
     match spawn_result {
@@ -222,10 +198,7 @@ pub async fn subsession_close_impl(
             SubSessionCloseIntent::RequestAppClose => {
                 // Best-effort polite close. Errors are logged but
                 // swallowed — we still want to detach the tab.
-                if let Err(e) = sub_ctx
-                    .app_pool
-                    .request_window_close(&id, &*sub_ctx.focuser)
-                {
+                if let Err(e) = sub_ctx.app_pool.request_window_close(&id, &*sub_ctx.focuser) {
                     tracing::warn!(
                         sub_session_id = %id,
                         error = %e,
@@ -256,11 +229,7 @@ pub async fn subsession_close_impl(
 /// (no PID in the store), returns `Error::NotApplicable` so the
 /// frontend can decide whether to relaunch (Phase 7) or just leave
 /// the tab greyed.
-pub fn subsession_focus_impl(
-    ctx: &AppContext,
-    sub_ctx: &SubAppContext,
-    id: SubSessionId,
-) -> Result<(), AppError> {
+pub fn subsession_focus_impl(ctx: &AppContext, sub_ctx: &SubAppContext, id: SubSessionId) -> Result<(), AppError> {
     // Reject while a workspace switch is queued or active. Focus can
     // race a swap of the underlying app_pool tracking.
     let _switch = acquire_switch_read(ctx)?;
@@ -282,19 +251,13 @@ pub fn subsession_focus_impl(
                 sub.status
             ))));
         }
-        sub_ctx
-            .app_pool
-            .focus(&id, &*sub_ctx.focuser)
-            .map_err(AppError::from)?;
+        sub_ctx.app_pool.focus(&id, &*sub_ctx.focuser).map_err(AppError::from)?;
     }
     Ok(())
 }
 
 /// List sub-sessions, optionally filtered to a parent.
-pub fn subsession_list_impl(
-    sub_ctx: &SubAppContext,
-    parent: Option<crate::types::SessionId>,
-) -> Result<Vec<SubSession>, AppError> {
+pub fn subsession_list_impl(sub_ctx: &SubAppContext, parent: Option<crate::types::SessionId>) -> Result<Vec<SubSession>, AppError> {
     Ok(match parent {
         Some(p) => sub_ctx.store.list_for(&p),
         None => sub_ctx.store.list_all(),
@@ -304,11 +267,7 @@ pub fn subsession_list_impl(
 /// Send PTY input. Application sub-sessions have no PTY — return
 /// `NotApplicable` so the frontend can present a clear error if it
 /// accidentally routes input there.
-pub fn subsession_input_impl(
-    ctx: &AppContext,
-    sub_ctx: &SubAppContext,
-    args: crate::types::SubSessionInputArgs,
-) -> Result<(), AppError> {
+pub fn subsession_input_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: crate::types::SubSessionInputArgs) -> Result<(), AppError> {
     // Reject while a workspace switch is queued or active. Writing to a
     // PTY that's about to be drained for swap would be silently lost.
     let _switch = acquire_switch_read(ctx)?;
@@ -320,10 +279,7 @@ pub fn subsession_input_impl(
             )));
         }
     }
-    sub_ctx
-        .pool
-        .write(&args.id, args.data.as_bytes())
-        .map_err(AppError::from)
+    sub_ctx.pool.write(&args.id, args.data.as_bytes()).map_err(AppError::from)
 }
 
 /// Resize a PTY. Application sub-sessions have no PTY — return
@@ -332,11 +288,7 @@ pub fn subsession_input_impl(
 /// workspace swap is rejected with `WorkspaceSwitchInProgress`
 /// rather than silently lost — keeps the UI's reconciliation logic
 /// in sync with input/relaunch.
-pub fn subsession_resize_impl(
-    ctx: &AppContext,
-    sub_ctx: &SubAppContext,
-    args: crate::types::SubSessionResizeArgs,
-) -> Result<(), AppError> {
+pub fn subsession_resize_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: crate::types::SubSessionResizeArgs) -> Result<(), AppError> {
     let _switch = acquire_switch_read(ctx)?;
 
     if let Some(sub) = sub_ctx.store.get(&args.id) {
@@ -346,10 +298,7 @@ pub fn subsession_resize_impl(
             )));
         }
     }
-    sub_ctx
-        .pool
-        .resize(&args.id, args.cols, args.rows)
-        .map_err(AppError::from)
+    sub_ctx.pool.resize(&args.id, args.cols, args.rows).map_err(AppError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -374,11 +323,7 @@ pub fn subsession_resize_impl(
 ///
 /// Returns `()` — cascade is best-effort and never blocks the parent
 /// close. Failures are logged via `tracing::warn`.
-pub async fn close_for_parent_impl(
-    ctx: &AppContext,
-    sub_ctx: &SubAppContext,
-    parent_id: crate::types::SessionId,
-) {
+pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, parent_id: crate::types::SessionId) {
     let subs = sub_ctx.store.list_for(&parent_id);
     if subs.is_empty() {
         return;
@@ -409,9 +354,7 @@ pub async fn close_for_parent_impl(
                                 &sub.id,
                                 SubSessionStatus::Error,
                                 Some(pid),
-                                Some(format!(
-                                    "PTY kill unconfirmed during parent close (pid {pid} may still be alive)"
-                                )),
+                                Some(format!("PTY kill unconfirmed during parent close (pid {pid} may still be alive)")),
                             );
                             // Skip the prune — leave the orphan visible.
                             continue;
@@ -489,10 +432,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
     }
     let sessions = ctx.store().load_sessions();
 
-    info!(
-        sub_record_count = records.len(),
-        "restore: second pass for sub-sessions"
-    );
+    info!(sub_record_count = records.len(), "restore: second pass for sub-sessions");
 
     for record in records {
         // Orphan check: parent gone OR currently mid-close (the latter is
@@ -553,12 +493,10 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
         match record.kind {
             CustomProcessKind::Terminal => {
                 let cwd = sub_session_cwd(parent).to_path_buf();
-                match sub_ctx.pool.spawn_terminal(
-                    record.id,
-                    record.composed_command.clone(),
-                    cwd,
-                    sub_ctx.sink.clone(),
-                ) {
+                match sub_ctx
+                    .pool
+                    .spawn_terminal(record.id, record.composed_command.clone(), cwd, sub_ctx.sink.clone())
+                {
                     Ok(pid) => {
                         info!(sub_session_id = %record.id, pid, "restore: terminal sub-session respawned");
                     }
@@ -572,12 +510,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
                         // `restored` event already arrived with status
                         // Starting; this Error transition flips the row
                         // to the visible failure state.
-                        (sub_ctx.sink.status)(
-                            &record.id,
-                            SubSessionStatus::Error,
-                            None,
-                            Some(format!("respawn failed: {e}")),
-                        );
+                        (sub_ctx.sink.status)(&record.id, SubSessionStatus::Error, None, Some(format!("respawn failed: {e}")));
                     }
                 }
             }
@@ -598,11 +531,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
 /// reason. Persisted record is unchanged (id stable; composedCommand is
 /// **re-derived** from the current def so user edits to the
 /// `customProcesses` list take effect on relaunch).
-pub async fn subsession_relaunch_impl(
-    ctx: &AppContext,
-    sub_ctx: &SubAppContext,
-    id: SubSessionId,
-) -> Result<SubSession, AppError> {
+pub async fn subsession_relaunch_impl(ctx: &AppContext, sub_ctx: &SubAppContext, id: SubSessionId) -> Result<SubSession, AppError> {
     // Reject while a workspace switch is queued or active. Held for the
     // full body (including across `pool.kill().await` + spawn) so the
     // new child can't end up bound to the old workspace's CWD after a
@@ -625,10 +554,7 @@ pub async fn subsession_relaunch_impl(
         .ok_or_else(|| {
             AppError::new(
                 "NotFound",
-                format!(
-                    "custom process def {:?} no longer exists; cannot relaunch",
-                    existing.def_id
-                ),
+                format!("custom process def {:?} no longer exists; cannot relaunch", existing.def_id),
             )
         })?
         .clone();
@@ -641,16 +567,11 @@ pub async fn subsession_relaunch_impl(
 
     // Look up the parent session for its worktree path.
     let sessions = ctx.store().load_sessions();
-    let parent = sessions.get(&existing.parent_session_id).ok_or_else(|| {
-        AppError::new(
-            "NotFound",
-            format!("parent session {} not found", existing.parent_session_id),
-        )
-    })?;
+    let parent = sessions
+        .get(&existing.parent_session_id)
+        .ok_or_else(|| AppError::new("NotFound", format!("parent session {} not found", existing.parent_session_id)))?;
     if !parent.worktree_path.is_dir() {
-        return Err(AppError::from(Error::WorktreeMissing(
-            parent.worktree_path.clone(),
-        )));
+        return Err(AppError::from(Error::WorktreeMissing(parent.worktree_path.clone())));
     }
     if ctx.is_parent_closing(&existing.parent_session_id) {
         return Err(AppError::new(
@@ -700,10 +621,7 @@ pub async fn subsession_relaunch_impl(
     refreshed.composed_command = composed_command.clone();
     refreshed.label = def.name.clone();
     sub_ctx.store.remove(&id);
-    sub_ctx
-        .store
-        .insert(refreshed.clone())
-        .map_err(AppError::from)?;
+    sub_ctx.store.insert(refreshed.clone()).map_err(AppError::from)?;
     let updated_record = SubSessionRecord {
         id: refreshed.id,
         parent_session_id: refreshed.parent_session_id,
@@ -725,30 +643,19 @@ pub async fn subsession_relaunch_impl(
         rollback.status = SubSessionStatus::Error;
         rollback.pid = None;
         let _ = sub_ctx.store.insert(rollback);
-        (sub_ctx.sink.status)(
-            &id,
-            SubSessionStatus::Error,
-            None,
-            Some(format!("relaunch persistence failed: {e}")),
-        );
+        (sub_ctx.sink.status)(&id, SubSessionStatus::Error, None, Some(format!("relaunch persistence failed: {e}")));
         return Err(AppError::from(e));
     }
     (sub_ctx.sink.status)(&id, SubSessionStatus::Starting, None, None);
 
     let cwd = sub_session_cwd(parent).to_path_buf();
     let spawn_result = match def.kind {
-        CustomProcessKind::Terminal => {
+        CustomProcessKind::Terminal => sub_ctx.pool.spawn_terminal(id, composed_command, cwd, sub_ctx.sink.clone()),
+        CustomProcessKind::Application => {
             sub_ctx
-                .pool
-                .spawn_terminal(id, composed_command, cwd, sub_ctx.sink.clone())
+                .app_pool
+                .spawn(id, composed_command, cwd.clone(), sub_ctx.sink.clone(), owner_resolver_for(&def, &cwd))
         }
-        CustomProcessKind::Application => sub_ctx.app_pool.spawn(
-            id,
-            composed_command,
-            cwd.clone(),
-            sub_ctx.sink.clone(),
-            owner_resolver_for(&def, &cwd),
-        ),
     };
 
     match spawn_result {
@@ -763,12 +670,7 @@ pub async fn subsession_relaunch_impl(
         Err(e) => {
             // Surface as Error but KEEP the row + persistence so user can
             // retry. Mirrors `restore_all_sub_sessions_impl` failure path.
-            (sub_ctx.sink.status)(
-                &id,
-                SubSessionStatus::Error,
-                None,
-                Some(format!("relaunch failed: {e}")),
-            );
+            (sub_ctx.sink.status)(&id, SubSessionStatus::Error, None, Some(format!("relaunch failed: {e}")));
             Err(AppError::from(e))
         }
     }
@@ -794,14 +696,9 @@ fn now_unix_seconds() -> i64 {
 /// Returns `None` for every other def: most app launchers spawn a
 /// child the user identifies with directly (`open`, `explorer`,
 /// `gimp`, etc.) so the launcher PID IS the long-lived process.
-fn owner_resolver_for(
-    def: &crate::types::CustomProcessDef,
-    cwd: &std::path::Path,
-) -> Option<Arc<dyn crate::app_launcher::OwnerResolver>> {
+fn owner_resolver_for(def: &crate::types::CustomProcessDef, cwd: &std::path::Path) -> Option<Arc<dyn crate::app_launcher::OwnerResolver>> {
     if crate::vscode_owner::looks_like_vscode_command(&def.command) {
-        return Some(Arc::new(crate::vscode_owner::VsCodeOwnerResolver::new(
-            cwd.to_path_buf(),
-        )));
+        return Some(Arc::new(crate::vscode_owner::VsCodeOwnerResolver::new(cwd.to_path_buf())));
     }
     None
 }

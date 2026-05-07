@@ -20,20 +20,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arborist_lib::commands::session::{
-    frontend_ready_impl, restore_all_sessions, session_close_impl, session_create_impl,
-    session_focus_impl, session_input_impl, session_list_impl, session_resize_impl,
-    session_restart_impl, AppContext,
+    frontend_ready_impl, restore_all_sessions, session_close_impl, session_create_impl, session_focus_impl, session_input_impl, session_list_impl,
+    session_resize_impl, session_restart_impl, AppContext,
 };
 use arborist_lib::compose::session_temp_dir;
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
-use arborist_lib::pty_pool::{
-    ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild,
-};
+use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::types::{
-    InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
-    SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs, SessionStatus, Tool,
-    WorktreeInfo,
+    InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs,
+    SessionRestartArgs, SessionStatus, Tool, WorktreeInfo,
 };
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
@@ -79,12 +75,7 @@ impl FakeSpawner {
 }
 
 impl PtySpawner for FakeSpawner {
-    fn spawn(
-        &self,
-        cmd: ChildCommand,
-        cwd: &Path,
-        size: PtySize,
-    ) -> Result<SpawnedChild, arborist_lib::types::Error> {
+    fn spawn(&self, cmd: ChildCommand, cwd: &Path, size: PtySize) -> Result<SpawnedChild, arborist_lib::types::Error> {
         let mut s = self.state.lock().unwrap();
         if let Some(err) = s.fail_next_with.take() {
             // Capture the inputs of the failed attempt too — assertions
@@ -105,14 +96,10 @@ impl PtySpawner for FakeSpawner {
 
         Ok(SpawnedChild {
             pid,
-            reader: Box::new(ParkedReader {
-                eof: Arc::clone(&eof),
-            }),
+            reader: Box::new(ParkedReader { eof: Arc::clone(&eof) }),
             writer: Box::new(WriteCapture),
             resize: Arc::new(NoopResize),
-            waiter: Box::new(BlockingWaiter {
-                eof: Arc::clone(&eof),
-            }),
+            waiter: Box::new(BlockingWaiter { eof: Arc::clone(&eof) }),
             killer: Arc::new(EofKiller { eof }),
         })
     }
@@ -188,22 +175,16 @@ fn capture_sink(events: Arc<CapturedEvents>, store: ConfigStore) -> PtySink {
         out_events.output.lock().unwrap().push((*id, data));
     });
     let status_events = Arc::clone(&events);
-    let status = Arc::new(
-        move |id: &SessionId, st: SessionStatus, pid: Option<u32>, msg: Option<String>| {
-            // Mirror production wiring: persist status, swallow NotFound.
-            if let Err(e) = store.update_session_status(id, st, pid) {
-                use arborist_lib::types::Error as E;
-                if !matches!(e, E::NotFound(_)) {
-                    panic!("unexpected status persist error: {e:?}");
-                }
+    let status = Arc::new(move |id: &SessionId, st: SessionStatus, pid: Option<u32>, msg: Option<String>| {
+        // Mirror production wiring: persist status, swallow NotFound.
+        if let Err(e) = store.update_session_status(id, st, pid) {
+            use arborist_lib::types::Error as E;
+            if !matches!(e, E::NotFound(_)) {
+                panic!("unexpected status persist error: {e:?}");
             }
-            status_events
-                .status
-                .lock()
-                .unwrap()
-                .push((*id, st, pid, msg));
-        },
-    );
+        }
+        status_events.status.lock().unwrap().push((*id, st, pid, msg));
+    });
     PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
@@ -242,23 +223,11 @@ impl GitRunner for RecordingGitRunner {
     fn git_toplevel(&self, p: &Path) -> Result<Option<PathBuf>, arborist_lib::types::Error> {
         Ok(Some(p.to_path_buf()))
     }
-    fn create_worktree(
-        &self,
-        repo_root: &Path,
-        relative_path: &Path,
-        _branch: &str,
-    ) -> Result<PathBuf, arborist_lib::types::Error> {
+    fn create_worktree(&self, repo_root: &Path, relative_path: &Path, _branch: &str) -> Result<PathBuf, arborist_lib::types::Error> {
         Ok(repo_root.join(relative_path))
     }
-    fn remove_worktree(
-        &self,
-        repo_root: &Path,
-        worktree_path: &Path,
-    ) -> Result<(), arborist_lib::types::Error> {
-        self.removes
-            .lock()
-            .unwrap()
-            .push((repo_root.to_path_buf(), worktree_path.to_path_buf()));
+    fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), arborist_lib::types::Error> {
+        self.removes.lock().unwrap().push((repo_root.to_path_buf(), worktree_path.to_path_buf()));
         if let Some(msg) = self.fail_with.lock().unwrap().clone() {
             return Err(arborist_lib::types::Error::Internal(msg));
         }
@@ -354,10 +323,7 @@ async fn create_emits_starting_then_running_and_persists_session() {
 
     // Status sequence: Starting (from impl) then Running (from pool).
     let statuses = h.events.status.lock().unwrap().clone();
-    assert!(
-        statuses.len() >= 2,
-        "expected ≥2 status events, got {statuses:?}"
-    );
+    assert!(statuses.len() >= 2, "expected ≥2 status events, got {statuses:?}");
     assert_eq!(statuses[0].1, SessionStatus::Starting);
     assert_eq!(statuses[0].2, None);
     assert_eq!(statuses[1].1, SessionStatus::Running);
@@ -381,10 +347,7 @@ async fn create_emits_starting_then_running_and_persists_session() {
     let cwd = st.last_cwd.as_ref().unwrap();
     let cwd_canon = dunce::canonicalize(cwd).unwrap();
     let wt_canon = dunce::canonicalize(h.worktree.path()).unwrap();
-    assert_eq!(
-        cwd_canon, wt_canon,
-        "fake spawner cwd should canonicalize to the worktree"
-    );
+    assert_eq!(cwd_canon, wt_canon, "fake spawner cwd should canonicalize to the worktree");
     let cmd = st.last_cmd.as_ref().unwrap();
     assert!(
         !cmd.args.iter().any(|a| a.contains("cd ")),
@@ -454,21 +417,13 @@ async fn create_rejects_zero_dimensions() {
             cols,
             rows,
         };
-        let err = session_create_impl(&h.ctx, args)
-            .expect_err(&format!("create({cols}x{rows}) should have failed"));
+        let err = session_create_impl(&h.ctx, args).expect_err(&format!("create({cols}x{rows}) should have failed"));
         assert_eq!(err.code, "InvalidArgs", "unexpected code for {cols}x{rows}");
-        assert!(
-            err.message.contains("pty dimensions"),
-            "unexpected message: {}",
-            err.message
-        );
+        assert!(err.message.contains("pty dimensions"), "unexpected message: {}", err.message);
     }
     // Sanity: the spawner must NOT have been touched.
     let st = h.spawner.state.lock().unwrap();
-    assert!(
-        st.last_size.is_none(),
-        "spawner.spawn should not run when dims are 0"
-    );
+    assert!(st.last_size.is_none(), "spawner.spawn should not run when dims are 0");
 }
 
 #[tokio::test]
@@ -597,11 +552,7 @@ async fn focus_refuses_while_workspace_switch_in_progress() {
         // write guard on the unified switch barrier. Lifecycle
         // handlers' `try_read()` then fails with TryLockError →
         // `WorkspaceSwitchInProgress`.
-        let _w = h
-            .ctx
-            .switch_lock
-            .try_write()
-            .expect("switch_lock should be free in test");
+        let _w = h.ctx.switch_lock.try_write().expect("switch_lock should be free in test");
         let err = session_focus_impl(&h.ctx, v.id).expect_err("must refuse mid-switch");
         assert_eq!(err.code, "WorkspaceSwitchInProgress");
     }
@@ -618,20 +569,14 @@ async fn lifecycle_handlers_refuse_while_switch_write_held() {
     let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
     {
-        let _w = h
-            .ctx
-            .switch_lock
-            .try_write()
-            .expect("switch_lock should be free in test");
+        let _w = h.ctx.switch_lock.try_write().expect("switch_lock should be free in test");
 
         // session_create
         let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("create must refuse");
         assert_eq!(err.code, "WorkspaceSwitchInProgress");
 
         // session_close (async; the impl takes the read guard internally)
-        let err = session_close_impl(&h.ctx, v.id, false)
-            .await
-            .expect_err("close must refuse");
+        let err = session_close_impl(&h.ctx, v.id, false).await.expect_err("close must refuse");
         assert_eq!(err.code, "WorkspaceSwitchInProgress");
 
         // session_restart
@@ -670,11 +615,7 @@ async fn resize_silently_skips_while_switch_write_held() {
     let h = build_harness();
     let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
-    let _w = h
-        .ctx
-        .switch_lock
-        .try_write()
-        .expect("switch_lock should be free in test");
+    let _w = h.ctx.switch_lock.try_write().expect("switch_lock should be free in test");
 
     let res = session_resize_impl(
         &h.ctx,
@@ -684,10 +625,7 @@ async fn resize_silently_skips_while_switch_write_held() {
             rows: 30,
         },
     );
-    assert!(
-        res.is_ok(),
-        "resize during switch must return Ok(()) silently, got {res:?}",
-    );
+    assert!(res.is_ok(), "resize during switch must return Ok(()) silently, got {res:?}",);
 }
 
 /// Regression for the rubber-duck's "queued-writer" finding. The
@@ -707,11 +645,7 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
     let v = session_create_impl(&h.ctx, create_args(&h)).unwrap();
 
     // Take a read guard so writers must queue.
-    let read_guard = h
-        .ctx
-        .switch_lock
-        .try_read()
-        .expect("read guard available initially");
+    let read_guard = h.ctx.switch_lock.try_read().expect("read guard available initially");
 
     // Spawn a task that mimics the *prologue* of
     // `workspace_switch_impl_inner`: bump `switch_pending` BEFORE
@@ -743,9 +677,7 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
 
     // Deterministic synchronisation point: writer task has bumped the
     // counter and is now queued for write.
-    bumped_rx
-        .await
-        .expect("writer task signals after bumping switch_pending");
+    bumped_rx.await.expect("writer task signals after bumping switch_pending");
     assert_eq!(
         h.ctx.switch_pending.load(Ordering::SeqCst),
         1,
@@ -757,8 +689,7 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
     let err = session_focus_impl(&h.ctx, v.id).expect_err("queued writer must block focus");
     assert_eq!(err.code, "WorkspaceSwitchInProgress");
 
-    let err =
-        session_create_impl(&h.ctx, create_args(&h)).expect_err("queued writer blocks create");
+    let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("queued writer blocks create");
     assert_eq!(err.code, "WorkspaceSwitchInProgress");
 
     // …and resize is silently `Ok`.
@@ -770,10 +701,7 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
             rows: 25,
         },
     );
-    assert!(
-        res.is_ok(),
-        "resize while writer queued must return Ok(()) silently, got {res:?}",
-    );
+    assert!(res.is_ok(), "resize while writer queued must return Ok(()) silently, got {res:?}",);
 
     // Release the read guard and let the queued writer drain.
     drop(read_guard);
@@ -835,8 +763,7 @@ async fn close_with_delete_worktree_invokes_git_runner_remove() {
     assert_eq!(removes.len(), 1, "expected one remove_worktree call");
     let (_repo, wt) = &removes[0];
     let wt_canon = dunce::canonicalize(wt).unwrap_or_else(|_| wt.clone());
-    let expected_canon =
-        dunce::canonicalize(&worktree_path).unwrap_or_else(|_| worktree_path.clone());
+    let expected_canon = dunce::canonicalize(&worktree_path).unwrap_or_else(|_| worktree_path.clone());
     assert_eq!(
         wt_canon, expected_canon,
         "remove_worktree must be called with the session's worktree path"
@@ -877,17 +804,12 @@ async fn close_with_delete_worktree_refuses_main_workspace_root() {
     let result = session_close_impl(&h.ctx, view.id, true)
         .await
         .expect("close itself should succeed even when worktree deletion is refused");
-    let msg = result
-        .worktree_delete_error
-        .expect("expected a worktree-delete-error in the result");
+    let msg = result.worktree_delete_error.expect("expected a worktree-delete-error in the result");
     assert!(
         msg.contains("workspace root") || msg.contains("main worktree"),
         "expected a workspace-root refusal message, got: {msg}",
     );
-    assert!(
-        git.removes.lock().unwrap().is_empty(),
-        "remove_worktree must not be invoked when refused"
-    );
+    assert!(git.removes.lock().unwrap().is_empty(), "remove_worktree must not be invoked when refused");
     // The session is still removed because the kill+config cleanup happens
     // before the worktree-deletion attempt — the user opted in to losing
     // the session even if the worktree is preserved.
@@ -912,18 +834,9 @@ async fn close_with_delete_worktree_propagates_git_failure() {
     let result = session_close_impl(&h.ctx, view.id, true)
         .await
         .expect("close itself should succeed even when git fails");
-    let msg = result
-        .worktree_delete_error
-        .expect("git failure must surface as a worktree-delete-error");
-    assert!(
-        msg.contains("not a working tree"),
-        "expected the git stderr to bubble up, got: {msg}",
-    );
-    assert_eq!(
-        git.removes.lock().unwrap().len(),
-        1,
-        "remove_worktree should still have been attempted"
-    );
+    let msg = result.worktree_delete_error.expect("git failure must surface as a worktree-delete-error");
+    assert!(msg.contains("not a working tree"), "expected the git stderr to bubble up, got: {msg}",);
+    assert_eq!(git.removes.lock().unwrap().len(), 1, "remove_worktree should still have been attempted");
     // Session record is gone regardless of the post-close worktree failure.
     assert!(session_list_impl(&h.ctx).unwrap().is_empty());
 }
@@ -938,17 +851,9 @@ async fn close_with_delete_worktree_refuses_when_no_workspace_root() {
     let result = session_close_impl(&h.ctx, view.id, true)
         .await
         .expect("close itself should succeed even without workspace_root");
-    let msg = result
-        .worktree_delete_error
-        .expect("expected workspace-root error in result");
-    assert!(
-        msg.contains("workspace root"),
-        "expected workspace-root error, got: {msg}",
-    );
-    assert!(
-        git.removes.lock().unwrap().is_empty(),
-        "remove_worktree must not be invoked"
-    );
+    let msg = result.worktree_delete_error.expect("expected workspace-root error in result");
+    assert!(msg.contains("workspace root"), "expected workspace-root error, got: {msg}",);
+    assert!(git.removes.lock().unwrap().is_empty(), "remove_worktree must not be invoked");
     assert!(session_list_impl(&h.ctx).unwrap().is_empty());
 }
 
@@ -975,13 +880,8 @@ async fn close_with_delete_worktree_refuses_when_sessions_snapshot_unreadable() 
     let result = session_close_impl(&h.ctx, view.id, true)
         .await
         .expect("close itself should succeed even when sessions.json is corrupt");
-    let msg = result
-        .worktree_delete_error
-        .expect("expected snapshot-read refusal in result");
-    assert!(
-        msg.contains("sessions snapshot"),
-        "expected snapshot-read refusal, got: {msg}",
-    );
+    let msg = result.worktree_delete_error.expect("expected snapshot-read refusal in result");
+    assert!(msg.contains("sessions snapshot"), "expected snapshot-read refusal, got: {msg}",);
     assert!(
         git.removes.lock().unwrap().is_empty(),
         "remove_worktree must not be invoked when sessions snapshot is unreadable"
@@ -1007,17 +907,9 @@ async fn close_with_delete_worktree_refuses_when_outside_workspace_root() {
     let result = session_close_impl(&h.ctx, view.id, true)
         .await
         .expect("close itself should succeed even when path is outside workspace_root");
-    let msg = result
-        .worktree_delete_error
-        .expect("expected containment error in result");
-    assert!(
-        msg.contains("outside workspace root"),
-        "expected containment error, got: {msg}",
-    );
-    assert!(
-        git.removes.lock().unwrap().is_empty(),
-        "remove_worktree must not be invoked"
-    );
+    let msg = result.worktree_delete_error.expect("expected containment error in result");
+    assert!(msg.contains("outside workspace root"), "expected containment error, got: {msg}",);
+    assert!(git.removes.lock().unwrap().is_empty(), "remove_worktree must not be invoked");
 }
 
 #[tokio::test]
@@ -1051,10 +943,7 @@ async fn restart_reuses_composed_command_and_yields_new_pid() {
 async fn frontend_ready_is_one_shot() {
     let h = build_harness();
     assert!(frontend_ready_impl(&h.ctx), "first call must win the CAS");
-    assert!(
-        !frontend_ready_impl(&h.ctx),
-        "subsequent call must be a no-op"
-    );
+    assert!(!frontend_ready_impl(&h.ctx), "subsequent call must be a no-op");
 }
 
 #[tokio::test]
@@ -1063,13 +952,7 @@ async fn restore_defers_spawn_until_first_session_resize() {
     // a fresh ctx around the same store — simulating an app restart.
     let h = build_harness();
     let original = session_create_impl(&h.ctx, create_args(&h)).unwrap();
-    let persisted = h
-        .ctx
-        .store()
-        .load_sessions()
-        .get(&original.id)
-        .cloned()
-        .unwrap();
+    let persisted = h.ctx.store().load_sessions().get(&original.id).cloned().unwrap();
     let original_command = persisted.composed_command.clone();
 
     // "Restart": new pool, new spawner, same store.
@@ -1077,11 +960,7 @@ async fn restore_defers_spawn_until_first_session_resize() {
     let pool2 = Arc::new(PtyPool::new(spawner2.clone() as Arc<dyn PtySpawner>));
     let events2 = Arc::new(CapturedEvents::default());
     let sink2 = capture_sink(Arc::clone(&events2), h.ctx.store().clone());
-    let ctx2 = Arc::new(AppContext::with_real_git(
-        pool2,
-        h.ctx.store().clone(),
-        sink2,
-    ));
+    let ctx2 = Arc::new(AppContext::with_real_git(pool2, h.ctx.store().clone(), sink2));
 
     restore_all_sessions(&ctx2);
 
@@ -1164,10 +1043,7 @@ async fn restore_drops_session_record_when_worktree_directory_is_missing() {
 
     let worktree_path = h.worktree.path().to_path_buf();
     drop(h.worktree);
-    assert!(
-        !worktree_path.exists(),
-        "precondition: worktree was removed"
-    );
+    assert!(!worktree_path.exists(), "precondition: worktree was removed");
 
     // "Restart": new pool + sink + ctx around the same store.
     let spawner2 = Arc::new(FakeSpawner::new());
@@ -1186,21 +1062,12 @@ async fn restore_drops_session_record_when_worktree_directory_is_missing() {
 
     // The persisted record is gone — no phantom tab.
     let listed = session_list_impl(&Arc::new(ctx2)).unwrap();
-    assert!(
-        listed.is_empty(),
-        "stale-worktree session record must be dropped, got: {listed:?}"
-    );
+    assert!(listed.is_empty(), "stale-worktree session record must be dropped, got: {listed:?}");
 
     // Config bookkeeping is trimmed too.
     let cfg = h.ctx.store().load_config();
-    assert!(
-        cfg.last_open_sessions.is_empty(),
-        "stale id must be trimmed from last_open_sessions"
-    );
-    assert!(
-        cfg.tab_order.is_empty(),
-        "stale id must be trimmed from tab_order"
-    );
+    assert!(cfg.last_open_sessions.is_empty(), "stale id must be trimmed from last_open_sessions");
+    assert!(cfg.tab_order.is_empty(), "stale id must be trimmed from tab_order");
     assert_eq!(
         cfg.active_session_id, None,
         "active_session_id pointing at a dropped session must be cleared"
@@ -1266,10 +1133,7 @@ async fn restore_trims_orphan_ids_in_config_with_no_session_record() {
         "phantom IDs must be trimmed from tab_order, got {:?}",
         cfg.tab_order
     );
-    assert_eq!(
-        cfg.active_session_id, None,
-        "phantom active_session_id must be cleared"
-    );
+    assert_eq!(cfg.active_session_id, None, "phantom active_session_id must be cleared");
 }
 
 #[tokio::test]
@@ -1306,10 +1170,7 @@ async fn restore_does_not_rewrite_config_when_no_orphans_present() {
         cfg_before.last_open_sessions, cfg_after.last_open_sessions,
         "no-orphan restore must not mutate last_open_sessions"
     );
-    assert_eq!(
-        cfg_before.tab_order, cfg_after.tab_order,
-        "no-orphan restore must not mutate tab_order"
-    );
+    assert_eq!(cfg_before.tab_order, cfg_after.tab_order, "no-orphan restore must not mutate tab_order");
     assert_eq!(
         cfg_before.active_session_id, cfg_after.active_session_id,
         "no-orphan restore must not mutate active_session_id"
@@ -1366,21 +1227,12 @@ async fn session_create_preallocates_ai_session_id_for_copilot() {
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
 
-    let persisted = h
-        .ctx
-        .store()
-        .load_sessions()
-        .get(&view.id)
-        .cloned()
-        .expect("session must persist");
+    let persisted = h.ctx.store().load_sessions().get(&view.id).cloned().expect("session must persist");
     let aid = persisted
         .ai_session_id
         .as_deref()
         .expect("Copilot create must pre-allocate ai_session_id");
-    assert!(
-        uuid::Uuid::parse_str(aid).is_ok(),
-        "pre-allocated id should be a uuid; got {aid:?}",
-    );
+    assert!(uuid::Uuid::parse_str(aid).is_ok(), "pre-allocated id should be a uuid; got {aid:?}",);
 
     // composed_command itself stays bare (DESIGN §5.4 — persisted record
     // is immutable). The splice happens on a clone at spawn time only.
@@ -1403,13 +1255,7 @@ async fn session_create_does_not_preallocate_for_claude() {
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Claude)).unwrap();
 
-    let persisted = h
-        .ctx
-        .store()
-        .load_sessions()
-        .get(&view.id)
-        .cloned()
-        .unwrap();
+    let persisted = h.ctx.store().load_sessions().get(&view.id).cloned().unwrap();
     assert_eq!(
         persisted.ai_session_id, None,
         "Claude must not pre-allocate; id is discovered from transcript",
@@ -1488,13 +1334,7 @@ async fn session_restart_clears_ai_session_id_for_claude() {
     )
     .unwrap();
 
-    let after = h
-        .ctx
-        .store()
-        .load_sessions()
-        .get(&view.id)
-        .cloned()
-        .unwrap();
+    let after = h.ctx.store().load_sessions().get(&view.id).cloned().unwrap();
     assert_eq!(
         after.ai_session_id, None,
         "Claude restart must clear ai_session_id (no equivalent of --resume <uuid>)",
@@ -1559,13 +1399,7 @@ async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent()
     );
 
     // The persisted id must NOT have been cleared.
-    let after = h
-        .ctx
-        .store()
-        .load_sessions()
-        .get(&view.id)
-        .cloned()
-        .unwrap();
+    let after = h.ctx.store().load_sessions().get(&view.id).cloned().unwrap();
     assert_eq!(after.ai_session_id.as_deref(), Some(preallocated.as_str()));
 }
 
@@ -1597,9 +1431,7 @@ async fn failed_copilot_restart_preserves_prior_ai_session_id() {
     // `respawn_existing` call).
     {
         let mut s = h.spawner.state.lock().unwrap();
-        s.fail_next_with = Some(arborist_lib::types::Error::PtySpawnFailed(
-            "simulated transient spawn failure".to_owned(),
-        ));
+        s.fail_next_with = Some(arborist_lib::types::Error::PtySpawnFailed("simulated transient spawn failure".to_owned()));
     }
 
     let result = session_restart_impl(
@@ -1610,10 +1442,7 @@ async fn failed_copilot_restart_preserves_prior_ai_session_id() {
             rows: 24,
         },
     );
-    assert!(
-        result.is_err(),
-        "restart must surface the spawner failure to the caller; got {result:?}",
-    );
+    assert!(result.is_err(), "restart must surface the spawner failure to the caller; got {result:?}",);
 
     let after = h
         .ctx

@@ -88,10 +88,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// it at watcher-start time without re-implementing the layout.
 #[must_use]
 pub fn events_path(home: &std::path::Path, ai_session_id: &str) -> PathBuf {
-    home.join(".copilot")
-        .join("session-state")
-        .join(ai_session_id)
-        .join("events.jsonl")
+    home.join(".copilot").join("session-state").join(ai_session_id).join("events.jsonl")
 }
 
 /// Callback shape mirrors [`crate::pty_pool::ActivityCb`] so production
@@ -152,12 +149,7 @@ struct Envelope<'a> {
 /// don't end up with bogus open counts), but we don't emit transient
 /// events for them. Set `true` during the initial mid-file catch-up read
 /// and `false` once we're tailing live.
-pub fn ingest_line<F: FnMut(ActivityEvent)>(
-    state: &mut EventsState,
-    line: &[u8],
-    suppress_resolved: bool,
-    mut emit: F,
-) {
+pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8], suppress_resolved: bool, mut emit: F) {
     let env = match serde_json::from_slice::<Envelope<'_>>(line) {
         Ok(e) => e,
         Err(_) => return, // malformed line — skip silently
@@ -180,11 +172,7 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(
             }
         }
         "assistant.turn_end" => {
-            let turn_id = env
-                .data
-                .as_ref()
-                .and_then(|d| d.get("turnId"))
-                .and_then(|v| v.as_str());
+            let turn_id = env.data.as_ref().and_then(|d| d.get("turnId")).and_then(|v| v.as_str());
             // The metrics watcher is the canonical source of TurnEnd-with-duration
             // (Copilot OTel `invoke_agent` span). We emit a TurnEnd here without a
             // duration so the frontend's reducer flips out of `thinking` promptly
@@ -204,17 +192,8 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(
             let Some(tool_call_id) = data.get("toolCallId").and_then(|v| v.as_str()) else {
                 return;
             };
-            let tool_name = data
-                .get("toolName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("tool")
-                .to_owned();
-            state.open_tools.insert(
-                tool_call_id.to_owned(),
-                ToolInfo {
-                    name: tool_name.clone(),
-                },
-            );
+            let tool_name = data.get("toolName").and_then(|v| v.as_str()).unwrap_or("tool").to_owned();
+            state.open_tools.insert(tool_call_id.to_owned(), ToolInfo { name: tool_name.clone() });
             if !suppress_resolved {
                 emit(ActivityEvent::ToolStart {
                     tool_call_id: tool_call_id.to_owned(),
@@ -237,10 +216,7 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(
             // bogus ToolEnd would decrement a counter that was never
             // incremented.
             if was_open && !suppress_resolved {
-                let success = data
-                    .get("success")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
                 emit(ActivityEvent::ToolEnd {
                     tool_call_id: tool_call_id.to_owned(),
                     success,
@@ -357,11 +333,7 @@ pub fn emit_current_state<F: FnMut(ActivityEvent)>(state: &EventsState, mut emit
 /// Copilot schema isn't public; we accept several shapes seen in the
 /// wild and fall back to `"permission"` for anything we don't recognise.
 fn extract_permission_kind(data: &serde_json::Value) -> String {
-    if let Some(s) = data
-        .get("permissionRequest")
-        .and_then(|p| p.get("kind"))
-        .and_then(|v| v.as_str())
-    {
+    if let Some(s) = data.get("permissionRequest").and_then(|p| p.get("kind")).and_then(|v| v.as_str()) {
         return s.to_owned();
     }
     if let Some(s) = data.get("kind").and_then(|v| v.as_str()) {
@@ -469,12 +441,7 @@ fn align_snapshot_to_line_boundary(path: &std::path::Path, len: u64) -> u64 {
 ///
 /// `running` is checked at the top of each poll iteration; flipping it
 /// to `false` stops the watcher within at most one [`POLL_INTERVAL`].
-pub fn run_watcher(
-    session_id: SessionId,
-    events_path: PathBuf,
-    emit: CopilotActivityCb,
-    running: Arc<AtomicBool>,
-) {
+pub fn run_watcher(session_id: SessionId, events_path: PathBuf, emit: CopilotActivityCb, running: Arc<AtomicBool>) {
     let mut state = EventsState::new();
     let mut cursor: u64 = 0;
     let mut catch_up_done = false;
@@ -531,38 +498,29 @@ pub fn run_watcher(
             };
             if read_end > cursor {
                 let suppress = !catch_up_done;
-                cursor = crate::session_metrics::tail_lines_pub(
-                    &events_path,
-                    cursor,
-                    read_end,
-                    |line| {
-                        ingest_line(&mut state, line, suppress, |ev| {
-                            // Defensive de-dup on tool/permission ids
-                            // for live-tail emissions only — the catch-up
-                            // path doesn't emit at all (suppress=true).
-                            let should_emit = match &ev {
-                                ActivityEvent::ToolStart { tool_call_id, .. } => {
-                                    announced_tools.insert(tool_call_id.clone())
-                                }
-                                ActivityEvent::ToolEnd { tool_call_id, .. } => {
-                                    announced_tools.remove(tool_call_id);
-                                    true
-                                }
-                                ActivityEvent::AwaitingPermission { request_id, .. } => {
-                                    announced_perms.insert(request_id.clone())
-                                }
-                                ActivityEvent::PermissionResolved { request_id, .. } => {
-                                    announced_perms.remove(request_id);
-                                    true
-                                }
-                                _ => true,
-                            };
-                            if should_emit {
-                                emit(&session_id, ev);
+                cursor = crate::session_metrics::tail_lines_pub(&events_path, cursor, read_end, |line| {
+                    ingest_line(&mut state, line, suppress, |ev| {
+                        // Defensive de-dup on tool/permission ids
+                        // for live-tail emissions only — the catch-up
+                        // path doesn't emit at all (suppress=true).
+                        let should_emit = match &ev {
+                            ActivityEvent::ToolStart { tool_call_id, .. } => announced_tools.insert(tool_call_id.clone()),
+                            ActivityEvent::ToolEnd { tool_call_id, .. } => {
+                                announced_tools.remove(tool_call_id);
+                                true
                             }
-                        });
-                    },
-                );
+                            ActivityEvent::AwaitingPermission { request_id, .. } => announced_perms.insert(request_id.clone()),
+                            ActivityEvent::PermissionResolved { request_id, .. } => {
+                                announced_perms.remove(request_id);
+                                true
+                            }
+                            _ => true,
+                        };
+                        if should_emit {
+                            emit(&session_id, ev);
+                        }
+                    });
+                });
             }
             // Catch-up flips done only once cursor has drained past the
             // pre-read EOF snapshot. For empty / no-new-bytes files the
@@ -633,13 +591,7 @@ mod tests {
             ],
             false,
         );
-        assert_eq!(
-            evs,
-            vec![
-                ActivityEvent::TurnStart,
-                ActivityEvent::TurnEnd { duration_ms: None },
-            ]
-        );
+        assert_eq!(evs, vec![ActivityEvent::TurnStart, ActivityEvent::TurnEnd { duration_ms: None },]);
         assert!(s.in_turn.is_none());
     }
 
@@ -738,15 +690,7 @@ mod tests {
     #[test]
     fn malformed_line_does_not_panic() {
         let mut s = EventsState::new();
-        let evs = collect(
-            &mut s,
-            &[
-                b"not json at all",
-                b"{\"type\":\"assistant.turn_start\",\"data\":",
-                b"",
-            ],
-            false,
-        );
+        let evs = collect(&mut s, &[b"not json at all", b"{\"type\":\"assistant.turn_start\",\"data\":", b""], false);
         assert!(evs.is_empty());
         assert!(s.in_turn.is_none());
     }
@@ -756,10 +700,7 @@ mod tests {
         let mut s = EventsState::new();
         let evs = collect(
             &mut s,
-            &[
-                br#"{"type":"tool.execution_start"}"#,
-                br#"{"type":"permission.requested"}"#,
-            ],
+            &[br#"{"type":"tool.execution_start"}"#, br#"{"type":"permission.requested"}"#],
             false,
         );
         assert!(evs.is_empty());
@@ -790,17 +731,10 @@ mod tests {
             ],
             false,
         );
-        let evs = collect(
-            &mut s,
-            &[br#"{"type":"abort","data":{"reason":"user"}}"#],
-            false,
-        );
+        let evs = collect(&mut s, &[br#"{"type":"abort","data":{"reason":"user"}}"#], false);
         // Order: turn-end before tool-end (turn-end first by impl).
         assert_eq!(evs.len(), 2);
-        assert!(matches!(
-            evs[0],
-            ActivityEvent::TurnEnd { duration_ms: None }
-        ));
+        assert!(matches!(evs[0], ActivityEvent::TurnEnd { duration_ms: None }));
         assert!(matches!(
             evs[1],
             ActivityEvent::ToolEnd {
@@ -831,10 +765,7 @@ mod tests {
             ],
             true,
         );
-        assert!(
-            suppressed.is_empty(),
-            "catch-up must not emit transient events, got {suppressed:?}"
-        );
+        assert!(suppressed.is_empty(), "catch-up must not emit transient events, got {suppressed:?}");
         let mut out = Vec::new();
         emit_current_state(&s, |ev| out.push(ev));
         // AwaitingPermission wins priority over the still-open turn.
@@ -851,11 +782,7 @@ mod tests {
     #[test]
     fn catch_up_with_only_open_turn_emits_turn_start() {
         let mut s = EventsState::new();
-        let _ = collect(
-            &mut s,
-            &[br#"{"type":"assistant.turn_start","data":{"turnId":"t1"}}"#],
-            true,
-        );
+        let _ = collect(&mut s, &[br#"{"type":"assistant.turn_start","data":{"turnId":"t1"}}"#], true);
         let mut out = Vec::new();
         emit_current_state(&s, |ev| out.push(ev));
         assert_eq!(out, vec![ActivityEvent::TurnStart]);
@@ -899,8 +826,7 @@ mod tests {
     #[test]
     fn permission_kind_falls_back_to_tool_name_then_permission() {
         // No permissionRequest.kind, no top-level kind, but toolName.
-        let v: serde_json::Value =
-            serde_json::from_slice(br#"{"toolName":"shell","other":"x"}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(br#"{"toolName":"shell","other":"x"}"#).unwrap();
         assert_eq!(extract_permission_kind(&v), "shell");
 
         // Nothing recognisable.
@@ -910,18 +836,14 @@ mod tests {
 
     #[test]
     fn permission_summary_prefers_command_then_summary_then_description() {
-        let v: serde_json::Value = serde_json::from_slice(
-            br#"{"permissionRequest":{"command":"git pull","summary":"sync","description":"d"}}"#,
-        )
-        .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_slice(br#"{"permissionRequest":{"command":"git pull","summary":"sync","description":"d"}}"#).unwrap();
         assert_eq!(extract_permission_summary(&v).as_deref(), Some("git pull"));
 
-        let v: serde_json::Value =
-            serde_json::from_slice(br#"{"permissionRequest":{"summary":"sync"}}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(br#"{"permissionRequest":{"summary":"sync"}}"#).unwrap();
         assert_eq!(extract_permission_summary(&v).as_deref(), Some("sync"));
 
-        let v: serde_json::Value =
-            serde_json::from_slice(br#"{"permissionRequest":{"description":"d"}}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(br#"{"permissionRequest":{"description":"d"}}"#).unwrap();
         assert_eq!(extract_permission_summary(&v).as_deref(), Some("d"));
 
         let v: serde_json::Value = serde_json::from_slice(br#"{"x":1}"#).unwrap();
@@ -931,9 +853,7 @@ mod tests {
     #[test]
     fn events_path_layout_matches_copilot_session_state() {
         let p = events_path(std::path::Path::new("/home/u"), "abc-uuid");
-        assert!(p.ends_with(std::path::Path::new(
-            ".copilot/session-state/abc-uuid/events.jsonl"
-        )));
+        assert!(p.ends_with(std::path::Path::new(".copilot/session-state/abc-uuid/events.jsonl")));
     }
 
     // -----------------------------------------------------------------
@@ -990,24 +910,17 @@ mod tests {
         // Wait until catch-up has finished (no events from quiescent
         // history) — tail-poll cycle is ~POLL_INTERVAL.
         thread::sleep(POLL_INTERVAL * 3);
-        assert!(
-            bag.lock().unwrap().is_empty(),
-            "catch-up over a fully-resolved history must emit nothing",
-        );
+        assert!(bag.lock().unwrap().is_empty(), "catch-up over a fully-resolved history must emit nothing",);
 
         // Now append a live event — should be emitted.
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        f.write_all(b"{\"type\":\"permission.requested\",\"data\":{\"requestId\":\"p1\",\"permissionRequest\":{\"kind\":\"shell\",\"command\":\"ls\"}}}\n").unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(
+            b"{\"type\":\"permission.requested\",\"data\":{\"requestId\":\"p1\",\"permissionRequest\":{\"kind\":\"shell\",\"command\":\"ls\"}}}\n",
+        )
+        .unwrap();
         drop(f);
 
-        let got = drain(
-            &bag,
-            |b| !b.lock().unwrap().is_empty(),
-            Duration::from_secs(5),
-        );
+        let got = drain(&bag, |b| !b.lock().unwrap().is_empty(), Duration::from_secs(5));
         running.store(false, Ordering::SeqCst);
         let _ = join.join();
 
@@ -1044,11 +957,7 @@ mod tests {
         let p = path.clone();
         let join = thread::spawn(move || run_watcher(session_id, p, emit, r));
 
-        let got = drain(
-            &bag,
-            |b| !b.lock().unwrap().is_empty(),
-            Duration::from_secs(5),
-        );
+        let got = drain(&bag, |b| !b.lock().unwrap().is_empty(), Duration::from_secs(5));
         running.store(false, Ordering::SeqCst);
         let _ = join.join();
 
@@ -1056,11 +965,7 @@ mod tests {
             .iter()
             .filter(|(_, ev)| matches!(ev, ActivityEvent::AwaitingPermission { .. }))
             .collect();
-        assert_eq!(
-            perms.len(),
-            1,
-            "expected exactly one synthesized AwaitingPermission, got {got:?}",
-        );
+        assert_eq!(perms.len(), 1, "expected exactly one synthesized AwaitingPermission, got {got:?}",);
     }
 
     #[test]
@@ -1082,8 +987,7 @@ mod tests {
         // a live ToolStart/ToolEnd. With the fix, neither event fires.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("events.jsonl");
-        let padding_line: &[u8] =
-            br#"{"type":"system.message","data":{"text":"forward-compat-pad"}}"#;
+        let padding_line: &[u8] = br#"{"type":"system.message","data":{"text":"forward-compat-pad"}}"#;
         let bytes_per_line: u64 = (padding_line.len() + 1) as u64; // newline
                                                                    // Push clearly past MAX_READ_CHUNK (10 MB) so a single poll
                                                                    // can't drain it in one read. ~11 MB of padding → second poll
@@ -1101,15 +1005,11 @@ mod tests {
             // Resolved tool pair past the 10 MB boundary. With the bug
             // these lines are read in iteration 2 with suppress=false
             // and surface as live emissions.
-            w.write_all(
-                br#"{"type":"tool.execution_start","data":{"toolCallId":"hist","toolName":"shell"}}"#,
-            )
-            .unwrap();
+            w.write_all(br#"{"type":"tool.execution_start","data":{"toolCallId":"hist","toolName":"shell"}}"#)
+                .unwrap();
             w.write_all(b"\n").unwrap();
-            w.write_all(
-                br#"{"type":"tool.execution_complete","data":{"toolCallId":"hist","success":true}}"#,
-            )
-            .unwrap();
+            w.write_all(br#"{"type":"tool.execution_complete","data":{"toolCallId":"hist","success":true}}"#)
+                .unwrap();
             w.write_all(b"\n").unwrap();
             w.flush().unwrap();
         }
@@ -1239,12 +1139,12 @@ mod tests {
         // Now append: complete the partial line, then add a fresh
         // resolved permission request that the watcher must surface
         // as a live event.
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         f.write_all(b"ell\"}}\n").unwrap();
-        f.write_all(b"{\"type\":\"permission.requested\",\"data\":{\"requestId\":\"live\",\"permissionRequest\":{\"kind\":\"shell\",\"command\":\"ls\"}}}\n").unwrap();
+        f.write_all(
+            b"{\"type\":\"permission.requested\",\"data\":{\"requestId\":\"live\",\"permissionRequest\":{\"kind\":\"shell\",\"command\":\"ls\"}}}\n",
+        )
+        .unwrap();
         drop(f);
 
         let got = drain(
@@ -1302,10 +1202,7 @@ mod tests {
 
         // Append a fresh, complete line — must be emitted live (proves
         // catch-up didn't wedge).
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         f.write_all(b"ell\"}}\n").unwrap();
         drop(f);
 

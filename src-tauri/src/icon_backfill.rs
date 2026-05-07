@@ -43,23 +43,13 @@ pub fn backfill_icons(cfg: &mut AppConfig, cache: &IconCache, fallback_cwd: &Pat
     }
 
     if cfg.ai_launch_commands.claude_icon_data_uri.is_none() {
-        if let Some(uri) = resolve_ai_icon(
-            "claude",
-            &cfg.ai_launch_commands.claude,
-            fallback_cwd,
-            cache,
-        ) {
+        if let Some(uri) = resolve_ai_icon("claude", &cfg.ai_launch_commands.claude, fallback_cwd, cache) {
             cfg.ai_launch_commands.claude_icon_data_uri = Some(uri);
             changed = true;
         }
     }
     if cfg.ai_launch_commands.copilot_icon_data_uri.is_none() {
-        if let Some(uri) = resolve_ai_icon(
-            "copilot",
-            &cfg.ai_launch_commands.copilot,
-            fallback_cwd,
-            cache,
-        ) {
+        if let Some(uri) = resolve_ai_icon("copilot", &cfg.ai_launch_commands.copilot, fallback_cwd, cache) {
             cfg.ai_launch_commands.copilot_icon_data_uri = Some(uri);
             changed = true;
         }
@@ -88,12 +78,7 @@ fn resolve_one(command: &str, cwd: &Path, cache: &IconCache) -> Option<String> {
 ///    `launch_command` (if non-empty).
 /// 3. Otherwise, return `None` — the frontend falls back to the
 ///    bundled `ToolIcon` SVG glyph.
-fn resolve_ai_icon(
-    default_name: &str,
-    launch_command: &str,
-    cwd: &Path,
-    cache: &IconCache,
-) -> Option<String> {
+fn resolve_ai_icon(default_name: &str, launch_command: &str, cwd: &Path, cache: &IconCache) -> Option<String> {
     resolve_ai_icon_with(default_name, launch_command, cwd, cache, resolve_one)
 }
 
@@ -101,13 +86,7 @@ fn resolve_ai_icon(
 /// unit tests can exercise the default-first ordering without
 /// touching the global `PATH` / `PATHEXT` environment (which would
 /// race with parallel tests in the same process).
-fn resolve_ai_icon_with<F>(
-    default_name: &str,
-    launch_command: &str,
-    cwd: &Path,
-    cache: &IconCache,
-    resolve: F,
-) -> Option<String>
+fn resolve_ai_icon_with<F>(default_name: &str, launch_command: &str, cwd: &Path, cache: &IconCache, resolve: F) -> Option<String>
 where
     F: Fn(&str, &Path, &IconCache) -> Option<String>,
 {
@@ -125,9 +104,7 @@ where
 mod tests {
     use super::*;
     use crate::process_icon::{IconExtractor, RealIconExtractor};
-    use crate::types::{
-        AiLaunchCommands, AppConfig, CustomProcessDef, CustomProcessDefId, CustomProcessKind,
-    };
+    use crate::types::{AiLaunchCommands, AppConfig, CustomProcessDef, CustomProcessDefId, CustomProcessKind};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
@@ -171,11 +148,7 @@ mod tests {
     fn backfill_skips_when_cached_value_already_present() {
         let cache = IconCache::new(Arc::new(CountingExtractor::new()));
         let mut cfg = AppConfig {
-            custom_processes: vec![def_with(
-                "x",
-                "pwsh",
-                Some("data:image/png;base64,AAAA".into()),
-            )],
+            custom_processes: vec![def_with("x", "pwsh", Some("data:image/png;base64,AAAA".into()))],
             ai_launch_commands: AiLaunchCommands {
                 claude: String::new(),
                 copilot: String::new(),
@@ -247,13 +220,7 @@ mod tests {
             (program == "claude").then(|| "data:image/png;base64,DEFAULT".to_owned())
         };
 
-        let result = resolve_ai_icon_with(
-            "claude",
-            "C:/wrappers/agency.exe --tool=claude",
-            &cwd,
-            &cache,
-            resolve,
-        );
+        let result = resolve_ai_icon_with("claude", "C:/wrappers/agency.exe --tool=claude", &cwd, &cache, resolve);
         assert_eq!(result.as_deref(), Some("data:image/png;base64,DEFAULT"));
         // Critical assertion: only the *default* name was queried —
         // the wrapper command was never asked about, because the
@@ -271,24 +238,14 @@ mod tests {
         let calls_for_resolver = Arc::clone(&calls);
         let resolve = move |program: &str, _: &Path, _: &IconCache| -> Option<String> {
             calls_for_resolver.lock().unwrap().push(program.to_owned());
-            (program == "C:/wrappers/agency.exe --tool=claude")
-                .then(|| "data:image/png;base64,WRAPPER".to_owned())
+            (program == "C:/wrappers/agency.exe --tool=claude").then(|| "data:image/png;base64,WRAPPER".to_owned())
         };
 
-        let result = resolve_ai_icon_with(
-            "claude",
-            "C:/wrappers/agency.exe --tool=claude",
-            &cwd,
-            &cache,
-            resolve,
-        );
+        let result = resolve_ai_icon_with("claude", "C:/wrappers/agency.exe --tool=claude", &cwd, &cache, resolve);
         assert_eq!(result.as_deref(), Some("data:image/png;base64,WRAPPER"));
         assert_eq!(
             *calls.lock().unwrap(),
-            vec![
-                "claude".to_owned(),
-                "C:/wrappers/agency.exe --tool=claude".to_owned()
-            ],
+            vec!["claude".to_owned(), "C:/wrappers/agency.exe --tool=claude".to_owned()],
             "default tried first, wrapper tried as fallback"
         );
     }

@@ -68,9 +68,7 @@ describe('WorkspacePicker — first-boot mode', () => {
 
   it('calls onConfirm with the trimmed path and shows submission errors', async () => {
     workspaceValidate.mockResolvedValue({ valid: true });
-    const onConfirm = vi
-      .fn<(path: string) => Promise<void>>()
-      .mockRejectedValueOnce(new Error('save failed'));
+    const onConfirm = vi.fn<(path: string) => Promise<void>>().mockRejectedValueOnce(new Error('save failed'));
     render(<WorkspacePicker mode="first-boot" onConfirm={onConfirm} />);
 
     fireEvent.change(screen.getByLabelText(/workspace path/i), {
@@ -125,9 +123,7 @@ describe('WorkspacePicker — first-boot mode', () => {
     const warning = await screen.findByTestId('picker-already-open-warning');
     expect(warning).toHaveTextContent(/already be open in another arborist window/i);
     // Confirm button must remain enabled — the probe is advisory only.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled(),
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled());
   });
 
   it('does not show the advisory warning when the probe reports the lock is free', async () => {
@@ -138,9 +134,7 @@ describe('WorkspacePicker — first-boot mode', () => {
     render(<WorkspacePicker mode="first-boot" onConfirm={vi.fn()} />);
     fireEvent.change(screen.getByLabelText(/workspace path/i), { target: { value: '/repo' } });
     await flushDebounce();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled(),
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled());
     expect(screen.queryByTestId('picker-already-open-warning')).not.toBeInTheDocument();
   });
 });
@@ -148,9 +142,7 @@ describe('WorkspacePicker — first-boot mode', () => {
 describe('WorkspacePicker — change mode', () => {
   it('exposes a Cancel button that calls onCancel', () => {
     const onCancel = vi.fn();
-    render(
-      <WorkspacePicker mode="change" initialPath="/old" onConfirm={vi.fn()} onCancel={onCancel} />,
-    );
+    render(<WorkspacePicker mode="change" initialPath="/old" onConfirm={vi.fn()} onCancel={onCancel} />);
     expect(screen.getByLabelText(/workspace path/i)).toHaveValue('/old');
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalled();
@@ -169,9 +161,7 @@ describe('WorkspacePicker — change mode', () => {
     });
     render(<WorkspacePicker mode="change" initialPath="/current" onConfirm={vi.fn()} />);
     await flushDebounce();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /switch workspace/i })).not.toBeDisabled(),
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /switch workspace/i })).not.toBeDisabled());
     expect(screen.queryByTestId('picker-already-open-warning')).not.toBeInTheDocument();
   });
 

@@ -41,12 +41,7 @@ impl GitRunner for FakeGitRunner {
     fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error> {
         Ok(Some(path.to_path_buf()))
     }
-    fn create_worktree(
-        &self,
-        repo_root: &Path,
-        relative_path: &Path,
-        _branch: &str,
-    ) -> Result<PathBuf, Error> {
+    fn create_worktree(&self, repo_root: &Path, relative_path: &Path, _branch: &str) -> Result<PathBuf, Error> {
         Ok(repo_root.join(relative_path))
     }
     fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path) -> Result<(), Error> {
@@ -57,8 +52,7 @@ impl GitRunner for FakeGitRunner {
 /// Minimal sink that swallows everything — we don't exercise the PTY here.
 fn null_sink() -> PtySink {
     let output = Arc::new(|_id: &SessionId, _data: String| {});
-    let status =
-        Arc::new(|_id: &SessionId, _st: SessionStatus, _pid: Option<u32>, _msg: Option<String>| {});
+    let status = Arc::new(|_id: &SessionId, _st: SessionStatus, _pid: Option<u32>, _msg: Option<String>| {});
     PtySink::new(output, status, Arc::new(|_id, _evt| {}))
 }
 
@@ -100,10 +94,7 @@ fn returns_canned_list_from_injected_runner() {
 
     let got = worktrees_list_impl(&ctx, repo_dir.path()).expect("ok");
     assert_eq!(got, canned);
-    assert_eq!(
-        runner.last_root.lock().unwrap().as_deref(),
-        Some(repo_dir.path()),
-    );
+    assert_eq!(runner.last_root.lock().unwrap().as_deref(), Some(repo_dir.path()),);
 }
 
 #[test]
@@ -120,10 +111,7 @@ fn missing_repo_root_returns_empty_without_invoking_runner() {
     let bogus = PathBuf::from("/this/path/should/not/exist/arborist-phase10-test");
     let got = worktrees_list_impl(&ctx, &bogus).expect("graceful");
     assert!(got.is_empty(), "missing dir must short-circuit to empty");
-    assert!(
-        runner.last_root.lock().unwrap().is_none(),
-        "runner must not be called for a missing dir",
-    );
+    assert!(runner.last_root.lock().unwrap().is_none(), "runner must not be called for a missing dir",);
 }
 
 #[test]

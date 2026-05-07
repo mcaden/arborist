@@ -52,9 +52,8 @@ use tracing::{debug, warn};
 
 use crate::store_layout::StoreLayout;
 use crate::types::{
-    AppConfig, AppError, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error,
-    InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
-    SessionId, SessionStatus, SubSessionRecord, Tool, CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, InstructionSet, InstructionSetId, PartialAppConfig,
+    PartialDefaultInstructionSets, Session, SessionId, SessionStatus, SubSessionRecord, Tool, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -269,20 +268,11 @@ impl ConfigStore {
         // otherwise clobber legitimate IDs that haven't yet been observed.
         if !cfg.instruction_sets_dir.as_os_str().is_empty() {
             let discovered = discover_instructions(&cfg.instruction_sets_dir).unwrap_or_default();
-            let known_ids: BTreeSet<InstructionSetId> =
-                discovered.iter().map(|i| i.id.clone()).collect();
-            let claude_default = discovered
-                .iter()
-                .find(|i| i.tool == Tool::Claude && i.is_default)
-                .map(|i| i.id.clone());
-            let copilot_default = discovered
-                .iter()
-                .find(|i| i.tool == Tool::Copilot && i.is_default)
-                .map(|i| i.id.clone());
+            let known_ids: BTreeSet<InstructionSetId> = discovered.iter().map(|i| i.id.clone()).collect();
+            let claude_default = discovered.iter().find(|i| i.tool == Tool::Claude && i.is_default).map(|i| i.id.clone());
+            let copilot_default = discovered.iter().find(|i| i.tool == Tool::Copilot && i.is_default).map(|i| i.id.clone());
 
-            if !cfg.default_instruction_sets.claude.as_str().is_empty()
-                && !known_ids.contains(&cfg.default_instruction_sets.claude)
-            {
+            if !cfg.default_instruction_sets.claude.as_str().is_empty() && !known_ids.contains(&cfg.default_instruction_sets.claude) {
                 warn!(
                     code = "ConfigQuarantined",
                     missing = %cfg.default_instruction_sets.claude,
@@ -290,9 +280,7 @@ impl ConfigStore {
                 );
                 cfg.default_instruction_sets.claude = claude_default.unwrap_or_default();
             }
-            if !cfg.default_instruction_sets.copilot.as_str().is_empty()
-                && !known_ids.contains(&cfg.default_instruction_sets.copilot)
-            {
+            if !cfg.default_instruction_sets.copilot.as_str().is_empty() && !known_ids.contains(&cfg.default_instruction_sets.copilot) {
                 warn!(
                     code = "ConfigQuarantined",
                     missing = %cfg.default_instruction_sets.copilot,
@@ -323,11 +311,7 @@ impl ConfigStore {
     /// already merged in. The lock spans load → merge → mutate →
     /// write, eliminating the read-modify-write race that would
     /// exist if a caller did `save_config` followed by `write_full`.
-    pub fn save_config_with<F>(
-        &self,
-        patch: PartialAppConfig,
-        mut mutate: F,
-    ) -> Result<AppConfig, Error>
+    pub fn save_config_with<F>(&self, patch: PartialAppConfig, mut mutate: F) -> Result<AppConfig, Error>
     where
         F: FnMut(&mut AppConfig) -> bool,
     {
@@ -407,12 +391,8 @@ impl ConfigStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
             Err(e) => return Err(Error::Io(e)),
         };
-        let mut m: BTreeMap<SessionId, Session> = serde_json::from_str(&raw).map_err(|e| {
-            Error::Internal(format!(
-                "sessions.json failed to parse: {} ({e})",
-                path.display()
-            ))
-        })?;
+        let mut m: BTreeMap<SessionId, Session> =
+            serde_json::from_str(&raw).map_err(|e| Error::Internal(format!("sessions.json failed to parse: {} ({e})", path.display())))?;
         migrate_copilot_composed_commands(&mut m);
         Ok(m)
     }
@@ -438,12 +418,7 @@ impl ConfigStore {
     /// Mutate the persisted status (and optionally PID) of a session record.
     /// Used by the Phase 6 wait thread so reloaded sessions never advertise
     /// stale `running`/`pid` values.
-    pub fn update_session_status(
-        &self,
-        id: &SessionId,
-        status: SessionStatus,
-        pid: Option<u32>,
-    ) -> Result<(), Error> {
+    pub fn update_session_status(&self, id: &SessionId, status: SessionStatus, pid: Option<u32>) -> Result<(), Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
         let Some(session) = all.get_mut(id) else {
@@ -460,11 +435,7 @@ impl ConfigStore {
     /// changed (and was therefore persisted), `Ok(false)` when the value
     /// was already current — the latter avoids a redundant disk write
     /// every poll once the watcher has converged.
-    pub fn update_session_ai_session_id(
-        &self,
-        id: &SessionId,
-        ai_session_id: Option<String>,
-    ) -> Result<bool, Error> {
+    pub fn update_session_ai_session_id(&self, id: &SessionId, ai_session_id: Option<String>) -> Result<bool, Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
         let Some(session) = all.get_mut(id) else {
@@ -483,10 +454,7 @@ impl ConfigStore {
     /// Append a sub-session record to `AppConfig.lastOpenSubSessions`,
     /// replacing any existing entry with the same id. Serialized via the
     /// shared `write_lock`.
-    pub fn append_last_open_sub_session(
-        &self,
-        record: crate::types::SubSessionRecord,
-    ) -> Result<(), Error> {
+    pub fn append_last_open_sub_session(&self, record: crate::types::SubSessionRecord) -> Result<(), Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = self.load_config();
         cfg.last_open_sub_sessions.retain(|r| r.id != record.id);
@@ -495,10 +463,7 @@ impl ConfigStore {
     }
 
     /// Remove a sub-session record by id. Missing ids are a no-op success.
-    pub fn remove_last_open_sub_session(
-        &self,
-        id: &crate::types::SubSessionId,
-    ) -> Result<(), Error> {
+    pub fn remove_last_open_sub_session(&self, id: &crate::types::SubSessionId) -> Result<(), Error> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = self.load_config();
         let before = cfg.last_open_sub_sessions.len();
@@ -665,18 +630,11 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
             cfg.instruction_sets_dir = PathBuf::new();
         } else {
             if dir.is_relative() {
-                return Err(Error::InvalidPath(format!(
-                    "instructionSetsDir must be absolute, got {}",
-                    dir.display()
-                )));
+                return Err(Error::InvalidPath(format!("instructionSetsDir must be absolute, got {}", dir.display())));
             }
-            let canon = dunce::canonicalize(&dir)
-                .map_err(|e| Error::InvalidPath(format!("{}: {e}", dir.display())))?;
+            let canon = dunce::canonicalize(&dir).map_err(|e| Error::InvalidPath(format!("{}: {e}", dir.display())))?;
             if !canon.is_dir() {
-                return Err(Error::InvalidPath(format!(
-                    "instructionSetsDir is not a directory: {}",
-                    canon.display()
-                )));
+                return Err(Error::InvalidPath(format!("instructionSetsDir is not a directory: {}", canon.display())));
             }
             cfg.instruction_sets_dir = canon;
         }
@@ -689,18 +647,11 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
             None => cfg.workspace_root = None,
             Some(p) => {
                 if p.is_relative() {
-                    return Err(Error::InvalidPath(format!(
-                        "workspaceRoot must be absolute, got {}",
-                        p.display()
-                    )));
+                    return Err(Error::InvalidPath(format!("workspaceRoot must be absolute, got {}", p.display())));
                 }
-                let canon = dunce::canonicalize(&p)
-                    .map_err(|e| Error::InvalidPath(format!("{}: {e}", p.display())))?;
+                let canon = dunce::canonicalize(&p).map_err(|e| Error::InvalidPath(format!("{}: {e}", p.display())))?;
                 if !canon.is_dir() {
-                    return Err(Error::InvalidPath(format!(
-                        "workspaceRoot is not a directory: {}",
-                        canon.display()
-                    )));
+                    return Err(Error::InvalidPath(format!("workspaceRoot is not a directory: {}", canon.display())));
                 }
                 cfg.workspace_root = Some(canon);
             }
@@ -710,18 +661,11 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         let mut out = Vec::with_capacity(roots.len());
         for p in roots {
             if p.is_relative() {
-                return Err(Error::InvalidPath(format!(
-                    "worktreeRoots entries must be absolute, got {}",
-                    p.display()
-                )));
+                return Err(Error::InvalidPath(format!("worktreeRoots entries must be absolute, got {}", p.display())));
             }
-            let canon = dunce::canonicalize(&p)
-                .map_err(|e| Error::InvalidPath(format!("{}: {e}", p.display())))?;
+            let canon = dunce::canonicalize(&p).map_err(|e| Error::InvalidPath(format!("{}: {e}", p.display())))?;
             if !canon.is_dir() {
-                return Err(Error::InvalidPath(format!(
-                    "worktreeRoots entry is not a directory: {}",
-                    canon.display()
-                )));
+                return Err(Error::InvalidPath(format!("worktreeRoots entry is not a directory: {}", canon.display())));
             }
             out.push(canon);
         }
@@ -752,9 +696,7 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         for (key, cmds) in overrides {
             let p = PathBuf::from(&key);
             if p.is_relative() {
-                return Err(Error::InvalidPath(format!(
-                    "worktreePrelaunchCommands key must be absolute, got {key}",
-                )));
+                return Err(Error::InvalidPath(format!("worktreePrelaunchCommands key must be absolute, got {key}",)));
             }
             match dunce::canonicalize(&p) {
                 Ok(c) if c.is_dir() => {
@@ -787,11 +729,8 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         // carry it (the frontend never sends it — it's a backend
         // derived field). Drop the cache when `command` changes so
         // the next backfill pass re-resolves.
-        let prev: BTreeMap<crate::types::CustomProcessDefId, &crate::types::CustomProcessDef> = cfg
-            .custom_processes
-            .iter()
-            .map(|d| (d.id.clone(), d))
-            .collect();
+        let prev: BTreeMap<crate::types::CustomProcessDefId, &crate::types::CustomProcessDef> =
+            cfg.custom_processes.iter().map(|d| (d.id.clone(), d)).collect();
         for def in defs.iter_mut() {
             if def.icon_data_uri.is_some() {
                 continue;
@@ -825,16 +764,9 @@ fn validate_custom_processes(defs: &[CustomProcessDef]) -> Result<(), Error> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for def in defs {
         if def.id.as_str().is_empty() {
-            return Err(Error::InvalidCustomProcessDef(
-                "customProcesses[]: id must be non-empty".into(),
-            ));
+            return Err(Error::InvalidCustomProcessDef("customProcesses[]: id must be non-empty".into()));
         }
-        if !def
-            .id
-            .as_str()
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
+        if !def.id.as_str().chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err(Error::InvalidCustomProcessDef(format!(
                 "customProcesses[]: id {:?} must match [a-zA-Z0-9_-]+",
                 def.id.as_str()
@@ -895,14 +827,8 @@ fn write_atomic<T: serde::Serialize>(target: &Path, value: &T) -> Result<(), Err
 // ---------------------------------------------------------------------------
 
 fn quarantine(path: &Path) -> Option<PathBuf> {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let target = path.with_extension(format!(
-        "{}.bad-{ts}",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("json"),
-    ));
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let target = path.with_extension(format!("{}.bad-{ts}", path.extension().and_then(|e| e.to_str()).unwrap_or("json"),));
     match fs::rename(path, &target) {
         Ok(_) => Some(target),
         Err(e) => {
@@ -1138,12 +1064,8 @@ fn sanitize_loaded_custom_processes(defs: &mut Vec<CustomProcessDef>) {
 /// was deleted between sessions), and backfill `composed_command` from
 /// the def for legacy v3→v4 records that didn't persist it. Both are
 /// silent — restore-on-launch is best-effort.
-fn sanitize_loaded_sub_session_records(
-    records: &mut Vec<SubSessionRecord>,
-    defs: &[CustomProcessDef],
-) {
-    let by_id: std::collections::BTreeMap<&CustomProcessDefId, &CustomProcessDef> =
-        defs.iter().map(|d| (&d.id, d)).collect();
+fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs: &[CustomProcessDef]) {
+    let by_id: std::collections::BTreeMap<&CustomProcessDefId, &CustomProcessDef> = defs.iter().map(|d| (&d.id, d)).collect();
     let original_len = records.len();
     records.retain_mut(|rec| {
         let Some(def) = by_id.get(&rec.def_id) else {
@@ -1242,11 +1164,7 @@ fn default_shell_command() -> String {
             .ok()
             .filter(|s| {
                 let s = s.trim();
-                !s.is_empty()
-                    && std::path::Path::new(s).is_absolute()
-                    && !s
-                        .chars()
-                        .any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
+                !s.is_empty() && std::path::Path::new(s).is_absolute() && !s.chars().any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
             })
             .unwrap_or_else(|| "sh".to_owned());
         format!("{shell} -i")
@@ -1303,9 +1221,7 @@ pub fn command_on_path(cmd: &str) -> bool {
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    std::fs::metadata(path).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
 #[cfg(not(unix))]
@@ -1322,10 +1238,7 @@ fn is_executable(_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        CustomProcessDef, CustomProcessDefId, CustomProcessKind, SessionStatus, SubSessionId,
-        SubSessionRecord, TempFileSpec,
-    };
+    use crate::types::{CustomProcessDef, CustomProcessDefId, CustomProcessKind, SessionStatus, SubSessionId, SubSessionRecord, TempFileSpec};
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
     use std::fs::{self, File};
@@ -1376,15 +1289,9 @@ mod tests {
         touch(&dir.path().join("copilot-default.md"), "p");
 
         let sets = discover_instructions(dir.path()).expect("ok");
-        let claude_default = sets
-            .iter()
-            .find(|s| s.tool == Tool::Claude && s.is_default)
-            .expect("claude default");
+        let claude_default = sets.iter().find(|s| s.tool == Tool::Claude && s.is_default).expect("claude default");
         assert_eq!(claude_default.id.as_str(), "claude-default");
-        let copilot_default = sets
-            .iter()
-            .find(|s| s.tool == Tool::Copilot && s.is_default)
-            .expect("copilot default");
+        let copilot_default = sets.iter().find(|s| s.tool == Tool::Copilot && s.is_default).expect("copilot default");
         assert_eq!(copilot_default.id.as_str(), "copilot-default");
         assert_eq!(sets.len(), 3);
     }
@@ -1396,10 +1303,7 @@ mod tests {
         touch(&dir.path().join("claude-zeta.md"), "y");
 
         let sets = discover_instructions(dir.path()).expect("ok");
-        let default = sets
-            .iter()
-            .find(|s| s.is_default)
-            .expect("a default exists");
+        let default = sets.iter().find(|s| s.is_default).expect("a default exists");
         assert_eq!(default.id.as_str(), "claude-other");
     }
 
@@ -1418,10 +1322,7 @@ mod tests {
         drop(f);
 
         let sets = discover_instructions(dir.path()).expect("ok");
-        assert!(
-            sets.is_empty(),
-            "oversized file must be skipped, got {sets:?}",
-        );
+        assert!(sets.is_empty(), "oversized file must be skipped, got {sets:?}",);
     }
 
     #[test]
@@ -1447,10 +1348,7 @@ mod tests {
         symlink(&target, &link).expect("symlink");
 
         let sets = discover_instructions(dir.path()).expect("ok");
-        assert!(
-            sets.is_empty(),
-            "symlink escaping instructionSetsDir must be skipped, got {sets:?}",
-        );
+        assert!(sets.is_empty(), "symlink escaping instructionSetsDir must be skipped, got {sets:?}",);
     }
 
     // ----- ConfigStore: load/save ---------------------------------------
@@ -1480,11 +1378,7 @@ mod tests {
         let badfiles: Vec<_> = fs::read_dir(td.path())
             .expect("rd")
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("config.json.bad-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("config.json.bad-"))
             .collect();
         assert_eq!(badfiles.len(), 1, "expected exactly one quarantine file");
     }
@@ -1501,11 +1395,7 @@ mod tests {
         let badfiles: Vec<_> = fs::read_dir(td.path())
             .expect("rd")
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("sessions.json.bad-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("sessions.json.bad-"))
             .collect();
         assert_eq!(badfiles.len(), 1);
     }
@@ -1525,30 +1415,18 @@ mod tests {
         let path = td.path().join(SESSIONS_FILENAME);
         fs::write(&path, b"###bad###").expect("write");
 
-        let err = store
-            .try_load_sessions()
-            .expect_err("expected parse failure");
+        let err = store.try_load_sessions().expect_err("expected parse failure");
         assert!(matches!(err, Error::Internal(_)), "got {err:?}");
 
         // Strict variant must NOT quarantine — the caller (a destructive
         // operation) needs the file intact so it can be inspected/repaired.
-        assert!(
-            path.exists(),
-            "try_load_sessions must not quarantine the bad file"
-        );
+        assert!(path.exists(), "try_load_sessions must not quarantine the bad file");
         let badfiles: Vec<_> = fs::read_dir(td.path())
             .expect("rd")
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("sessions.json.bad-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("sessions.json.bad-"))
             .collect();
-        assert!(
-            badfiles.is_empty(),
-            "try_load_sessions must not produce quarantine files"
-        );
+        assert!(badfiles.is_empty(), "try_load_sessions must not produce quarantine files");
     }
 
     #[test]
@@ -1610,15 +1488,9 @@ mod tests {
         let good = td.path().join("good-wt");
         fs::create_dir_all(&good).expect("mkdir");
         let mut overrides = BTreeMap::new();
-        overrides.insert(
-            good.to_string_lossy().into_owned(),
-            vec!["nvm use".to_owned()],
-        );
+        overrides.insert(good.to_string_lossy().into_owned(), vec!["nvm use".to_owned()]);
         // Absolute, but does not exist on disk.
-        overrides.insert(
-            td.path().join("ghost-wt").to_string_lossy().into_owned(),
-            vec!["nope".to_owned()],
-        );
+        overrides.insert(td.path().join("ghost-wt").to_string_lossy().into_owned(), vec!["nope".to_owned()]);
         let patch = PartialAppConfig {
             worktree_prelaunch_commands: Some(overrides),
             ..Default::default()
@@ -1679,10 +1551,7 @@ mod tests {
                 ..Default::default()
             })
             .expect("ok");
-        assert_eq!(
-            after.default_instruction_sets.claude.as_str(),
-            "claude-other"
-        );
+        assert_eq!(after.default_instruction_sets.claude.as_str(), "claude-other");
         assert_eq!(
             after.default_instruction_sets.copilot.as_str(),
             "copilot-default",
@@ -1715,17 +1584,10 @@ mod tests {
             "lastOpenSessions": [],
             "tabOrder": []
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
 
         let cfg = store.load_config();
-        assert_eq!(
-            cfg.default_instruction_sets.claude.as_str(),
-            "claude-default"
-        );
+        assert_eq!(cfg.default_instruction_sets.claude.as_str(), "claude-default");
     }
 
     #[test]
@@ -1744,11 +1606,7 @@ mod tests {
             "lastOpenSessions": [],
             "tabOrder": []
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
         assert!(cfg.worktree_prelaunch_commands.is_empty());
     }
@@ -1787,9 +1645,7 @@ mod tests {
         let s = make_session(Uuid::new_v4(), "x", td.path());
         store.save_session(&s).expect("save");
 
-        store
-            .update_session_status(&s.id, SessionStatus::Exited, None)
-            .expect("update");
+        store.update_session_status(&s.id, SessionStatus::Exited, None).expect("update");
         let after = store.load_sessions();
         let updated = after.get(&s.id).expect("present");
         assert_eq!(updated.status, SessionStatus::Exited);
@@ -1815,16 +1671,11 @@ mod tests {
         let s = make_session(Uuid::new_v4(), "x", td.path());
         store.save_session(&s).expect("save");
 
-        let changed = store
-            .update_session_ai_session_id(&s.id, Some("ai-123".to_owned()))
-            .expect("update");
+        let changed = store.update_session_ai_session_id(&s.id, Some("ai-123".to_owned())).expect("update");
         assert!(changed, "first set must report a change");
 
         let after = store.load_sessions();
-        assert_eq!(
-            after.get(&s.id).expect("present").ai_session_id.as_deref(),
-            Some("ai-123"),
-        );
+        assert_eq!(after.get(&s.id).expect("present").ai_session_id.as_deref(), Some("ai-123"),);
     }
 
     #[test]
@@ -1834,12 +1685,8 @@ mod tests {
         let s = make_session(Uuid::new_v4(), "x", td.path());
         store.save_session(&s).expect("save");
 
-        store
-            .update_session_ai_session_id(&s.id, Some("same".to_owned()))
-            .expect("first update");
-        let changed = store
-            .update_session_ai_session_id(&s.id, Some("same".to_owned()))
-            .expect("second update");
+        store.update_session_ai_session_id(&s.id, Some("same".to_owned())).expect("first update");
+        let changed = store.update_session_ai_session_id(&s.id, Some("same".to_owned())).expect("second update");
         assert!(!changed, "no-op write must report no change");
     }
 
@@ -1860,21 +1707,10 @@ mod tests {
         let s = make_session(Uuid::new_v4(), "x", td.path());
         store.save_session(&s).expect("save");
 
-        store
-            .update_session_ai_session_id(&s.id, Some("ai-1".to_owned()))
-            .expect("set");
-        let changed = store
-            .update_session_ai_session_id(&s.id, None)
-            .expect("clear");
+        store.update_session_ai_session_id(&s.id, Some("ai-1".to_owned())).expect("set");
+        let changed = store.update_session_ai_session_id(&s.id, None).expect("clear");
         assert!(changed);
-        assert_eq!(
-            store
-                .load_sessions()
-                .get(&s.id)
-                .expect("present")
-                .ai_session_id,
-            None,
-        );
+        assert_eq!(store.load_sessions().get(&s.id).expect("present").ai_session_id, None,);
     }
 
     // ----- Copilot composed_command migration --------------------------
@@ -1901,11 +1737,7 @@ mod tests {
                 "tempFiles": []
             }
         });
-        fs::write(
-            store.sessions_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
 
         let loaded = store.load_sessions();
         let session = loaded.get(&id).expect("present");
@@ -1931,16 +1763,9 @@ mod tests {
                 "tempFiles": []
             }
         });
-        fs::write(
-            store.sessions_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let loaded = store.load_sessions();
-        assert_eq!(
-            loaded.get(&id).expect("present").composed_command,
-            "copilot"
-        );
+        assert_eq!(loaded.get(&id).expect("present").composed_command, "copilot");
     }
 
     #[test]
@@ -1962,16 +1787,9 @@ mod tests {
                 "tempFiles": []
             }
         });
-        fs::write(
-            store.sessions_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let loaded = store.load_sessions();
-        assert_eq!(
-            loaded.get(&id).expect("present").composed_command,
-            "claude --system-prompt /tmp/x.md"
-        );
+        assert_eq!(loaded.get(&id).expect("present").composed_command, "claude --system-prompt /tmp/x.md");
     }
 
     // ----- Atomic write durability --------------------------------------
@@ -2057,11 +1875,7 @@ mod tests {
             "lastOpenSessions": [],
             "tabOrder": []
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
         assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
         assert_eq!(cfg.active_session_id, None);
@@ -2152,11 +1966,7 @@ mod tests {
             "tabOrder": [],
             "activeSessionId": null
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
         assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
         assert_eq!(cfg.workspace_root, Some(canon(&repo)));
@@ -2182,11 +1992,7 @@ mod tests {
             "tabOrder": [],
             "activeSessionId": null
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
         assert_eq!(cfg.workspace_root, None);
     }
@@ -2225,11 +2031,7 @@ mod tests {
                 }
             ]
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
         assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
         // Shell preserved verbatim.
@@ -2242,11 +2044,7 @@ mod tests {
         assert_eq!(shell.command, "fish -i");
         assert!(!shell.enabled, "user's enabled=false must survive seeding");
         // Other built-ins appended.
-        let ids: Vec<_> = cfg
-            .custom_processes
-            .iter()
-            .map(|d| d.id.as_str().to_owned())
-            .collect();
+        let ids: Vec<_> = cfg.custom_processes.iter().map(|d| d.id.as_str().to_owned()).collect();
         assert!(
             ids.contains(&BUILTIN_DEF_ID_OPEN_FOLDER.to_owned()),
             "open-folder must be appended by v3→v4 migration"
@@ -2273,18 +2071,10 @@ mod tests {
             "tabOrder": [],
             "activeSessionId": null
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
         assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
-        let ids: Vec<_> = cfg
-            .custom_processes
-            .iter()
-            .map(|d| d.id.as_str().to_owned())
-            .collect();
+        let ids: Vec<_> = cfg.custom_processes.iter().map(|d| d.id.as_str().to_owned()).collect();
         assert_eq!(ids, vec!["shell", "open-folder", "vscode"]);
         assert!(cfg.last_open_sub_sessions.is_empty());
     }
@@ -2347,17 +2137,9 @@ mod tests {
             ],
             "lastOpenSubSessions": []
         });
-        fs::write(
-            store.config_path(),
-            serde_json::to_vec_pretty(&raw).expect("ser"),
-        )
-        .expect("write");
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
-        let ids: Vec<_> = cfg
-            .custom_processes
-            .iter()
-            .map(|d| d.id.as_str().to_owned())
-            .collect();
+        let ids: Vec<_> = cfg.custom_processes.iter().map(|d| d.id.as_str().to_owned()).collect();
         assert_eq!(ids, vec!["shell"], "v4+ must not re-run the seed pass");
     }
 
@@ -2381,10 +2163,7 @@ mod tests {
                 ..Default::default()
             })
             .expect_err("rejected");
-        assert!(
-            matches!(err, Error::InvalidCustomProcessDef(_)),
-            "got {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidCustomProcessDef(_)), "got {err:?}");
     }
 
     #[test]
@@ -2405,10 +2184,7 @@ mod tests {
                 ..Default::default()
             })
             .expect_err("rejected");
-        assert!(
-            matches!(err, Error::InvalidCustomProcessDef(_)),
-            "got {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidCustomProcessDef(_)), "got {err:?}");
     }
 
     #[test]
@@ -2429,10 +2205,7 @@ mod tests {
                 ..Default::default()
             })
             .expect_err("rejected");
-        assert!(
-            matches!(err, Error::InvalidCustomProcessDef(_)),
-            "got {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidCustomProcessDef(_)), "got {err:?}");
     }
 
     #[test]
@@ -2454,22 +2227,16 @@ mod tests {
                 ..Default::default()
             })
             .expect_err("rejected");
-        assert!(
-            matches!(err, Error::InvalidCustomProcessDef(_)),
-            "got {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidCustomProcessDef(_)), "got {err:?}");
     }
 
     #[test]
     fn save_config_round_trips_valid_custom_processes_and_records() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
-        let parent =
-            SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"));
+        let parent = SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"));
         let sub = SubSessionRecord {
-            id: SubSessionId(
-                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
-            ),
+            id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
             parent_session_id: parent,
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
@@ -2540,9 +2307,7 @@ mod tests {
 
     #[test]
     fn command_on_path_returns_false_for_unknown_binary() {
-        assert!(!command_on_path(
-            "arborist-definitely-not-on-path-zzz-12345"
-        ));
+        assert!(!command_on_path("arborist-definitely-not-on-path-zzz-12345"));
     }
 
     #[cfg(unix)]
@@ -2568,10 +2333,7 @@ mod tests {
             Some(p) => std::env::set_var("PATH", p),
             None => std::env::remove_var("PATH"),
         }
-        assert!(
-            !result,
-            "non-executable file with name {stem} must not be reported as on PATH"
-        );
+        assert!(!result, "non-executable file with name {stem} must not be reported as on PATH");
     }
 
     // ----- Fresh-install + load-time hardening -------------------------
@@ -2633,10 +2395,7 @@ mod tests {
             std::fs::read_dir(td.path())
                 .expect("readdir")
                 .filter_map(|e| e.ok())
-                .any(|e| e
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("config.json.bad-")),
+                .any(|e| e.file_name().to_string_lossy().starts_with("config.json.bad-")),
             "quarantine file must exist alongside",
         );
     }
@@ -2684,10 +2443,7 @@ mod tests {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
         }
-        assert_eq!(
-            cmd, "sh -i",
-            "metacharacter in $SHELL must trigger fallback"
-        );
+        assert_eq!(cmd, "sh -i", "metacharacter in $SHELL must trigger fallback");
     }
 
     // ----- from_layout --------------------------------------------------
@@ -2706,12 +2462,8 @@ mod tests {
 
         // Branch build → settings live under
         // `<app_data>/branches/feature-x/workspaces/<key>/config.json`.
-        let root = crate::store_layout::StoreRoot::new(
-            app_data.path().to_path_buf(),
-            "feature-x".to_owned(),
-        );
-        let workspace_canon_typed =
-            crate::store_layout::CanonicalPath::assume_canonical(workspace_canon.clone());
+        let root = crate::store_layout::StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
+        let workspace_canon_typed = crate::store_layout::CanonicalPath::assume_canonical(workspace_canon.clone());
         let layout = root.for_workspace(&workspace_canon_typed);
         let expected_settings_path = layout.settings_path();
         let expected_workspace_dir = layout.workspace_dir();
@@ -2751,13 +2503,9 @@ mod tests {
     fn from_layout_is_deterministic_for_same_inputs() {
         let app_data = TempDir::new().expect("app_data");
         let workspace = TempDir::new().expect("workspace");
-        let canonical =
-            crate::store_layout::CanonicalPath::assume_canonical(canon(workspace.path()));
+        let canonical = crate::store_layout::CanonicalPath::assume_canonical(canon(workspace.path()));
 
-        let root_a = crate::store_layout::StoreRoot::new(
-            app_data.path().to_path_buf(),
-            "feature-x".to_owned(),
-        );
+        let root_a = crate::store_layout::StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
         let root_b = root_a.clone();
         let store_a = ConfigStore::from_layout(root_a.for_workspace(&canonical)).expect("a");
         let store_b = ConfigStore::from_layout(root_b.for_workspace(&canonical)).expect("b");
@@ -2773,22 +2521,11 @@ mod tests {
         let ws_a = TempDir::new().expect("ws_a");
         let ws_b = TempDir::new().expect("ws_b");
 
-        let root = crate::store_layout::StoreRoot::new(
-            app_data.path().to_path_buf(),
-            "feature-x".to_owned(),
-        );
-        let store_a = ConfigStore::from_layout(root.for_workspace(
-            &crate::store_layout::CanonicalPath::assume_canonical(canon(ws_a.path())),
-        ))
-        .expect("a");
-        let store_b = ConfigStore::from_layout(root.for_workspace(
-            &crate::store_layout::CanonicalPath::assume_canonical(canon(ws_b.path())),
-        ))
-        .expect("b");
-        assert_ne!(
-            store_a.dir(),
-            store_b.dir(),
-            "distinct workspaces must isolate their stores",
-        );
+        let root = crate::store_layout::StoreRoot::new(app_data.path().to_path_buf(), "feature-x".to_owned());
+        let store_a =
+            ConfigStore::from_layout(root.for_workspace(&crate::store_layout::CanonicalPath::assume_canonical(canon(ws_a.path())))).expect("a");
+        let store_b =
+            ConfigStore::from_layout(root.for_workspace(&crate::store_layout::CanonicalPath::assume_canonical(canon(ws_b.path())))).expect("b");
+        assert_ne!(store_a.dir(), store_b.dir(), "distinct workspaces must isolate their stores",);
     }
 }
