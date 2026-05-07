@@ -425,7 +425,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={customProcessesPanelId}
               aria-labelledby={customProcessesTabId}
               data-testid="settings-panel-custom-processes"
-              className="min-h-0 flex-1 overflow-y-auto"
+              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
             >
               <CustomProcessesTab onClose={onClose} />
             </div>
