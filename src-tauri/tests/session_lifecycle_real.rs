@@ -11,6 +11,7 @@
 //! end-to-end with a hand-crafted composed string that sidesteps the issue.
 
 #![cfg(unix)]
+#![cfg(feature = "test-helpers")]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

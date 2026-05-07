@@ -93,13 +93,18 @@ Behaviour:
 - exits 0 on `quit\n`,
 - exits with code N on `exit N\n`.
 
-Cargo automatically builds the binary as part of `cargo test --workspace`
-and exposes its full path to integration tests via the
-`CARGO_BIN_EXE_arborist-test-child` environment variable. To poke at it
-manually:
+Cargo builds the binary when the `test-helpers` feature is enabled and exposes
+its full path to integration tests via the `CARGO_BIN_EXE_arborist-test-child`
+environment variable:
 
 ```sh
-cargo run -p arborist --bin arborist-test-child
+cargo test --workspace --features test-helpers
+```
+
+To poke at it manually:
+
+```sh
+cargo run -p arborist --features test-helpers --bin arborist-test-child
 ```
 
 ## 4. Test-only env-var seam: CLI program override

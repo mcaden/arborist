@@ -196,10 +196,10 @@ at least a minimal in-app settings surface is needed.
   lint, or test run on push or pull request.
 - **Needed**: A GitHub Actions workflow that runs on push/PR targeting `main`,
   with jobs for:
-  - **Lint & type-check** (`npm run lint`, `npm run build`, `cargo fmt --check`,
+  - **Lint & type-check** (`pnpm run lint`, `pnpm run build`, `cargo fmt --check`,
     `cargo clippy -D warnings`) on `ubuntu-latest`.
-  - **Frontend tests** (`npm test -- --run`) on `ubuntu-latest`.
-  - **Rust tests** (`cargo test --workspace`) on `ubuntu-latest`,
+  - **Frontend tests** (`pnpm test --run`) on `ubuntu-latest`.
+  - **Rust tests** (`cargo test --workspace --features test-helpers`) on `ubuntu-latest`,
     `windows-latest`, and `macos-latest`.
   - (Optional) Tauri build smoke-test on all three platforms.
 
@@ -207,7 +207,7 @@ at least a minimal in-app settings surface is needed.
 - **Gap**: No automated release workflow to produce distributable bundles
   (`.msi`, `.dmg`, `.AppImage`).
 - **Needed** (v2 candidate): A GitHub Actions release workflow triggered on a
-  version tag that runs `npm run tauri:build` on all three platform runners and
+  version tag that runs `pnpm run tauri:build` on all three platform runners and
   uploads bundle artefacts as release assets.
 
 ---
@@ -222,7 +222,7 @@ PTY processes.
 ### 7.1 E2E test harness
 - **Gap**: No end-to-end test framework is wired up. Regressions in the
   frontend ↔ backend bridge (e.g. a renamed command, a missing capability entry,
-  a broken event payload) are only caught manually via `npm run tauri dev`.
+  a broken event payload) are only caught manually via `pnpm run tauri dev`.
 - **Needed**: Adopt a Tauri-compatible E2E framework — the leading options are
   WebDriver via [`tauri-driver`](https://v2.tauri.app/develop/tests/webdriver/)
   driving the built app binary, or Playwright pointed at the dev server with the

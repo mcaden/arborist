@@ -77,6 +77,9 @@ import type { SessionId, SubSessionId } from '@/types/arborist';
 /** Time the ResizeObserver waits before firing `fit()` + resize. */
 const RESIZE_DEBOUNCE_MS = 50;
 
+/** Terminal font family — used by both the xterm.js Terminal and the pre-mount dimension probe. */
+export const TERMINAL_FONT_FAMILY = "'CaskaydiaCove NF Mono', monospace";
+
 /**
  * Which underlying Tauri commands a registry entry's input/resize map to.
  * Sessions and sub-sessions share the registry (UUID id-space is global)
@@ -378,7 +381,7 @@ export function initTerminalRouter(): void {
 function createEntry(id: string, ioKind: IoKind): RegistryEntry {
   const term = new Terminal({
     scrollback: 5000,
-    fontFamily: 'monospace',
+    fontFamily: TERMINAL_FONT_FAMILY,
     cursorBlink: true,
     allowProposedApi: false,
   });
@@ -994,7 +997,8 @@ export function measureInitialPtyDimensions(): InitialPtyDims {
     const probe = document.createElement('span');
     probe.textContent = PROBE_SAMPLE_TEXT;
     probe.style.cssText =
-      'position:absolute;left:-9999px;top:-9999px;visibility:hidden;' + 'white-space:pre;font-family:monospace;font-size:15px;line-height:normal;';
+      'position:absolute;left:-9999px;top:-9999px;visibility:hidden;' +
+      `white-space:pre;font-family:${TERMINAL_FONT_FAMILY};font-size:15px;line-height:normal;`;
     document.body.appendChild(probe);
     cellWidth = probe.offsetWidth / PROBE_SAMPLE_TEXT.length;
     cellHeight = probe.offsetHeight;

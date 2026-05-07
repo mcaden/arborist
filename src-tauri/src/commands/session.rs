@@ -1530,7 +1530,31 @@ pub async fn workspace_switch_impl(
         .path()
         .app_data_dir()
         .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
-    workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await
+    let result = workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await?;
+
+    // Refresh the OS window title so the new workspace name is visible (issue #56). To make this deterministic across rapid back-to-back switches we
+    // hold the `ctx.workspace` READ guard across the `set_title` call rather than read-clone-drop-then-set: the inner's commit takes
+    // `ctx.workspace.write()`, which cannot acquire while any reader is active, so no newer scope can be committed between our `window_title`
+    // computation and the OS title-set. A delayed wrapper therefore can never overwrite a newer correct title with a stale value. The hold spans one
+    // synchronous OS call (`SetWindowTextW` / `NSWindow.title=` / `gtk_window_set_title`) — none re-enter into Arborist workspace code, so there is
+    // no deadlock surface. Lock-poisoning is treated as best-effort: log and skip rather than crash the whole process for a non-essential title
+    // refresh (matches the pattern in `commands::mod.rs` PtySink callbacks).
+    if let Some(window) = app_handle.get_webview_window("main") {
+        match ctx.workspace.read() {
+            Ok(guard) => {
+                let title = crate::window_title(crate::BUILD_BRANCH, guard.workspace_root.as_deref());
+                if let Err(err) = window.set_title(&title) {
+                    tracing::warn!(%err, "failed to update main window title after workspace switch");
+                }
+                drop(guard);
+            }
+            Err(_) => {
+                tracing::warn!("workspace lock poisoned; skipping title refresh after workspace switch");
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Testable inner of [`workspace_switch_impl`]. See module-level docs on the public wrapper for the full pipeline. Split out so unit tests can drive
