@@ -60,6 +60,24 @@ describe('isInsideWorktreesDir', () => {
     expect(isInsideWorktreesDir('/repo', '', '/repo/.worktrees/foo')).toBe(true);
     expect(isInsideWorktreesDir('/repo', '   ', '/repo/.worktrees/foo')).toBe(true);
   });
+
+  // Regression for PR #70 review: when worktreesDir resolves to a filesystem
+  // root (POSIX `/`, drive `C:/`, UNC `//srv/share/`), the prefix check used
+  // to double the trailing slash and incorrectly reject every child.
+  it('handles a worktrees root that already ends with a separator (POSIX /)', () => {
+    expect(isInsideWorktreesDir('/repo', '..', '/foo')).toBe(true);
+    expect(isInsideWorktreesDir('/repo', '..', '/')).toBe(false);
+  });
+
+  it('handles a worktrees root that collapses to a Windows drive root', () => {
+    expect(isInsideWorktreesDir('C:/Repo', '..', 'C:/foo')).toBe(true);
+    expect(isInsideWorktreesDir('C:/Repo', '..', 'C:/')).toBe(false);
+  });
+
+  it('handles a worktrees root that collapses to a UNC share root', () => {
+    expect(isInsideWorktreesDir('//srv/share/repo', '..', '//srv/share/foo')).toBe(true);
+    expect(isInsideWorktreesDir('//srv/share/repo', '..', '//srv/share/')).toBe(false);
+  });
 });
 
 describe('resolveWorktreesRoot', () => {

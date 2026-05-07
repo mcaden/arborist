@@ -73,9 +73,12 @@ function lexicalResolve(parts: string[]): string {
  * - Relative `worktreesDir` is joined onto `repoRoot` and then lexically
  *   resolved (so `..` may legitimately escape the workspace).
  *
- * Returns the absolute path with normalised `/` separators on POSIX and the
- * original separator style preserved on Windows-style inputs (drive letter or
- * UNC). The trailing `/` on `repoRoot`, if any, is stripped before joining.
+ * Returns the absolute path with separators normalised to forward slashes
+ * regardless of input style (Windows-style `D:\foo` becomes `D:/foo`). All
+ * downstream string comparisons go through `normalize()`, which does the same
+ * normalisation on the child path, so the styles always agree.
+ *
+ * The trailing `/` on `repoRoot`, if any, is stripped before joining.
  */
 export function resolveWorktreesRoot(repoRoot: string, worktreesDir: string): string {
   const trimmed = worktreesDir.trim();
@@ -133,7 +136,10 @@ function joinAndResolve(root: string, extra: string[]): string {
 export function isInsideWorktreesDir(repoRoot: string, worktreesDir: string, child: string): boolean {
   const root = resolveWorktreesRoot(repoRoot, worktreesDir);
   const c = normalize(child);
-  const prefix = `${root}/`;
+  // `root` may already end with `/` for filesystem roots (POSIX `/`, drive `C:/`, UNC `//srv/share/`)
+  // when the configured worktreesDir collapses to an anchor (e.g. `..` against `/repo`). Doubling the
+  // slash here would break the prefix check for valid children like `/foo`.
+  const prefix = root.endsWith('/') ? root : `${root}/`;
   const winLike = isWindowsLikePath(repoRoot) || isWindowsLikePath(child) || isWindowsLikePath(root);
   if (winLike) {
     const cl = c.toLowerCase();

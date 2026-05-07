@@ -73,10 +73,11 @@ pub trait GitRunner: Send + Sync {
     /// Errors are surfaced as [`Error::Internal`] carrying git's stderr so the frontend can show the user a meaningful message.
     fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error>;
 
-    /// Probe `git -C <repo_root> check-ignore -q -- <candidate>` (Issue #53). Returns `Ok(true)` when git considers `candidate` ignored (exit 0),
-    /// `Ok(false)` when not ignored (exit 1), and `Ok(false)` for any other condition (git unavailable, candidate outside the repo, IO error). The
-    /// "treat unknown as not-ignored" policy keeps the live Settings warning conservative — we only flash the banner when git positively confirms
-    /// the configured folder is **not** ignored.
+    /// Probe `git -C <repo_root> check-ignore -q --no-index -- <candidate>` (Issue #53). Returns `Ok(true)` when git positively confirms `candidate`
+    /// is ignored (exit 0), `Ok(false)` when git positively confirms it is *not* ignored (exit 1), and `Ok(false)` for any other condition (git
+    /// unavailable, candidate outside the repo, IO error, unexpected exit). The "treat unknown as not-ignored" policy errs toward showing the live
+    /// Settings warning: silently masking a potential misconfig (worktrees folder accidentally tracked by Git) is worse than nudging the user to
+    /// double-check, since the warning is only ever evaluated when the resolved path is already inside the workspace.
     ///
     /// Implementations must include `--no-index` so unstaged candidates still consult `.gitignore` rules — `git check-ignore` defaults to consulting
     /// the index for tracked paths, which would mark a candidate as "not ignored" simply because it happens to be tracked already.
@@ -247,8 +248,9 @@ impl GitRunner for RealGitRunner {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
             // 128 = "fatal" (e.g. candidate outside repo, repo lookup failed). 129 = bad usage. Anything else is unexpected. None = killed by signal.
-            // We surface a debug log so a curious developer can see what happened, but the public answer is the conservative "not ignored" — the
-            // Settings warning prefers a false negative (no banner shown) to a false positive that would scare the user into reverting good config.
+            // Surface a debug log so a curious developer can see what happened, but the public answer is the conservative "not ignored" — that is,
+            // we err on the side of *showing* the Settings warning. Silently masking a potential misconfig (worktrees folder tracked by Git despite
+            // a .gitignore that should match) would be worse than nudging the user to investigate; cf. the trait-level docstring on `check_ignore`.
             other => {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
                 debug!(
