@@ -8,9 +8,9 @@
 //!
 //! - The pool is **Tauri-agnostic**. The only seam between the pool and the
 //!   rest of the app is [`PtySink`], a pair of callbacks the caller supplies.
-//! - The pool **never** constructs a production spawner. [`PtyPool::new`]
-//!   takes `Arc<dyn PtySpawner>`. Production code wires the
-//!   [`PortablePtySpawner`]; tests wire a fake.
+//! - The pool **never** constructs a production spawner. [`PtyPool::new`] takes
+//!   `Arc<dyn PtySpawner>`. Production code wires the [`PortablePtySpawner`];
+//!   tests wire a fake.
 //! - One **OS thread** per session reads bytes from the PTY (per
 //!   `copilot-instructions.md` — `portable-pty` reads block, so they cannot
 //!   live on a tokio task).
@@ -20,8 +20,8 @@
 //!   `mpsc::channel::<String>(512)` and dispatches each chunk to
 //!   `sink.output(...)`. The bounded channel is the backpressure boundary
 //!   (DESIGN §8.3).
-//! - The pool's lock is a `std::sync::Mutex` over a `BTreeMap`. **It is
-//!   never held across an `.await`** — callers `lock → take → drop → await`.
+//! - The pool's lock is a `std::sync::Mutex` over a `BTreeMap`. **It is never
+//!   held across an `.await`** — callers `lock → take → drop → await`.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -181,7 +181,8 @@ pub trait PtyKiller: Send + Sync {
 /// The reserved env-var namespace prefix for Arborist's own build/dev tooling.
 const ARBORIST_ENV_PREFIX: &str = "ARBORIST_";
 
-/// Strip every `ARBORIST_*` env var from the inherited environment of `builder`.
+/// Strip every `ARBORIST_*` env var from the inherited environment of
+/// `builder`.
 ///
 /// `portable_pty::CommandBuilder` snapshots the current process env at
 /// construction; `env_remove` records an unset that overrides those entries
@@ -216,7 +217,8 @@ where
     }
 }
 
-/// Production wrapper: feed the current process env into [`strip_arborist_env_keys`].
+/// Production wrapper: feed the current process env into
+/// [`strip_arborist_env_keys`].
 fn strip_arborist_env(builder: &mut CommandBuilder) {
     strip_arborist_env_keys(builder, std::env::vars_os().map(|(k, _)| k));
 }
@@ -811,8 +813,8 @@ impl PtyPool {
     /// care about possible orphans (e.g. `park_session_for_switch_impl`)
     /// should log loudly when they see `Unconfirmed`.
     pub async fn kill(&self, id: &SessionId) -> Result<KillOutcome, Error> {
-        // 1. Remove the runtime entry under the lock; everything else
-        //    happens with no lock held.
+        // 1. Remove the runtime entry under the lock; everything else happens with no
+        //    lock held.
         let rt = {
             let mut guard = self.inner.lock().map_err(|_| Error::Internal("pty pool mutex poisoned".into()))?;
             guard.remove(id)
@@ -825,13 +827,12 @@ impl PtyPool {
         // 2. Mark killed so the wait thread doesn't emit Exited/Error.
         rt.killed.store(true, Ordering::SeqCst);
 
-        // 3. Kill the child via the independent killer handle.
-        //    `PortableKiller::kill` issues SIGKILL on Unix (unconditional
-        //    process termination) or `TerminateProcess` on Windows
-        //    (also unconditional). Failure here is rare — typically only
-        //    permission-denied or the child has already exited — but we
-        //    capture it so we can surface it in `KillOutcome` rather
-        //    than swallow it as we used to with `let _ =`.
+        // 3. Kill the child via the independent killer handle. `PortableKiller::kill`
+        //    issues SIGKILL on Unix (unconditional process termination) or
+        //    `TerminateProcess` on Windows (also unconditional). Failure here is rare —
+        //    typically only permission-denied or the child has already exited — but we
+        //    capture it so we can surface it in `KillOutcome` rather than swallow it as
+        //    we used to with `let _ =`.
         let killer_result = rt.killer.kill();
 
         // 4. Drop the sender; cancel the drain task; await with a timeout.
@@ -847,11 +848,11 @@ impl PtyPool {
             }
         }
 
-        // 5. Best-effort: join the wait thread (it should exit when the PTY
-        //    closes). Use a tokio blocking task with a short timeout so we
-        //    don't block the executor forever. The success/failure of this
-        //    join is the load-bearing signal for `KillOutcome`: a clean
-        //    join means the OS reaped the child within `KILL_GRACE`.
+        // 5. Best-effort: join the wait thread (it should exit when the PTY closes).
+        //    Use a tokio blocking task with a short timeout so we don't block the
+        //    executor forever. The success/failure of this join is the load-bearing
+        //    signal for `KillOutcome`: a clean join means the OS reaped the child
+        //    within `KILL_GRACE`.
         let wait_joined = if let Some(handle) = rt.wait_thread {
             matches!(
                 timeout(KILL_GRACE, tokio::task::spawn_blocking(move || handle.join()),).await,
@@ -872,11 +873,10 @@ impl PtyPool {
             }
         }
 
-        // 7. Decide on the outcome. The kill **was** issued in step 3
-        //    regardless of what we return here — we never re-spawn the
-        //    same SessionId from the pool's perspective because step 1
-        //    already evicted it. The outcome is purely diagnostic, so
-        //    the caller can record an orphan PID for human cleanup.
+        // 7. Decide on the outcome. The kill **was** issued in step 3 regardless of
+        //    what we return here — we never re-spawn the same SessionId from the pool's
+        //    perspective because step 1 already evicted it. The outcome is purely
+        //    diagnostic, so the caller can record an orphan PID for human cleanup.
         if killer_result.is_err() || !wait_joined {
             if let Err(e) = killer_result {
                 warn!(

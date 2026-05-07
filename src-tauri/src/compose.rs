@@ -58,10 +58,10 @@ pub struct ComposeInputs<'a> {
     pub worktree_path: &'a Path,
     pub worktree_label: &'a str,
     /// Optional user-curated instruction set. When `None`:
-    /// * Claude launches with no `--system-prompt` (auto-loads `CLAUDE.md`
-    ///   from `cwd`).
-    /// * Copilot ignores this field — it is launched bare regardless,
-    ///   and reads `.github/copilot-instructions.md` from `cwd`.
+    /// * Claude launches with no `--system-prompt` (auto-loads `CLAUDE.md` from
+    ///   `cwd`).
+    /// * Copilot ignores this field — it is launched bare regardless, and reads
+    ///   `.github/copilot-instructions.md` from `cwd`.
     pub instruction_set: Option<&'a InstructionSet>,
     /// Verbatim, in declaration order. They are joined with ` && ` ahead of
     /// the CLI command and passed through *without* re-quoting — they are
@@ -268,14 +268,14 @@ pub fn copilot_otel_path(session_id: &SessionId) -> PathBuf {
 /// Per-tool behaviour:
 ///
 /// * `Tool::Copilot` — enable Copilot's OpenTelemetry **file exporter**
-///   pointing at `<session_temp_dir>/otel.jsonl`. Arborist tails that file
-///   to surface real-time token usage / context-window state in the sidebar
-///   (see [`crate::session_metrics::run_copilot_watcher`]). The
-///   `OTEL_BSP_SCHEDULE_DELAY=1000` (ms) tightens the SDK's batch flush
-///   from its 5s default to ~1Hz so the sidebar updates feel live. Older
-///   Copilot CLIs that don't recognise these vars silently ignore them.
-/// * `Tool::Claude` — empty. Claude Code has no file-exporter mode (only
-///   OTLP, which would require an in-process receiver). Reuses the existing
+///   pointing at `<session_temp_dir>/otel.jsonl`. Arborist tails that file to
+///   surface real-time token usage / context-window state in the sidebar (see
+///   [`crate::session_metrics::run_copilot_watcher`]). The
+///   `OTEL_BSP_SCHEDULE_DELAY=1000` (ms) tightens the SDK's batch flush from
+///   its 5s default to ~1Hz so the sidebar updates feel live. Older Copilot
+///   CLIs that don't recognise these vars silently ignore them.
+/// * `Tool::Claude` — empty. Claude Code has no file-exporter mode (only OTLP,
+///   which would require an in-process receiver). Reuses the existing
 ///   transcript-tailing watcher.
 #[must_use]
 pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi::OsString)> {
@@ -386,15 +386,14 @@ pub fn shell_quote_posix(value: &str) -> String {
 /// 1. **CRT layer** (so the spawned program sees the value as one argument):
 ///    wrap in `"…"`, double any embedded `"` and any backslash run that
 ///    immediately precedes a `"` or the closing quote.
-/// 2. **`cmd.exe` layer** (so the metacharacters
-///    `^ & | < > ( ) % !` aren't interpreted by the shell *before* the
-///    target program ever sees them): caret-escape every reserved character
-///    *outside* of the double quotes — but because we put the whole value
-///    inside one pair of double quotes, the only metacharacter that needs
-///    a caret is `"` itself when it appears at the boundary. We additionally
-///    caret-escape `^` inside the value to defend against `cmd /v:on`-style
-///    delayed expansion gotchas, and caret-escape `%` and `!` which the
-///    shell expands inside double quotes.
+/// 2. **`cmd.exe` layer** (so the metacharacters `^ & | < > ( ) % !` aren't
+///    interpreted by the shell *before* the target program ever sees them):
+///    caret-escape every reserved character *outside* of the double quotes —
+///    but because we put the whole value inside one pair of double quotes, the
+///    only metacharacter that needs a caret is `"` itself when it appears at
+///    the boundary. We additionally caret-escape `^` inside the value to defend
+///    against `cmd /v:on`-style delayed expansion gotchas, and caret-escape `%`
+///    and `!` which the shell expands inside double quotes.
 ///
 /// The implementation here errs on the side of over-quoting: every reserved
 /// character gets a `^` prefix and the whole value is wrapped in `"…"`.
@@ -563,10 +562,10 @@ pub const COPILOT_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_COPILOT";
 /// Resolve the program token for `tool`. Precedence (highest first):
 ///
 /// 1. **User config override** (`config_override`, when `Some` and non-empty):
-///    inserted **verbatim** into the composed command. This is a shell
-///    snippet authored by the user — not a single argument — so callers can
-///    add flags like `--model sonnet` directly. Persisted by the Settings
-///    dialog into `AppConfig.ai_launch_commands`.
+///    inserted **verbatim** into the composed command. This is a shell snippet
+///    authored by the user — not a single argument — so callers can add flags
+///    like `--model sonnet` directly. Persisted by the Settings dialog into
+///    `AppConfig.ai_launch_commands`.
 /// 2. **Test-seam env var** (`ARBORIST_CLI_OVERRIDE_*`): set by integration
 ///    tests to point at `arborist-test-child`. Returned **shell-quoted** so
 ///    paths with spaces still work.

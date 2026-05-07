@@ -108,73 +108,66 @@ pub struct AppContext {
     /// answers two questions a workspace-mutating handler must resolve
     /// before touching `ctx.store()`:
     ///
-    /// 1. *Is a switch about to swap the scope out from under me?*
-    ///    → consult `switch_pending`.
-    /// 2. *Once I have decided to proceed, can the switch wait for me
-    ///    to finish before it swaps?*
-    ///    → hold a `try_read()` guard on `switch_lock` for my full body.
+    /// 1. *Is a switch about to swap the scope out from under me?* → consult
+    ///    `switch_pending`.
+    /// 2. *Once I have decided to proceed, can the switch wait for me to finish
+    ///    before it swaps?* → hold a `try_read()` guard on `switch_lock` for my
+    ///    full body.
     ///
     /// Why both are needed:
     ///
-    /// * `switch_lock` (this field) — `tokio::sync::RwLock<()>`. The
-    ///   switch acquires `write().await` and holds it for the entire
-    ///   pipeline. The `write().await` waits for every reader to drop
-    ///   before it proceeds, which **quiesces** in-flight handlers /
-    ///   restore / resize-deferred-spawn before the swap, the
-    ///   `metrics.stop_all_and_join` drain, and the
-    ///   `pending_spawn.clear` run. Concurrent switches queue serially
-    ///   on the write side via tokio's FIFO waker queue, so we get
+    /// * `switch_lock` (this field) — `tokio::sync::RwLock<()>`. The switch
+    ///   acquires `write().await` and holds it for the entire pipeline. The
+    ///   `write().await` waits for every reader to drop before it proceeds,
+    ///   which **quiesces** in-flight handlers / restore /
+    ///   resize-deferred-spawn before the swap, the `metrics.stop_all_and_join`
+    ///   drain, and the `pending_spawn.clear` run. Concurrent switches queue
+    ///   serially on the write side via tokio's FIFO waker queue, so we get
     ///   serialisation for free.
     /// * [`Self::switch_pending`] — `AtomicUsize` counter, incremented
-    ///   immediately *before* the switch awaits the write lock and
-    ///   decremented when its RAII guard drops. We need a counter
-    ///   separate from the lock itself because tokio's
-    ///   `RwLock::try_read` is permit-based and does NOT honour
-    ///   writer-preferring fairness for non-awaiting callers — a
-    ///   queued writer behind active readers does not bump out new
-    ///   `try_read` calls. Without the counter, a handler issued
-    ///   between "switch task spawned" and "switch's write().await
-    ///   resolved" could acquire `try_read` successfully, complete a
-    ///   mutation against the soon-to-be-discarded old store, and
-    ///   silently lose the user's write. The counter lets handlers
+    ///   immediately *before* the switch awaits the write lock and decremented
+    ///   when its RAII guard drops. We need a counter separate from the lock
+    ///   itself because tokio's `RwLock::try_read` is permit-based and does NOT
+    ///   honour writer-preferring fairness for non-awaiting callers — a queued
+    ///   writer behind active readers does not bump out new `try_read` calls.
+    ///   Without the counter, a handler issued between "switch task spawned"
+    ///   and "switch's write().await resolved" could acquire `try_read`
+    ///   successfully, complete a mutation against the soon-to-be-discarded old
+    ///   store, and silently lose the user's write. The counter lets handlers
     ///   detect the queued switch and bail out.
     ///
     /// Per-handler gating policy:
     ///
     /// * **Workspace-scoped lifecycle handlers** (`session_create`,
-    ///   `session_close`, `session_restart`, `session_focus`,
-    ///   `config_set`) call [`acquire_switch_read`] at impl entry —
-    ///   it takes the read guard, then checks `switch_pending`. If the
-    ///   counter is non-zero (or the read guard cannot be acquired),
-    ///   return [`AppError::WorkspaceSwitchInProgress`] so the user
-    ///   sees the failure and can retry. Otherwise hold the guard for
-    ///   the **full impl body** (including across `.await` for async
-    ///   impls — tokio guards are `Send` for `T: Send + Sync`) so the
-    ///   switch cannot start swapping mid-handler.
+    ///   `session_close`, `session_restart`, `session_focus`, `config_set`)
+    ///   call [`acquire_switch_read`] at impl entry — it takes the read guard,
+    ///   then checks `switch_pending`. If the counter is non-zero (or the read
+    ///   guard cannot be acquired), return
+    ///   [`AppError::WorkspaceSwitchInProgress`] so the user sees the failure
+    ///   and can retry. Otherwise hold the guard for the **full impl body**
+    ///   (including across `.await` for async impls — tokio guards are `Send`
+    ///   for `T: Send + Sync`) so the switch cannot start swapping mid-handler.
     /// * **`session_resize` and `frontend_ready`** apply the same
-    ///   take-then-check pattern but return `Ok(())` silently on a
-    ///   negative outcome. There is no useful error to surface — the
-    ///   next `ResizeObserver` fire (resize) re-issues the call
-    ///   against the new scope, and `frontend_ready` is fire-once at
-    ///   app boot (post-PR5 the workspace switch handles its own
-    ///   inline restore + `restored=true` latch, so a defensive
-    ///   `frontend_ready` re-fire after a switch is itself a no-op
-    ///   CAS). A "switch in progress" toast for either of these
+    ///   take-then-check pattern but return `Ok(())` silently on a negative
+    ///   outcome. There is no useful error to surface — the next
+    ///   `ResizeObserver` fire (resize) re-issues the call against the new
+    ///   scope, and `frontend_ready` is fire-once at app boot (post-PR5 the
+    ///   workspace switch handles its own inline restore + `restored=true`
+    ///   latch, so a defensive `frontend_ready` re-fire after a switch is
+    ///   itself a no-op CAS). A "switch in progress" toast for either of these
     ///   automatically-issued background commands would be noise.
-    /// * **`restore_all_sessions`** (called from `frontend_ready`'s
-    ///   wrapper inside `spawn_blocking`) inherits an
-    ///   `OwnedRwLockReadGuard` moved into the task, so the entire
-    ///   restore loop is bounded by the same barrier — a switch
-    ///   cannot start swapping while restore is mid-iteration.
-    /// * **`session_input`** is intentionally ungated — it operates by
-    ///   id on the PTY pool (workspace-agnostic), and writes to a PTY
-    ///   about to be parked are benign (the bytes go to a soon-killed
-    ///   child). Gating would impose lock contention on every
-    ///   keystroke for no correctness benefit.
+    /// * **`restore_all_sessions`** (called from `frontend_ready`'s wrapper
+    ///   inside `spawn_blocking`) inherits an `OwnedRwLockReadGuard` moved into
+    ///   the task, so the entire restore loop is bounded by the same barrier —
+    ///   a switch cannot start swapping while restore is mid-iteration.
+    /// * **`session_input`** is intentionally ungated — it operates by id on
+    ///   the PTY pool (workspace-agnostic), and writes to a PTY about to be
+    ///   parked are benign (the bytes go to a soon-killed child). Gating would
+    ///   impose lock contention on every keystroke for no correctness benefit.
     /// * **Read-only commands** (`session_list`, `config_get`,
-    ///   `instructions_list`) are ungated — they see a consistent
-    ///   `ctx.store()` snapshot for the duration of one call, which is
-    ///   all the consistency they owe their caller.
+    ///   `instructions_list`) are ungated — they see a consistent `ctx.store()`
+    ///   snapshot for the duration of one call, which is all the consistency
+    ///   they owe their caller.
     ///
     /// **Lock ordering / no deadlock cycles.** `switch_lock` is the
     /// outermost lock taken by every gated handler. Inner locks
@@ -426,10 +419,9 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 1. Validate worktree (canonicalises; rejects relative/missing).
     let worktree = compose::validate_worktree(&args.worktree_path).map_err(AppError::from)?;
 
-    // 2. Optionally resolve the instruction set & enforce tool match.
-    //    Empty-string IDs from the frontend are treated as "no selection"
-    //    so an over-eager wizard can't trigger a NotFound for a `none`
-    //    sentinel.
+    // 2. Optionally resolve the instruction set & enforce tool match. Empty-string
+    //    IDs from the frontend are treated as "no selection" so an over-eager
+    //    wizard can't trigger a NotFound for a `none` sentinel.
     let cfg = ctx.store().load_config();
     let id_opt = args.instruction_set_id.as_ref().filter(|id| !id.as_str().is_empty());
     let set_opt = match id_opt {
@@ -438,8 +430,8 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     };
 
     // 3. Read instruction file contents (re-checking the size cap because
-    //    `discover_instructions` *skips* oversized files but a user could
-    //    have plumbed an ID through that bypassed discovery).
+    //    `discover_instructions` *skips* oversized files but a user could have
+    //    plumbed an ID through that bypassed discovery).
     let contents_opt = match &set_opt {
         Some(set) => Some(read_instruction_file(&set.file_path)?),
         None => None,
@@ -475,10 +467,10 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 6. Materialise temp files on disk.
     materialise_temp_files(&composed.temp_files)?;
 
-    // 7. Build the persisted record. `tab_index` puts the new session at
-    //    the end of the current order.
-    // 7. Build the persisted record. `tab_index` puts the new session at
-    //    the end of the current order.
+    // 7. Build the persisted record. `tab_index` puts the new session at the end of
+    //    the current order.
+    // 7. Build the persisted record. `tab_index` puts the new session at the end of
+    //    the current order.
     //
     //    For Copilot we *pre-allocate* the conversation id (a fresh
     //    `--resume <uuid>` causes Copilot to create the session at that
@@ -517,8 +509,8 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         ai_session_id: preallocated_ai_id.clone(),
     };
 
-    // 8. Persist before spawning so a crash mid-spawn still leaves an
-    //    auditable record we can clean up on restart.
+    // 8. Persist before spawning so a crash mid-spawn still leaves an auditable
+    //    record we can clean up on restart.
     ctx.store().save_session(&session).map_err(AppError::from)?;
 
     // 9. Append to lastOpenSessions / tabOrder.
@@ -542,11 +534,10 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 10. Announce Starting (synchronous; the pool will follow with Running).
     (ctx.sink.status)(&session.id, SessionStatus::Starting, None, None);
 
-    // 11. Spawn. The pool emits Running with PID through the same sink.
-    //     For Copilot we splice the pre-allocated `--resume <uuid>` here
-    //     so Copilot creates the session-state directory at the known
-    //     deterministic path from spawn time. The persisted
-    //     `composed_command` stays bare (see step 7).
+    // 11. Spawn. The pool emits Running with PID through the same sink. For Copilot
+    //     we splice the pre-allocated `--resume <uuid>` here so Copilot creates the
+    //     session-state directory at the known deterministic path from spawn time.
+    //     The persisted `composed_command` stays bare (see step 7).
     let session_to_spawn = if let Some(aid) = preallocated_ai_id.as_deref() {
         let mut s = session.clone();
         s.composed_command = compose::with_resume(&session.composed_command, args.tool, aid);
@@ -568,10 +559,10 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         )
         .map_err(AppError::from)?;
 
-    // 12. Start the per-session metrics watcher (Issue #3). No-op for tools
-    //     we can't introspect; never fatal — surface as a debug log only.
-    //     For Copilot the pre-allocated ai_session_id (step 7) lets the
-    //     events.jsonl tailer attach immediately on the deterministic
+    // 12. Start the per-session metrics watcher (Issue #3). No-op for tools we
+    //     can't introspect; never fatal — surface as a debug log only. For Copilot
+    //     the pre-allocated ai_session_id (step 7) lets the events.jsonl tailer
+    //     attach immediately on the deterministic
     //     `~/.copilot/session-state/<aid>/events.jsonl` path.
     ctx.metrics.start(
         session.id,
@@ -614,8 +605,8 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree
     // completes against the old store. See [`AppContext::switch_lock`].
     let _switch = acquire_switch_read(ctx)?;
 
-    // 0. Stop the metrics watcher (Issue #3) before tearing the rest down
-    //    so it never observes a half-cleaned session.
+    // 0. Stop the metrics watcher (Issue #3) before tearing the rest down so it
+    //    never observes a half-cleaned session.
     ctx.metrics.stop(&id);
 
     // 0b. Drop any deferred-spawn registration so a session closed before
@@ -647,14 +638,14 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree
         WorktreeDeleteIntent::None
     };
 
-    // 1. Best-effort kill (NotFound from the pool is fine — the session
-    //    may have exited on its own already).
+    // 1. Best-effort kill (NotFound from the pool is fine — the session may have
+    //    exited on its own already).
     if ctx.pool.contains(&id) {
         ctx.pool.kill(&id).await.map_err(AppError::from)?;
     }
 
-    // 2. Belt-and-braces temp-dir cleanup. `pool.kill` also does this when
-    //    the session is live; we re-attempt for the "already exited" path.
+    // 2. Belt-and-braces temp-dir cleanup. `pool.kill` also does this when the
+    //    session is live; we re-attempt for the "already exited" path.
     let dir = compose::session_temp_dir(&id);
     if dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dir) {
@@ -682,11 +673,10 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree
         })
         .map_err(AppError::from)?;
 
-    // 5. Optional: remove the git worktree from disk. The session is
-    //    already gone from the store at this point, so deletion failure
-    //    must NOT fail the overall close (that would leave the frontend
-    //    unable to converge on a "tab gone" state). Surface the error in
-    //    the result instead.
+    // 5. Optional: remove the git worktree from disk. The session is already gone
+    //    from the store at this point, so deletion failure must NOT fail the
+    //    overall close (that would leave the frontend unable to converge on a "tab
+    //    gone" state). Surface the error in the result instead.
     let mut result = SessionCloseResult::default();
     match worktree_intent {
         WorktreeDeleteIntent::Path(wt) => {
@@ -744,20 +734,18 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree
 /// a per-session `metrics.stop` here would be unconditionally a no-op
 /// and is intentionally omitted.
 async fn park_session_for_switch_impl(ctx: &AppContext, id: SessionId) {
-    // 1. Drop any deferred-spawn registration so a stale resize for
-    //    this id can't trigger a phantom spawn against the new
-    //    (post-swap) workspace. (Belt-and-braces: the switch's
-    //    write-guard step already cleared `pending_spawn`; this is
-    //    defense-in-depth against future code paths that might insert
-    //    after the drain.)
+    // 1. Drop any deferred-spawn registration so a stale resize for this id can't
+    //    trigger a phantom spawn against the new (post-swap) workspace.
+    //    (Belt-and-braces: the switch's write-guard step already cleared
+    //    `pending_spawn`; this is defense-in-depth against future code paths that
+    //    might insert after the drain.)
     if let Ok(mut g) = ctx.pending_spawn.lock() {
         g.remove(&id);
     }
 
-    // 2. Best-effort kill. Temp dir is removed by pool.kill itself
-    //    (step 6 inside pool::kill); restore re-materialises temp
-    //    files from the persisted `Session.temp_files` so this is
-    //    safe.
+    // 2. Best-effort kill. Temp dir is removed by pool.kill itself (step 6 inside
+    //    pool::kill); restore re-materialises temp files from the persisted
+    //    `Session.temp_files` so this is safe.
     //
     //    `pool.kill` reports a `KillOutcome` so we can distinguish
     //    "OS confirmed the child was reaped within KILL_GRACE" from
@@ -1095,18 +1083,16 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // (e.g. user-typed `/clear` or `/resume <other-id>`).
     //
     // Persist order:
-    //   - Claude: clear *eagerly* (before respawn). This preserves the
-    //     pre-Phase-2 semantics — a crash between here and the new
-    //     watcher's first discovery could otherwise let the next restore
-    //     `--resume` the pre-restart conversation. Cost: a failed Claude
-    //     restart loses the prior id from the persisted record (same as
-    //     today).
+    //   - Claude: clear *eagerly* (before respawn). This preserves the pre-Phase-2
+    //     semantics — a crash between here and the new watcher's first discovery
+    //     could otherwise let the next restore `--resume` the pre-restart
+    //     conversation. Cost: a failed Claude restart loses the prior id from the
+    //     persisted record (same as today).
     //   - Copilot: defer until *after* `respawn_existing` succeeds. The
-    //     pre-allocated uuid is ours and unique; if respawn fails, we
-    //     keep the old conversation id resumable rather than rotating to
-    //     a uuid with no Copilot session-state directory (which would
-    //     irrevocably orphan the prior conversation on a transient
-    //     respawn failure).
+    //     pre-allocated uuid is ours and unique; if respawn fails, we keep the old
+    //     conversation id resumable rather than rotating to a uuid with no Copilot
+    //     session-state directory (which would irrevocably orphan the prior
+    //     conversation on a transient respawn failure).
     ctx.metrics.stop_and_join(&id);
     let restart_ai_id: Option<String> = match session.tool {
         Tool::Copilot => Some(uuid::Uuid::new_v4().to_string()),
@@ -1200,15 +1186,14 @@ pub fn frontend_ready_impl(ctx: &AppContext) -> bool {
 /// **Take-then-check ordering** (load-bearing). We take the read
 /// guard *before* checking `switch_pending`. Reasoning:
 ///
-/// 1. If the switch hasn't yet incremented `switch_pending`, we
-///    acquire the guard and the switch's later `write().await`
-///    waits for our drop — no race.
-/// 2. If the switch already incremented `switch_pending` but hasn't
-///    yet acquired write (or we beat it to `try_read`), we take the
-///    guard, observe the non-zero counter, drop the guard, and reject.
-///    The brief held-then-dropped guard means the switch's
-///    `write().await` waits an extra moment for our drop, which is
-///    fine.
+/// 1. If the switch hasn't yet incremented `switch_pending`, we acquire the
+///    guard and the switch's later `write().await` waits for our drop — no
+///    race.
+/// 2. If the switch already incremented `switch_pending` but hasn't yet
+///    acquired write (or we beat it to `try_read`), we take the guard, observe
+///    the non-zero counter, drop the guard, and reject. The brief
+///    held-then-dropped guard means the switch's `write().await` waits an extra
+///    moment for our drop, which is fine.
 ///
 /// The reverse order (check-then-take) would have a race window
 /// between the load and the `try_read` where the switch could
@@ -1649,117 +1634,103 @@ pub fn workspace_validate_impl(
 // [`WorkspaceScope`] without restarting the process.
 //
 // Concurrency primitives used by this pipeline:
-// * [`AppContext::switch_pending`] (`AtomicUsize`) — bumped before
-//   the write lock is awaited; decremented when the
-//   `SwitchPendingGuard` drops at function return. This is what makes
-//   handlers' `try_read` rejections deterministic; see the rustdoc on
-//   [`AppContext::switch_lock`] for why tokio's writer-preferring
-//   fairness alone is insufficient.
-// * [`AppContext::switch_lock`] (`tokio::sync::RwLock<()>`) —
-//   acquired for write, held for the entire body. Quiesces in-flight
-//   handlers (their read guards must drop before our `write().await`
-//   resolves) and serialises concurrent switches.
+// * [`AppContext::switch_pending`] (`AtomicUsize`) — bumped before the write
+//   lock is awaited; decremented when the `SwitchPendingGuard` drops at
+//   function return. This is what makes handlers' `try_read` rejections
+//   deterministic; see the rustdoc on [`AppContext::switch_lock`] for why
+//   tokio's writer-preferring fairness alone is insufficient.
+// * [`AppContext::switch_lock`] (`tokio::sync::RwLock<()>`) — acquired for
+//   write, held for the entire body. Quiesces in-flight handlers (their read
+//   guards must drop before our `write().await` resolves) and serialises
+//   concurrent switches.
 //
 // Pipeline:
-// 1. Bump `switch_pending` and acquire `switch_lock.write().await`.
-//    The counter is set BEFORE awaiting the lock so handlers issued
-//    after this point reject (with `WorkspaceSwitchInProgress`) or
-//    silently `Ok` (resize/frontend_ready) — see take-then-check in
-//    [`acquire_switch_read`] and the rustdoc on
-//    [`AppContext::switch_lock`] for why the counter is necessary in
-//    addition to the lock. The `write().await` then waits for any
-//    in-flight read guards (handlers whose work began before our
-//    bump) to drop before resolving — this is what makes the rest of
-//    the pipeline safe to run against an unobstructed scope. Both
-//    guards are held for the **entire** function body and drop at
-//    function return (success or error); concurrent switches queue
-//    serially on the write side via tokio's FIFO waker queue.
-// 2. Validate the new path is a real git-repository directory and
-//    canonicalise it. Reject early on any failure — no state mutated.
-// 3. No-op fast path: if the canonical new path equals the current
-//    workspace, return `{ no_op: true }` immediately. The existing
-//    binding stays valid; no event is emitted.
-// 4. Acquire the OS lock + open `ConfigStore` for the new workspace
-//    via [`crate::boot::bind_workspace`]. While step 4 runs we hold
-//    BOTH the old lock (inside the current `WorkspaceScope`) and the
-//    new lock (inside `WorkspaceBinding`). On
-//    [`crate::boot::BootError::Contention`] we abort the switch with
-//    `WorkspaceLocked` — the user stays on the current workspace.
-// 5. Persist `workspace_root` into the *new* store's `config.json`
-//    BEFORE the scope swap. If this write fails, abort cleanly:
-//    drop `binding` (releases the new OS lock), the write guard's
-//    Drop releases `switch_lock`, and the old workspace remains
-//    bound. Doing this BEFORE the swap (rather than after) prevents
-//    the failure mode where the swap commits but the new store
-//    lacks `workspace_root`, which would make the post-switch
-//    rehydrate read `workspaceRoot: null` and pop the first-boot
-//    picker on top of an already-bound workspace.
-// 6. **Drain the AI-discovery callback channel.**
-//    `pending_spawn.clear()` drops any deferred-spawn entry queued
-//    by the old workspace's restore, then
-//    [`MetricsRegistry::stop_all_and_join`] stops AND joins every
-//    metrics watcher thread. After this returns, no AI-session-
-//    discovery callback for an old session can fire again. Under
-//    our write guard no resize-deferred-spawn / restore can be in
-//    flight (their read guards have all dropped before our
-//    `write().await` resolved), so the join is deterministic — and
-//    no new watchers can be armed until we drop the write guard at
-//    function exit.
-// 7. **Park** old workspace sessions — and, as a side effect, drain
-//    the PTY-status callback channel. We `pool.kill().await` per
-//    session: the kill sets `killed=true` (so the wait thread skips
-//    its final status emit, see `pty_pool::pty_wait_loop`), awaits
-//    the bounded drain task that pumps PTY output, and joins the
-//    wait thread before returning. After step 7 finishes, no PTY
-//    output / status callback for an old session can fire again. We
-//    **preserve** every session record (sessions.json,
-//    lastOpenSessions, tabOrder, activeSessionId untouched). When
-//    the user switches back to this workspace,
-//    [`restore_all_sessions`] re-spawns the PTYs from the persisted
-//    records — Claude/Copilot `--resume` splicing
-//    ([`compose::with_resume`]) keeps the AI conversation context
-//    alive across the round-trip. Park is *best-effort*: a failed
-//    `pool.kill` (rare; e.g. PTY already dead) is logged and
-//    ignored. There is no abort path because park performs zero
+// 1. Bump `switch_pending` and acquire `switch_lock.write().await`. The counter
+//    is set BEFORE awaiting the lock so handlers issued after this point reject
+//    (with `WorkspaceSwitchInProgress`) or silently `Ok`
+//    (resize/frontend_ready) — see take-then-check in [`acquire_switch_read`]
+//    and the rustdoc on [`AppContext::switch_lock`] for why the counter is
+//    necessary in addition to the lock. The `write().await` then waits for any
+//    in-flight read guards (handlers whose work began before our bump) to drop
+//    before resolving — this is what makes the rest of the pipeline safe to run
+//    against an unobstructed scope. Both guards are held for the **entire**
+//    function body and drop at function return (success or error); concurrent
+//    switches queue serially on the write side via tokio's FIFO waker queue.
+// 2. Validate the new path is a real git-repository directory and canonicalise
+//    it. Reject early on any failure — no state mutated.
+// 3. No-op fast path: if the canonical new path equals the current workspace,
+//    return `{ no_op: true }` immediately. The existing binding stays valid; no
+//    event is emitted.
+// 4. Acquire the OS lock + open `ConfigStore` for the new workspace via
+//    [`crate::boot::bind_workspace`]. While step 4 runs we hold BOTH the old
+//    lock (inside the current `WorkspaceScope`) and the new lock (inside
+//    `WorkspaceBinding`). On [`crate::boot::BootError::Contention`] we abort
+//    the switch with `WorkspaceLocked` — the user stays on the current
+//    workspace.
+// 5. Persist `workspace_root` into the *new* store's `config.json` BEFORE the
+//    scope swap. If this write fails, abort cleanly: drop `binding` (releases
+//    the new OS lock), the write guard's Drop releases `switch_lock`, and the
+//    old workspace remains bound. Doing this BEFORE the swap (rather than
+//    after) prevents the failure mode where the swap commits but the new store
+//    lacks `workspace_root`, which would make the post-switch rehydrate read
+//    `workspaceRoot: null` and pop the first-boot picker on top of an
+//    already-bound workspace.
+// 6. **Drain the AI-discovery callback channel.** `pending_spawn.clear()` drops
+//    any deferred-spawn entry queued by the old workspace's restore, then
+//    [`MetricsRegistry::stop_all_and_join`] stops AND joins every metrics
+//    watcher thread. After this returns, no AI-session- discovery callback for
+//    an old session can fire again. Under our write guard no
+//    resize-deferred-spawn / restore can be in flight (their read guards have
+//    all dropped before our `write().await` resolved), so the join is
+//    deterministic — and no new watchers can be armed until we drop the write
+//    guard at function exit.
+// 7. **Park** old workspace sessions — and, as a side effect, drain the
+//    PTY-status callback channel. We `pool.kill().await` per session: the kill
+//    sets `killed=true` (so the wait thread skips its final status emit, see
+//    `pty_pool::pty_wait_loop`), awaits the bounded drain task that pumps PTY
+//    output, and joins the wait thread before returning. After step 7 finishes,
+//    no PTY output / status callback for an old session can fire again. We
+//    **preserve** every session record (sessions.json, lastOpenSessions,
+//    tabOrder, activeSessionId untouched). When the user switches back to this
+//    workspace, [`restore_all_sessions`] re-spawns the PTYs from the persisted
+//    records — Claude/Copilot `--resume` splicing ([`compose::with_resume`])
+//    keeps the AI conversation context alive across the round-trip. Park is
+//    *best-effort*: a failed `pool.kill` (rare; e.g. PTY already dead) is
+//    logged and ignored. There is no abort path because park performs zero
 //    irreversible store mutations.
 // 8. Swap [`AppContext::workspace`] under `RwLock` write — the old
-//    `WorkspaceLockGuard` inside the old scope is dropped here, in
-//    one atomic moment, releasing the OS lock on the old workspace.
-//    Steps 6 and 7 ensured the only callbacks that *could* still
-//    fire are post-emit Tauri event deliveries to the JS side
-//    (handled by the `NotFound`-tolerant store re-resolution in
-//    `commands::mod::build_production_*`). The `restored` atomic is
-//    **not** reset here (PR4's flow reset it before the swap so the
-//    frontend's follow-up `frontend_ready` could trigger restore;
-//    PR5 owns the restore inline at step 10, so resetting would be
-//    wrong — it would let a defensive `frontend_ready` re-fire
-//    restore against a workspace that was just restored).
-// 9. Best-effort: update the per-branch `last-workspace.json` hint
-//    so the next launch resumes the new workspace by default.
-//    `workspace_root` was already persisted at step 5, so the
-//    post-swap frontend rehydrate is correct regardless of whether
-//    this succeeds.
-// 10. Run [`restore_all_sessions`] for the new workspace inline. We
-//     are still under our exclusive `switch_lock.write()` guard, so no
-//     other workspace-mutating handler can interleave (lifecycle
-//     handlers reject; `frontend_ready` / `session_resize` silently
-//     no-op). Restore is dispatched onto a `spawn_blocking` thread
-//     because it does store IO + temp-file materialise + cleanup_orphans
-//     — same rationale as the existing `commands::frontend_ready`
-//     wrapper. Awaiting the join ensures sessions are in their
-//     post-restore state (`Starting` / `Error`) before we build the
-//     response. After the join, **latch `ctx.restored` to `true`**
-//     so any subsequent `frontend_ready` (defensive re-issue from the
-//     frontend, or a future code path that calls it after a switch)
-//     becomes a no-op CAS — restore for this binding has already
-//     fired exactly once, here.
-// 11. Build [`WorkspaceSwitchResult`] from the new store
-//     (`load_config` + `session_list_impl`). The frontend adopts the
-//     full state in one render — no follow-up `frontend_ready`
-//     round-trip and no `workspace://changed` event is needed.
-//     Returning from the function drops both guards (write lock +
-//     `switch_pending` decrement), allowing queued lifecycle
-//     handlers to proceed against the new scope.
+//    `WorkspaceLockGuard` inside the old scope is dropped here, in one atomic
+//    moment, releasing the OS lock on the old workspace. Steps 6 and 7 ensured
+//    the only callbacks that *could* still fire are post-emit Tauri event
+//    deliveries to the JS side (handled by the `NotFound`-tolerant store
+//    re-resolution in `commands::mod::build_production_*`). The `restored`
+//    atomic is **not** reset here (PR4's flow reset it before the swap so the
+//    frontend's follow-up `frontend_ready` could trigger restore; PR5 owns the
+//    restore inline at step 10, so resetting would be wrong — it would let a
+//    defensive `frontend_ready` re-fire restore against a workspace that was
+//    just restored).
+// 9. Best-effort: update the per-branch `last-workspace.json` hint so the next
+//    launch resumes the new workspace by default. `workspace_root` was already
+//    persisted at step 5, so the post-swap frontend rehydrate is correct
+//    regardless of whether this succeeds.
+// 10. Run [`restore_all_sessions`] for the new workspace inline. We are still
+//     under our exclusive `switch_lock.write()` guard, so no other
+//     workspace-mutating handler can interleave (lifecycle handlers reject;
+//     `frontend_ready` / `session_resize` silently no-op). Restore is
+//     dispatched onto a `spawn_blocking` thread because it does store IO +
+//     temp-file materialise + cleanup_orphans — same rationale as the existing
+//     `commands::frontend_ready` wrapper. Awaiting the join ensures sessions
+//     are in their post-restore state (`Starting` / `Error`) before we build
+//     the response. After the join, **latch `ctx.restored` to `true`** so any
+//     subsequent `frontend_ready` (defensive re-issue from the frontend, or a
+//     future code path that calls it after a switch) becomes a no-op CAS —
+//     restore for this binding has already fired exactly once, here.
+// 11. Build [`WorkspaceSwitchResult`] from the new store (`load_config` +
+//     `session_list_impl`). The frontend adopts the full state in one render —
+//     no follow-up `frontend_ready` round-trip and no `workspace://changed`
+//     event is needed. Returning from the function drops both guards (write
+//     lock + `switch_pending` decrement), allowing queued lifecycle handlers to
+//     proceed against the new scope.
 
 /// Tauri-shaped wrapper around the inner switch implementation —
 /// converts the [`AppHandle`] into the testable seams the inner
@@ -1882,13 +1853,13 @@ pub async fn workspace_switch_impl_inner(
     // — a self-contradictory state that's hard for the user to
     // recover from. By writing first, we can abort cleanly:
     //
-    // * Drop `binding` on the early-return path → releases the new
-    //   OS lock, reverting any state we may have started to
-    //   materialise on the new workspace.
-    // * Old `WorkspaceScope` is still bound (we have not yet
-    //   modified `ctx.workspace`).
-    // * `_switch`'s Drop releases the write guard so subsequent
-    //   commands resume against the still-bound old workspace.
+    // * Drop `binding` on the early-return path → releases the new OS lock,
+    //   reverting any state we may have started to materialise on the new
+    //   workspace.
+    // * Old `WorkspaceScope` is still bound (we have not yet modified
+    //   `ctx.workspace`).
+    // * `_switch`'s Drop releases the write guard so subsequent commands resume
+    //   against the still-bound old workspace.
     //
     // This is the asymmetric counterpart to `boot_select_workspace`,
     // which tolerates the same failure (boot is one-shot; the user

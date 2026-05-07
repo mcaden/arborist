@@ -5,12 +5,12 @@
 //! runs is `code .`. On Windows this resolves to `code.cmd`, which
 //! launches a Node.js helper that EITHER:
 //!
-//!   * **No VS Code already running** — spawns the long-lived
-//!     `Code.exe` (the editor) and exits ~1 s later.
-//!   * **VS Code already running** — sends an IPC message to the
-//!     existing `Code.exe`, which opens the folder in a new window;
-//!     the launcher exits ~1 s later. The new window's `Code.exe` is
-//!     **not** a descendant of our launcher PID.
+//!   * **No VS Code already running** — spawns the long-lived `Code.exe` (the
+//!     editor) and exits ~1 s later.
+//!   * **VS Code already running** — sends an IPC message to the existing
+//!     `Code.exe`, which opens the folder in a new window; the launcher exits
+//!     ~1 s later. The new window's `Code.exe` is **not** a descendant of our
+//!     launcher PID.
 //!
 //! Either way, the PID Arborist captured is dead within seconds and
 //! `focus_pid` returns [`Error::NotFound`]. This module re-discovers

@@ -14,15 +14,16 @@
 //! Recognised today (informed by raw captures of `claude` and `copilot`,
 //! see `src-tauri/examples/pty_capture.rs`):
 //!
-//! - **`OSC 0;<title>`** / **`OSC 2;<title>`** → [`ActivityEvent::Title`].
-//!   Both terminate with either BEL (`\x07`) or ST (`\x1b\\`).
+//! - **`OSC 0;<title>`** / **`OSC 2;<title>`** → [`ActivityEvent::Title`]. Both
+//!   terminate with either BEL (`\x07`) or ST (`\x1b\\`).
 //! - **`OSC 9;<msg>`** (ConEmu notification) → [`ActivityEvent::Attention`].
-//! - **`OSC 777;notify;...`** (rxvt/Kitty notification) → [`ActivityEvent::Attention`].
+//! - **`OSC 777;notify;...`** (rxvt/Kitty notification) →
+//!   [`ActivityEvent::Attention`].
 //! - **Standalone BEL** (a `\x07` byte that is *not* terminating an OSC
 //!   sequence) → [`ActivityEvent::Attention`].
 //! - **Output byte-rate**: a session that has not produced bytes for
-//!   [`IDLE_THRESHOLD`] is reported as [`ActivityEvent::Idle`]; the next
-//!   byte after an idle window flips it back to [`ActivityEvent::Working`].
+//!   [`IDLE_THRESHOLD`] is reported as [`ActivityEvent::Idle`]; the next byte
+//!   after an idle window flips it back to [`ActivityEvent::Working`].
 //!
 //! Future-proofed (not currently emitted by either tested CLI but cheap to
 //! parse): **OSC 133 A/B/C/D** → semantic prompt/command markers.

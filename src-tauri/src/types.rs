@@ -2,8 +2,8 @@
 //!
 //! Every type in this module is a load-bearing wire contract between the Rust
 //! backend and the React/TypeScript frontend. **The TypeScript mirror lives in
-//! `src/types/arborist.ts`**: when you change anything here, update the matching
-//! TS interface in the same commit (look for the `MIRROR:` markers).
+//! `src/types/arborist.ts`**: when you change anything here, update the
+//! matching TS interface in the same commit (look for the `MIRROR:` markers).
 //!
 //! Conventions:
 //! * `#[serde(rename_all = "camelCase")]` on every struct so the on-the-wire
@@ -157,8 +157,8 @@ pub enum SessionStatus {
 ///   bytes flow over `session://output`-style events). Backed by the same
 ///   `PtyPool` as full sessions.
 /// * `Application` — spawns an external GUI program detached. The sub-tab
-///   tracks only the OS PID; clicking the sub-tab focuses the program's
-///   window via the platform-specific [`crate::app_launcher`] focuser.
+///   tracks only the OS PID; clicking the sub-tab focuses the program's window
+///   via the platform-specific [`crate::app_launcher`] focuser.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum CustomProcessKind {
@@ -208,8 +208,8 @@ pub struct Session {
     pub worktree_name: String,
     pub label: String,
     /// Optional user-curated instruction set overlay. When `None`:
-    /// * Claude is launched with no `--system-prompt`; the agent relies
-    ///   on its auto-discovered `CLAUDE.md` from `cwd`.
+    /// * Claude is launched with no `--system-prompt`; the agent relies on its
+    ///   auto-discovered `CLAUDE.md` from `cwd`.
     /// * Copilot ignores this field — it always auto-discovers
     ///   `.github/copilot-instructions.md` from `cwd` regardless.
     ///
@@ -332,10 +332,10 @@ pub struct DefaultInstructionSets {
 /// * `2` — added `active_session_id` (Phase 7).
 /// * `3` — added `workspace_root` (single-workspace model, Roadmap §1).
 /// * `4` — added `ai_launch_commands` (per-agent CLI launch override),
-///   `custom_processes`, and `last_open_sub_sessions` (context-menu /
-///   sub-tab feature). Migration seeds the built-in custom-process defs
-///   (`shell`, `open-folder`, `vscode`) additively — only IDs not already
-///   present are inserted, never overwriting a user-edited def.
+///   `custom_processes`, and `last_open_sub_sessions` (context-menu / sub-tab
+///   feature). Migration seeds the built-in custom-process defs (`shell`,
+///   `open-folder`, `vscode`) additively — only IDs not already present are
+///   inserted, never overwriting a user-edited def.
 pub const CONFIG_VERSION_CURRENT: u32 = 4;
 
 /// Per-agent CLI launch command override. Each field is a verbatim shell

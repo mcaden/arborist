@@ -72,12 +72,12 @@ fn resolve_one(command: &str, cwd: &Path, cache: &IconCache) -> Option<String> {
 /// only fall back to the user's actual launch command if the default
 /// can't be resolved on this machine.
 ///
-/// 1. Resolve the default name (`claude` / `copilot`) on PATH+PATHEXT.
-///    If that succeeds and isn't an interpreter wrapper, use its icon.
-/// 2. Otherwise, fall back to resolving the user-configured
-///    `launch_command` (if non-empty).
-/// 3. Otherwise, return `None` — the frontend falls back to the
-///    bundled `ToolIcon` SVG glyph.
+/// 1. Resolve the default name (`claude` / `copilot`) on PATH+PATHEXT. If that
+///    succeeds and isn't an interpreter wrapper, use its icon.
+/// 2. Otherwise, fall back to resolving the user-configured `launch_command`
+///    (if non-empty).
+/// 3. Otherwise, return `None` — the frontend falls back to the bundled
+///    `ToolIcon` SVG glyph.
 fn resolve_ai_icon(default_name: &str, launch_command: &str, cwd: &Path, cache: &IconCache) -> Option<String> {
     resolve_ai_icon_with(default_name, launch_command, cwd, cache, resolve_one)
 }

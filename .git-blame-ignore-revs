@@ -1,2 +1,5 @@
 # Standardize line length to 150 for Rust and TypeScript (#46)
 f7230e14267a3fdb61a1812565024db62059d359
+
+# Reformat Rust comments to 150 with wrap_comments (#46)
+fa1479370d7f19dea22423887f879e14393beaa9

@@ -18,15 +18,14 @@
 //!
 //! ## Locking model
 //!
-//! * The OS-level lock guard ([`WorkspaceLockGuard`]) lives on the
-//!   scope; dropping the scope releases the OS lock. The lock is held
-//!   for the lifetime of the binding, not just per-write — that's
-//!   what gives single-writer semantics across processes.
-//! * The in-process `RwLock<WorkspaceScope>` is for read/write
-//!   coordination *within* the running process: callers acquire a
-//!   read lock to clone the [`ConfigStore`] (cheap, returns instantly),
-//!   the workspace switch acquires a write lock to perform the
-//!   transactional swap.
+//! * The OS-level lock guard ([`WorkspaceLockGuard`]) lives on the scope;
+//!   dropping the scope releases the OS lock. The lock is held for the lifetime
+//!   of the binding, not just per-write — that's what gives single-writer
+//!   semantics across processes.
+//! * The in-process `RwLock<WorkspaceScope>` is for read/write coordination
+//!   *within* the running process: callers acquire a read lock to clone the
+//!   [`ConfigStore`] (cheap, returns instantly), the workspace switch acquires
+//!   a write lock to perform the transactional swap.
 //!
 //! ## Snapshot pattern
 //!

@@ -3,29 +3,28 @@
 //! Sub-sessions are user-launched secondary processes attached to a parent
 //! [`Session`]. There are two flavours:
 //!
-//! * **Terminal** — a PTY hosted in-app, owned by the [`SubPtyPool`]
-//!   defined here. Output flows over `session://output` (the existing
-//!   stream — UUID id space is global), status flows over
-//!   `subsession://status`.
-//! * **Application** — a detached external GUI process. Phase 3 will own
-//!   the spawn / window-focus implementation. Phase 2's
-//!   `subsession_create` rejects this kind with `NotImplemented`.
+//! * **Terminal** — a PTY hosted in-app, owned by the [`SubPtyPool`] defined
+//!   here. Output flows over `session://output` (the existing stream — UUID id
+//!   space is global), status flows over `subsession://status`.
+//! * **Application** — a detached external GUI process. Phase 3 will own the
+//!   spawn / window-focus implementation. Phase 2's `subsession_create` rejects
+//!   this kind with `NotImplemented`.
 //!
 //! ## Design choices
 //!
 //! - **Separate pool, not a refactor of [`crate::pty_pool::PtyPool`].** We
-//!   intentionally keep the existing session pool untouched. The
-//!   sub-session pool reuses [`PtySpawner`] / [`ChildCommand`] /
-//!   [`SpawnedChild`] / [`Utf8Stream`] from [`crate::pty_pool`] so the
-//!   spawn primitive itself isn't duplicated, but the per-runtime state
-//!   and lifecycle are owned independently. This matches the
-//!   "compose-once, store-and-reuse" rule from DESIGN §5.4: sub-sessions
-//!   have their own [`composed_command`](SubSession::composed_command).
-//! - **No activity scanner.** Sub-tabs are plain terminals; we don't
-//!   reuse the OTel/title/idle scanning today. Phase 7+ may revisit.
+//!   intentionally keep the existing session pool untouched. The sub-session
+//!   pool reuses [`PtySpawner`] / [`ChildCommand`] / [`SpawnedChild`] /
+//!   [`Utf8Stream`] from [`crate::pty_pool`] so the spawn primitive itself
+//!   isn't duplicated, but the per-runtime state and lifecycle are owned
+//!   independently. This matches the "compose-once, store-and-reuse" rule from
+//!   DESIGN §5.4: sub-sessions have their own
+//!   [`composed_command`](SubSession::composed_command).
+//! - **No activity scanner.** Sub-tabs are plain terminals; we don't reuse the
+//!   OTel/title/idle scanning today. Phase 7+ may revisit.
 //! - **Bounded backpressure mirrors the session pool** (DESIGN §8.3).
-//! - **Locks are never held across `.await`.** All async paths follow
-//!   "lock → take → drop → await".
+//! - **Locks are never held across `.await`.** All async paths follow "lock →
+//!   take → drop → await".
 //!
 //! ## Public surface
 //!
@@ -34,8 +33,8 @@
 //!   callbacks (mirrors [`crate::pty_pool::PtySink`]).
 //! - [`SubSessionStore`] — in-memory metadata store for live sub-sessions
 //!   indexed by id and (orderedly) by parent.
-//! - [`SubAppContext`] — managed Tauri state combining the pool, store,
-//!   and sink for command handlers.
+//! - [`SubAppContext`] — managed Tauri state combining the pool, store, and
+//!   sink for command handlers.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -634,8 +633,9 @@ impl SubAppContext {
 /// Make a [`SubSession`] ready to insert into the store. The returned
 /// `composed_command` mirrors the session-pool rule: the launch command
 /// is captured once at creation time (DESIGN §5.4 "compose once,
-/// store-and-reuse"); later edits to the source [`crate::types::CustomProcessDef`]
-/// do not retroactively rewrite already-running sub-sessions.
+/// store-and-reuse"); later edits to the source
+/// [`crate::types::CustomProcessDef`] do not retroactively rewrite
+/// already-running sub-sessions.
 #[must_use]
 pub fn build_sub_session(parent_session_id: SessionId, def: &crate::types::CustomProcessDef, composed_command: String) -> SubSession {
     SubSession {

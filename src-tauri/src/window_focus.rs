@@ -8,18 +8,17 @@
 //!
 //! ## Honest limitations
 //!
-//! * **Linux**: requires `wmctrl` on `PATH`; X11 only. Wayland
-//!   compositors typically forbid programmatic focus stealing entirely
-//!   — we surface that as [`Error::Unsupported`].
-//! * **macOS**: uses `osascript` + System Events, which requires the
-//!   user to grant Arborist Accessibility permission the first time.
-//!   Permission denial is mapped to [`Error::PermissionDenied`].
-//! * **Windows**: uses `EnumWindows` + `SetForegroundWindow`. Windows
-//!   restricts focus stealing to the currently-foreground process; we
-//!   call `AllowSetForegroundWindow(pid)` first as a best-effort
-//!   workaround. May still no-op if our process is not the foreground
-//!   when the user clicks (rare in practice — a click on the sub-tab
-//!   *does* make us the foreground).
+//! * **Linux**: requires `wmctrl` on `PATH`; X11 only. Wayland compositors
+//!   typically forbid programmatic focus stealing entirely — we surface that as
+//!   [`Error::Unsupported`].
+//! * **macOS**: uses `osascript` + System Events, which requires the user to
+//!   grant Arborist Accessibility permission the first time. Permission denial
+//!   is mapped to [`Error::PermissionDenied`].
+//! * **Windows**: uses `EnumWindows` + `SetForegroundWindow`. Windows restricts
+//!   focus stealing to the currently-foreground process; we call
+//!   `AllowSetForegroundWindow(pid)` first as a best-effort workaround. May
+//!   still no-op if our process is not the foreground when the user clicks
+//!   (rare in practice — a click on the sub-tab *does* make us the foreground).
 //!
 //! ## Delegated launchers
 //!
@@ -38,16 +37,16 @@ use crate::types::Error;
 pub trait WindowFocuser: Send + Sync + 'static {
     /// Best-effort focus. Returns:
     ///
-    /// * `Ok(())` if focus was successfully requested. (We can't always
-    ///   detect whether the OS actually gave us focus.)
-    /// * `Err(Error::NotFound(...))` if no window was found for `pid`
-    ///   (the process exited or owns no top-level window).
-    /// * `Err(Error::ToolMissing(...))` if a required external tool
-    ///   isn't on `PATH` (Linux: `wmctrl`).
+    /// * `Ok(())` if focus was successfully requested. (We can't always detect
+    ///   whether the OS actually gave us focus.)
+    /// * `Err(Error::NotFound(...))` if no window was found for `pid` (the
+    ///   process exited or owns no top-level window).
+    /// * `Err(Error::ToolMissing(...))` if a required external tool isn't on
+    ///   `PATH` (Linux: `wmctrl`).
     /// * `Err(Error::PermissionDenied(...))` if the OS refused (macOS
     ///   Accessibility).
-    /// * `Err(Error::Unsupported(...))` if the platform fundamentally
-    ///   does not support programmatic focus (Wayland in most setups).
+    /// * `Err(Error::Unsupported(...))` if the platform fundamentally does not
+    ///   support programmatic focus (Wayland in most setups).
     fn focus_pid(&self, pid: u32) -> Result<(), Error>;
 
     /// Best-effort focus on a specific OS window handle (HWND on

@@ -7,12 +7,11 @@
 //!
 //! Two sub-session flavours:
 //!
-//! * **Terminal** (Phase 2) — owned by [`SubPtyPool`] in `sub_sessions`.
-//!   PTY allocated; output streams over `session://output`.
-//! * **Application** (Phase 3) — owned by
-//!   [`crate::app_launcher::AppPool`]. No PTY; lifecycle limited to
-//!   spawn / wait / kill. `subsession_focus` delegates to a
-//!   [`crate::window_focus::WindowFocuser`].
+//! * **Terminal** (Phase 2) — owned by [`SubPtyPool`] in `sub_sessions`. PTY
+//!   allocated; output streams over `session://output`.
+//! * **Application** (Phase 3) — owned by [`crate::app_launcher::AppPool`]. No
+//!   PTY; lifecycle limited to spawn / wait / kill. `subsession_focus`
+//!   delegates to a [`crate::window_focus::WindowFocuser`].
 
 use std::sync::Arc;
 
@@ -132,17 +131,17 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
 
 /// Close a sub-session. Behaviour depends on `intent`:
 ///
-/// * **Terminal kind** — `intent` is ignored; we always kill the
-///   underlying PTY (the tab IS the process) and remove the record.
-/// * **Application + `TabOnly`** — detach our tracking; leave the
-///   external app running.
-/// * **Application + `RequestAppClose`** — best-effort: post
-///   `WM_CLOSE` (or platform equivalent) to the resolver-matched
-///   window via [`crate::app_launcher::AppPool::request_window_close`],
-///   then detach. The app may show a save-changes prompt and decline
-///   to actually close — Arborist's tab is removed regardless.
-/// * **Application + `ForceKill`** — `pool.kill` the underlying
-///   process and remove the record. Use sparingly.
+/// * **Terminal kind** — `intent` is ignored; we always kill the underlying PTY
+///   (the tab IS the process) and remove the record.
+/// * **Application + `TabOnly`** — detach our tracking; leave the external app
+///   running.
+/// * **Application + `RequestAppClose`** — best-effort: post `WM_CLOSE` (or
+///   platform equivalent) to the resolver-matched window via
+///   [`crate::app_launcher::AppPool::request_window_close`], then detach. The
+///   app may show a save-changes prompt and decline to actually close —
+///   Arborist's tab is removed regardless.
+/// * **Application + `ForceKill`** — `pool.kill` the underlying process and
+///   remove the record. Use sparingly.
 ///
 /// The store entry and persisted `lastOpenSubSessions` slot are
 /// removed in all cases.
@@ -224,11 +223,11 @@ pub async fn subsession_close_impl(
 /// Focus handler. Terminal kind is a frontend-only tab swap (no backend
 /// state to update). Application kind delegates to
 /// [`crate::app_launcher::AppPool::focus`], which prefers the
-/// resolver-matched HWND (via [`crate::window_focus::WindowFocuser::focus_hwnd`])
-/// before falling back to the runtime PID. If the process has exited
-/// (no PID in the store), returns `Error::NotApplicable` so the
-/// frontend can decide whether to relaunch (Phase 7) or just leave
-/// the tab greyed.
+/// resolver-matched HWND (via
+/// [`crate::window_focus::WindowFocuser::focus_hwnd`]) before falling back to
+/// the runtime PID. If the process has exited (no PID in the store), returns
+/// `Error::NotApplicable` so the frontend can decide whether to relaunch (Phase
+/// 7) or just leave the tab greyed.
 pub fn subsession_focus_impl(ctx: &AppContext, sub_ctx: &SubAppContext, id: SubSessionId) -> Result<(), AppError> {
     // Reject while a workspace switch is queued or active. Focus can
     // race a swap of the underlying app_pool tracking.
@@ -312,14 +311,13 @@ pub fn subsession_resize_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: c
 ///
 /// Cascade rules (mirror `subsession_close_impl`):
 ///
-/// * **Terminal**: best-effort `pool.kill()`. On a *real* PTY-kill
-///   failure we keep the in-memory record + persistence + flip status to
-///   `Error` — better a visible orphan than a silently-leaked PTY child.
-///   `NotFound` from the pool (sub-session already exited on its own)
-///   counts as success.
-/// * **Application**: `app_pool.detach()` — never kill. The user's
-///   editor / file browser must survive its parent session being
-///   closed; same rule as the explicit `subsession_close` path.
+/// * **Terminal**: best-effort `pool.kill()`. On a *real* PTY-kill failure we
+///   keep the in-memory record + persistence + flip status to `Error` — better
+///   a visible orphan than a silently-leaked PTY child. `NotFound` from the
+///   pool (sub-session already exited on its own) counts as success.
+/// * **Application**: `app_pool.detach()` — never kill. The user's editor /
+///   file browser must survive its parent session being closed; same rule as
+///   the explicit `subsession_close` path.
 ///
 /// Returns `()` — cascade is best-effort and never blocks the parent
 /// close. Failures are logged via `tracing::warn`.
@@ -411,15 +409,14 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
 /// * **Orphan** (parent gone OR parent currently mid-close): drop from
 ///   persistence and skip. The frontend will not see the row at all.
 /// * **Terminal**: insert into the in-memory store (Starting), emit
-///   `subsession://restored` so the frontend store inserts the row,
-///   then `pool.spawn_terminal(record.composed_command)`. The pool
-///   emits `Running` (or `Exited`/`Error` on failure) via the same sink
-///   the production wiring uses, so the frontend status path is
-///   identical to the create path.
-/// * **Application**: insert into the in-memory store with status
-///   `Exited` (greyed) and no PID, emit `subsession://restored`. The
-///   frontend renders the tab greyed; clicking it triggers
-///   `subsession_relaunch` which spawns under the same id.
+///   `subsession://restored` so the frontend store inserts the row, then
+///   `pool.spawn_terminal(record.composed_command)`. The pool emits `Running`
+///   (or `Exited`/`Error` on failure) via the same sink the production wiring
+///   uses, so the frontend status path is identical to the create path.
+/// * **Application**: insert into the in-memory store with status `Exited`
+///   (greyed) and no PID, emit `subsession://restored`. The frontend renders
+///   the tab greyed; clicking it triggers `subsession_relaunch` which spawns
+///   under the same id.
 ///
 /// On a Terminal *spawn* failure we keep the persistence record so the
 /// next app launch can retry; the row is already visible via the

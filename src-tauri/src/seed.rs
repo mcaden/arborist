@@ -6,15 +6,14 @@
 //! blank settings — we seed the new dir from the most-relevant
 //! existing source:
 //!
-//! 1. **Branch builds** seed `config.json` from the canonical
-//!    (main / release) build's same-workspace settings, if present.
-//!    They never seed sessions (each branch dev build starts with a
-//!    fresh session list — see SPEC §C-04).
-//! 2. **Canonical builds** seed `config.json` (and `sessions.json`)
-//!    from the legacy top-level paths only when those paths' recorded
-//!    `workspaceRoot` matches the workspace being seeded (or, for
-//!    `config.json` first-launch, when no `workspaceRoot` is set yet
-//!    — treat first-pick as adopt).
+//! 1. **Branch builds** seed `config.json` from the canonical (main / release)
+//!    build's same-workspace settings, if present. They never seed sessions
+//!    (each branch dev build starts with a fresh session list — see SPEC
+//!    §C-04).
+//! 2. **Canonical builds** seed `config.json` (and `sessions.json`) from the
+//!    legacy top-level paths only when those paths' recorded `workspaceRoot`
+//!    matches the workspace being seeded (or, for `config.json` first-launch,
+//!    when no `workspaceRoot` is set yet — treat first-pick as adopt).
 //! 3. If no seed source applies, the dir stays empty; a fresh
 //!    [`AppConfig::default`] applies and `sessions.json` is absent.
 //!
@@ -31,12 +30,11 @@
 //! launch (e.g., the user double-clicks the icon). Correctness is
 //! preserved by:
 //!
-//! 1. Acquiring `<workspace_dir>/.config-seed.lock` *blocking* — the
-//!    second process waits for the first to finish.
-//! 2. Re-checking the marker (`workspace-meta.json`) **after**
-//!    obtaining the lock — the lock-then-recheck pattern. The loser
-//!    sees the marker the winner just wrote and returns
-//!    [`SeedOutcome::AlreadySeeded`].
+//! 1. Acquiring `<workspace_dir>/.config-seed.lock` *blocking* — the second
+//!    process waits for the first to finish.
+//! 2. Re-checking the marker (`workspace-meta.json`) **after** obtaining the
+//!    lock — the lock-then-recheck pattern. The loser sees the marker the
+//!    winner just wrote and returns [`SeedOutcome::AlreadySeeded`].
 //!
 //! The seed lock is released by dropping the returned guard at the
 //! end of [`initialise_workspace_dir`]; it is *not* the long-lived
@@ -131,12 +129,11 @@ impl From<io::Error> for SeedError {
 /// Sidecar written to `<workspace_dir>/workspace-meta.json` on first
 /// launch. Two purposes:
 ///
-/// 1. Serves as the "this dir was initialised" marker for future
-///    launches (presence-only check; field contents are diagnostic).
-/// 2. Records the original canonicalised workspace path so a human
-///    inspecting the on-disk store dir can tell which workspace this
-///    opaque-keyed directory belongs to ([`crate::store_layout::workspace_key`]
-///    is one-way).
+/// 1. Serves as the "this dir was initialised" marker for future launches
+///    (presence-only check; field contents are diagnostic).
+/// 2. Records the original canonicalised workspace path so a human inspecting
+///    the on-disk store dir can tell which workspace this opaque-keyed
+///    directory belongs to ([`crate::store_layout::workspace_key`] is one-way).
 ///
 /// The schema is intentionally minimal and forward-compatible (extra
 /// fields are ignored on read). Versioning is unnecessary because the
@@ -268,15 +265,13 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
 ///
 /// Decide whether the legacy top-level config is a valid seed source:
 /// * It must exist on disk.
-/// * If it has a `workspaceRoot` field, it must match the workspace
-///   we're seeding (i.e., the legacy install was last opened against
-///   the same repo).
-/// * If the field is absent/null AND we're a canonical build, the
-///   user has not yet adopted a workspace — treat first-pick as
-///   adopt and seed from legacy.
-/// * Branch builds never seed from a `workspaceRoot`-less legacy
-///   config; without the match check there's no reason to believe
-///   the legacy settings belong to this workspace.
+/// * If it has a `workspaceRoot` field, it must match the workspace we're
+///   seeding (i.e., the legacy install was last opened against the same repo).
+/// * If the field is absent/null AND we're a canonical build, the user has not
+///   yet adopted a workspace — treat first-pick as adopt and seed from legacy.
+/// * Branch builds never seed from a `workspaceRoot`-less legacy config;
+///   without the match check there's no reason to believe the legacy settings
+///   belong to this workspace.
 fn should_seed_from_legacy_config(legacy_path: &Path, layout: &StoreLayout) -> bool {
     if !legacy_path.exists() {
         return false;

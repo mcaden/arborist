@@ -23,8 +23,8 @@
 //!
 //! * Relative paths in `instructionSetsDir` or `worktreeRoots[]` are rejected
 //!   with [`Error::InvalidPath`].
-//! * The keys of `worktreePrelaunchCommands` (canonicalized worktree paths)
-//!   are also rejected if relative.
+//! * The keys of `worktreePrelaunchCommands` (canonicalized worktree paths) are
+//!   also rejected if relative.
 //! * Instruction file paths supplied via the (currently unused) override path
 //!   must canonicalize *inside* `instructionSetsDir`.
 //!
@@ -180,8 +180,8 @@ impl ConfigStore {
     /// * Canonicalizes `instructionSetsDir` and each `worktreeRoots[]`,
     ///   dropping (with a warning) any entry that no longer points at an
     ///   existing directory.
-    /// * Drops per-worktree override keys whose paths don't canonicalize to
-    ///   an existing directory (logged warning).
+    /// * Drops per-worktree override keys whose paths don't canonicalize to an
+    ///   existing directory (logged warning).
     /// * If `defaultInstructionSets.{claude|copilot}` references an ID that
     ///   isn't in the discovered instruction set list, falls back to the
     ///   discovered default for that tool.
@@ -719,7 +719,8 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(t) = patch.tab_order {
         cfg.tab_order = t;
     }
-    // Tri-state: `None` → don't touch; `Some(None)` → clear; `Some(Some(id))` → set.
+    // Tri-state: `None` → don't touch; `Some(None)` → clear; `Some(Some(id))` →
+    // set.
     if let Some(active) = patch.active_session_id {
         cfg.active_session_id = active;
     }
@@ -756,8 +757,8 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
 /// the source of truth):
 ///
 /// * Non-empty `id` and `name`.
-/// * `id` matches `[a-zA-Z0-9_-]+` (so it can be safely used as a wire
-///   key and React `key` without escaping).
+/// * `id` matches `[a-zA-Z0-9_-]+` (so it can be safely used as a wire key and
+///   React `key` without escaping).
 /// * Non-empty `command`.
 /// * IDs are unique within the list.
 fn validate_custom_processes(defs: &[CustomProcessDef]) -> Result<(), Error> {

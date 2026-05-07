@@ -27,11 +27,11 @@
 //!
 //! ## Public surface
 //!
-//! - [`AppSpawner`] — trait seam over `std::process::Command`. Real impl
-//!   is [`RealAppSpawner`]; tests use [`tests::FakeAppSpawner`].
+//! - [`AppSpawner`] — trait seam over `std::process::Command`. Real impl is
+//!   [`RealAppSpawner`]; tests use [`tests::FakeAppSpawner`].
 //! - [`AppPool`] — runtime pool for application sub-sessions.
-//! - [`AppPoolSink`] — alias for [`crate::sub_sessions::SubPtySink`]
-//!   reused so a single sink type drives both pool flavours.
+//! - [`AppPoolSink`] — alias for [`crate::sub_sessions::SubPtySink`] reused so
+//!   a single sink type drives both pool flavours.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -459,15 +459,15 @@ impl AppKiller for RealKiller {
 /// Runtime pool for application sub-sessions. Mirrors the lifecycle
 /// pattern of [`crate::sub_sessions::SubPtyPool`]:
 ///
-/// - `spawn` inserts a [`AppRuntime`] keyed by [`SubSessionId`], starts a
-///   wait thread, and returns the captured PID synchronously. The
+/// - `spawn` inserts a [`AppRuntime`] keyed by [`SubSessionId`], starts a wait
+///   thread, and returns the captured PID synchronously. The
 ///   [`AppPoolSink::status`] callback fires `Running` immediately.
-/// - The wait thread self-removes its runtime entry on natural exit
-///   (via a `Weak` upgrade) so the pool can never leak entries.
-/// - `kill` sets a `killed` guard, forwards to the killer, and removes
-///   the runtime from the pool. The wait thread sees `killed == true`
-///   and suppresses the status emission so the user-visible event is
-///   the explicit close, not a synthetic "exited".
+/// - The wait thread self-removes its runtime entry on natural exit (via a
+///   `Weak` upgrade) so the pool can never leak entries.
+/// - `kill` sets a `killed` guard, forwards to the killer, and removes the
+///   runtime from the pool. The wait thread sees `killed == true` and
+///   suppresses the status emission so the user-visible event is the explicit
+///   close, not a synthetic "exited".
 type Inner = Arc<Mutex<BTreeMap<SubSessionId, AppRuntime>>>;
 
 pub struct AppPool {
@@ -782,12 +782,12 @@ impl AppPool {
     /// also call [`detach`]. Idempotent across stale handles.
     ///
     /// Returns:
-    /// * `Ok(())` on a successful PostMessage (the app may still
-    ///   prompt the user before actually closing).
-    /// * `Err(Error::NotFound)` when no runtime is registered, or
-    ///   when no `window_target` is known and we can't act.
-    /// * `Err(Error::Unsupported)` when the platform doesn't
-    ///   support window-handle close (non-Windows today).
+    /// * `Ok(())` on a successful PostMessage (the app may still prompt the
+    ///   user before actually closing).
+    /// * `Err(Error::NotFound)` when no runtime is registered, or when no
+    ///   `window_target` is known and we can't act.
+    /// * `Err(Error::Unsupported)` when the platform doesn't support
+    ///   window-handle close (non-Windows today).
     pub fn request_window_close(&self, id: &SubSessionId, focuser: &dyn crate::window_focus::WindowFocuser) -> Result<(), Error> {
         let snapshot = {
             let g = self.inner.lock().map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
@@ -864,13 +864,13 @@ fn app_wait_loop(
 
     // Three possible outcomes once the launcher exits:
     //
-    //   * `Retargeted` — resolver thread already swapped this entry to
-    //     a long-lived owner PID. Stay silent; the liveness thread is
-    //     responsible for eventually emitting `Exited`.
-    //   * `Removed` — we won the race to claim emission rights for
-    //     this entry. Remove ourselves from the pool and emit.
-    //   * `AlreadyGone` — `kill` / `detach` removed us first; the
-    //     user-facing event was the explicit close.
+    //   * `Retargeted` — resolver thread already swapped this entry to a long-lived
+    //     owner PID. Stay silent; the liveness thread is responsible for eventually
+    //     emitting `Exited`.
+    //   * `Removed` — we won the race to claim emission rights for this entry.
+    //     Remove ourselves from the pool and emit.
+    //   * `AlreadyGone` — `kill` / `detach` removed us first; the user-facing event
+    //     was the explicit close.
     enum Action {
         Retargeted,
         Removed,

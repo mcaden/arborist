@@ -79,12 +79,12 @@ impl CanonicalPath {
     ///
     /// **Use sparingly.** This bypasses the runtime canonicalisation
     /// guarantee and trusts the caller's claim. Legitimate uses:
-    /// - The path was just produced by [`Self::canonicalise`] upstream
-    ///   (e.g. plumbed through a struct field as `PathBuf`) and we
-    ///   want to re-tag it without a redundant filesystem round-trip.
-    /// - Synthetic test fixtures whose paths intentionally do not
-    ///   exist on disk (e.g. the unit tests in this module that
-    ///   exercise `workspace_key` against `/repos/x` literals).
+    /// - The path was just produced by [`Self::canonicalise`] upstream (e.g.
+    ///   plumbed through a struct field as `PathBuf`) and we want to re-tag it
+    ///   without a redundant filesystem round-trip.
+    /// - Synthetic test fixtures whose paths intentionally do not exist on disk
+    ///   (e.g. the unit tests in this module that exercise `workspace_key`
+    ///   against `/repos/x` literals).
     ///
     /// Do **not** use this to wrap raw user input. It's a deliberate
     /// foot-gun preserved only because the alternative — forcing

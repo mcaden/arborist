@@ -14,10 +14,10 @@
 //! touching the OS. [`IconCache`] caches successful results by
 //! **canonical exe path** rather than by PID:
 //!
-//! - PIDs recycle aggressively (especially on Linux) and would lead to
-//!   stale icons if reused.
-//! - Multiple sub-sessions running the same app share one cache
-//!   entry — `Code.exe` open four times = one extraction.
+//! - PIDs recycle aggressively (especially on Linux) and would lead to stale
+//!   icons if reused.
+//! - Multiple sub-sessions running the same app share one cache entry —
+//!   `Code.exe` open four times = one extraction.
 //!
 //! Failures are NOT cached: a transient miss (race during VS Code
 //! retarget, brittle Linux `.desktop` lookup) shouldn't poison the
@@ -26,31 +26,30 @@
 //!
 //! ## Per-platform extractors (best-effort)
 //!
-//! - **Windows** — `QueryFullProcessImageNameW` → `SHGetFileInfoW`
-//!   → `DrawIconEx` into a 32-bit BGRA DIB → swizzle to RGBA → PNG
-//!   encode (`png` crate).
-//! - **macOS** — `proc_pidpath` → walk up to `.app` bundle →
-//!   `plutil -extract CFBundleIconFile raw …` → `sips -s format png`
-//!   into a tempfile. No new Rust deps; relies on Apple's
-//!   pre-installed binaries.
+//! - **Windows** — `QueryFullProcessImageNameW` → `SHGetFileInfoW` →
+//!   `DrawIconEx` into a 32-bit BGRA DIB → swizzle to RGBA → PNG encode (`png`
+//!   crate).
+//! - **macOS** — `proc_pidpath` → walk up to `.app` bundle → `plutil -extract
+//!   CFBundleIconFile raw …` → `sips -s format png` into a tempfile. No new
+//!   Rust deps; relies on Apple's pre-installed binaries.
 //! - **Linux** — read `/proc/<pid>/exe` → search XDG `applications/`
 //!   directories for a matching `.desktop` file → resolve `Icon=`
 //!   conservatively (absolute path, then a few standard
-//!   `hicolor/<size>/apps/<name>.png` paths). No theme resolution; no
-//!   SVG. Returns `None` on miss; emoji fallback in the UI is fine.
+//!   `hicolor/<size>/apps/<name>.png` paths). No theme resolution; no SVG.
+//!   Returns `None` on miss; emoji fallback in the UI is fine.
 //!
 //! ## What this module does NOT do
 //!
-//! - It does not invalidate cache entries. Exe paths don't recycle
-//!   (VS Code self-update writes to a new versioned dir → new key).
-//!   Cache size is bounded **at runtime** by [`MAX_CACHED_ICONS`] as a
-//!   safety net against a runaway caller; the natural bound (distinct
-//!   apps the user ever launches per session) is far smaller (~10).
-//! - It does not return errors for the "no icon found" case, only
-//!   `None`. The UI is supposed to fall back gracefully.
-//! - It is NOT involved in the VS Code retarget flow itself; the hook
-//!   in the frontend re-invokes [`Self::data_uri_for`] when the
-//!   sub-session's pid changes.
+//! - It does not invalidate cache entries. Exe paths don't recycle (VS Code
+//!   self-update writes to a new versioned dir → new key). Cache size is
+//!   bounded **at runtime** by [`MAX_CACHED_ICONS`] as a safety net against a
+//!   runaway caller; the natural bound (distinct apps the user ever launches
+//!   per session) is far smaller (~10).
+//! - It does not return errors for the "no icon found" case, only `None`. The
+//!   UI is supposed to fall back gracefully.
+//! - It is NOT involved in the VS Code retarget flow itself; the hook in the
+//!   frontend re-invokes [`Self::data_uri_for`] when the sub-session's pid
+//!   changes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

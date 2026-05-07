@@ -18,7 +18,6 @@
 //! branch refs/heads/<name>      # OR `detached`
 //! locked [<reason>]?            # optional
 //! prunable [<reason>]?          # optional
-//!
 //! ```
 //! Blocks are separated by blank lines; the very first one is the main
 //! worktree.
@@ -580,15 +579,13 @@ locked migrating to slow disk
                     .output();
             };
 
-            // 1. Clean every linked worktree registered in the tempdir repo.
-            //    Constrain to paths inside the tempdir as well — see comment
-            //    above on `inside_temp`.
+            // 1. Clean every linked worktree registered in the tempdir repo. Constrain to
+            //    paths inside the tempdir as well — see comment above on `inside_temp`.
             scrub(&self.repo_root, &inside_temp);
 
-            // 2. Belt-and-braces: if the test process's CWD is inside another
-            //    git repo, scrub any worktree there whose path lies under our
-            //    tempdir. This is the safety net for the historical
-            //    outer-repo-pollution bug (issue #13).
+            // 2. Belt-and-braces: if the test process's CWD is inside another git repo,
+            //    scrub any worktree there whose path lies under our tempdir. This is the
+            //    safety net for the historical outer-repo-pollution bug (issue #13).
             if let Ok(cwd) = std::env::current_dir() {
                 scrub(&cwd, &inside_temp);
             }

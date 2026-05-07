@@ -24,10 +24,10 @@
 //! assertion on the checked-in capability file:
 //!
 //! * `core:default` is present (the catch-all for built-in core APIs).
-//! * `allow-ping` is present (the permission that gates the `ping`
-//!   application command).
-//! * The corresponding `permissions/allow-ping.toml` file exists and
-//!   declares `commands.allow = ["ping"]`.
+//! * `allow-ping` is present (the permission that gates the `ping` application
+//!   command).
+//! * The corresponding `permissions/allow-ping.toml` file exists and declares
+//!   `commands.allow = ["ping"]`.
 //!
 //! Together these prove (a) the production build will accept `ping`
 //! invocations, and (b) deleting either the capability entry or the

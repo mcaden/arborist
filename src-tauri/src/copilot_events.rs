@@ -7,8 +7,8 @@
 //! three new sub-states the byte-rate scanner can't tell apart:
 //!
 //! - **`AwaitingPermission`** — the agent is *blocked on the user* (e.g.
-//!   waiting for shell-command approval). This is the single most
-//!   actionable cue we can give about a sidebar tab.
+//!   waiting for shell-command approval). This is the single most actionable
+//!   cue we can give about a sidebar tab.
 //! - **`ToolStart` / `ToolEnd`** — the agent is busy running a tool, not
 //!   generating tokens. Tooltips can name the tool.
 //! - **`TurnStart` / `TurnEnd`** — bracket "the model is generating".
@@ -32,10 +32,10 @@
 //! Events are append-only and time-ordered, but the tailer **must not**
 //! crash on:
 //! - Unknown `type` values (Copilot adds new event kinds across versions).
-//! - Missing or malformed `data.*` fields (defensive — schema isn't
-//!   public-API stable).
-//! - A `tool.execution_complete` arriving with no matching `_start` (we
-//!   started tailing mid-file).
+//! - Missing or malformed `data.*` fields (defensive — schema isn't public-API
+//!   stable).
+//! - A `tool.execution_complete` arriving with no matching `_start` (we started
+//!   tailing mid-file).
 //! - File rotation / truncation under us (rare; same handling as
 //!   [`crate::session_metrics`]).
 //!
@@ -375,11 +375,10 @@ fn extract_permission_summary(data: &serde_json::Value) -> Option<String> {
 /// `metadata().len()` can land mid-line in two cases that both leave a
 /// partial trailing line in `events.jsonl`:
 ///
-/// 1. **Crash / interrupted write.** The previous Copilot session was
-///    killed mid-write of a single event line (no trailing `\n`).
-/// 2. **Race with active write.** We polled metadata while Copilot was
-///    actively flushing a line (very narrow window on modern OSes but
-///    non-zero).
+/// 1. **Crash / interrupted write.** The previous Copilot session was killed
+///    mid-write of a single event line (no trailing `\n`).
+/// 2. **Race with active write.** We polled metadata while Copilot was actively
+///    flushing a line (very narrow window on modern OSes but non-zero).
 ///
 /// If the catch-up target lands inside a partial line, the watcher
 /// would clamp catch-up reads to that target forever. `tail_lines_pub`

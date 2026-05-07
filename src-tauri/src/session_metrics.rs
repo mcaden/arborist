@@ -35,35 +35,35 @@
 //! The watcher tails that file and extracts:
 //!
 //! * **Cumulative input/output token totals** from `chat <model>` span
-//!   `attributes."gen_ai.usage.{input,output}_tokens"`. Each span is one
-//!   LLM round-trip; we sum them.
+//!   `attributes."gen_ai.usage.{input,output}_tokens"`. Each span is one LLM
+//!   round-trip; we sum them.
 //! * **Model name** from `attributes."gen_ai.response.model"` (fallback
 //!   `"gen_ai.request.model"`).
 //! * **Context-window state** from the inline event
 //!   `github.copilot.session.usage_info`'s attributes:
 //!   `github.copilot.token_limit` (the model's authoritative window) and
-//!   `github.copilot.current_tokens` (the conversational context size at
-//!   the moment that span was emitted — *not* the same as
-//!   `gen_ai.usage.input_tokens`, which also includes cache-creation
-//!   writes; we use `current_tokens` as the "context % used" numerator
-//!   to match the user-visible Copilot status line).
+//!   `github.copilot.current_tokens` (the conversational context size at the
+//!   moment that span was emitted — *not* the same as
+//!   `gen_ai.usage.input_tokens`, which also includes cache-creation writes; we
+//!   use `current_tokens` as the "context % used" numerator to match the
+//!   user-visible Copilot status line).
 //!
 //! Two critical parsing rules:
 //!
 //! 1. **Filter to leaf `chat` spans only.** Copilot's `invoke_agent` parent
-//!    span aggregates the *same* `gen_ai.usage.*` numbers as its child
-//!    `chat` span(s). Counting both would double the totals. We require
-//!    the semconv attribute `gen_ai.operation.name == "chat"` and ignore
-//!    everything else (including `type: "metric"` lines, which are
-//!    redundant with span attributes). The op attribute is the source of
-//!    truth — `name` varies (`"chat"` vs `"chat <model>"` across Copilot
-//!    versions) and a previous `name.starts_with("chat ")` filter silently
-//!    dropped bare-name spans, breaking `aiSessionId` tracking after
-//!    `/clear` or `/resume` and zeroing token totals for affected sessions.
-//! 2. **Spans only emit at span CLOSE.** OTel's batch span processor
-//!    flushes after the span ends, not while it's open. Use the existing
-//!    PTY-stream activity scanner for "is the agent currently working" —
-//!    OTel cannot answer that question.
+//!    span aggregates the *same* `gen_ai.usage.*` numbers as its child `chat`
+//!    span(s). Counting both would double the totals. We require the semconv
+//!    attribute `gen_ai.operation.name == "chat"` and ignore everything else
+//!    (including `type: "metric"` lines, which are redundant with span
+//!    attributes). The op attribute is the source of truth — `name` varies
+//!    (`"chat"` vs `"chat <model>"` across Copilot versions) and a previous
+//!    `name.starts_with("chat ")` filter silently dropped bare-name spans,
+//!    breaking `aiSessionId` tracking after `/clear` or `/resume` and zeroing
+//!    token totals for affected sessions.
+//! 2. **Spans only emit at span CLOSE.** OTel's batch span processor flushes
+//!    after the span ends, not while it's open. Use the existing PTY-stream
+//!    activity scanner for "is the agent currently working" — OTel cannot
+//!    answer that question.
 //!
 //! `OTEL_BSP_SCHEDULE_DELAY=1000` (set in `env_for_tool`) tightens the
 //! SDK's batch flush from its 5s default to ~1Hz so token totals appear
@@ -584,23 +584,22 @@ pub(crate) fn tail_lines_pub<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64
 /// (always `>= cursor`).
 ///
 /// Three pitfalls handled:
-/// 1. **Half-written trailing line.** The cursor only advances past the
-///    last complete `\n`; partial trailing bytes are re-read on the next
-///    call. Without this the line parser silently drops a partial JSON
-///    object the writer is still finishing.
-/// 2. **Read cap.** `read_range` is capped at [`MAX_READ_CHUNK`] so a
-///    runaway exporter cannot make us allocate gigabytes in one shot.
-///    The remaining bytes are picked up on subsequent polls.
-/// 3. **Oversized line (> [`MAX_READ_CHUNK`] without a `\n` in the cap).**
-///    If the capped chunk has no newline AND the file extends past what
-///    we read, the line itself is bigger than the cap. Without special
-///    handling, `rposition` would always be `None` and the watcher would
-///    re-read the same chunk forever (wasted I/O, metrics never advance).
-///    We scan forward from the end of the chunk *without* buffering to
-///    find the next `\n`, log a warning, and skip the whole oversized
-///    line. If no `\n` is found anywhere up to `end`, the writer is
-///    still in flight, so we leave the cursor where it is and let the
-///    next poll re-check.
+/// 1. **Half-written trailing line.** The cursor only advances past the last
+///    complete `\n`; partial trailing bytes are re-read on the next call.
+///    Without this the line parser silently drops a partial JSON object the
+///    writer is still finishing.
+/// 2. **Read cap.** `read_range` is capped at [`MAX_READ_CHUNK`] so a runaway
+///    exporter cannot make us allocate gigabytes in one shot. The remaining
+///    bytes are picked up on subsequent polls.
+/// 3. **Oversized line (> [`MAX_READ_CHUNK`] without a `\n` in the cap).** If
+///    the capped chunk has no newline AND the file extends past what we read,
+///    the line itself is bigger than the cap. Without special handling,
+///    `rposition` would always be `None` and the watcher would re-read the same
+///    chunk forever (wasted I/O, metrics never advance). We scan forward from
+///    the end of the chunk *without* buffering to find the next `\n`, log a
+///    warning, and skip the whole oversized line. If no `\n` is found anywhere
+///    up to `end`, the writer is still in flight, so we leave the cursor where
+///    it is and let the next poll re-check.
 fn tail_lines<F: FnMut(&[u8])>(path: &Path, cursor: u64, end: u64, mut consume: F) -> u64 {
     let bytes = match read_range(path, cursor, end) {
         Ok(b) => b,
@@ -1862,9 +1861,9 @@ mod tests {
         assert_eq!(first.input_tokens, Some(10));
         assert_eq!(first.output_tokens, Some(2));
 
-        // 2) Finish the partial line. The cursor must have stayed at the
-        //    end of the first line, so the now-complete second line gets
-        //    parsed in full and added to the totals.
+        // 2) Finish the partial line. The cursor must have stayed at the end of the
+        //    first line, so the now-complete second line gets parsed in full and added
+        //    to the totals.
         {
             let mut f = std::fs::OpenOptions::new().append(true).open(&jsonl).unwrap();
             f.write_all(b",\"output_tokens\":7}}}\n").unwrap();

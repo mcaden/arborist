@@ -14,13 +14,13 @@
 //! ## Resolution priority
 //!
 //! 1. `--workspace <path>` (or `--workspace=<path>`) CLI argument.
-//! 2. The branch-specific `last-workspace.json` hint file written by
-//!    a previous successful bind.
-//! 3. Legacy `<app_data_dir>/config.json::workspace_root` (one-time
-//!    migration breadcrumb so existing single-canonical-install users
-//!    pick up the new layout on their first upgraded launch).
-//! 4. Native folder picker dialog ([`rfd::FileDialog::pick_folder`]).
-//!    The user can cancel — the app then exits cleanly.
+//! 2. The branch-specific `last-workspace.json` hint file written by a previous
+//!    successful bind.
+//! 3. Legacy `<app_data_dir>/config.json::workspace_root` (one-time migration
+//!    breadcrumb so existing single-canonical-install users pick up the new
+//!    layout on their first upgraded launch).
+//! 4. Native folder picker dialog ([`rfd::FileDialog::pick_folder`]). The user
+//!    can cancel — the app then exits cleanly.
 //!
 //! ## Lock contention
 //!
@@ -153,8 +153,8 @@ pub struct CliArgs {
 /// argv (the binary name at index 0 is skipped).
 ///
 /// Errors:
-/// * Missing value after `--workspace` (last arg, or next arg starts
-///   with `--`).
+/// * Missing value after `--workspace` (last arg, or next arg starts with
+///   `--`).
 /// * Duplicate `--workspace` (specified more than once).
 /// * Empty value (e.g. `--workspace=`).
 pub fn parse_cli_args<I, S>(argv: I) -> Result<CliArgs, BootError>
@@ -369,16 +369,15 @@ fn canonicalise_existing(p: &Path) -> Result<crate::store_layout::CanonicalPath,
 /// rejects worktrees).
 ///
 /// Errors:
-/// * [`BootError::NotARepository`] if `git_toplevel` returns `None`
-///   (path is not inside any git working tree, or git is unavailable),
-///   or if the discovered toplevel differs from `canon` (the path is
-///   *inside* a repo but not the repo root — e.g. the user picked a
-///   subdirectory).
-/// * [`BootError::NotARepository`] if `<canon>/.git` is not a
-///   directory (the path is a linked worktree root, a submodule
-///   working tree, or otherwise non-primary).
-/// * [`BootError::NotARepository`] (with the underlying error in
-///   `reason`) if `git_toplevel` itself errors.
+/// * [`BootError::NotARepository`] if `git_toplevel` returns `None` (path is
+///   not inside any git working tree, or git is unavailable), or if the
+///   discovered toplevel differs from `canon` (the path is *inside* a repo but
+///   not the repo root — e.g. the user picked a subdirectory).
+/// * [`BootError::NotARepository`] if `<canon>/.git` is not a directory (the
+///   path is a linked worktree root, a submodule working tree, or otherwise
+///   non-primary).
+/// * [`BootError::NotARepository`] (with the underlying error in `reason`) if
+///   `git_toplevel` itself errors.
 fn validate_repo_root(canon: &Path, git_runner: &dyn GitRunner, origin: BootSource) -> Result<(), BootError> {
     match git_runner.git_toplevel(canon) {
         Ok(Some(toplevel)) if toplevel == *canon => {
@@ -513,21 +512,20 @@ pub fn into_scope(binding: WorkspaceBinding) -> WorkspaceScope {
 /// `None`:
 ///
 /// * **Boot path** ([`boot_select_workspace`]) aborts with
-///   [`BootError::WorkspaceRootPersist`]. The lock + store binding
-///   are dropped on the way out, the user gets a launch failure,
-///   and the next launch starts from a clean slate. Tolerating the
-///   failure (the previous behaviour) was unsafe: the frontend would
-///   read `workspaceRoot: null`, show the first-boot
-///   [`crate::commands::session::workspace_validate_impl`] picker,
-///   and the picker's `onConfirm` only calls `config_set` on the
-///   already-bound store — so the user would believe they picked a
-///   new workspace while the backend continued to hold the original
-///   one's lock and the new path was written into the wrong store.
-/// * **Switch path** ([`crate::commands::session::workspace_switch_impl_inner`])
-///   MUST also propagate. The switch must call this BEFORE the
-///   `WorkspaceScope` swap so a failure can abort cleanly with the
-///   old workspace still bound (drop the new binding → release the
-///   new OS lock).
+///   [`BootError::WorkspaceRootPersist`]. The lock + store binding are dropped
+///   on the way out, the user gets a launch failure, and the next launch starts
+///   from a clean slate. Tolerating the failure (the previous behaviour) was
+///   unsafe: the frontend would read `workspaceRoot: null`, show the first-boot
+///   [`crate::commands::session::workspace_validate_impl`] picker, and the
+///   picker's `onConfirm` only calls `config_set` on the already-bound store —
+///   so the user would believe they picked a new workspace while the backend
+///   continued to hold the original one's lock and the new path was written
+///   into the wrong store.
+/// * **Switch path**
+///   ([`crate::commands::session::workspace_switch_impl_inner`]) MUST also
+///   propagate. The switch must call this BEFORE the `WorkspaceScope` swap so a
+///   failure can abort cleanly with the old workspace still bound (drop the new
+///   binding → release the new OS lock).
 pub fn ensure_workspace_root_in_config(store: &ConfigStore, canonical: &Path) -> Result<(), crate::types::Error> {
     let cfg = store.load_config();
     if cfg.workspace_root.as_deref() == Some(canonical) {
@@ -622,14 +620,14 @@ pub fn show_workspace_root_persist_dialog(workspace_dir: &Path, reason: &str) {
 /// single entry point `lib::run()`'s setup hook calls.
 ///
 /// Behaviour:
-/// * If a workspace can be resolved (CLI/hint/legacy/picker) and bound,
-///   returns `Ok(Some(WorkspaceBinding))`. Caller writes the hint and
-///   builds the AppContext.
-/// * If the user cancels the picker, returns `Ok(None)`. Caller exits
-///   cleanly (no error).
-/// * On lock contention or hard error, returns `Err(BootError)`.
-///   Caller surfaces a native dialog (for [`BootError::Contention`])
-///   and exits non-zero.
+/// * If a workspace can be resolved (CLI/hint/legacy/picker) and bound, returns
+///   `Ok(Some(WorkspaceBinding))`. Caller writes the hint and builds the
+///   AppContext.
+/// * If the user cancels the picker, returns `Ok(None)`. Caller exits cleanly
+///   (no error).
+/// * On lock contention or hard error, returns `Err(BootError)`. Caller
+///   surfaces a native dialog (for [`BootError::Contention`]) and exits
+///   non-zero.
 pub fn boot_select_workspace(
     args: &CliArgs,
     app_data_dir: &Path,

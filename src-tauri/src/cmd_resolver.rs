@@ -4,13 +4,11 @@
 //! query for an icon, given just the user-typed command string. The
 //! captured PID is unreliable for icon purposes:
 //!
-//! - Terminal sub-sessions on Windows are wrapped in `cmd /c <cmd>`,
-//!   so the PID belongs to `cmd.exe` — the user typed `pwsh` and
-//!   expects pwsh's icon.
-//! - Application sub-sessions whose launcher is a script shim
-//!   (`code.cmd`, `gh.cmd`, npm-installed CLI shims) all show
-//!   `cmd.exe`'s generic shell icon if you ask the OS for the script
-//!   file's icon directly.
+//! - Terminal sub-sessions on Windows are wrapped in `cmd /c <cmd>`, so the PID
+//!   belongs to `cmd.exe` — the user typed `pwsh` and expects pwsh's icon.
+//! - Application sub-sessions whose launcher is a script shim (`code.cmd`,
+//!   `gh.cmd`, npm-installed CLI shims) all show `cmd.exe`'s generic shell icon
+//!   if you ask the OS for the script file's icon directly.
 //!
 //! The resolution is intentionally a pure function of the command
 //! string + cwd + PATH/PATHEXT. No subprocess-spawning, no
@@ -21,12 +19,11 @@
 //!
 //! 1. `parse_program(cmd)` — quote-aware first token, skipping
 //!    `env`/`KEY=value` shell prefixes.
-//! 2. `resolve_executable(program, cwd)` — absolute / cwd-relative /
-//!    `PATH` lookup, applying Windows `PATHEXT` for bare names.
+//! 2. `resolve_executable(program, cwd)` — absolute / cwd-relative / `PATH`
+//!    lookup, applying Windows `PATHEXT` for bare names.
 //! 3. `unwrap_script_wrapper(path)` — if the resolved file is a
-//!    `.cmd`/`.bat`/`.ps1`/`.sh` script, peek at its contents to find
-//!    the first existing executable referenced inside (e.g.
-//!    `code.cmd` → `..\Code.exe`).
+//!    `.cmd`/`.bat`/`.ps1`/`.sh` script, peek at its contents to find the first
+//!    existing executable referenced inside (e.g. `code.cmd` → `..\Code.exe`).
 //!
 //! [`resolve_command_executable`] composes all three and returns the
 //! best path it could find, or `None`.
@@ -78,11 +75,11 @@ pub fn parse_program(command: &str) -> Option<String> {
 }
 
 /// Resolve `program` to an absolute path:
-/// 1. If it's already absolute, return it (with Windows `PATHEXT`
-///    completion if no extension).
+/// 1. If it's already absolute, return it (with Windows `PATHEXT` completion if
+///    no extension).
 /// 2. If it contains a path separator, resolve it relative to `cwd`.
-/// 3. Otherwise look it up in `PATH` (Windows: also tries each
-///    `PATHEXT` suffix).
+/// 3. Otherwise look it up in `PATH` (Windows: also tries each `PATHEXT`
+///    suffix).
 #[must_use]
 pub fn resolve_executable(program: &str, cwd: &Path) -> Option<PathBuf> {
     let p = Path::new(program);
@@ -328,16 +325,14 @@ impl Iterator for ShellTokens<'_> {
 
 /// Like [`resolve_command_executable`] but tuned for icon extraction:
 ///
-/// 1. Walks `bin/<stem>.exe` launchers up to the parent dir's main
-///    application exe (the VS Code case — `bin/code.exe` is a thin
-///    CLI launcher with no embedded icon, while `../Code.exe` carries
-///    the branded icon resource).
-/// 2. Suppresses results that land on a generic language interpreter
-///    wrapper (`node.exe`, `python.exe`, …) **only when the resolution
-///    went through a script shim** ([`unwrap_script_wrapper`] followed
-///    it). That's the npm/pip-installed-CLI case where the wrapper
-///    hands us back the interpreter and its icon is useless branding
-///    for the actual tool.
+/// 1. Walks `bin/<stem>.exe` launchers up to the parent dir's main application
+///    exe (the VS Code case — `bin/code.exe` is a thin CLI launcher with no
+///    embedded icon, while `../Code.exe` carries the branded icon resource).
+/// 2. Suppresses results that land on a generic language interpreter wrapper
+///    (`node.exe`, `python.exe`, …) **only when the resolution went through a
+///    script shim** ([`unwrap_script_wrapper`] followed it). That's the
+///    npm/pip-installed-CLI case where the wrapper hands us back the
+///    interpreter and its icon is useless branding for the actual tool.
 ///
 /// Direct user invocations (`pwsh`, `node`, `cmd`, `bash`, …) are
 /// **not** suppressed — the user explicitly named that runtime as
@@ -346,9 +341,8 @@ impl Iterator for ShellTokens<'_> {
 ///
 /// Returns `None` in three cases:
 /// 1. [`resolve_command_executable_detailed`] returned `None`.
-/// 2. The path was reached via script unwrap **and** the resolved
-///    path's basename matches a known interpreter (see
-///    [`is_interpreter_basename`]).
+/// 2. The path was reached via script unwrap **and** the resolved path's
+///    basename matches a known interpreter (see [`is_interpreter_basename`]).
 /// 3. The basename is missing entirely (defensive).
 #[must_use]
 pub fn resolve_command_icon_path(command: &str, cwd: &Path) -> Option<PathBuf> {
@@ -380,17 +374,16 @@ const MAX_APP_DIR_SCAN_ENTRIES: usize = 4096;
 /// branded icon resource).
 ///
 /// Match rules:
-/// * Parent directory must be named `bin` (case-insensitive). We
-///   intentionally do not match other generic dir names (`cli`,
-///   `launchers`) until we have evidence those layouts exist in the
-///   wild — matching too eagerly risks false positives that pick up
-///   the wrong binary's icon.
+/// * Parent directory must be named `bin` (case-insensitive). We intentionally
+///   do not match other generic dir names (`cli`, `launchers`) until we have
+///   evidence those layouts exist in the wild — matching too eagerly risks
+///   false positives that pick up the wrong binary's icon.
 /// * The candidate exe in `<root>` must share the same file stem
 ///   (case-insensitive) as the launcher. Capitalisation may differ
 ///   (`bin/code.exe` ↔ `Code.exe`).
-/// * The candidate must not canonicalise to the launcher itself
-///   (defensive — avoid loops when `bin/code.exe` happens to also
-///   exist as `<root>/code.exe`).
+/// * The candidate must not canonicalise to the launcher itself (defensive —
+///   avoid loops when `bin/code.exe` happens to also exist as
+///   `<root>/code.exe`).
 ///
 /// Returns `None` when the heuristic does not apply or the parent dir
 /// is unreadable / contains no matching exe within

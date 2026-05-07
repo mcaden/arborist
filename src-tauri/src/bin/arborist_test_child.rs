@@ -1,5 +1,5 @@
-//! `arborist-test-child` — a deterministic, dependency-free child process used by
-//! the PTY-pool integration tests.
+//! `arborist-test-child` — a deterministic, dependency-free child process used
+//! by the PTY-pool integration tests.
 //!
 //! Protocol (line-based, `\n`-terminated; both `\n` and `\r\n` are tolerated
 //! because some PTY layers translate newlines):
@@ -9,8 +9,8 @@
 //! - `exit N\n`             → exit N (N is a non-negative i32).
 //! - `flood K\n`            → write K lines `flood-i\n` as fast as possible
 //!   (used by backpressure tests).
-//! - `unicode\n`            → write a known multibyte UTF-8 string (used by
-//!   the streaming-decoder tests).
+//! - `unicode\n`            → write a known multibyte UTF-8 string (used by the
+//!   streaming-decoder tests).
 //! - any other line `X`     → write `echo: X\n`.
 //!
 //! Cross-platform: pure stdlib, no extra dependencies. The binary is wired

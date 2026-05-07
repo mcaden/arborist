@@ -10,11 +10,10 @@
 //! Behaviour:
 //! 1. Acquire an exclusive lock on `<lock_path>` via
 //!    [`WorkspaceLockGuard::acquire`].
-//! 2. On success: print `LOCKED\n` to stdout (flushed) and block on
-//!    stdin until EOF, then drop the guard and exit 0.
+//! 2. On success: print `LOCKED\n` to stdout (flushed) and block on stdin until
+//!    EOF, then drop the guard and exit 0.
 //! 3. On contention: print `CONTENDED\n` to stdout (flushed) and exit 2.
-//! 4. On any other error: print `ERROR: <message>\n` to stderr and
-//!    exit 3.
+//! 4. On any other error: print `ERROR: <message>\n` to stderr and exit 3.
 //!
 //! The `LOCKED` sentinel is the test's signal that the lock is held,
 //! so the parent test can attempt a contending acquire.
