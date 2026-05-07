@@ -306,16 +306,20 @@ fn which_in_path(tool: &str) -> Option<PathBuf> {
     None
 }
 
+/// Returns `true` when `key` starts with `ARBORIST_` (case-insensitive).
+fn is_arborist_env_key(key: &std::ffi::OsStr) -> bool {
+    const PREFIX: &[u8] = b"ARBORIST_";
+    let bytes = key.as_encoded_bytes();
+    bytes.len() >= PREFIX.len() && bytes[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+}
+
 /// Strip `ARBORIST_*` env vars from the spawned command so they don't leak
 /// into children (e.g. VSCode terminals inheriting `ARBORIST_DEV_PORT`).
 /// Mirror of `pty_pool::strip_arborist_env` adapted for `std::process::Command`.
 fn strip_arborist_env(command: &mut std::process::Command) {
-    const PREFIX: &[u8] = b"ARBORIST_";
-    for (k, _) in std::env::vars_os() {
-        let key_bytes = k.as_encoded_bytes();
-        if key_bytes.len() >= PREFIX.len() && key_bytes[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
-            command.env_remove(&k);
-        }
+    let keys: Vec<_> = std::env::vars_os().filter(|(k, _)| is_arborist_env_key(k)).map(|(k, _)| k).collect();
+    for k in keys {
+        command.env_remove(&k);
     }
 }
 
@@ -1830,5 +1834,71 @@ mod tests {
         let res = pool.request_window_close(&id, &focuser);
         assert!(matches!(res, Err(Error::NotFound(_))));
         assert!(focuser.close_calls().is_empty());
+    }
+
+    // ── strip_arborist_env / is_arborist_env_key tests ──────────────
+
+    #[test]
+    fn is_arborist_env_key_matches_prefixed_keys() {
+        assert!(is_arborist_env_key(std::ffi::OsStr::new("ARBORIST_DEV_PORT")));
+        assert!(is_arborist_env_key(std::ffi::OsStr::new("ARBORIST_BUILD_BRANCH")));
+    }
+
+    #[test]
+    fn is_arborist_env_key_is_case_insensitive() {
+        assert!(is_arborist_env_key(std::ffi::OsStr::new("arborist_dev_port")));
+        assert!(is_arborist_env_key(std::ffi::OsStr::new("Arborist_Build_Branch")));
+    }
+
+    #[test]
+    fn is_arborist_env_key_rejects_non_prefixed() {
+        assert!(!is_arborist_env_key(std::ffi::OsStr::new("PATH")));
+        assert!(!is_arborist_env_key(std::ffi::OsStr::new("MY_ARBORIST_VAR")));
+        assert!(!is_arborist_env_key(std::ffi::OsStr::new("ARBORISH_DEV")));
+    }
+
+    #[test]
+    fn is_arborist_env_key_handles_short_or_empty_keys() {
+        assert!(!is_arborist_env_key(std::ffi::OsStr::new("")));
+        assert!(!is_arborist_env_key(std::ffi::OsStr::new("AR")));
+        assert!(!is_arborist_env_key(std::ffi::OsStr::new("ARBORIST")));
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn strip_arborist_env_removes_prefixed_keys_from_command() {
+        // Exercise the full strip_arborist_env path with a real env var and std::process::Command.
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                std::env::remove_var(self.0);
+            }
+        }
+
+        let key = "ARBORIST_TEST_APP_LAUNCHER_STRIP_B7E2";
+        let _guard = EnvGuard(key);
+        std::env::set_var(key, "leak-me");
+
+        // Spawn a child that prints whether the key is set.
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/c", &format!("if defined {key} (echo FOUND) else (echo ABSENT)")]);
+            c
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd = {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", &format!("if [ -n \"${{{key}}}\" ]; then echo FOUND; else echo ABSENT; fi")]);
+            c
+        };
+
+        strip_arborist_env(&mut cmd);
+        let output = cmd.output().expect("failed to spawn child");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("ABSENT"),
+            "expected ARBORIST_* key to be stripped from child env, got: {stdout}"
+        );
     }
 }
