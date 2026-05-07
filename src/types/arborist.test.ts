@@ -170,6 +170,7 @@ describe('arborist type mirrors', () => {
         'activeSessionId',
         'customProcesses',
         'lastOpenSubSessions',
+        'worktreesDir',
       ],
       [],
       'AppConfig',
@@ -192,6 +193,7 @@ describe('arborist type mirrors', () => {
       'activeSessionId',
       'customProcesses',
       'lastOpenSubSessions',
+      'worktreesDir',
     ]);
     const unexpected = Object.keys(partialAppConfigFixture).filter((k) => !allowed.has(k));
     expect(unexpected, 'PartialAppConfig: fixture has keys not declared in TS mirror').toEqual([]);

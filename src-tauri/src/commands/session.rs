@@ -1691,7 +1691,9 @@ pub async fn workspace_switch_impl_inner(
     })
 }
 
-/// Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>`.
+/// Create a new linked worktree at `<worktreesDir>/<name>` (Issue #53). When `worktreesDir` is relative the parent is `<workspaceRoot>/<worktreesDir>`
+/// and the existing symlink/containment guard is enforced. Absolute `worktreesDir` values (e.g. `D:\arborist-worktrees`) are used as-is — the user has
+/// explicitly opted out of the workspace-contained layout, so we only enforce the basic "no clobber" / "no symlink escape" hardening.
 pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types::WorktreeCreateResult, AppError> {
     use crate::types::WorktreeCreateResult;
 
@@ -1709,45 +1711,62 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
         return Err(AppError::from(Error::WorktreeMissing(workspace)));
     }
 
-    let relative = std::path::PathBuf::from(".worktrees").join(&validated);
-    let absolute = workspace.join(&relative);
+    // Resolve the configured worktrees folder. Lexical resolution lets us reason about containment without requiring the parent dir to exist yet.
+    let resolved = compose::resolve_worktrees_dir(&workspace, &cfg.worktrees_dir);
+    let parent_dir = resolved.absolute.clone();
+    let absolute = parent_dir.join(&validated);
     // Use symlink_metadata so dangling symlinks/junctions are still treated as "exists" (Roadmap critique #4).
     if std::fs::symlink_metadata(&absolute).is_ok() {
         return Err(AppError::from(Error::InvalidPath(format!("{} already exists", absolute.display()))));
     }
 
-    // Containment guard (critique #3): ensure `<workspace>/.worktrees` canonicalizes back inside the workspace. Refuses symlink/junction escapes that
-    // would otherwise place the new worktree outside the declared workspace root.
-    let worktrees_dir = workspace.join(".worktrees");
-    if let Ok(meta) = std::fs::symlink_metadata(&worktrees_dir) {
+    // Containment guard for the *workspace-contained* case only (Issue #53). When the user explicitly configured an absolute path outside the
+    // workspace we skip the workspace-containment check — they've opted out — but we still refuse a parent that is itself a symlink, which would
+    // otherwise let a tampered config silently redirect every new worktree.
+    if let Ok(meta) = std::fs::symlink_metadata(&parent_dir) {
         if meta.file_type().is_symlink() {
             return Err(AppError::from(Error::InvalidPath(format!(
-                "{} is a symlink; refusing to create worktree outside workspace",
-                worktrees_dir.display()
+                "{} is a symlink; refusing to create worktree at this location",
+                parent_dir.display()
             ))));
         }
     } else {
-        // Create the .worktrees parent ourselves so `git worktree add` does not have to, and so the canonicalize/containment check below has
-        // something to resolve.
-        std::fs::create_dir_all(&worktrees_dir)
-            .map_err(|e| AppError::from(Error::Internal(format!("could not create {}: {e}", worktrees_dir.display()))))?;
+        // Create the parent ourselves so `git worktree add` does not have to, and so the canonicalize/containment check below has something to
+        // resolve. Use create_dir_all so multi-segment configured dirs (`.cache/worktrees`) work.
+        std::fs::create_dir_all(&parent_dir)
+            .map_err(|e| AppError::from(Error::Internal(format!("could not create {}: {e}", parent_dir.display()))))?;
     }
-    let canon_worktrees = dunce::canonicalize(&worktrees_dir)
-        .map_err(|e| AppError::from(Error::Internal(format!("could not canonicalize {}: {e}", worktrees_dir.display()))))?;
-    if !canon_worktrees.starts_with(&workspace) {
-        return Err(AppError::from(Error::InvalidPath(format!(
-            "{} resolves outside the workspace",
-            worktrees_dir.display()
-        ))));
+
+    if resolved.inside_workspace {
+        // Inside-workspace path: enforce the original symlink-escape guard. `dunce::canonicalize` resolves any symlink/junction segments and the
+        // result must still live under the canonical workspace root.
+        let canon_parent = dunce::canonicalize(&parent_dir)
+            .map_err(|e| AppError::from(Error::Internal(format!("could not canonicalize {}: {e}", parent_dir.display()))))?;
+        if !canon_parent.starts_with(&workspace) {
+            return Err(AppError::from(Error::InvalidPath(format!(
+                "{} resolves outside the workspace",
+                parent_dir.display()
+            ))));
+        }
     }
+
+    // Pass the parent path verbatim (relative for inside-workspace cases, absolute for opted-out external cases). `git worktree add` accepts both.
+    let path_for_git: PathBuf = if resolved.was_relative && resolved.inside_workspace {
+        // Preserve the legacy "relative path under the repo" call shape so existing tests/observability stay unchanged.
+        PathBuf::from(cfg.worktrees_dir.trim()).join(&validated)
+    } else {
+        absolute.clone()
+    };
 
     let new_path = ctx
         .git_runner
-        .create_worktree(&workspace, &relative, &validated)
+        .create_worktree(&workspace, &path_for_git, &validated)
         .map_err(AppError::from)?;
 
-    // Post-condition: the canonical new path must still lie under the canonical workspace root.
-    if !new_path.starts_with(&workspace) {
+    // Post-condition for inside-workspace creates only: outside-workspace creates are explicitly user-requested and may legitimately resolve outside
+    // the workspace root. We still trust the canonicalised path returned by git_runner — `RealGitRunner::create_worktree` runs `dunce::canonicalize`
+    // on the new path before returning.
+    if resolved.inside_workspace && !new_path.starts_with(&workspace) {
         return Err(AppError::from(Error::InvalidPath(format!(
             "created worktree {} resolved outside workspace {}",
             new_path.display(),
@@ -1756,6 +1775,44 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
     }
 
     Ok(WorktreeCreateResult { path: new_path })
+}
+
+/// Live preview for the Settings dialog (Issue #53). Returns `{ resolvedPath, insideRepo, gitIgnored }` for the candidate `worktrees_dir` value the
+/// user is currently typing.  No filesystem mutation; safe to call on every keystroke (the frontend still debounces).
+///
+/// `gitIgnored` is computed only when `insideRepo` is true — a path outside the workspace cannot be "ignored" in any meaningful sense, and
+/// `git check-ignore` returns a non-zero status (128) for paths outside the repo anyway.  We probe both the directory itself and a synthetic child
+/// (`<dir>/.arborist-ignore-probe`) and treat ignoring *either* as "good enough"; this matches how worktrees actually populate the folder.
+pub fn worktrees_dir_check_impl(ctx: &AppContext, value: &str) -> Result<crate::types::WorktreesDirCheckResult, AppError> {
+    use crate::types::WorktreesDirCheckResult;
+
+    let cfg = ctx.store().load_config();
+    let Some(workspace) = cfg.workspace_root.as_ref() else {
+        return Ok(WorktreesDirCheckResult {
+            resolved_path: None,
+            inside_repo: false,
+            git_ignored: false,
+        });
+    };
+
+    let resolved = compose::resolve_worktrees_dir(workspace, value);
+    let inside_repo = resolved.inside_workspace;
+    let git_ignored = if inside_repo {
+        // Probe the configured directory directly and a synthetic child path. A user might add either `/.worktrees` or `/.worktrees/` (file rule vs.
+        // directory rule); accepting either flag keeps the warning quiet for any reasonable `.gitignore` snippet.
+        let probe_child = resolved.absolute.join(".arborist-ignore-probe");
+        let dir_ignored = ctx.git_runner.check_ignore(workspace, &resolved.absolute).unwrap_or(false);
+        let child_ignored = ctx.git_runner.check_ignore(workspace, &probe_child).unwrap_or(false);
+        dir_ignored || child_ignored
+    } else {
+        false
+    };
+
+    Ok(WorktreesDirCheckResult {
+        resolved_path: Some(resolved.absolute),
+        inside_repo,
+        git_ignored,
+    })
 }
 
 /// Look up an instruction set by ID, validating that its tool matches the requested one.

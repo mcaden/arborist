@@ -219,6 +219,9 @@ impl GitRunner for RecordingGitRunner {
         }
         Ok(())
     }
+    fn check_ignore(&self, _repo_root: &Path, _candidate: &Path) -> Result<bool, arborist_lib::types::Error> {
+        Ok(false)
+    }
 }
 
 fn build_harness() -> Harness {

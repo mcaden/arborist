@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use arborist_lib::commands::session::{workspace_validate_impl, worktree_create_impl, AppContext};
+use arborist_lib::commands::session::{workspace_validate_impl, worktree_create_impl, worktrees_dir_check_impl, AppContext};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
@@ -18,6 +18,8 @@ struct FakeGitRunner {
     /// `Ok(())` ⇒ create_worktree returns the joined path; `Err(s)` ⇒ it returns Error::Internal(s).
     create_outcome: Mutex<Result<(), String>>,
     last_create: Mutex<Option<(PathBuf, PathBuf, String)>>,
+    /// Drives `check_ignore`. Defaults to `false` ("not ignored") which matches the default state of a fresh repo with no `.gitignore`.
+    git_ignored: std::sync::atomic::AtomicBool,
 }
 
 impl FakeGitRunner {
@@ -26,6 +28,7 @@ impl FakeGitRunner {
             toplevel: Mutex::new(None),
             create_outcome: Mutex::new(Ok(())),
             last_create: Mutex::new(None),
+            git_ignored: std::sync::atomic::AtomicBool::new(false),
         })
     }
     /// Configure git_toplevel to return `Some(canonical(path))` for any query — i.e. "this is a repo whose root is `path`".
@@ -38,6 +41,9 @@ impl FakeGitRunner {
     /// Test-only: forget the configured repo root so subsequent `git_toplevel` queries return `None` ("not a repo").
     fn clear_repo_root(&self) {
         *self.toplevel.lock().unwrap() = None;
+    }
+    fn set_git_ignored(&self, ignored: bool) {
+        self.git_ignored.store(ignored, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -61,6 +67,9 @@ impl GitRunner for FakeGitRunner {
     }
     fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path) -> Result<(), Error> {
         Ok(())
+    }
+    fn check_ignore(&self, _repo_root: &Path, _candidate: &Path) -> Result<bool, Error> {
+        Ok(self.git_ignored.load(std::sync::atomic::Ordering::Relaxed))
     }
 }
 
@@ -311,6 +320,164 @@ fn worktree_create_propagates_runner_failure() {
 
     let err = worktree_create_impl(&ctx, "feat-x").expect_err("must err");
     assert!(format!("{err:?}").contains("simulated git failure"));
+}
+
+// ---------- worktree_create with configurable worktreesDir (Issue #53) ----------
+
+/// Helper: persist a workspace_root + worktrees_dir in one save.
+fn set_workspace_and_worktrees_dir(ctx: &AppContext, root: &Path, dir: &str) {
+    ctx.store()
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(root.to_path_buf())),
+            worktrees_dir: Some(dir.to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+#[test]
+fn worktree_create_uses_configured_relative_dir() {
+    // Custom relative worktreesDir lands under the workspace and is passed verbatim to git_runner.
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace_and_worktrees_dir(&ctx, ws.path(), ".cache/wt");
+
+    let out = worktree_create_impl(&ctx, "feat-y").expect("ok");
+    assert!(out.path.ends_with(PathBuf::from(".cache").join("wt").join("feat-y")));
+
+    let last = runner.last_create.lock().unwrap().clone().unwrap();
+    let canon_ws = dunce::canonicalize(ws.path()).unwrap();
+    assert_eq!(last.0, canon_ws);
+    assert_eq!(last.1, PathBuf::from(".cache").join("wt").join("feat-y"));
+    assert_eq!(last.2, "feat-y");
+}
+
+#[test]
+fn worktree_create_uses_configured_absolute_dir_outside_workspace() {
+    // Absolute external worktreesDir: containment guard skipped, parent created on demand, runner sees the absolute parent path.
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let external = TempDir::new().unwrap();
+    let parent = external.path().join("arborist-external");
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace_and_worktrees_dir(&ctx, ws.path(), parent.to_str().unwrap());
+
+    let out = worktree_create_impl(&ctx, "feat-ext").expect("ok");
+    assert_eq!(out.path, parent.join("feat-ext"));
+    assert!(parent.exists(), "parent dir should have been created on demand");
+
+    let last = runner.last_create.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        last.1,
+        parent.join("feat-ext"),
+        "runner must receive absolute parent for external worktreesDir"
+    );
+}
+
+#[test]
+fn worktree_create_default_dir_unchanged_when_unset() {
+    // Defence in depth: a fresh config (worktreesDir defaulted via serde) still creates under `.worktrees/<name>` exactly like before Issue #53.
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let out = worktree_create_impl(&ctx, "feat-default").expect("ok");
+    assert!(out.path.ends_with(PathBuf::from(".worktrees").join("feat-default")));
+}
+
+// ---------- worktrees_dir_check_impl (Issue #53) ----------
+
+#[test]
+fn worktrees_dir_check_returns_null_when_no_workspace() {
+    let store = TempDir::new().unwrap();
+    let ctx = build_ctx(FakeGitRunner::new(), &store);
+    let res = worktrees_dir_check_impl(&ctx, ".worktrees").expect("ok");
+    assert!(res.resolved_path.is_none());
+    assert!(!res.inside_repo);
+    assert!(!res.git_ignored);
+}
+
+#[test]
+fn worktrees_dir_check_inside_repo_reports_inside_and_ignored_state() {
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_git_ignored(true);
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let res = worktrees_dir_check_impl(&ctx, ".worktrees").expect("ok");
+    assert!(res.inside_repo);
+    assert!(res.git_ignored);
+    assert!(res.resolved_path.unwrap().ends_with(".worktrees"));
+}
+
+#[test]
+fn worktrees_dir_check_not_ignored_when_runner_says_no() {
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new(); // git_ignored defaults to false
+    let ctx = build_ctx(runner as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let res = worktrees_dir_check_impl(&ctx, ".worktrees").expect("ok");
+    assert!(res.inside_repo);
+    assert!(!res.git_ignored, "warning banner should fire when git check-ignore returns false");
+}
+
+#[test]
+fn worktrees_dir_check_outside_repo_skips_git_call() {
+    // Ignoring something outside the repo is meaningless — the result must always be {insideRepo: false, gitIgnored: false} regardless of what the
+    // runner would have answered. This guards against the frontend's `inside && !ignored` warning false-firing for absolute external dirs.
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_git_ignored(true);
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let external = if cfg!(windows) {
+        r"D:\arborist-external"
+    } else {
+        "/var/arborist-external"
+    };
+    let res = worktrees_dir_check_impl(&ctx, external).expect("ok");
+    assert!(!res.inside_repo);
+    assert!(!res.git_ignored, "git_ignored must be false for paths outside the workspace");
+}
+
+#[test]
+fn worktrees_dir_check_relative_dotdot_escape_treated_as_outside() {
+    // `../sibling` lexically resolves outside the workspace root and must be classified as not-inside, mirroring the create-path semantics.
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_git_ignored(true);
+    let ctx = build_ctx(runner as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let res = worktrees_dir_check_impl(&ctx, "../sibling-worktrees").expect("ok");
+    assert!(!res.inside_repo);
+    assert!(!res.git_ignored);
+}
+
+#[test]
+fn worktrees_dir_check_empty_input_resolves_to_default() {
+    // Empty input must agree with merge_partial's normalisation: treat as ".worktrees" so the live preview matches what would be saved.
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let res = worktrees_dir_check_impl(&ctx, "").expect("ok");
+    assert!(res.inside_repo);
+    assert!(res.resolved_path.unwrap().ends_with(".worktrees"));
 }
 
 // ---------- workspace_switch (Phase 7) ----------

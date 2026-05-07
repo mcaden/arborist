@@ -11,7 +11,7 @@ export const workspaceSwitchResultFixture = {
   workspaceRoot: '/tmp/repo',
   noOp: false,
   config: {
-    configVersion: 4,
+    configVersion: 5,
     defaultInstructionSets: {
       claude: 'claude-default',
       copilot: 'copilot-default',
@@ -27,6 +27,7 @@ export const workspaceSwitchResultFixture = {
     activeSessionId: null,
     customProcesses: [],
     lastOpenSubSessions: [],
+    worktreesDir: '.worktrees',
   },
   sessions: [],
 } as const satisfies WorkspaceSwitchResult;

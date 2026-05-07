@@ -271,6 +271,7 @@ pub fn run() {
             commands::workspace_validate,
             commands::workspace_switch,
             commands::worktree_create,
+            commands::worktrees_dir_check,
             commands::subsession_create,
             commands::subsession_close,
             commands::subsession_focus,

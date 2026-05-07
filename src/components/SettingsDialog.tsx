@@ -21,9 +21,17 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { CustomProcessesTab } from './CustomProcessesTab';
 import { WorkspacePicker } from './WorkspacePicker';
-import { formatError, pickDirectory } from '@/lib/tauri-bridge';
+import { formatError, pickDirectory, worktreesDirCheck } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import { selectAiLaunchCommands, selectInstructionSetsDir, selectPrelaunchCommands, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
+import {
+  selectAiLaunchCommands,
+  selectInstructionSetsDir,
+  selectPrelaunchCommands,
+  selectWorkspaceRoot,
+  selectWorktreesDir,
+  useConfigStore,
+} from '@/store/config-store';
+import type { WorktreesDirCheckResult } from '@/types/arborist';
 
 export type SettingsTab = 'general' | 'customProcesses';
 
@@ -62,6 +70,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
   const aiLaunchCommands = useConfigStore(selectAiLaunchCommands);
+  const worktreesDir = useConfigStore(selectWorktreesDir);
   const setConfig = useConfigStore((s) => s.set);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
@@ -69,6 +78,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(prelaunchCommands));
   const [claudeCmdInput, setClaudeCmdInput] = useState<string>(aiLaunchCommands.claude);
   const [copilotCmdInput, setCopilotCmdInput] = useState<string>(aiLaunchCommands.copilot);
+  const [wtDirInput, setWtDirInput] = useState<string>(worktreesDir);
+  const [wtDirCheck, setWtDirCheck] = useState<WorktreesDirCheckResult | null>(null);
+  const [wtDirChecking, setWtDirChecking] = useState<boolean>(false);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -136,15 +148,62 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   useEffect(() => {
     setCopilotCmdInput(aiLaunchCommands.copilot);
   }, [aiLaunchCommands.copilot]);
+  useEffect(() => {
+    setWtDirInput(worktreesDir);
+  }, [worktreesDir]);
+
+  // Live `worktrees_dir_check` preview. We debounce by 250ms (per the
+  // dialog's design — keeps the keystroke load reasonable) and use a
+  // monotonically incremented request id so a slow earlier response
+  // can't overwrite a faster newer one. While a check is in-flight the
+  // previous result is cleared so the warning banner doesn't flash with
+  // stale info; we only restore it (or the new result) when the request
+  // for the current input value resolves.
+  const wtDirCheckRequestIdRef = useRef(0);
+  useEffect(() => {
+    if (workspaceRoot === null || workspaceRoot.length === 0) {
+      setWtDirCheck(null);
+      setWtDirChecking(false);
+      return;
+    }
+    const requestId = ++wtDirCheckRequestIdRef.current;
+    setWtDirCheck(null);
+    setWtDirChecking(true);
+    const value = wtDirInput;
+    const timer = setTimeout(() => {
+      worktreesDirCheck(value)
+        .then((result) => {
+          if (requestId !== wtDirCheckRequestIdRef.current) return;
+          setWtDirCheck(result);
+        })
+        .catch(() => {
+          if (requestId !== wtDirCheckRequestIdRef.current) return;
+          setWtDirCheck(null);
+        })
+        .finally(() => {
+          if (requestId !== wtDirCheckRequestIdRef.current) return;
+          setWtDirChecking(false);
+        });
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [wtDirInput, workspaceRoot]);
 
   const parsedCmds = textToCommands(cmdsInput);
   const claudeCmdTrimmed = claudeCmdInput.trim();
   const copilotCmdTrimmed = copilotCmdInput.trim();
+  const wtDirTrimmed = wtDirInput.trim();
+  // Empty input collapses to `.worktrees` server-side; treat them as
+  // equivalent so the Save button doesn't light up on an empty edit
+  // when the persisted value is already the default.
+  const wtDirEffective = wtDirTrimmed === '' ? '.worktrees' : wtDirTrimmed;
   const dirty =
     instrInput !== instructionSetsDir ||
     !arraysEqual(parsedCmds, prelaunchCommands) ||
     claudeCmdTrimmed !== aiLaunchCommands.claude ||
-    copilotCmdTrimmed !== aiLaunchCommands.copilot;
+    copilotCmdTrimmed !== aiLaunchCommands.copilot ||
+    wtDirEffective !== worktreesDir;
 
   const handleBrowseInstructions = useCallback(async () => {
     const picked = await pickDirectory();
@@ -162,6 +221,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
         instructionSetsDir?: string;
         prelaunchCommands?: string[];
         aiLaunchCommands?: { claude?: string; copilot?: string };
+        worktreesDir?: string;
       } = {};
       if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
       if (!arraysEqual(parsedCmds, prelaunchCommands)) patch.prelaunchCommands = parsedCmds;
@@ -169,6 +229,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
       if (claudeCmdTrimmed !== aiLaunchCommands.claude) launchPatch.claude = claudeCmdTrimmed;
       if (copilotCmdTrimmed !== aiLaunchCommands.copilot) launchPatch.copilot = copilotCmdTrimmed;
       if (Object.keys(launchPatch).length > 0) patch.aiLaunchCommands = launchPatch;
+      if (wtDirEffective !== worktreesDir) patch.worktreesDir = wtDirEffective;
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
     } catch (err) {
@@ -186,6 +247,8 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     copilotCmdTrimmed,
     aiLaunchCommands.claude,
     aiLaunchCommands.copilot,
+    wtDirEffective,
+    worktreesDir,
     setConfig,
     onClose,
   ]);
@@ -294,6 +357,48 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Changing the workspace closes every open session.</p>
+              </section>
+
+              <section className="mb-4">
+                <label
+                  htmlFor="settings-worktrees-dir"
+                  className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
+                >
+                  Worktrees folder
+                </label>
+                <input
+                  id="settings-worktrees-dir"
+                  type="text"
+                  value={wtDirInput}
+                  onChange={(e) => {
+                    setSubmitError(null);
+                    setWtDirInput(e.target.value);
+                  }}
+                  spellCheck={false}
+                  placeholder=".worktrees"
+                  data-testid="settings-worktrees-dir"
+                  aria-describedby="settings-worktrees-dir-help"
+                  className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+                <p id="settings-worktrees-dir-help" className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Parent folder for new worktrees. Relative paths resolve against the workspace root; absolute paths are used as-is. Existing
+                  worktrees on disk are not moved.
+                </p>
+                {wtDirCheck?.resolvedPath !== undefined && wtDirCheck.resolvedPath !== null && (
+                  <p className="mt-1 truncate font-mono text-xs text-slate-500 dark:text-slate-400" data-testid="settings-worktrees-dir-resolved">
+                    Resolves to: {wtDirCheck.resolvedPath}
+                  </p>
+                )}
+                {wtDirCheck && wtDirCheck.insideRepo && !wtDirCheck.gitIgnored && !wtDirChecking && (
+                  <p
+                    role="alert"
+                    data-testid="settings-worktrees-dir-warning"
+                    className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+                  >
+                    This folder is inside the workspace and is not ignored by Git. Add it to .gitignore (or .git/info/exclude) so worktrees don't
+                    appear as untracked changes.
+                  </p>
+                )}
               </section>
 
               <section className="mb-4">

@@ -86,6 +86,10 @@ fn main_capability_allows_core_default_and_ping() {
         "main capability must include allow-worktree-create so worktree_create is callable; got {identifiers:?}",
     );
     assert!(
+        identifiers.contains(&"allow-worktrees-dir-check"),
+        "main capability must include allow-worktrees-dir-check so worktrees_dir_check is callable (Issue #53); got {identifiers:?}",
+    );
+    assert!(
         identifiers.contains(&"dialog:allow-open"),
         "main capability must include dialog:allow-open so the file picker is callable; got {identifiers:?}",
     );
@@ -255,6 +259,22 @@ fn allow_worktree_create_permission_file_declares_command() {
     let path = manifest_dir().join("permissions").join("allow-worktree-create.toml");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(raw.contains("worktree_create"));
+}
+
+#[test]
+fn allow_worktrees_dir_check_permission_file_declares_command() {
+    // Issue #53: live-preview command in the Settings dialog. Failing this test means the WebView's `invoke('worktrees_dir_check', …)` will be
+    // rejected at runtime — see the file-level docstring for context on why we fail loudly here.
+    let path = manifest_dir().join("permissions").join("allow-worktrees-dir-check.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktrees-dir-check\""),
+        "permission identifier must remain `allow-worktrees-dir-check`",
+    );
+    assert!(
+        raw.contains("\"worktrees_dir_check\""),
+        "permission must allow the `worktrees_dir_check` command",
+    );
 }
 
 #[test]

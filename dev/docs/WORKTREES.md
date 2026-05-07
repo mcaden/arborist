@@ -22,8 +22,9 @@ the app cooperates with it.
 
 ## The convention
 
-Given a configured `workspaceRoot` of `/path/to/repo`, all worktrees
-created by Arborist are placed at:
+Given a configured `workspaceRoot` of `/path/to/repo` and the default
+`worktreesDir` of `.worktrees`, all worktrees created by Arborist are
+placed at:
 
 ```
 /path/to/repo/.worktrees/<name>/
@@ -37,8 +38,41 @@ one another.
 The exact `git` invocation Arborist uses (DESIGN §6, `worktree_create`):
 
 ```sh
-git -C <workspaceRoot> worktree add .worktrees/<name> -b <name>
+git -C <workspaceRoot> worktree add <worktreesDir>/<name> -b <name>
 ```
+
+### Configuring the parent folder
+
+The parent folder is configurable via `AppConfig.worktreesDir` (Issue
+#53). Two shapes are accepted:
+
+- **Relative** (default `.worktrees`) — resolved against `workspaceRoot`.
+  `..` segments are honoured, so `../wt` legitimately escapes the
+  workspace; the same containment guard applied to the legacy default
+  applies here.
+- **Absolute** (e.g. `/var/arborist/worktrees`, `D:\wt`) — used
+  verbatim. Lives wherever the user puts it — typically *outside* the
+  workspace, so Git never sees the contents at all.
+
+Empty / whitespace-only values normalise to the default at both save and
+load time (the backend's `merge_partial` and `validate_loaded_config`
+are defence-in-depth for hand-edited config files).
+
+The Settings dialog runs a live `worktrees_dir_check` against the
+candidate value (debounced ~250 ms) and surfaces a warning when:
+
+1. the resolved path is **inside** the workspace root, **and**
+2. `git check-ignore --no-index` says it is **not** ignored.
+
+The recommendation in that case is to add the folder to `.gitignore`
+(or `.git/info/exclude`) so worktree contents don't appear as untracked
+changes in the host repo.
+
+> **Changing `worktreesDir` does not migrate existing worktrees.** Each
+> session stores its absolute `worktreePath` on creation, so already-open
+> sessions keep working unchanged. Existing on-disk worktrees under the
+> *old* parent folder simply stop appearing in the new-session
+> "Existing worktrees" list — they are still reachable via Browse…
 
 ## Why a fixed subdirectory under the repo
 
@@ -100,6 +134,6 @@ installations are encouraged to standardise on `workspaceRoot` +
 ## See also
 
 - `SPEC.md` §5.5 — Worktree Discovery requirements
-- `DESIGN.md` §3 — `AppConfig.workspaceRoot` / `worktreeRoots`
-- `DESIGN.md` §6 — `worktree_create`, `worktrees_list`, `workspace_validate`
+- `DESIGN.md` §3 — `AppConfig.workspaceRoot` / `worktreeRoots` / `worktreesDir`
+- `DESIGN.md` §6 — `worktree_create`, `worktrees_list`, `workspace_validate`, `worktrees_dir_check`
 - `ROADMAP.md` §1, §2 — single-workspace model and worktree creation work

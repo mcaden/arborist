@@ -309,7 +309,17 @@ pub struct DefaultInstructionSets {
 ///   feature). Migration seeds the built-in custom-process defs (`shell`,
 ///   `open-folder`, `vscode`) additively — only IDs not already present are
 ///   inserted, never overwriting a user-edited def.
-pub const CONFIG_VERSION_CURRENT: u32 = 4;
+/// * `5` — added `worktrees_dir` (configurable worktrees folder, Issue #53).
+///   Migration is purely additive — pre-v5 configs hydrate with the
+///   `default_worktrees_dir()` value (`".worktrees"`), preserving the legacy
+///   layout for every existing install.
+pub const CONFIG_VERSION_CURRENT: u32 = 5;
+
+/// Default value for [`AppConfig::worktrees_dir`]. Kept as a free function (rather than a `const`) so it can be referenced from
+/// `#[serde(default = "default_worktrees_dir")]` and the `Default` impl alike. Returning `String` instead of `&'static str` matches the field type.
+pub fn default_worktrees_dir() -> String {
+    ".worktrees".to_owned()
+}
 
 /// Per-agent CLI launch command override. Each field is a verbatim shell snippet (e.g. `"npx claude --model sonnet"`) interpolated into the composed
 /// command in place of the bare program token. Empty string means "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
@@ -342,6 +352,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub workspace_root: Option<PathBuf>,
     pub worktree_roots: Vec<PathBuf>,
+    /// Configurable parent directory under which Arborist creates new worktrees (Issue #53). Default `".worktrees"`. Stored verbatim (relative or
+    /// absolute) so the user-visible value in Settings round-trips losslessly: relative values are resolved against `workspace_root` at use time;
+    /// absolute values are used as-is and may live outside the repo entirely. Empty string is treated as "use the default" by both the merge path and
+    /// the `worktrees_dir_check` command. Added in `configVersion = 5`.
+    #[serde(default = "default_worktrees_dir")]
+    pub worktrees_dir: String,
     pub prelaunch_commands: Vec<String>,
     /// Per-worktree overrides. Key = canonicalized worktree path as a string.
     pub worktree_prelaunch_commands: BTreeMap<String, Vec<String>>,
@@ -374,6 +390,7 @@ impl Default for AppConfig {
             instruction_sets_dir: PathBuf::new(),
             workspace_root: None,
             worktree_roots: Vec::new(),
+            worktrees_dir: default_worktrees_dir(),
             prelaunch_commands: Vec::new(),
             worktree_prelaunch_commands: BTreeMap::new(),
             ai_launch_commands: AiLaunchCommands::default(),
@@ -422,6 +439,10 @@ pub struct PartialAppConfig {
     pub workspace_root: Option<Option<PathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub worktree_roots: Option<Vec<PathBuf>>,
+    /// Patch the configurable worktrees folder. `Some("")` resets to the runtime default (`".worktrees"`); `Some("<value>")` stores the value
+    /// verbatim. Absent leaves the field alone. Added in `configVersion = 5` (Issue #53).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub worktrees_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub prelaunch_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -849,6 +870,34 @@ pub struct WorktreeCreateResult {
     pub path: PathBuf,
 }
 
+/// Argument shape for `worktrees_dir_check` (Issue #53). The frontend sends the un-saved Settings input verbatim so the backend can render a live
+/// warning without the user having to commit the new value first.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreesDirCheckArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreesDirCheckArgs {
+    pub value: String,
+}
+
+/// Result of `worktrees_dir_check`. All three fields are mandatory so the frontend can render its banner state from a single payload without juggling
+/// optionality.
+///
+/// * `resolved_path` — `Some` when a workspace root is configured (the lexically-resolved absolute path the configured value points at). `None` when
+///   no workspace is set; in that case the dialog cannot meaningfully preview anything and the warning is suppressed.
+/// * `inside_repo` — whether the resolved path lies inside the active workspace root (and therefore needs to be in `.gitignore`).
+/// * `git_ignored` — whether `git check-ignore --no-index` reports the resolved path (or a synthetic child) as ignored. Only meaningful when
+///   `inside_repo` is true; the backend always returns `false` for outside-repo paths so the frontend can short-circuit on `inside_repo` alone.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreesDirCheckResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreesDirCheckResult {
+    pub resolved_path: Option<PathBuf>,
+    pub inside_repo: bool,
+    pub git_ignored: bool,
+}
+
 // --------------------------------------------------------------------------- Custom processes / sub-sessions (Phase 1: types only; backend lands in
 // Phases 2–3, frontend in 4–6, restore in 7). ---------------------------------------------------------------------------
 
@@ -1207,7 +1256,7 @@ mod tests {
         let mut overrides = BTreeMap::new();
         overrides.insert("/repo/feature-x".to_owned(), vec!["nvm use".to_owned(), "asdf reshim".to_owned()]);
         let value = AppConfig {
-            config_version: 4,
+            config_version: 5,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
@@ -1215,6 +1264,7 @@ mod tests {
             instruction_sets_dir: PathBuf::from("/cfg/instructions"),
             workspace_root: Some(PathBuf::from("/repo")),
             worktree_roots: vec![PathBuf::from("/repo")],
+            worktrees_dir: ".worktrees".to_owned(),
             prelaunch_commands: vec!["source ~/.zshenv".to_owned()],
             worktree_prelaunch_commands: overrides,
             ai_launch_commands: AiLaunchCommands {
@@ -1245,7 +1295,7 @@ mod tests {
             }],
         };
         let fixture = json!({
-            "configVersion": 4,
+            "configVersion": 5,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
@@ -1253,6 +1303,7 @@ mod tests {
             "instructionSetsDir": "/cfg/instructions",
             "workspaceRoot": "/repo",
             "worktreeRoots": ["/repo"],
+            "worktreesDir": ".worktrees",
             "prelaunchCommands": ["source ~/.zshenv"],
             "worktreePrelaunchCommands": {
                 "/repo/feature-x": ["nvm use", "asdf reshim"]
@@ -1364,6 +1415,7 @@ mod tests {
             instruction_sets_dir: None,
             workspace_root: None,
             worktree_roots: Some(vec![PathBuf::from("/repo")]),
+            worktrees_dir: None,
             prelaunch_commands: None,
             worktree_prelaunch_commands: None,
             ai_launch_commands: None,
@@ -1491,6 +1543,7 @@ mod tests {
         assert!(!obj.contains_key("configVersion"));
         assert!(!obj.contains_key("instructionSetsDir"));
         assert!(!obj.contains_key("workspaceRoot"));
+        assert!(!obj.contains_key("worktreesDir"));
         assert!(!obj.contains_key("prelaunchCommands"));
         assert!(!obj.contains_key("worktreePrelaunchCommands"));
         assert!(!obj.contains_key("lastOpenSessions"));

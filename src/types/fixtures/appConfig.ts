@@ -7,7 +7,7 @@
 import type { AppConfig } from '../arborist';
 
 export const appConfigFixture = {
-  configVersion: 4,
+  configVersion: 5,
   defaultInstructionSets: {
     claude: 'claude-default',
     copilot: 'copilot-default',
@@ -45,4 +45,5 @@ export const appConfigFixture = {
       composedCommand: 'sh -i',
     },
   ],
+  worktreesDir: '.worktrees',
 } as const satisfies AppConfig;

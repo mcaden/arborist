@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-worktrees-dir-check"
+description = "Allows the Settings dialog to live-preview a candidate `worktreesDir` value via the `worktrees_dir_check` command (Issue #53)."
+commands.allow = [
+    "worktrees_dir_check",
+]

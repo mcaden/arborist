@@ -51,7 +51,7 @@ function seed(config: Partial<AppConfig> = {}): void {
   });
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 5,
       defaultInstructionSets: { claude: 'default-claude', copilot: 'default-copilot' },
       instructionSetsDir: '/tmp/i',
       workspaceRoot: '/tmp',
@@ -63,6 +63,7 @@ function seed(config: Partial<AppConfig> = {}): void {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreesDir: '.worktrees',
       ...config,
     } as AppConfig,
     status: 'ready',

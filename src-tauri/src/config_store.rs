@@ -206,12 +206,16 @@ impl ConfigStore {
         if cfg.config_version < 3 && cfg.workspace_root.is_none() && cfg.worktree_roots.len() == 1 {
             cfg.workspace_root = Some(cfg.worktree_roots[0].clone());
         }
-        // Bump the on-disk version stamp so the next save records the current schema explicitly. (`active_session_id` was the v1→v2 addition;
-        // `workspace_root` is the v2→v3 addition; `custom_processes` and `last_open_sub_sessions` are the v3→v4 additions. All default via serde, so
-        // missing fields hydrate cleanly already.)
+        // Bump the on-disk version stamp so the next save records the current schema explicitly.
         //
-        // v3→v4: additively seed the built-in custom-process defs (`shell`, `open-folder`, `vscode`). Only IDs not already present are inserted, so a
-        // user who edited / deleted a built-in does not get it silently re-injected on every launch.
+        // Version-by-version migration table:
+        // * v1→v2: `active_session_id` added — defaults via serde, no migration needed.
+        // * v2→v3: `workspace_root` added — see `worktree_roots` adoption above.
+        // * v3→v4: `ai_launch_commands`, `custom_processes`, and `last_open_sub_sessions` added. The custom-processes seeding below back-fills the
+        //   built-in launchers (`shell`, `open-folder`, `vscode`) additively for users coming from < v4.
+        // * v4→v5 (Issue #53): `worktrees_dir` added. Defaults via `#[serde(default = "default_worktrees_dir")]`, so missing fields hydrate as
+        //   `".worktrees"` and the legacy layout is preserved for every existing install. `validate_loaded_config` also normalises a hand-edited
+        //   empty string back to the default so the runtime never sees `""`.
         if cfg.config_version < 4 {
             seed_default_custom_processes(&mut cfg.custom_processes);
         }
@@ -536,6 +540,20 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
         }
     }
     cfg.worktree_prelaunch_commands = filtered;
+
+    // worktrees_dir: hand-edited configs may contain an empty string or a value with embedded NULs. Treat both as "use the default" so the runtime
+    // never has to special-case `""`. Per Issue #53 this preserves the original intent of the field — the in-app Settings dialog has its own empty
+    // → default normalisation in `merge_partial`, but a corrupt/legacy config edited on disk goes through this path instead.
+    if cfg.worktrees_dir.is_empty() || cfg.worktrees_dir.contains('\0') {
+        if !cfg.worktrees_dir.is_empty() {
+            warn!(
+                code = "InvalidPath",
+                value = %cfg.worktrees_dir.escape_debug(),
+                "worktreesDir contains NUL byte; resetting to default",
+            );
+        }
+        cfg.worktrees_dir = crate::types::default_worktrees_dir();
+    }
 }
 
 // --------------------------------------------------------------------------- Partial merge / save validation
@@ -599,6 +617,21 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
             out.push(canon);
         }
         cfg.worktree_roots = out;
+    }
+    if let Some(value) = patch.worktrees_dir {
+        // Issue #53: empty input collapses to the runtime default so the on-disk shape always carries a meaningful value (the Settings dialog uses the
+        // empty string to mean "reset to default"). NUL bytes are rejected outright — they would slip past the path-API and could surface as confusing
+        // errors deep in `worktree_create_impl`. We deliberately allow `..` segments and absolute paths; the resolver in `worktrees_dir_check` and the
+        // create path each carry their own containment/escape semantics so the user can place worktrees outside the workspace if they choose.
+        if value.contains('\0') {
+            return Err(Error::InvalidPath("worktreesDir must not contain NUL bytes".to_owned()));
+        }
+        let trimmed = value.trim();
+        cfg.worktrees_dir = if trimmed.is_empty() {
+            crate::types::default_worktrees_dir()
+        } else {
+            trimmed.to_owned()
+        };
     }
     if let Some(cmds) = patch.prelaunch_commands {
         cfg.prelaunch_commands = cmds;
@@ -1833,6 +1866,143 @@ mod tests {
             })
             .expect_err("rejected");
         assert!(matches!(err, Error::InvalidPath(_)), "got {err:?}");
+    }
+
+    // ---------- worktrees_dir (Issue #53) ----------
+
+    #[test]
+    fn save_config_persists_custom_worktrees_dir() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store
+            .save_config(PartialAppConfig {
+                worktrees_dir: Some(".cache/wt".to_owned()),
+                ..Default::default()
+            })
+            .expect("save");
+        assert_eq!(cfg.worktrees_dir, ".cache/wt");
+    }
+
+    #[test]
+    fn save_config_empty_worktrees_dir_resets_to_default() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        // First persist a custom value, then send an empty patch and assert reset.
+        store
+            .save_config(PartialAppConfig {
+                worktrees_dir: Some("custom".to_owned()),
+                ..Default::default()
+            })
+            .expect("save custom");
+        let cfg = store
+            .save_config(PartialAppConfig {
+                worktrees_dir: Some(String::new()),
+                ..Default::default()
+            })
+            .expect("save empty");
+        assert_eq!(cfg.worktrees_dir, ".worktrees");
+    }
+
+    #[test]
+    fn save_config_whitespace_only_worktrees_dir_resets_to_default() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store
+            .save_config(PartialAppConfig {
+                worktrees_dir: Some("   \t".to_owned()),
+                ..Default::default()
+            })
+            .expect("save");
+        assert_eq!(cfg.worktrees_dir, ".worktrees");
+    }
+
+    #[test]
+    fn save_config_rejects_worktrees_dir_with_nul_byte() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let err = store
+            .save_config(PartialAppConfig {
+                worktrees_dir: Some("foo\0bar".to_owned()),
+                ..Default::default()
+            })
+            .expect_err("rejected");
+        assert!(matches!(err, Error::InvalidPath(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn save_config_accepts_absolute_worktrees_dir_outside_workspace() {
+        // Issue #53 explicitly allows opting out of the in-repo layout — absolute paths must round-trip without rejection. (Containment is enforced by
+        // worktree_create_impl, not by merge_partial.)
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let abs = if cfg!(windows) { r"D:\arborist-wt" } else { "/var/arborist-wt" };
+        let cfg = store
+            .save_config(PartialAppConfig {
+                worktrees_dir: Some(abs.to_owned()),
+                ..Default::default()
+            })
+            .expect("save absolute");
+        assert_eq!(cfg.worktrees_dir, abs);
+    }
+
+    #[test]
+    fn save_config_trims_worktrees_dir_whitespace() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store
+            .save_config(PartialAppConfig {
+                worktrees_dir: Some("  .worktrees  ".to_owned()),
+                ..Default::default()
+            })
+            .expect("save");
+        assert_eq!(cfg.worktrees_dir, ".worktrees");
+    }
+
+    #[test]
+    fn load_config_normalises_empty_worktrees_dir_on_disk() {
+        // A user who hand-edits config.json down to `"worktreesDir": ""` must not crash the create path. Validation should resurrect the default.
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let store = ConfigStore::open(&store_dir).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": CONFIG_VERSION_CURRENT,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "worktreesDir": ""
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.worktrees_dir, ".worktrees");
+    }
+
+    #[test]
+    fn load_config_v4_without_worktrees_dir_field_hydrates_default() {
+        // Migration smoke test: a v4 config (pre-Issue-#53) has no `worktreesDir` key. It must hydrate as `.worktrees` via the serde default and bump
+        // to CONFIG_VERSION_CURRENT on next save.
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let store = ConfigStore::open(&store_dir).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": 4,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        assert_eq!(cfg.worktrees_dir, ".worktrees");
     }
 
     #[test]

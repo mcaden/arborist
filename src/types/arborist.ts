@@ -153,6 +153,14 @@ export interface AppConfig {
    * application sub-sessions back greyed (re-launch on click).
    */
   lastOpenSubSessions: SubSessionRecord[];
+  /**
+   * Configurable parent directory for newly-created worktrees (Issue #53).
+   * Relative values are resolved against `workspaceRoot`; absolute values
+   * are used verbatim and may live outside the workspace. Defaults to
+   * `".worktrees"`. Empty input collapses to the default on save.
+   * Added in `configVersion = 5`.
+   */
+  worktreesDir: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
@@ -192,6 +200,13 @@ export interface PartialAppConfig {
   customProcesses?: CustomProcessDef[];
   /** Replaces the entire `lastOpenSubSessions` list when present. */
   lastOpenSubSessions?: SubSessionRecord[];
+  /**
+   * Configurable parent directory for newly-created worktrees (Issue #53).
+   * Empty string is normalized to the runtime default (`".worktrees"`) by
+   * `merge_partial`; non-empty values are stored verbatim after rejection
+   * of NUL bytes.
+   */
+  worktreesDir?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::CustomProcessDef
@@ -454,6 +469,26 @@ export interface WorkspaceValidateResult {
 // canonical absolute path to the newly-created worktree directory.
 export interface WorktreeCreateResult {
   path: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreesDirCheckArgs
+// Argument struct for the `worktrees_dir_check` command (Issue #53). `value`
+// is the un-saved candidate from the Settings dialog text input — the
+// backend resolves it lexically against `workspaceRoot` (no filesystem
+// mutation) so the dialog can render a live "not in .gitignore" warning.
+export interface WorktreesDirCheckArgs {
+  value: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreesDirCheckResult
+// Live preview for the Settings dialog. `resolvedPath` is `null` when no
+// workspace is configured. `insideRepo` and `gitIgnored` together let the
+// dialog drive the "ignored by git" warning banner: show the warning when
+// `insideRepo && !gitIgnored`.
+export interface WorktreesDirCheckResult {
+  resolvedPath: string | null;
+  insideRepo: boolean;
+  gitIgnored: boolean;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorkspaceSwitchArgs

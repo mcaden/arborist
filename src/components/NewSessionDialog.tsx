@@ -27,7 +27,7 @@ import { isInsideWorktreesDir } from '@/lib/worktree-paths';
 import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
-import { selectPrelaunchCommands, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
+import { selectPrelaunchCommands, selectWorkspaceRoot, selectWorktreesDir, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionActions } from '@/store/session-store';
 import type { Tool, WorktreeInfo } from '@/types/arborist';
@@ -55,6 +55,7 @@ export function NewSessionDialog(): JSX.Element | null {
   const actions = useSessionActions();
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
+  const worktreesDir = useConfigStore(selectWorktreesDir);
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
@@ -156,14 +157,14 @@ export function NewSessionDialog(): JSX.Element | null {
       .then((list) => {
         if (!isMountedRef.current) return;
         if (requestId !== worktreesRequestIdRef.current) return;
-        const filtered = list.filter((w) => isInsideWorktreesDir(root, w.path));
+        const filtered = list.filter((w) => isInsideWorktreesDir(root, worktreesDir, w.path));
         setWorktrees(filtered);
       })
       .finally(() => {
         if (!isMountedRef.current) return;
         if (requestId === worktreesRequestIdRef.current) setWorktreesLoading(false);
       });
-  }, [isOpen, step, workspaceRoot]);
+  }, [isOpen, step, workspaceRoot, worktreesDir]);
 
   // Resolve the prelaunchCommands the backend would actually run for the
   // chosen worktree (DESIGN §5.6 / §8.1): per-worktree override (if set)
@@ -278,7 +279,7 @@ export function NewSessionDialog(): JSX.Element | null {
               // A newer list request has been issued in the meantime; let
               // the latest one win to avoid stale data overwriting fresh.
               if (requestId !== worktreesRequestIdRef.current) return;
-              setWorktrees(list.filter((w) => isInsideWorktreesDir(root, w.path)));
+              setWorktrees(list.filter((w) => isInsideWorktreesDir(root, worktreesDir, w.path)));
             })
             .finally(() => {
               if (!isMountedRef.current) return;
@@ -433,8 +434,8 @@ export function NewSessionDialog(): JSX.Element | null {
                     <p className="text-sm text-slate-500">Loading...</p>
                   ) : worktrees.length === 0 ? (
                     <p className="mb-2 text-sm text-slate-500">
-                      No worktrees found in <span className="font-mono">.worktrees/</span> — create one in the New tab, or use Browse for a path
-                      elsewhere.
+                      No worktrees found in <span className="font-mono">{worktreesDir.trim() || '.worktrees'}/</span> — create one in the New tab, or
+                      use Browse for a path elsewhere.
                     </p>
                   ) : (
                     <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
@@ -506,7 +507,7 @@ export function NewSessionDialog(): JSX.Element | null {
                 <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
                   Will run{' '}
                   <span className="font-mono">
-                    git worktree add .worktrees/{newName.trim() || 'NAME'} -b {newName.trim() || 'NAME'}
+                    git worktree add {worktreesDir.trim() || '.worktrees'}/{newName.trim() || 'NAME'} -b {newName.trim() || 'NAME'}
                   </span>
                 </p>
               )}

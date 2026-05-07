@@ -14,11 +14,12 @@ function seedConfig(
     instructionSetsDir: string;
     prelaunchCommands: string[];
     aiLaunchCommands: { claude: string; copilot: string };
+    worktreesDir: string;
   }> = {},
 ): void {
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 5,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: overrides.instructionSetsDir ?? '/cfg/instr',
       workspaceRoot: overrides.workspaceRoot ?? '/work',
@@ -31,6 +32,7 @@ function seedConfig(
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreesDir: overrides.worktreesDir ?? '.worktrees',
     },
     status: 'ready',
     error: null,
@@ -52,7 +54,7 @@ afterEach(() => {
   // Reset config store between tests by re-seeding the empty default.
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 5,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
@@ -65,6 +67,7 @@ afterEach(() => {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreesDir: '.worktrees',
     },
     status: 'idle',
     error: null,
@@ -241,6 +244,130 @@ describe('SettingsDialog', () => {
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
       aiLaunchCommands: { claude: '' },
+    });
+  });
+
+  describe('worktrees folder section (Issue #53)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+    });
+
+    it('shows the configured worktrees folder', () => {
+      seedConfig({ worktreesDir: 'wt' });
+      render(<SettingsDialog onClose={() => {}} />);
+      expect(screen.getByTestId('settings-worktrees-dir')).toHaveValue('wt');
+    });
+
+    it('debounces the live check to ~250ms and uses latest-wins ordering', async () => {
+      seedConfig();
+      bridgeMock.worktreesDirCheck.mockResolvedValue({
+        resolvedPath: '/work/.worktrees',
+        insideRepo: true,
+        gitIgnored: true,
+      });
+      render(<SettingsDialog onClose={() => {}} />);
+      // Drain the initial mount-driven check.
+      await act(async () => {
+        vi.advanceTimersByTime(260);
+      });
+      bridgeMock.worktreesDirCheck.mockClear();
+
+      const input = screen.getByTestId('settings-worktrees-dir');
+      fireEvent.change(input, { target: { value: 'a' } });
+      await act(async () => {
+        vi.advanceTimersByTime(100);
+      });
+      // Still within debounce window — no call yet.
+      expect(bridgeMock.worktreesDirCheck).not.toHaveBeenCalled();
+      // A new keystroke resets the timer.
+      fireEvent.change(input, { target: { value: 'ab' } });
+      await act(async () => {
+        vi.advanceTimersByTime(100);
+      });
+      expect(bridgeMock.worktreesDirCheck).not.toHaveBeenCalled();
+      await act(async () => {
+        vi.advanceTimersByTime(160);
+      });
+      // Only the latest value should fire — exactly one call with `ab`.
+      expect(bridgeMock.worktreesDirCheck).toHaveBeenCalledTimes(1);
+      expect(bridgeMock.worktreesDirCheck).toHaveBeenLastCalledWith('ab');
+    });
+
+    it('shows the warning when the resolved path is inside the repo and not gitignored', async () => {
+      seedConfig();
+      bridgeMock.worktreesDirCheck.mockResolvedValue({
+        resolvedPath: '/work/inside',
+        insideRepo: true,
+        gitIgnored: false,
+      });
+      render(<SettingsDialog onClose={() => {}} />);
+      fireEvent.change(screen.getByTestId('settings-worktrees-dir'), { target: { value: 'inside' } });
+      await act(async () => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(screen.getByTestId('settings-worktrees-dir-warning')).toBeInTheDocument();
+    });
+
+    it('hides the warning when the path is gitignored', async () => {
+      seedConfig();
+      bridgeMock.worktreesDirCheck.mockResolvedValue({
+        resolvedPath: '/work/.worktrees',
+        insideRepo: true,
+        gitIgnored: true,
+      });
+      render(<SettingsDialog onClose={() => {}} />);
+      fireEvent.change(screen.getByTestId('settings-worktrees-dir'), { target: { value: '.worktrees' } });
+      await act(async () => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(screen.queryByTestId('settings-worktrees-dir-warning')).toBeNull();
+    });
+
+    it('hides the warning when the path is outside the workspace', async () => {
+      seedConfig();
+      bridgeMock.worktreesDirCheck.mockResolvedValue({
+        resolvedPath: '/var/wt',
+        insideRepo: false,
+        gitIgnored: false,
+      });
+      render(<SettingsDialog onClose={() => {}} />);
+      fireEvent.change(screen.getByTestId('settings-worktrees-dir'), { target: { value: '/var/wt' } });
+      await act(async () => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(screen.queryByTestId('settings-worktrees-dir-warning')).toBeNull();
+    });
+
+    it('persists the new worktrees dir on save', async () => {
+      seedConfig({ worktreesDir: '.worktrees' });
+      bridgeMock.worktreesDirCheck.mockResolvedValue({
+        resolvedPath: '/work/wt',
+        insideRepo: true,
+        gitIgnored: true,
+      });
+      render(<SettingsDialog onClose={() => {}} />);
+      fireEvent.change(screen.getByTestId('settings-worktrees-dir'), { target: { value: 'wt' } });
+      await act(async () => {
+        vi.advanceTimersByTime(260);
+      });
+      await act(async () => {
+        screen.getByRole('button', { name: /^save$/i }).click();
+      });
+      expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({ worktreesDir: 'wt' });
+    });
+
+    it('whitespace-only input collapses to the default and does not mark dirty', async () => {
+      seedConfig({ worktreesDir: '.worktrees' });
+      render(<SettingsDialog onClose={() => {}} />);
+      fireEvent.change(screen.getByTestId('settings-worktrees-dir'), { target: { value: '   ' } });
+      await act(async () => {
+        vi.advanceTimersByTime(260);
+      });
+      expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
     });
   });
 });

@@ -47,6 +47,7 @@ import type {
   WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
+  WorktreesDirCheckResult,
 } from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
@@ -269,13 +270,29 @@ export function workspaceValidate(path: string): Promise<WorkspaceValidateResult
 }
 
 /**
- * Create a new linked git worktree at `<workspaceRoot>/.worktrees/<name>`
- * on a fresh branch named `<name>`. Rejects with `AppError` on validation
- * or git failure (Roadmap §2.2).
+ * Create a new linked git worktree at `<workspaceRoot>/<worktreesDir>/<name>`
+ * on a fresh branch named `<name>`. The parent directory is taken from the
+ * persisted `worktreesDir` config field (Issue #53); when configured as an
+ * absolute path, the worktree may live outside the workspace. Rejects with
+ * `AppError` on validation or git failure (Roadmap §2.2).
  */
 export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
   return invoke<WorktreeCreateResult>('worktree_create', {
     args: { name },
+  });
+}
+
+/**
+ * Live-preview helper for the Settings dialog (Issue #53). Given a candidate
+ * `worktreesDir` value (relative or absolute), returns whether the resolved
+ * path lands inside the active workspace and whether `git check-ignore`
+ * reports it as ignored. Performs no filesystem mutation; safe to call on
+ * every keystroke (the dialog still debounces). Rejects with `AppError`
+ * only on backend transport failures.
+ */
+export function worktreesDirCheck(value: string): Promise<WorktreesDirCheckResult> {
+  return invoke<WorktreesDirCheckResult>('worktrees_dir_check', {
+    args: { value },
   });
 }
 

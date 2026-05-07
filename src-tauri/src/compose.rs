@@ -204,6 +204,71 @@ pub fn validate_worktree(path: &Path) -> Result<PathBuf, Error> {
     Ok(canonical)
 }
 
+/// Outcome of [`resolve_worktrees_dir`]. Pure data; no IO. The two flags are needed by both the create path (to decide whether to enforce a workspace
+/// containment guard) and the new `worktrees_dir_check` Tauri command (to drive the live `.gitignore` warning in Settings).
+///
+/// The resolved path is always lexically normalised (`.` collapsed, `..` walked) but never canonicalised, so a caller probing a folder that does not
+/// yet exist still gets a sensible answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWorktreesDir {
+    /// Absolute (or workspace-relative-then-joined) path the configured value points at, with `.`/`..` segments resolved.
+    pub absolute: PathBuf,
+    /// `true` iff the configured value was relative (and therefore resolved against `workspace_root`).
+    pub was_relative: bool,
+    /// `true` iff `absolute` lies inside `workspace_root` after lexical resolution.
+    pub inside_workspace: bool,
+}
+
+/// Resolve a configured `worktrees_dir` value (Issue #53) against the active workspace root. Pure: no IO.
+///
+/// Empty/whitespace-only inputs collapse to the runtime default (`".worktrees"`) so the resolver agrees with `merge_partial`'s normalisation. Relative
+/// values are joined onto `workspace_root`; absolute values are taken verbatim. In both cases lexical `..` segments are walked so we can decide
+/// `inside_workspace` without touching disk — the alternative (`canonicalize`) would fail on dirs that do not yet exist, which is the common case
+/// during Settings-dialog editing.
+///
+/// `workspace_root` itself is **not** canonicalised here either; callers that need a canonical comparison are expected to pass an already-canonical
+/// path (`AppConfig.workspace_root` is canonicalised on load).
+pub fn resolve_worktrees_dir(workspace_root: &Path, value: &str) -> ResolvedWorktreesDir {
+    let trimmed = value.trim();
+    let effective = if trimmed.is_empty() { ".worktrees" } else { trimmed };
+    let candidate = PathBuf::from(effective);
+    let was_relative = candidate.is_relative();
+    let joined = if was_relative { workspace_root.join(&candidate) } else { candidate };
+    let absolute = lexical_normalise(&joined);
+    let inside_workspace = absolute.starts_with(workspace_root);
+    ResolvedWorktreesDir {
+        absolute,
+        was_relative,
+        inside_workspace,
+    }
+}
+
+/// Walk `.` and `..` components without touching the filesystem. Mirrors what `Path::canonicalize` would do for the parent-traversal case but tolerates
+/// non-existent paths — required by Settings-dialog previews where the user is typing a folder that has not been created yet.
+fn lexical_normalise(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop only when the last component is a regular name; preserve `..` against a root or a leading `..` chain.
+                let popped = out.components().next_back().is_some_and(|last| matches!(last, Component::Normal(_)));
+                if popped {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
 /// Deterministic per-session temp directory: `<os-temp>/arborist/<uuid>/`.
 ///
 /// Phase 6's `cleanup_orphans` walks `<os-temp>/arborist/` and removes child directories whose UUID does not match a known session, so this scheme
@@ -1020,6 +1085,85 @@ mod tests {
         assert!(validate_worktree_name(&long).is_err());
         let max = "a".repeat(255);
         assert!(validate_worktree_name(&max).is_ok());
+    }
+
+    // --- resolve_worktrees_dir (Issue #53) -----------------------------------
+
+    #[test]
+    fn resolve_worktrees_dir_default_is_relative_inside_workspace() {
+        let ws = PathBuf::from("/repo");
+        let r = resolve_worktrees_dir(&ws, ".worktrees");
+        assert!(r.was_relative);
+        assert!(r.inside_workspace);
+        assert_eq!(r.absolute, PathBuf::from("/repo/.worktrees"));
+    }
+
+    #[test]
+    fn resolve_worktrees_dir_empty_collapses_to_default() {
+        let ws = PathBuf::from("/repo");
+        // Empty + whitespace-only must agree with merge_partial's "use default" behaviour.
+        for value in ["", "   ", "\t"] {
+            let r = resolve_worktrees_dir(&ws, value);
+            assert_eq!(r.absolute, PathBuf::from("/repo/.worktrees"), "input {value:?}");
+            assert!(r.was_relative);
+            assert!(r.inside_workspace);
+        }
+    }
+
+    #[test]
+    fn resolve_worktrees_dir_relative_dotdot_can_escape() {
+        let ws = PathBuf::from("/repo");
+        let r = resolve_worktrees_dir(&ws, "../sibling-worktrees");
+        assert!(r.was_relative);
+        assert!(!r.inside_workspace, "expected ../ escape to land outside workspace");
+        assert_eq!(r.absolute, PathBuf::from("/sibling-worktrees"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_worktrees_dir_absolute_outside_workspace() {
+        let ws = PathBuf::from("/repo");
+        let r = resolve_worktrees_dir(&ws, "/var/arborist-worktrees");
+        assert!(!r.was_relative);
+        assert!(!r.inside_workspace);
+        assert_eq!(r.absolute, PathBuf::from("/var/arborist-worktrees"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_worktrees_dir_absolute_windows_outside_workspace() {
+        let ws = PathBuf::from(r"C:\repo");
+        let r = resolve_worktrees_dir(&ws, r"D:\arborist-worktrees");
+        assert!(!r.was_relative);
+        assert!(!r.inside_workspace);
+        assert_eq!(r.absolute, PathBuf::from(r"D:\arborist-worktrees"));
+    }
+
+    #[test]
+    fn resolve_worktrees_dir_nested_relative_inside() {
+        let ws = PathBuf::from("/repo");
+        let r = resolve_worktrees_dir(&ws, ".cache/worktrees");
+        assert!(r.was_relative);
+        assert!(r.inside_workspace);
+        assert_eq!(r.absolute, PathBuf::from("/repo/.cache/worktrees"));
+    }
+
+    #[test]
+    fn resolve_worktrees_dir_dot_segments_collapse() {
+        let ws = PathBuf::from("/repo");
+        let r = resolve_worktrees_dir(&ws, "./worktrees/./extra");
+        assert!(r.was_relative);
+        assert!(r.inside_workspace);
+        assert_eq!(r.absolute, PathBuf::from("/repo/worktrees/extra"));
+    }
+
+    #[test]
+    fn resolve_worktrees_dir_sibling_prefix_does_not_falsely_match() {
+        // Make sure `inside_workspace` actually checks path components — `/repo-foo` should NOT count as inside `/repo`.
+        let ws = PathBuf::from("/repo");
+        let r = resolve_worktrees_dir(&ws, "/repo-foo/worktrees");
+        // `Path::starts_with` is component-wise so this is correct, but it has tripped people up before — keep the regression test.
+        assert!(!r.inside_workspace);
     }
 
     // -- env_for_tool --------------------------------------------------------

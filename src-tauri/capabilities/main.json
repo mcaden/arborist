@@ -14,6 +14,7 @@
     "allow-workspace-validate",
     "allow-workspace-switch",
     "allow-worktree-create",
+    "allow-worktrees-dir-check",
     "allow-subsession",
     "allow-subsession-icon",
     "dialog:allow-open"

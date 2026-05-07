@@ -11,7 +11,7 @@ import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 import { useConfigStore } from './config-store';
 
 const SAMPLE: AppConfig = {
-  configVersion: 4,
+  configVersion: 5,
   defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
   instructionSetsDir: '/cfg/instr',
   workspaceRoot: null,
@@ -24,12 +24,13 @@ const SAMPLE: AppConfig = {
   activeSessionId: null,
   customProcesses: [],
   lastOpenSubSessions: [],
+  worktreesDir: '.worktrees',
 };
 
 function resetStore(): void {
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 5,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
@@ -42,6 +43,7 @@ function resetStore(): void {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreesDir: '.worktrees',
     },
     status: 'idle',
     error: null,

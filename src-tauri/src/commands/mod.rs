@@ -25,7 +25,8 @@ use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
     SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
     SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs,
-    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreesDirCheckArgs,
+    WorktreesDirCheckResult,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -239,11 +240,19 @@ pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateAr
     session::workspace_validate_impl(&ctx, &path, Some(&app_data_dir), crate::BUILD_BRANCH)
 }
 
-/// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2).
+/// Create a new linked worktree under `<workspaceRoot>/<worktreesDir>/<name>` on a fresh branch named `<name>` (Roadmap §2.2, Issue #53).
 #[tauri::command]
 pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) -> Result<WorktreeCreateResult, AppError> {
     let ctx = ctx_of(&app)?;
     session::worktree_create_impl(&ctx, &args.name)
+}
+
+/// Live-preview helper for the Settings dialog (Issue #53). Given a candidate `worktreesDir` value, returns whether it lands inside the workspace and
+/// whether `git check-ignore` reports it as ignored. Called on debounced keystrokes; performs no filesystem mutation.
+#[tauri::command]
+pub async fn worktrees_dir_check(app: tauri::AppHandle, args: WorktreesDirCheckArgs) -> Result<WorktreesDirCheckResult, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::worktrees_dir_check_impl(&ctx, &args.value)
 }
 
 /// Switch the active workspace in-place (Phase 7). Closes every open session in the current workspace, releases its OS lock, acquires the new

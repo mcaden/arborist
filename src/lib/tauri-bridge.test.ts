@@ -166,6 +166,7 @@ describe('configGet', () => {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreesDir: '.worktrees',
     };
     invokeMock.mockResolvedValueOnce(cfg);
 
@@ -180,7 +181,7 @@ describe('configGet', () => {
 describe('configSet', () => {
   it("calls invoke('config_set') wrapping the partial under `partial` and returns the merged AppConfig", async () => {
     const merged: AppConfig = {
-      configVersion: 4,
+      configVersion: 5,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
@@ -193,6 +194,7 @@ describe('configSet', () => {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreesDir: '.worktrees',
     };
     invokeMock.mockResolvedValueOnce(merged);
     const patch: PartialAppConfig = { prelaunchCommands: ['nvm use'] };
@@ -328,6 +330,7 @@ describe('workspaceSwitch', () => {
     activeSessionId: 'sid-restored',
     customProcesses: [],
     lastOpenSubSessions: [],
+    worktreesDir: '.worktrees',
   };
   const restoredSession: SessionView = {
     id: 'sid-restored',

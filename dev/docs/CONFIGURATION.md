@@ -84,7 +84,7 @@ to other pairs can keep running.
 
 ```json
 {
-  "configVersion": 4,
+  "configVersion": 5,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -92,6 +92,7 @@ to other pairs can keep running.
   "instructionSetsDir": "/absolute/path/to/instructions",
   "workspaceRoot": "/absolute/path/to/repo",
   "worktreeRoots": ["/absolute/path/to/repo"],
+  "worktreesDir": ".worktrees",
   "prelaunchCommands": [],
   "worktreePrelaunchCommands": {},
   "aiLaunchCommands": { "claude": "", "copilot": "" },
@@ -102,9 +103,11 @@ to other pairs can keep running.
 
 Field notes:
 
-- `configVersion` — schema version of the file. Currently `4` (see
+- `configVersion` — schema version of the file. Currently `5` (see
   `CONFIG_VERSION_CURRENT` in `src-tauri/src/types.rs`). Bumped only when
   the on-disk shape changes; older versions are quarantined (see below).
+  Pre-v5 configs hydrate the new `worktreesDir` field with the default
+  `.worktrees`.
 - `instructionSetsDir` — must be an **absolute** path that points at an
   existing directory. The path is canonicalized on load (symlinks resolved,
   `..` collapsed). Relative values are rejected when written via the
@@ -112,7 +115,7 @@ Field notes:
 - `workspaceRoot` — single, optional anchor repository. Must be an
   **absolute** path to a Git repository (validated via `git rev-parse`). When
   set, this is the repo Arborist treats as the primary workspace: the
-  `.worktrees/` convention (see `WORKTREES.md`), the workspace indicator,
+  configured worktrees folder (see `WORKTREES.md`), the workspace indicator,
   and new-worktree creation all derive from it. Cleared (set to `null`) on
   load if the path no longer exists, which re-triggers the first-boot
   picker.
@@ -120,6 +123,22 @@ Field notes:
   as `instructionSetsDir`. Entries that no longer exist on disk are dropped
   (with a warning) on load. Retained for forward compatibility; new
   installations should use `workspaceRoot`.
+- `worktreesDir` — parent folder Arborist uses when creating new worktrees
+  via `git worktree add`. Added in `configVersion = 5` (Issue #53). Default
+  `.worktrees`. Two shapes are accepted:
+  - **Relative** — resolved against `workspaceRoot`. The
+    Settings-dialog live check warns when the resolved path is inside the
+    workspace and is not ignored by Git (`git check-ignore --no-index`,
+    which honours `.gitignore`, `.git/info/exclude`, and the global
+    excludes file). Recommended action: add the folder to `.gitignore`.
+  - **Absolute** — used verbatim. Lets you keep worktrees outside the
+    repo entirely (no Git-ignore concern).
+  Empty / whitespace-only values normalise to `.worktrees` on both save
+  and load. Changing this field does **not** migrate or move existing
+  on-disk worktrees: each open session retains its absolute
+  `worktreePath`, but worktrees under the *previous* parent folder will
+  no longer appear in the new-session "Existing worktrees" list (they
+  remain reachable via Browse…).
 - `prelaunchCommands[]` — global commands joined with `&&` before each CLI
   launch (SPEC §5.6). They run as the user; review them carefully.
 - `worktreePrelaunchCommands` — per-worktree overrides. Keys are

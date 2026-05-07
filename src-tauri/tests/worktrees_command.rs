@@ -45,6 +45,9 @@ impl GitRunner for FakeGitRunner {
     fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path) -> Result<(), Error> {
         Ok(())
     }
+    fn check_ignore(&self, _repo_root: &Path, _candidate: &Path) -> Result<bool, Error> {
+        Ok(false)
+    }
 }
 
 /// Minimal sink that swallows everything — we don't exercise the PTY here.

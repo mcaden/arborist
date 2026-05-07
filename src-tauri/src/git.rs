@@ -72,6 +72,15 @@ pub trait GitRunner: Send + Sync {
     ///
     /// Errors are surfaced as [`Error::Internal`] carrying git's stderr so the frontend can show the user a meaningful message.
     fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error>;
+
+    /// Probe `git -C <repo_root> check-ignore -q -- <candidate>` (Issue #53). Returns `Ok(true)` when git considers `candidate` ignored (exit 0),
+    /// `Ok(false)` when not ignored (exit 1), and `Ok(false)` for any other condition (git unavailable, candidate outside the repo, IO error). The
+    /// "treat unknown as not-ignored" policy keeps the live Settings warning conservative — we only flash the banner when git positively confirms
+    /// the configured folder is **not** ignored.
+    ///
+    /// Implementations must include `--no-index` so unstaged candidates still consult `.gitignore` rules — `git check-ignore` defaults to consulting
+    /// the index for tracked paths, which would mark a candidate as "not ignored" simply because it happens to be tracked already.
+    fn check_ignore(&self, repo_root: &Path, candidate: &Path) -> Result<bool, Error>;
 }
 
 /// Production [`GitRunner`] that shells out to the system `git`.
@@ -204,6 +213,55 @@ impl GitRunner for RealGitRunner {
             )));
         }
         Ok(())
+    }
+
+    fn check_ignore(&self, repo_root: &Path, candidate: &Path) -> Result<bool, Error> {
+        if !repo_root.is_dir() {
+            return Ok(false);
+        }
+        // `--no-index` forces git to consult the exclude rules even for paths that already exist in the index, so a configured worktrees folder that
+        // was accidentally committed still reports as "ignored" when there is a matching `.gitignore` rule. Without it, tracked paths exit 1 silently
+        // and the warning would lie to the user about their .gitignore being correct.
+        // `-q` suppresses output; we only care about the exit code.
+        let output = match git_command()
+            .current_dir(repo_root)
+            .arg("-C")
+            .arg(repo_root)
+            .args(["check-ignore", "-q", "--no-index", "--"])
+            .arg(candidate)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                warn!(
+                    code = "GitUnavailable",
+                    repo_root = %repo_root.display(),
+                    candidate = %candidate.display(),
+                    error = %e,
+                    "git check-ignore could not be invoked; reporting as not ignored",
+                );
+                return Ok(false);
+            }
+        };
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            // 128 = "fatal" (e.g. candidate outside repo, repo lookup failed). 129 = bad usage. Anything else is unexpected. None = killed by signal.
+            // We surface a debug log so a curious developer can see what happened, but the public answer is the conservative "not ignored" — the
+            // Settings warning prefers a false negative (no banner shown) to a false positive that would scare the user into reverting good config.
+            other => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                debug!(
+                    code = "GitCheckIgnoreUnknown",
+                    repo_root = %repo_root.display(),
+                    candidate = %candidate.display(),
+                    exit = ?other,
+                    stderr = %stderr,
+                    "git check-ignore returned an unexpected status; reporting as not ignored",
+                );
+                Ok(false)
+            }
+        }
     }
 }
 

@@ -59,7 +59,7 @@ export const frontendReady: Mock<typeof realBridge.frontendReady> = vi.fn(() => 
 // of Phase 4; their default mock behaviour returns benign empty values so
 // tests don't need to wire each call individually unless they care.
 const defaultAppConfig = (): AppConfig => ({
-  configVersion: 4,
+  configVersion: 5,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   // Tests assume the main UI is reachable by default. The first-boot
@@ -74,6 +74,7 @@ const defaultAppConfig = (): AppConfig => ({
   activeSessionId: null,
   customProcesses: [],
   lastOpenSubSessions: [],
+  worktreesDir: '.worktrees',
 });
 
 export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
@@ -87,6 +88,10 @@ export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() => 
 export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.fn(() => Promise.resolve({ valid: true }));
 
 export const worktreeCreate: Mock<typeof realBridge.worktreeCreate> = vi.fn(rejectNotImplemented);
+
+export const worktreesDirCheck: Mock<typeof realBridge.worktreesDirCheck> = vi.fn(() =>
+  Promise.resolve({ resolvedPath: null, insideRepo: false, gitIgnored: false }),
+);
 
 export const workspaceSwitch: Mock<typeof realBridge.workspaceSwitch> = vi.fn(rejectNotImplemented);
 
@@ -147,6 +152,7 @@ export function resetBridgeMocks(): void {
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
   worktreeCreate.mockReset().mockImplementation(rejectNotImplemented);
+  worktreesDirCheck.mockReset().mockImplementation(() => Promise.resolve({ resolvedPath: null, insideRepo: false, gitIgnored: false }));
   workspaceSwitch.mockReset().mockImplementation(rejectNotImplemented);
   pickDirectory.mockReset().mockImplementation(() => Promise.resolve(null));
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
@@ -187,6 +193,7 @@ const _shapeCheck = {
   worktreesList,
   workspaceValidate,
   worktreeCreate,
+  worktreesDirCheck,
   workspaceSwitch,
   pickDirectory,
   onSessionOutput,

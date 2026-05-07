@@ -25,7 +25,7 @@ let sessionAdopt: ReturnType<typeof vi.fn>;
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
-    configVersion: 4,
+    configVersion: 5,
     defaultInstructionSets: { claude: '', copilot: '' },
     instructionSetsDir: '',
     workspaceRoot: '/new',
@@ -38,6 +38,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     activeSessionId: null,
     customProcesses: [],
     lastOpenSubSessions: [],
+    worktreesDir: '.worktrees',
     ...overrides,
   };
 }

@@ -17,7 +17,7 @@ const REPO_ROOT = '/repos/arborist';
 
 function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
-    configVersion: 3,
+    configVersion: 5,
     defaultInstructionSets: { claude: '', copilot: '' },
     instructionSetsDir: '/sets',
     workspaceRoot: REPO_ROOT,
@@ -30,6 +30,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     activeSessionId: null,
     customProcesses: [],
     lastOpenSubSessions: [],
+    worktreesDir: '.worktrees',
     ...overrides,
   };
 }

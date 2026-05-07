@@ -11,7 +11,7 @@ import type { CustomProcessDef } from '@/types/arborist';
 function seedDefs(defs: CustomProcessDef[]): void {
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 5,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
@@ -24,6 +24,7 @@ function seedDefs(defs: CustomProcessDef[]): void {
       activeSessionId: null,
       customProcesses: defs,
       lastOpenSubSessions: [],
+      worktreesDir: '.worktrees',
     },
     status: 'ready',
     error: null,
