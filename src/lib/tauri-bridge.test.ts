@@ -240,12 +240,10 @@ describe('onSessionOutput', () => {
   it('subscribes to session://output, forwards the payload, and returns the unlisten fn', async () => {
     const unlisten = vi.fn();
     let captured: ((event: { payload: SessionOutputEvent }) => void) | null = null;
-    listenMock.mockImplementation(
-      (_event: string, cb: (event: { payload: SessionOutputEvent }) => void) => {
-        captured = cb;
-        return Promise.resolve(unlisten);
-      },
-    );
+    listenMock.mockImplementation((_event: string, cb: (event: { payload: SessionOutputEvent }) => void) => {
+      captured = cb;
+      return Promise.resolve(unlisten);
+    });
 
     const cb = vi.fn();
     const returned = await bridge.onSessionOutput(cb);
@@ -264,12 +262,10 @@ describe('onSessionStatus', () => {
   it('subscribes to session://status, forwards the payload, and returns the unlisten fn', async () => {
     const unlisten = vi.fn();
     let captured: ((event: { payload: SessionStatusEvent }) => void) | null = null;
-    listenMock.mockImplementation(
-      (_event: string, cb: (event: { payload: SessionStatusEvent }) => void) => {
-        captured = cb;
-        return Promise.resolve(unlisten);
-      },
-    );
+    listenMock.mockImplementation((_event: string, cb: (event: { payload: SessionStatusEvent }) => void) => {
+      captured = cb;
+      return Promise.resolve(unlisten);
+    });
 
     const cb = vi.fn();
     const returned = await bridge.onSessionStatus(cb);

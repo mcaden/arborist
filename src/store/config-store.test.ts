@@ -139,9 +139,7 @@ describe('useConfigStore.set', () => {
       message: 'relative',
     });
 
-    await expect(
-      useConfigStore.getState().set({ instructionSetsDir: 'rel/path' }),
-    ).rejects.toMatchObject({ code: 'InvalidPath' });
+    await expect(useConfigStore.getState().set({ instructionSetsDir: 'rel/path' })).rejects.toMatchObject({ code: 'InvalidPath' });
 
     // Cache untouched.
     expect(useConfigStore.getState().config.instructionSetsDir).toBe('/cfg/instr');

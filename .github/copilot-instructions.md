@@ -87,6 +87,12 @@ These are the patterns to follow when writing code in this repo. They are opinio
 - Do not document changes to the spec in code comments — update the spec instead. The spec is the source of truth for design decisions; code comments are secondary annotations.
 - Inline comments inside method bodies are appropriate only when the logic would otherwise be opaque — link to tickets, specs, or external constraints when relevant.
 
+### Line length
+
+- **150 characters** is the maximum line length for all code and comments in both Rust and TypeScript.
+- Rust: enforced by `rustfmt.toml` (`max_width = 150`).
+- TypeScript/JS: enforced by Prettier (`.prettierrc.json`, `printWidth: 150`).
+
 ## Rust (src-tauri/)
 
 ### Module layout

@@ -27,20 +27,11 @@ export interface WorkspacePickerProps {
   onCancel?: () => void;
 }
 
-type ValidationState =
-  | { kind: 'idle' }
-  | { kind: 'validating' }
-  | { kind: 'valid'; alreadyOpen: boolean }
-  | { kind: 'invalid'; error: string };
+type ValidationState = { kind: 'idle' } | { kind: 'validating' } | { kind: 'valid'; alreadyOpen: boolean } | { kind: 'invalid'; error: string };
 
 const DEBOUNCE_MS = 250;
 
-export function WorkspacePicker({
-  mode,
-  initialPath,
-  onConfirm,
-  onCancel,
-}: WorkspacePickerProps): JSX.Element {
+export function WorkspacePicker({ mode, initialPath, onConfirm, onCancel }: WorkspacePickerProps): JSX.Element {
   const [path, setPath] = useState<string>(initialPath ?? '');
   const [validation, setValidation] = useState<ValidationState>({ kind: 'idle' });
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -160,10 +151,7 @@ export function WorkspacePicker({
         </h1>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{sub}</p>
 
-        <label
-          htmlFor={inputId}
-          className="mt-6 block text-sm font-medium text-slate-700 dark:text-slate-200"
-        >
+        <label htmlFor={inputId} className="mt-6 block text-sm font-medium text-slate-700 dark:text-slate-200">
           Workspace path
         </label>
         <div className="mt-2 flex gap-2">
@@ -191,21 +179,14 @@ export function WorkspacePicker({
           {validation.kind === 'validating' ? (
             <span className="text-slate-500 dark:text-slate-400">Validating…</span>
           ) : validation.kind === 'valid' ? (
-            <span className="text-emerald-600 dark:text-emerald-400">
-              Looks good — git repository detected.
-            </span>
+            <span className="text-emerald-600 dark:text-emerald-400">Looks good — git repository detected.</span>
           ) : null}
         </p>
 
         {validation.kind === 'valid' && validation.alreadyOpen ? (
-          <p
-            role="status"
-            aria-live="polite"
-            data-testid="picker-already-open-warning"
-            className="mt-2 text-xs text-amber-700 dark:text-amber-400"
-          >
-            ⚠ This workspace appears to already be open in another Arborist window. Opening it here
-            will fail unless the other window releases it first.
+          <p role="status" aria-live="polite" data-testid="picker-already-open-warning" className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+            ⚠ This workspace appears to already be open in another Arborist window. Opening it here will fail unless the other window releases it
+            first.
           </p>
         ) : null}
 

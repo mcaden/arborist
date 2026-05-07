@@ -35,11 +35,7 @@
 // own the viewport.
 
 import { useSessionActions } from '@/store/session-store';
-import {
-  useActiveSubSessionId,
-  useSubSessionActions,
-  useSubSessionById,
-} from '@/store/sub-session-store';
+import { useActiveSubSessionId, useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
 import type { SessionId, SubSessionId, SubSessionStatus } from '@/types/arborist';
 
@@ -50,11 +46,7 @@ interface SidebarSubTabProps {
   parentIsActive: boolean;
 }
 
-export function SidebarSubTab({
-  parentId,
-  subSessionId,
-  parentIsActive,
-}: SidebarSubTabProps): JSX.Element | null {
+export function SidebarSubTab({ parentId, subSessionId, parentIsActive }: SidebarSubTabProps): JSX.Element | null {
   const sub = useSubSessionById(subSessionId);
   const activeSubId = useActiveSubSessionId(parentId);
   const subActions = useSubSessionActions();
@@ -145,13 +137,7 @@ function SubStatusDot({ status }: { status: SubSessionStatus }): JSX.Element {
         return 'bg-red-500';
     }
   })();
-  return (
-    <span
-      aria-hidden="true"
-      data-testid={`sub-status-${status}`}
-      className={`h-2 w-2 shrink-0 rounded-full ${colour}`}
-    />
-  );
+  return <span aria-hidden="true" data-testid={`sub-status-${status}`} className={`h-2 w-2 shrink-0 rounded-full ${colour}`} />;
 }
 
 /**
@@ -160,24 +146,10 @@ function SubStatusDot({ status }: { status: SubSessionStatus }): JSX.Element {
  * emoji. Decorative — `aria-hidden` because the visible label
  * already conveys the sub-session identity for assistive tech.
  */
-function SubTabIcon({
-  kind,
-  iconDataUri,
-  label,
-}: {
-  kind: 'terminal' | 'application';
-  iconDataUri: string | undefined;
-  label: string;
-}): JSX.Element {
+function SubTabIcon({ kind, iconDataUri, label }: { kind: 'terminal' | 'application'; iconDataUri: string | undefined; label: string }): JSX.Element {
   if (iconDataUri) {
     return (
-      <img
-        src={iconDataUri}
-        alt=""
-        aria-hidden="true"
-        data-testid={`sub-tab-icon-${label}`}
-        className="h-4 w-4 shrink-0 rounded-sm object-contain"
-      />
+      <img src={iconDataUri} alt="" aria-hidden="true" data-testid={`sub-tab-icon-${label}`} className="h-4 w-4 shrink-0 rounded-sm object-contain" />
     );
   }
   return (

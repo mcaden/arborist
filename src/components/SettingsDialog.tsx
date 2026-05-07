@@ -23,13 +23,7 @@ import { CustomProcessesTab } from './CustomProcessesTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError, pickDirectory } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import {
-  selectAiLaunchCommands,
-  selectInstructionSetsDir,
-  selectPrelaunchCommands,
-  selectWorkspaceRoot,
-  useConfigStore,
-} from '@/store/config-store';
+import { selectAiLaunchCommands, selectInstructionSetsDir, selectPrelaunchCommands, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 
 export type SettingsTab = 'general' | 'customProcesses';
 
@@ -63,10 +57,7 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
-export function SettingsDialog({
-  onClose,
-  initialTab = 'general',
-}: SettingsDialogProps): JSX.Element {
+export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDialogProps): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
@@ -285,9 +276,7 @@ export function SettingsDialog({
               className="min-h-0 flex-1 overflow-y-auto"
             >
               <section className="mb-4">
-                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Workspace
-                </h3>
+                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Workspace</h3>
                 <div className="flex items-center gap-2">
                   <p
                     className="min-w-0 flex-1 truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
@@ -304,9 +293,7 @@ export function SettingsDialog({
                     Change…
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Changing the workspace closes every open session.
-                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Changing the workspace closes every open session.</p>
               </section>
 
               <section className="mb-4">
@@ -356,25 +343,17 @@ export function SettingsDialog({
                   placeholder="One shell command per line, e.g.&#10;source ~/.zshenv&#10;nvm use 20"
                   className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
                 />
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Run before every CLI session, in order. Blank lines are ignored.
-                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Run before every CLI session, in order. Blank lines are ignored.</p>
               </section>
 
               <section className="mb-4">
-                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  AI agent launch commands
-                </h3>
+                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">AI agent launch commands</h3>
                 <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-                  Replace the default CLI invocation for each agent. The text is passed to the shell
-                  verbatim, so you may include arguments (e.g.{' '}
+                  Replace the default CLI invocation for each agent. The text is passed to the shell verbatim, so you may include arguments (e.g.{' '}
                   <code>npx claude --model sonnet</code>). Leave blank to use the default.
                 </p>
                 <div className="mb-2">
-                  <label
-                    htmlFor="settings-launch-claude"
-                    className="mb-1 block text-xs text-slate-600 dark:text-slate-300"
-                  >
+                  <label htmlFor="settings-launch-claude" className="mb-1 block text-xs text-slate-600 dark:text-slate-300">
                     Claude
                   </label>
                   <input
@@ -392,10 +371,7 @@ export function SettingsDialog({
                   />
                 </div>
                 <div>
-                  <label
-                    htmlFor="settings-launch-copilot"
-                    className="mb-1 block text-xs text-slate-600 dark:text-slate-300"
-                  >
+                  <label htmlFor="settings-launch-copilot" className="mb-1 block text-xs text-slate-600 dark:text-slate-300">
                     GitHub Copilot
                   </label>
                   <input
@@ -459,12 +435,7 @@ export function SettingsDialog({
 
       {picking ? (
         <div className="fixed inset-0 z-40 bg-black/40">
-          <WorkspacePicker
-            mode="change"
-            initialPath={workspaceRoot}
-            onConfirm={handleWorkspaceConfirm}
-            onCancel={() => setPicking(false)}
-          />
+          <WorkspacePicker mode="change" initialPath={workspaceRoot} onConfirm={handleWorkspaceConfirm} onCancel={() => setPicking(false)} />
         </div>
       ) : null}
     </>

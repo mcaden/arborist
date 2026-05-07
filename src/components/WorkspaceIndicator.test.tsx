@@ -2,12 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkspaceIndicator } from './WorkspaceIndicator';
-import {
-  configSet,
-  resetBridgeMocks,
-  workspaceSwitch,
-  workspaceValidate,
-} from '@/lib/tauri-bridge.mock';
+import { configSet, resetBridgeMocks, workspaceSwitch, workspaceValidate } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 

@@ -93,9 +93,7 @@ export async function changeWorkspace(path: string): Promise<void> {
       result = await workspaceSwitch(path);
     } catch (err) {
       if (isAppErrorLike(err) && err.code === 'WorkspaceLocked') {
-        throw new Error(
-          'That workspace is already open in another Arborist window. Close it there and try again.',
-        );
+        throw new Error('That workspace is already open in another Arborist window. Close it there and try again.');
       }
       throw err;
     }
@@ -110,9 +108,7 @@ export async function changeWorkspace(path: string): Promise<void> {
     // closing the pre-existing UX gap where post-switch `MainArea`
     // would show a blank pane.
     useConfigStore.getState().adoptWorkspace(result.config);
-    useSessionStore
-      .getState()
-      .actions.adoptWorkspace(result.sessions, result.config.activeSessionId);
+    useSessionStore.getState().actions.adoptWorkspace(result.sessions, result.config.activeSessionId);
   } finally {
     // Cleared even on throw / WorkspaceLocked so the picker / settings
     // dialog isn't permanently locked behind a stuck overlay. Adoption

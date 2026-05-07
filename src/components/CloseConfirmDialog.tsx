@@ -55,17 +55,12 @@ export function CloseConfirmDialog(): JSX.Element | null {
         alertMessage = `Session terminated, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`;
       }
     } catch (error: unknown) {
-      const detail =
-        error instanceof Error && error.message.length > 0 ? error.message : String(error);
+      const detail = error instanceof Error && error.message.length > 0 ? error.message : String(error);
       alertMessage = `Close request failed (the session may already be terminated):\n\n${detail}`;
     } finally {
       actions.cancelClose();
     }
-    if (
-      alertMessage !== null &&
-      typeof window !== 'undefined' &&
-      typeof window.alert === 'function'
-    ) {
+    if (alertMessage !== null && typeof window !== 'undefined' && typeof window.alert === 'function') {
       window.alert(alertMessage);
     }
   };
@@ -95,16 +90,9 @@ export function CloseConfirmDialog(): JSX.Element | null {
         <span className="flex flex-col">
           <span>
             Also delete the worktree directory
-            {deleteWorktree ? (
-              <span className="ml-1 font-medium text-red-700 dark:text-red-400">
-                (cannot be undone)
-              </span>
-            ) : null}
+            {deleteWorktree ? <span className="ml-1 font-medium text-red-700 dark:text-red-400">(cannot be undone)</span> : null}
           </span>
-          <span
-            className="mt-0.5 break-all font-mono text-xs text-slate-500 dark:text-slate-400"
-            title={session.worktreePath}
-          >
+          <span className="mt-0.5 break-all font-mono text-xs text-slate-500 dark:text-slate-400" title={session.worktreePath}>
             {session.worktreePath}
           </span>
         </span>

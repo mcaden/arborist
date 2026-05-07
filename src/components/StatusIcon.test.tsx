@@ -5,14 +5,7 @@ import { StatusIcon } from './StatusIcon';
 import type { DisplayStatus } from '@/store/session-store';
 
 describe('StatusIcon', () => {
-  const cases: Array<Exclude<DisplayStatus, 'idle'>> = [
-    'starting',
-    'working',
-    'awaiting',
-    'attention',
-    'exited',
-    'error',
-  ];
+  const cases: Array<Exclude<DisplayStatus, 'idle'>> = ['starting', 'working', 'awaiting', 'attention', 'exited', 'error'];
 
   it.each(cases)('renders the %s glyph with a stable testid', (status) => {
     render(<StatusIcon status={status} />);

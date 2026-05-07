@@ -81,9 +81,7 @@ describe('SettingsDialog', () => {
     render(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-workspace-path')).toHaveTextContent('/repos/grove');
     expect(screen.getByLabelText(/instruction sets directory/i)).toHaveValue('/cfg/instr');
-    expect(screen.getByLabelText(/pre-launch commands/i)).toHaveValue(
-      'source ~/.zshenv\nnvm use 20',
-    );
+    expect(screen.getByLabelText(/pre-launch commands/i)).toHaveValue('source ~/.zshenv\nnvm use 20');
   });
 
   it('Save button is disabled until something changes', () => {
@@ -185,10 +183,7 @@ describe('SettingsDialog', () => {
     fireEvent.click(screen.getByTestId('settings-tab-custom-processes'));
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-panel-general')).toBeNull();
-    expect(screen.getByTestId('settings-tab-custom-processes')).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    expect(screen.getByTestId('settings-tab-custom-processes')).toHaveAttribute('aria-selected', 'true');
   });
 
   it('honours initialTab="customProcesses" so the empty-launch handoff lands on the right tab', () => {

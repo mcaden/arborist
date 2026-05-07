@@ -1,9 +1,8 @@
 //! Shared, serializable data model for Arborist.
 //!
-//! Every type in this module is a load-bearing wire contract between the Rust
-//! backend and the React/TypeScript frontend. **The TypeScript mirror lives in
-//! `src/types/arborist.ts`**: when you change anything here, update the matching
-//! TS interface in the same commit (look for the `MIRROR:` markers).
+//! Every type in this module is a load-bearing wire contract between the Rust backend and the React/TypeScript frontend. **The TypeScript mirror
+//! lives in `src/types/arborist.ts`**: when you change anything here, update the matching TS interface in the same commit (look for the `MIRROR:`
+//! markers).
 //!
 //! Conventions:
 //! * `#[serde(rename_all = "camelCase")]` on every struct so the on-the-wire
@@ -20,12 +19,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-// ---------------------------------------------------------------------------
-// IDs
+// --------------------------------------------------------------------------- IDs
 // ---------------------------------------------------------------------------
 
-/// Stable identifier for a [`Session`]. Backed by a UUID v4 in practice, but
-/// the wire shape is just the canonical hyphenated string form.
+/// Stable identifier for a [`Session`]. Backed by a UUID v4 in practice, but the wire shape is just the canonical hyphenated string form.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct SessionId(pub Uuid);
@@ -50,9 +47,8 @@ impl std::fmt::Display for SessionId {
     }
 }
 
-/// Stable identifier for a [`SubSession`]. Backed by a UUID v4. Distinct
-/// from [`SessionId`] at the type level so the compiler enforces the
-/// boundary, even though the wire shape is identical (a UUID string).
+/// Stable identifier for a [`SubSession`]. Backed by a UUID v4. Distinct from [`SessionId`] at the type level so the compiler enforces the boundary,
+/// even though the wire shape is identical (a UUID string).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct SubSessionId(pub Uuid);
@@ -77,12 +73,9 @@ impl std::fmt::Display for SubSessionId {
     }
 }
 
-/// Stable identifier for a [`CustomProcessDef`]. A short user-facing slug
-/// (e.g. `"shell"`, `"vscode"`, `"my-dev-server"`). Used both as the
-/// AppConfig dictionary key and to bind sub-session restore records back
-/// to their definition. Built-in defs use reserved IDs (`shell`,
-/// `open-folder`, `vscode`) but are otherwise indistinguishable from
-/// user-defined ones.
+/// Stable identifier for a [`CustomProcessDef`]. A short user-facing slug (e.g. `"shell"`, `"vscode"`, `"my-dev-server"`). Used both as the AppConfig
+/// dictionary key and to bind sub-session restore records back to their definition. Built-in defs use reserved IDs (`shell`, `open-folder`, `vscode`)
+/// but are otherwise indistinguishable from user-defined ones.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct CustomProcessDefId(pub String);
@@ -105,8 +98,7 @@ impl std::fmt::Display for CustomProcessDefId {
     }
 }
 
-/// Stable identifier for an [`InstructionSet`]. Currently a string slug
-/// derived from the instruction file name (e.g. `"claude-default"`).
+/// Stable identifier for an [`InstructionSet`]. Currently a string slug derived from the instruction file name (e.g. `"claude-default"`).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct InstructionSetId(pub String);
@@ -129,8 +121,7 @@ impl std::fmt::Display for InstructionSetId {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Enums
+// --------------------------------------------------------------------------- Enums
 // ---------------------------------------------------------------------------
 
 /// Which AI CLI a session is bound to.
@@ -157,8 +148,8 @@ pub enum SessionStatus {
 ///   bytes flow over `session://output`-style events). Backed by the same
 ///   `PtyPool` as full sessions.
 /// * `Application` — spawns an external GUI program detached. The sub-tab
-///   tracks only the OS PID; clicking the sub-tab focuses the program's
-///   window via the platform-specific [`crate::app_launcher`] focuser.
+///   tracks only the OS PID; clicking the sub-tab focuses the program's window
+///   via the platform-specific [`crate::app_launcher`] focuser.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum CustomProcessKind {
@@ -166,10 +157,8 @@ pub enum CustomProcessKind {
     Application,
 }
 
-/// Lifecycle state of a [`SubSession`]. Mirrors [`SessionStatus`] for the
-/// terminal kind; for the application kind only `Running`, `Exited`, and
-/// `Error` are observable (no separate "starting" — the spawn is
-/// synchronous, and an unfocusable / dead PID is reported as `Exited`).
+/// Lifecycle state of a [`SubSession`]. Mirrors [`SessionStatus`] for the terminal kind; for the application kind only `Running`, `Exited`, and
+/// `Error` are observable (no separate "starting" — the spawn is synchronous, and an unfocusable / dead PID is reported as `Exited`).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum SubSessionStatus {
@@ -179,16 +168,12 @@ pub enum SubSessionStatus {
     Error,
 }
 
-// ---------------------------------------------------------------------------
-// Session
+// --------------------------------------------------------------------------- Session
 // ---------------------------------------------------------------------------
 
-/// A temp file the backend must materialise on disk before (re)spawning a
-/// session. Currently used by Claude for its `--system-prompt` file.
+/// A temp file the backend must materialise on disk before (re)spawning a session. Currently used by Claude for its `--system-prompt` file.
 ///
-/// Persisted as part of [`Session`] so a Phase 7 `respawn_existing` can
-/// rematerialise the file after a crash/restart without re-running
-/// composition.
+/// Persisted as part of [`Session`] so a Phase 7 `respawn_existing` can rematerialise the file after a crash/restart without re-running composition.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TempFileSpec {
@@ -196,8 +181,7 @@ pub struct TempFileSpec {
     pub contents: String,
 }
 
-/// Full, persisted session record. Lives in the Rust `sessions.json` store
-/// (Phase 4) and is **never** sent to the frontend as-is — use
+/// Full, persisted session record. Lives in the Rust `sessions.json` store (Phase 4) and is **never** sent to the frontend as-is — use
 /// [`SessionView`] for that.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -208,17 +192,15 @@ pub struct Session {
     pub worktree_name: String,
     pub label: String,
     /// Optional user-curated instruction set overlay. When `None`:
-    /// * Claude is launched with no `--system-prompt`; the agent relies
-    ///   on its auto-discovered `CLAUDE.md` from `cwd`.
+    /// * Claude is launched with no `--system-prompt`; the agent relies on its
+    ///   auto-discovered `CLAUDE.md` from `cwd`.
     /// * Copilot ignores this field — it always auto-discovers
     ///   `.github/copilot-instructions.md` from `cwd` regardless.
     ///
-    /// Both tools always receive the worktree as their `cwd`, so
-    /// repository-level instructions are picked up either way.
+    /// Both tools always receive the worktree as their `cwd`, so repository-level instructions are picked up either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_set_id: Option<InstructionSetId>,
-    /// Full shell command string. Backend-only; reused verbatim by
-    /// `respawn_existing` so we never recompose at restart time.
+    /// Full shell command string. Backend-only; reused verbatim by `respawn_existing` so we never recompose at restart time.
     pub composed_command: String,
     pub status: SessionStatus,
     /// OS PID of the live PTY child; cleared on exit.
@@ -230,19 +212,15 @@ pub struct Session {
     /// [`SessionView`].
     #[serde(default)]
     pub temp_files: Vec<TempFileSpec>,
-    /// Most recently observed AI-side session id (Claude transcript file
-    /// stem; Copilot OTel `gen_ai.conversation.id` / session-state dir
-    /// name). When set, `restore_all_sessions` augments the spawn command
-    /// with `--resume <id>` so the conversation continues across an app
-    /// restart. Backend-only — omitted from [`SessionView`]; not surfaced
-    /// to the frontend today.
+    /// Most recently observed AI-side session id (Claude transcript file stem; Copilot OTel `gen_ai.conversation.id` / session-state dir name). When
+    /// set, `restore_all_sessions` augments the spawn command with `--resume <id>` so the conversation continues across an app restart. Backend-only
+    /// — omitted from [`SessionView`]; not surfaced to the frontend today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_session_id: Option<String>,
 }
 
-/// Frontend-facing projection of [`Session`]. Intentionally drops
-/// `composed_command` (backend-only restart material) and `temp_files`
-/// (backend-only filesystem material).
+/// Frontend-facing projection of [`Session`]. Intentionally drops `composed_command` (backend-only restart material) and `temp_files` (backend-only
+/// filesystem material).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
@@ -278,12 +256,10 @@ impl From<&Session> for SessionView {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Worktree discovery
+// --------------------------------------------------------------------------- Worktree discovery
 // ---------------------------------------------------------------------------
 
-/// One entry in the result of `worktrees_list` (DESIGN §6). Mirrored on the
-/// frontend by `WorktreeInfo` in `src/types/arborist.ts`.
+/// One entry in the result of `worktrees_list` (DESIGN §6). Mirrored on the frontend by `WorktreeInfo` in `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeInfo {
@@ -296,8 +272,7 @@ pub struct WorktreeInfo {
     pub is_locked: bool,
 }
 
-// ---------------------------------------------------------------------------
-// InstructionSet
+// --------------------------------------------------------------------------- InstructionSet
 // ---------------------------------------------------------------------------
 
 /// A discovered instruction set on disk. Discovery happens in Phase 4.
@@ -311,8 +286,7 @@ pub struct InstructionSet {
     pub is_default: bool,
 }
 
-// ---------------------------------------------------------------------------
-// AppConfig
+// --------------------------------------------------------------------------- AppConfig
 // ---------------------------------------------------------------------------
 
 /// Per-tool default instruction set selection.
@@ -323,25 +297,22 @@ pub struct DefaultInstructionSets {
     pub copilot: InstructionSetId,
 }
 
-/// Current on-disk schema version for [`AppConfig`]. Incremented whenever
-/// the persisted shape changes in a non-backwards-compatible way so the
-/// loader can migrate (or quarantine) old files.
+/// Current on-disk schema version for [`AppConfig`]. Incremented whenever the persisted shape changes in a non-backwards-compatible way so the loader
+/// can migrate (or quarantine) old files.
 ///
 /// Version history:
 /// * `1` — initial release.
 /// * `2` — added `active_session_id` (Phase 7).
 /// * `3` — added `workspace_root` (single-workspace model, Roadmap §1).
 /// * `4` — added `ai_launch_commands` (per-agent CLI launch override),
-///   `custom_processes`, and `last_open_sub_sessions` (context-menu /
-///   sub-tab feature). Migration seeds the built-in custom-process defs
-///   (`shell`, `open-folder`, `vscode`) additively — only IDs not already
-///   present are inserted, never overwriting a user-edited def.
+///   `custom_processes`, and `last_open_sub_sessions` (context-menu / sub-tab
+///   feature). Migration seeds the built-in custom-process defs (`shell`,
+///   `open-folder`, `vscode`) additively — only IDs not already present are
+///   inserted, never overwriting a user-edited def.
 pub const CONFIG_VERSION_CURRENT: u32 = 4;
 
-/// Per-agent CLI launch command override. Each field is a verbatim shell
-/// snippet (e.g. `"npx claude --model sonnet"`) interpolated into the
-/// composed command in place of the bare program token. Empty string means
-/// "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
+/// Per-agent CLI launch command override. Each field is a verbatim shell snippet (e.g. `"npx claude --model sonnet"`) interpolated into the composed
+/// command in place of the bare program token. Empty string means "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AiLaunchCommands {
@@ -349,12 +320,9 @@ pub struct AiLaunchCommands {
     pub claude: String,
     #[serde(default)]
     pub copilot: String,
-    /// Cached `data:image/png;base64,…` URI for Claude's launcher
-    /// executable, resolved from `claude` at config-save time. `None`
-    /// when resolution fell through to a known interpreter wrapper
-    /// (`node.exe` etc.) — the frontend then falls back to the
-    /// bundled `ToolIcon` SVG. Backend-managed; frontend patches
-    /// don't carry it.
+    /// Cached `data:image/png;base64,…` URI for Claude's launcher executable, resolved from `claude` at config-save time. `None` when resolution fell
+    /// through to a known interpreter wrapper (`node.exe` etc.) — the frontend then falls back to the bundled `ToolIcon` SVG. Backend-managed;
+    /// frontend patches don't carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_icon_data_uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -365,48 +333,35 @@ pub struct AiLaunchCommands {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
-    /// Schema version of this on-disk config. Bumped when the layout
-    /// changes; the loader quarantines files with versions it does not
-    /// understand.
+    /// Schema version of this on-disk config. Bumped when the layout changes; the loader quarantines files with versions it does not understand.
     pub config_version: u32,
     pub default_instruction_sets: DefaultInstructionSets,
     pub instruction_sets_dir: PathBuf,
-    /// Active workspace root: the single git repository the app operates
-    /// within. `None` until the user picks one in the first-boot picker
-    /// (Roadmap §1.1). When set, takes precedence over `worktree_roots` for
-    /// session-creation worktree discovery. Added in `configVersion = 3`.
+    /// Active workspace root: the single git repository the app operates within. `None` until the user picks one in the first-boot picker (Roadmap
+    /// §1.1). When set, takes precedence over `worktree_roots` for session-creation worktree discovery. Added in `configVersion = 3`.
     #[serde(default)]
     pub workspace_root: Option<PathBuf>,
     pub worktree_roots: Vec<PathBuf>,
     pub prelaunch_commands: Vec<String>,
     /// Per-worktree overrides. Key = canonicalized worktree path as a string.
     pub worktree_prelaunch_commands: BTreeMap<String, Vec<String>>,
-    /// Per-agent CLI launch override. Empty fields fall back to the
-    /// hardcoded defaults (`claude` / `copilot`). Added in
-    /// `configVersion = 4`.
+    /// Per-agent CLI launch override. Empty fields fall back to the hardcoded defaults (`claude` / `copilot`). Added in `configVersion = 4`.
     #[serde(default)]
     pub ai_launch_commands: AiLaunchCommands,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
-    /// ID of the most recently focused session. Persisted by `session_focus`
-    /// and consulted by Phase 8+ on launch to decide which tab to show
-    /// active. Cleared when the active session is closed. Added in
-    /// `configVersion = 2`.
+    /// ID of the most recently focused session. Persisted by `session_focus` and consulted by Phase 8+ on launch to decide which tab to show active.
+    /// Cleared when the active session is closed. Added in `configVersion = 2`.
     #[serde(default)]
     pub active_session_id: Option<SessionId>,
-    /// User-defined custom-process launchers exposed in the tab context
-    /// menu. Built-in defs (`shell`, `open-folder`, `vscode`) are seeded on
-    /// migration to `configVersion = 4` if absent; the user is free to
-    /// edit, disable, or delete them. Order is preserved as the on-the-
-    /// wire (Vec) order so the Settings tab stays stable across restarts.
+    /// User-defined custom-process launchers exposed in the tab context menu. Built-in defs (`shell`, `open-folder`, `vscode`) are seeded on
+    /// migration to `configVersion = 4` if absent; the user is free to edit, disable, or delete them. Order is preserved as the on-the- wire (Vec)
+    /// order so the Settings tab stays stable across restarts.
     #[serde(default)]
     pub custom_processes: Vec<CustomProcessDef>,
-    /// Lightweight restore records for sub-tabs (`SubSession`s) that were
-    /// open at last shutdown. On launch the restore pass re-creates each
-    /// terminal sub-session by re-spawning the matching `CustomProcessDef`;
-    /// application sub-sessions come back in `Exited` (greyed) state and
-    /// re-launch on user click. Records whose `defId` no longer exists in
-    /// `custom_processes` are silently dropped at restore time.
+    /// Lightweight restore records for sub-tabs (`SubSession`s) that were open at last shutdown. On launch the restore pass re-creates each terminal
+    /// sub-session by re-spawning the matching `CustomProcessDef`; application sub-sessions come back in `Exited` (greyed) state and re-launch on
+    /// user click. Records whose `defId` no longer exists in `custom_processes` are silently dropped at restore time.
     #[serde(default)]
     pub last_open_sub_sessions: Vec<SubSessionRecord>,
 }
@@ -431,8 +386,7 @@ impl Default for AppConfig {
     }
 }
 
-/// Partial form of [`DefaultInstructionSets`] used by [`PartialAppConfig`]
-/// for deep-merging in Phase 4's `config_set` command.
+/// Partial form of [`DefaultInstructionSets`] used by [`PartialAppConfig`] for deep-merging in Phase 4's `config_set` command.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PartialDefaultInstructionSets {
@@ -442,8 +396,7 @@ pub struct PartialDefaultInstructionSets {
     pub copilot: Option<InstructionSetId>,
 }
 
-/// Partial form of [`AiLaunchCommands`]. Each field is `Some` to overwrite
-/// that agent's launch command (set empty string to clear / revert to
+/// Partial form of [`AiLaunchCommands`]. Each field is `Some` to overwrite that agent's launch command (set empty string to clear / revert to
 /// default), or `None` to leave it alone.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -454,8 +407,7 @@ pub struct PartialAiLaunchCommands {
     pub copilot: Option<String>,
 }
 
-/// Patch over [`AppConfig`]: every field optional so callers can update one
-/// key at a time. Phase 4 deep-merges this into the persisted config.
+/// Patch over [`AppConfig`]: every field optional so callers can update one key at a time. Phase 4 deep-merges this into the persisted config.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PartialAppConfig {
@@ -465,13 +417,8 @@ pub struct PartialAppConfig {
     pub default_instruction_sets: Option<PartialDefaultInstructionSets>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub instruction_sets_dir: Option<PathBuf>,
-    /// Tri-state: absent → leave alone; `null` → clear; `"<path>"` → set.
-    /// Mirrors the encoding used for `active_session_id`.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "double_option"
-    )]
+    /// Tri-state: absent → leave alone; `null` → clear; `"<path>"` → set. Mirrors the encoding used for `active_session_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
     pub workspace_root: Option<Option<PathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub worktree_roots: Option<Vec<PathBuf>>,
@@ -485,30 +432,21 @@ pub struct PartialAppConfig {
     pub last_open_sessions: Option<Vec<SessionId>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tab_order: Option<Vec<SessionId>>,
-    /// Tri-state: absent → leave alone; `null` → clear; `"<uuid>"` → set.
-    /// Encoded with the `double_option` helper so JSON `null` is preserved
-    /// as `Some(None)` rather than collapsing to "field absent".
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "double_option"
-    )]
+    /// Tri-state: absent → leave alone; `null` → clear; `"<uuid>"` → set. Encoded with the `double_option` helper so JSON `null` is preserved as
+    /// `Some(None)` rather than collapsing to "field absent".
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
     pub active_session_id: Option<Option<SessionId>>,
-    /// Replace the entire `customProcesses` list. Absence leaves it
-    /// untouched. The Settings dialog (Phase 6) sends the full edited list
-    /// rather than per-row patches so ordering is unambiguous.
+    /// Replace the entire `customProcesses` list. Absence leaves it untouched. The Settings dialog (Phase 6) sends the full edited list rather than
+    /// per-row patches so ordering is unambiguous.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub custom_processes: Option<Vec<CustomProcessDef>>,
-    /// Replace the entire `lastOpenSubSessions` list. Absence leaves it
-    /// untouched.
+    /// Replace the entire `lastOpenSubSessions` list. Absence leaves it untouched.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_open_sub_sessions: Option<Vec<SubSessionRecord>>,
 }
 
-/// serde adapter for `Option<Option<T>>`: distinguishes "absent" from
-/// "present-but-null". JSON has no native `Some(None)`, so we serialise
-/// `Some(None)` as `null` and rely on `skip_serializing_if = Option::is_none`
-/// to elide the absent case.
+/// serde adapter for `Option<Option<T>>`: distinguishes "absent" from "present-but-null". JSON has no native `Some(None)`, so we serialise
+/// `Some(None)` as `null` and rely on `skip_serializing_if = Option::is_none` to elide the absent case.
 mod double_option {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -518,8 +456,7 @@ mod double_option {
         S: Serializer,
     {
         match v {
-            // Outer None is elided by `skip_serializing_if`; this branch
-            // would only fire if the field weren't tagged with that.
+            // Outer None is elided by `skip_serializing_if`; this branch would only fire if the field weren't tagged with that.
             None => s.serialize_none(),
             Some(inner) => inner.serialize(s),
         }
@@ -530,20 +467,17 @@ mod double_option {
         T: Deserialize<'de>,
         D: Deserializer<'de>,
     {
-        // If the field is present, parse it as `Option<T>` (null → None,
-        // value → Some). Wrap in the outer `Some` to mark "present".
+        // If the field is present, parse it as `Option<T>` (null → None, value → Some). Wrap in the outer `Some` to mark "present".
         Option::<T>::deserialize(d).map(Some)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Errors
+// --------------------------------------------------------------------------- Errors
 // ---------------------------------------------------------------------------
 
 /// Payload of the `session://output` event (DESIGN §6).
 ///
-/// Mirrored on the frontend by `SessionOutputEvent` in
-/// `src/types/arborist.ts`.
+/// Mirrored on the frontend by `SessionOutputEvent` in `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionOutputEvent {
@@ -553,12 +487,10 @@ pub struct SessionOutputEvent {
 
 /// Payload of the `session://activity` event (DESIGN §6).
 ///
-/// `event` is a tagged enum (see [`crate::activity::ActivityEvent`]):
-/// `{ kind: "title", value: "..." }`, `{ kind: "attention" }`,
-/// `{ kind: "working" }`, `{ kind: "idle" }`, etc.
+/// `event` is a tagged enum (see [`crate::activity::ActivityEvent`]): `{ kind: "title", value: "..." }`, `{ kind: "attention" }`, `{ kind: "working"
+/// }`, `{ kind: "idle" }`, etc.
 ///
-/// Mirrored on the frontend by `SessionActivityEvent` in
-/// `src/types/arborist.ts`.
+/// Mirrored on the frontend by `SessionActivityEvent` in `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionActivityEvent {
@@ -567,10 +499,8 @@ pub struct SessionActivityEvent {
     pub event: crate::activity::ActivityEvent,
 }
 
-/// Snapshot of the latest token / context-window observation for a session,
-/// used both as the payload for the `session://metrics` event and as the
-/// in-memory state the frontend renders. All fields except `session_id` and
-/// `observed_at` are optional: a snapshot may carry only a token count if
+/// Snapshot of the latest token / context-window observation for a session, used both as the payload for the `session://metrics` event and as the
+/// in-memory state the frontend renders. All fields except `session_id` and `observed_at` are optional: a snapshot may carry only a token count if
 /// the model's context limit cannot be resolved.
 ///
 /// Mirrored on the frontend by `SessionMetrics` in `src/types/arborist.ts`.
@@ -581,13 +511,10 @@ pub struct SessionMetricsEvent {
     /// Model identifier as reported by the CLI (e.g. `"claude-sonnet-4-6"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Percentage of the context window in use, 0..=100. Omitted when the
-    /// model's context limit cannot be resolved.
+    /// Percentage of the context window in use, 0..=100. Omitted when the model's context limit cannot be resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_used_pct: Option<u8>,
-    /// Tokens currently counted against the context window
-    /// (= `input + cache_creation + cache_read + output` for the latest
-    /// observed assistant turn).
+    /// Tokens currently counted against the context window (= `input + cache_creation + cache_read + output` for the latest observed assistant turn).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens_used: Option<u64>,
     /// Model context-window limit in tokens (e.g. 200_000), when known.
@@ -604,17 +531,13 @@ pub struct SessionMetricsEvent {
 }
 
 impl SessionMetricsEvent {
-    /// True when two snapshots carry the same data — every field except
-    /// `observed_at`. Used by the per-tool watchers to suppress redundant
-    /// `session://metrics` emissions when nothing has changed since the
-    /// previous poll. Comparing `Self` directly via derived `PartialEq`
-    /// would always differ because `observed_at` advances every poll.
+    /// True when two snapshots carry the same data — every field except `observed_at`. Used by the per-tool watchers to suppress redundant
+    /// `session://metrics` emissions when nothing has changed since the previous poll. Comparing `Self` directly via derived `PartialEq` would always
+    /// differ because `observed_at` advances every poll.
     ///
-    /// **Future-proofing:** the destructuring patterns below intentionally
-    /// list every field by name (no `..`) so that adding a new field to
-    /// `SessionMetricsEvent` is a compile error here. That forces an
-    /// explicit decision: include the new field in the dedup comparison,
-    /// or document why it's excluded (like `observed_at`).
+    /// **Future-proofing:** the destructuring patterns below intentionally list every field by name (no `..`) so that adding a new field to
+    /// `SessionMetricsEvent` is a compile error here. That forces an explicit decision: include the new field in the dedup comparison, or document
+    /// why it's excluded (like `observed_at`).
     #[must_use]
     pub fn same_payload_as(&self, other: &Self) -> bool {
         let Self {
@@ -649,13 +572,10 @@ impl SessionMetricsEvent {
 
 /// Payload of the `session://status` event (DESIGN §6).
 ///
-/// `message` is an optional human-readable note that accompanies the
-/// status change — used today for stale-worktree restore failures
-/// (Roadmap §4.3) so the terminal overlay can explain *why* the session
-/// is in `error` state instead of just showing a generic banner.
+/// `message` is an optional human-readable note that accompanies the status change — used today for stale-worktree restore failures (Roadmap §4.3) so
+/// the terminal overlay can explain *why* the session is in `error` state instead of just showing a generic banner.
 ///
-/// Mirrored on the frontend by `SessionStatusEvent` in
-/// `src/types/arborist.ts`.
+/// Mirrored on the frontend by `SessionStatusEvent` in `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStatusEvent {
@@ -665,8 +585,7 @@ pub struct SessionStatusEvent {
     pub message: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Command argument shapes (DESIGN §6)
+// --------------------------------------------------------------------------- Command argument shapes (DESIGN §6)
 // ---------------------------------------------------------------------------
 
 /// Arguments for the `session_create` command.
@@ -677,24 +596,19 @@ pub struct SessionStatusEvent {
 pub struct SessionCreateArgs {
     pub tool: Tool,
     pub worktree_path: PathBuf,
-    /// Optional. When omitted, the session is launched with no
-    /// `--system-prompt` for Claude (Copilot never used this field).
-    /// See [`Session::instruction_set_id`].
+    /// Optional. When omitted, the session is launched with no `--system-prompt` for Claude (Copilot never used this field). See
+    /// [`Session::instruction_set_id`].
     #[serde(default)]
     pub instruction_set_id: Option<InstructionSetId>,
-    /// Initial PTY width (columns) the child process will see at startup.
-    /// The frontend measures the terminal host before calling `session_create`
-    /// so the CLI's first paint (e.g., a Copilot/Claude splash screen)
-    /// renders at the right width — without this, the child reads 80 cols
-    /// from the OS, draws its splash narrow, and never re-paints when the
-    /// later `session_resize` arrives.
+    /// Initial PTY width (columns) the child process will see at startup. The frontend measures the terminal host before calling `session_create` so
+    /// the CLI's first paint (e.g., a Copilot/Claude splash screen) renders at the right width — without this, the child reads 80 cols from the OS,
+    /// draws its splash narrow, and never re-paints when the later `session_resize` arrives.
     pub cols: u16,
     /// Initial PTY height (rows). See [`Self::cols`].
     pub rows: u16,
 }
 
-/// Arguments for any command keyed only by session id
-/// (`session_focus`, `session_restart`). `session_close` uses the richer
+/// Arguments for any command keyed only by session id (`session_focus`, `session_restart`). `session_close` uses the richer
 /// [`SessionCloseArgs`] so the user can opt into worktree deletion.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SessionIdArg`.
@@ -704,10 +618,8 @@ pub struct SessionIdArg {
     pub session_id: SessionId,
 }
 
-/// Arguments for `session_close`. Extends [`SessionIdArg`] with an opt-in
-/// flag that removes the session's git worktree from disk after the PTY is
-/// torn down. The backend gates removal behind safety checks (never the
-/// main worktree, never a path outside the configured workspace root); see
+/// Arguments for `session_close`. Extends [`SessionIdArg`] with an opt-in flag that removes the session's git worktree from disk after the PTY is
+/// torn down. The backend gates removal behind safety checks (never the main worktree, never a path outside the configured workspace root); see
 /// `commands::session::session_close_impl`.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SessionCloseArgs`.
@@ -715,26 +627,21 @@ pub struct SessionIdArg {
 #[serde(rename_all = "camelCase")]
 pub struct SessionCloseArgs {
     pub session_id: SessionId,
-    /// When `true`, run `git worktree remove --force <worktree_path>` after
-    /// terminating the PTY. Defaults to `false` so legacy callers (and any
-    /// future code that forgets to set the flag) preserve existing
-    /// behaviour.
+    /// When `true`, run `git worktree remove --force <worktree_path>` after terminating the PTY. Defaults to `false` so legacy callers (and any
+    /// future code that forgets to set the flag) preserve existing behaviour.
     #[serde(default)]
     pub delete_worktree: bool,
 }
 
-/// Result of `session_close`. The session record and PTY are always torn
-/// down on success; if the user opted into worktree deletion and the
-/// `git worktree remove` step failed, the failure is reported here as a
-/// warning string rather than as a hard error so callers can converge UI
-/// state regardless.
+/// Result of `session_close`. The session record and PTY are always torn down on success; if the user opted into worktree deletion and the `git
+/// worktree remove` step failed, the failure is reported here as a warning string rather than as a hard error so callers can converge UI state
+/// regardless.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SessionCloseResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCloseResult {
-    /// Human-readable error message from `git worktree remove`. `None`
-    /// when worktree deletion was not requested or succeeded.
+    /// Human-readable error message from `git worktree remove`. `None` when worktree deletion was not requested or succeeded.
     pub worktree_delete_error: Option<String>,
 }
 
@@ -749,11 +656,9 @@ pub struct SessionResizeArgs {
     pub rows: u16,
 }
 
-/// Arguments for `session_restart`. Carries the current PTY dimensions so
-/// the freshly-spawned child process sees the right size from its very
-/// first `ioctl(TIOCGWINSZ)` / ConPTY query, instead of starting at the
-/// OS-default 80×24 and rendering its initial output (splash screen,
-/// shell prompt, …) at the wrong width.
+/// Arguments for `session_restart`. Carries the current PTY dimensions so the freshly-spawned child process sees the right size from its very first
+/// `ioctl(TIOCGWINSZ)` / ConPTY query, instead of starting at the OS-default 80×24 and rendering its initial output (splash screen, shell prompt, …)
+/// at the wrong width.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SessionRestartArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -774,14 +679,10 @@ pub struct SessionInputArgs {
     pub data: String,
 }
 
-// ---------------------------------------------------------------------------
-// Sub-session command/event payloads (Phase 2 backend; frontend wraps in
-// Phase 4). Mirrored on the frontend in `src/lib/tauri-bridge.ts`.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Sub-session command/event payloads (Phase 2 backend; frontend wraps in
+// Phase 4). Mirrored on the frontend in `src/lib/tauri-bridge.ts`. ---------------------------------------------------------------------------
 
-/// Arguments for `subsession_create`. The chosen [`CustomProcessDef`] is
-/// looked up in `AppConfig.customProcesses`; rejected if disabled or
-/// missing.
+/// Arguments for `subsession_create`. The chosen [`CustomProcessDef`] is looked up in `AppConfig.customProcesses`; rejected if disabled or missing.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubSessionCreateArgs {
@@ -789,42 +690,31 @@ pub struct SubSessionCreateArgs {
     pub def_id: CustomProcessDefId,
 }
 
-/// Arguments for `subsession_close` / `subsession_focus`. A bare-id
-/// envelope keeps the wire shape uniform with [`SessionIdArg`].
+/// Arguments for `subsession_close` / `subsession_focus`. A bare-id envelope keeps the wire shape uniform with [`SessionIdArg`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubSessionIdArg {
     pub id: SubSessionId,
 }
 
-/// What the user wants to happen to the underlying app when their
-/// sub-tab is closed. Terminal sub-tabs ignore the variant — there's
-/// no GUI window to address — and always behave as `TabOnly` (the
-/// PTY child gets killed because the tab IS the process).
+/// What the user wants to happen to the underlying app when their sub-tab is closed. Terminal sub-tabs ignore the variant — there's no GUI window to
+/// address — and always behave as `TabOnly` (the PTY child gets killed because the tab IS the process).
 ///
-/// The variants exist so app sub-tabs (VS Code, etc.) can offer the
-/// user the choice between detaching the tab while leaving the
-/// editor open, asking the editor to close itself, or force-killing
-/// the underlying process (escape hatch when the editor refuses).
-// `rename_all_fields` is inert today (all variants are unit-only) but
-// guards against a future struct variant — without it, named fields in a
-// future variant would serialise snake_case and silently desync from the
-// TS mirror. Same defensive pattern as `activity::ActivityEvent`.
+/// The variants exist so app sub-tabs (VS Code, etc.) can offer the user the choice between detaching the tab while leaving the editor open, asking
+/// the editor to close itself, or force-killing the underlying process (escape hatch when the editor refuses).
+// `rename_all_fields` is inert today (all variants are unit-only) but guards against a future struct variant — without it, named fields in a future
+// variant would serialise snake_case and silently desync from the TS mirror. Same defensive pattern as `activity::ActivityEvent`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SubSessionCloseIntent {
-    /// Detach the sub-tab from Arborist; leave any external app
-    /// window running. Default — preserves prior behaviour.
+    /// Detach the sub-tab from Arborist; leave any external app window running. Default — preserves prior behaviour.
     #[default]
     TabOnly,
-    /// Detach AND ask the OS to politely close the matched app
-    /// window (Windows: `WM_CLOSE` to the resolver-matched HWND).
-    /// Best-effort: the app may show a save-changes prompt and
-    /// stay open; Arborist's tab is removed regardless.
+    /// Detach AND ask the OS to politely close the matched app window (Windows: `WM_CLOSE` to the resolver-matched HWND). Best-effort: the app may
+    /// show a save-changes prompt and stay open; Arborist's tab is removed regardless.
     RequestAppClose,
-    /// Detach AND force-kill the underlying process (`TerminateProcess`
-    /// on Windows; `kill -9` on Unix). Use only when `RequestAppClose`
-    /// has been refused or isn't available.
+    /// Detach AND force-kill the underlying process (`TerminateProcess` on Windows; `kill -9` on Unix). Use only when `RequestAppClose` has been
+    /// refused or isn't available.
     ForceKill,
 }
 
@@ -838,10 +728,8 @@ pub struct SubSessionCloseArgs {
     pub intent: SubSessionCloseIntent,
 }
 
-/// Arguments for `subsession_list`. When `parent_session_id` is `None`
-/// the result is the full set across every parent; when `Some(id)` the
-/// result is filtered to that parent and ordered as the sub-sessions
-/// were created.
+/// Arguments for `subsession_list`. When `parent_session_id` is `None` the result is the full set across every parent; when `Some(id)` the result is
+/// filtered to that parent and ordered as the sub-sessions were created.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SubSessionListArgs {
@@ -880,10 +768,8 @@ pub struct SubSessionStatusEvent {
     pub message: Option<String>,
 }
 
-/// Payload of `subsession://exited`. Emitted when an Application sub-tab's
-/// detached process is observed to have exited. Phase 3 wires this from
-/// the application-launcher polling thread; Phase 2's terminal sub-tabs
-/// rely on `subsession://status` + `SubSessionStatus::Exited` instead.
+/// Payload of `subsession://exited`. Emitted when an Application sub-tab's detached process is observed to have exited. Phase 3 wires this from the
+/// application-launcher polling thread; Phase 2's terminal sub-tabs rely on `subsession://status` + `SubSessionStatus::Exited` instead.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SubSessionExitedEvent`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -895,15 +781,12 @@ pub struct SubSessionExitedEvent {
     pub exit_code: Option<i32>,
 }
 
-/// Payload of `subsession://restored`. Emitted by the Phase 7 restore
-/// second pass for every sub-session re-materialised from
-/// `AppConfig.lastOpenSubSessions`. The frontend store's `applyRestored`
-/// reducer inserts the entry idempotently so subsequent `subsession://
-/// status` events for the same id land on a real row.
+/// Payload of `subsession://restored`. Emitted by the Phase 7 restore second pass for every sub-session re-materialised from
+/// `AppConfig.lastOpenSubSessions`. The frontend store's `applyRestored` reducer inserts the entry idempotently so subsequent `subsession:// status`
+/// events for the same id land on a real row.
 ///
-/// Carrying the full [`SubSession`] (rather than just the id) means the
-/// frontend doesn't have to issue a follow-up `subsession_list` after
-/// restore — it has the data it needs immediately.
+/// Carrying the full [`SubSession`] (rather than just the id) means the frontend doesn't have to issue a follow-up `subsession_list` after restore —
+/// it has the data it needs immediately.
 ///
 /// MIRROR: `src/types/arborist.ts::SubSessionRestoredEvent`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -921,34 +804,19 @@ pub struct WorkspaceValidateArgs {
     pub path: String,
 }
 
-/// Result of `workspace_validate`. `valid: true` iff the candidate path is
-/// an absolute, existing directory containing a git repository. On failure,
+/// Result of `workspace_validate`. `valid: true` iff the candidate path is an absolute, existing directory containing a git repository. On failure,
 /// `error` carries a short human-readable reason for inline picker feedback.
 ///
-/// `alreadyOpenInAnotherInstance` is an **advisory** flag set when a
-/// non-blocking probe of the per-(branch, workspace) `.lock` file
-/// could not acquire the OS lock — i.e. another Arborist process
-/// **bound to the same `(branch, workspace)` pair** currently holds
-/// it. The lock is OS-advisory: if a previous owner exited (cleanly
-/// or by crash) the OS releases the file handle and the probe will
-/// succeed, so this flag does **not** indicate a stale lock —
-/// `WorkspaceLockGuard` does not require any explicit cleanup
-/// (see `workspace_lock.rs` "Crash semantics").
-/// Contention with a different branch (e.g. release vs dev build of
-/// the same workspace) is **not** detected here because each branch
-/// gets its own scoped lock path under
-/// `<app_data_dir>/[branches/<branch>/]workspaces/<key>/.lock`. The
-/// picker UI surfaces a warning but still allows the user to
-/// confirm; the actual lock is acquired transactionally by
-/// `workspace_switch` (or boot), which will fail with
-/// `WorkspaceLocked` if the contention is still present.
-/// The probe treats a missing `.lock` file as "no contention" (it
-/// short-circuits and returns `Ok(true)` without creating the file),
-/// so the missing file alone never produces an absent value — it
-/// serialises as `Some(false)` ("probed, no contention"). The field
-/// is `None` only when the path failed earlier validation (no probe
-/// attempted), the caller passed `app_data_dir = None`, or the probe
-/// itself hit an I/O error.
+/// `alreadyOpenInAnotherInstance` is an **advisory** flag set when a non-blocking probe of the per-(branch, workspace) `.lock` file could not acquire
+/// the OS lock — i.e. another Arborist process **bound to the same `(branch, workspace)` pair** currently holds it. The lock is OS-advisory: if a
+/// previous owner exited (cleanly or by crash) the OS releases the file handle and the probe will succeed, so this flag does **not** indicate a stale
+/// lock — `WorkspaceLockGuard` does not require any explicit cleanup (see `workspace_lock.rs` "Crash semantics"). Contention with a different branch
+/// (e.g. release vs dev build of the same workspace) is **not** detected here because each branch gets its own scoped lock path under
+/// `<app_data_dir>/[branches/<branch>/]workspaces/<key>/.lock`. The picker UI surfaces a warning but still allows the user to confirm; the actual
+/// lock is acquired transactionally by `workspace_switch` (or boot), which will fail with `WorkspaceLocked` if the contention is still present. The
+/// probe treats a missing `.lock` file as "no contention" (it short-circuits and returns `Ok(true)` without creating the file), so the missing file
+/// alone never produces an absent value — it serialises as `Some(false)` ("probed, no contention"). The field is `None` only when the path failed
+/// earlier validation (no probe attempted), the caller passed `app_data_dir = None`, or the probe itself hit an I/O error.
 ///
 /// MIRROR: `src/types/arborist.ts::WorkspaceValidateResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -957,9 +825,8 @@ pub struct WorkspaceValidateResult {
     pub valid: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error: Option<String>,
-    /// `Some(true)` if a non-blocking lock probe revealed contention;
-    /// `Some(false)` if the probe succeeded; `None` if no probe was
-    /// performed (e.g. the path failed earlier validation).
+    /// `Some(true)` if a non-blocking lock probe revealed contention; `Some(false)` if the probe succeeded; `None` if no probe was performed (e.g.
+    /// the path failed earlier validation).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub already_open_in_another_instance: Option<bool>,
 }
@@ -973,8 +840,7 @@ pub struct WorktreeCreateArgs {
     pub name: String,
 }
 
-/// Result of `worktree_create`. `path` is the canonical absolute path to
-/// the newly-created worktree directory.
+/// Result of `worktree_create`. `path` is the canonical absolute path to the newly-created worktree directory.
 ///
 /// MIRROR: `src/types/arborist.ts::WorktreeCreateResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -983,20 +849,16 @@ pub struct WorktreeCreateResult {
     pub path: PathBuf,
 }
 
-// ---------------------------------------------------------------------------
-// Custom processes / sub-sessions (Phase 1: types only; backend lands in
-// Phases 2–3, frontend in 4–6, restore in 7).
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Custom processes / sub-sessions (Phase 1: types only; backend lands in
+// Phases 2–3, frontend in 4–6, restore in 7). ---------------------------------------------------------------------------
 
 /// A user- or built-in-defined "custom process" launcher. Persisted in
 /// [`AppConfig::custom_processes`]. Disabled defs are visible in the
 /// Settings tab (with a toggle) but hidden from the tab context menu.
 ///
-/// `command` is a single shell command string composed exactly like a
-/// session's `composedCommand`: passed to `$SHELL -c` (or `%COMSPEC% /c`
-/// on Windows) with `cwd` set to the parent session's worktree path. **The
-/// worktree path is never interpolated** into the command (DESIGN §8 —
-/// injection prevention).
+/// `command` is a single shell command string composed exactly like a session's `composedCommand`: passed to `$SHELL -c` (or `%COMSPEC% /c` on
+/// Windows) with `cwd` set to the parent session's worktree path. **The worktree path is never interpolated** into the command (DESIGN §8 — injection
+/// prevention).
 ///
 /// MIRROR: `src/types/arborist.ts::CustomProcessDef`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1006,33 +868,26 @@ pub struct CustomProcessDef {
     pub name: String,
     pub kind: CustomProcessKind,
     pub command: String,
-    /// When `false`, hidden from the context menu's "Launch…" submenu.
-    /// Existing sub-sessions backed by a disabled def keep running until
-    /// the user closes them (Phase 5).
+    /// When `false`, hidden from the context menu's "Launch…" submenu. Existing sub-sessions backed by a disabled def keep running until the user
+    /// closes them (Phase 5).
     pub enabled: bool,
-    /// Optional UI hint (icon name / emoji / preset key). Reserved for
-    /// future use; the v1 sidebar renders a generic icon.
+    /// Optional UI hint (icon name / emoji / preset key). Reserved for future use; the v1 sidebar renders a generic icon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Cached `data:image/png;base64,…` URI for the app icon, resolved
-    /// from `command` at def-save / first-load time. `None` until
-    /// resolution succeeds (or permanently if no executable can be
-    /// found, e.g. for shell built-ins like `cd`). The frontend
-    /// treats `Some` as overriding the emoji `icon` glyph.
+    /// Cached `data:image/png;base64,…` URI for the app icon, resolved from `command` at def-save / first-load time. `None` until resolution succeeds
+    /// (or permanently if no executable can be found, e.g. for shell built-ins like `cd`). The frontend treats `Some` as overriding the emoji `icon`
+    /// glyph.
     ///
-    /// Filled in by the backend's `backfill_icons` pass — frontend
-    /// patches that omit this field do **not** clobber the cache,
-    /// see `config_store::merge_partial`.
+    /// Filled in by the backend's `backfill_icons` pass — frontend patches that omit this field do **not** clobber the cache, see
+    /// `config_store::merge_partial`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_data_uri: Option<String>,
 }
 
-/// In-memory + on-the-wire representation of a sub-tab. Sub-sessions live
-/// in a parallel `SubSessionStore` (Phase 2); only the lightweight
+/// In-memory + on-the-wire representation of a sub-tab. Sub-sessions live in a parallel `SubSessionStore` (Phase 2); only the lightweight
 /// [`SubSessionRecord`] is persisted across restarts. Identifies its
-/// parent via `parent_session_id` and the def that launched it via
-/// `def_id` (so the Sidebar can re-resolve the user-facing name/icon if
-/// the def is renamed).
+/// parent via `parent_session_id` and the def that launched it via `def_id` (so the Sidebar can re-resolve the user-facing name/icon if the def is
+/// renamed).
 ///
 /// MIRROR: `src/types/arborist.ts::SubSession`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1044,26 +899,20 @@ pub struct SubSession {
     pub kind: CustomProcessKind,
     pub label: String,
     pub status: SubSessionStatus,
-    /// OS PID of the underlying child (PTY child or detached GUI process).
-    /// Cleared on exit.
+    /// OS PID of the underlying child (PTY child or detached GUI process). Cleared on exit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    /// Composed launch command captured once at sub-session creation and
-    /// reused verbatim if the sub-session is re-spawned (Phase 2 will use
-    /// it for terminal sub-tab restart). Mirrors [`Session::composed_command`]:
-    /// later edits to the source [`CustomProcessDef`] do not retroactively
-    /// rewrite already-running sub-sessions.
+    /// Composed launch command captured once at sub-session creation and reused verbatim if the sub-session is re-spawned (Phase 2 will use it for
+    /// terminal sub-tab restart). Mirrors [`Session::composed_command`]: later edits to the source [`CustomProcessDef`] do not retroactively rewrite
+    /// already-running sub-sessions.
     pub composed_command: String,
     pub created_at: i64,
 }
 
 /// Lightweight restore record persisted in
 /// [`AppConfig::last_open_sub_sessions`]. Carries only what the restore
-/// pass needs to attempt re-creation: the def the sub-tab was launched
-/// from, the parent session it lived under, the user-facing label (so the
-/// sidebar can render the tab even before restore resolves), and the
-/// kind (so an Application sub-tab can come back greyed without
-/// re-launching the GUI).
+/// pass needs to attempt re-creation: the def the sub-tab was launched from, the parent session it lived under, the user-facing label (so the sidebar
+/// can render the tab even before restore resolves), and the kind (so an Application sub-tab can come back greyed without re-launching the GUI).
 ///
 /// MIRROR: `src/types/arborist.ts::SubSessionRecord`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1074,17 +923,13 @@ pub struct SubSessionRecord {
     pub def_id: CustomProcessDefId,
     pub kind: CustomProcessKind,
     pub label: String,
-    /// Resolved command at sub-session creation time. Persisted so a
-    /// later edit to the underlying [`CustomProcessDef`] doesn't change
-    /// what the restored sub-session would relaunch — matches the
-    /// "compose once, store-and-reuse" invariant for top-level sessions
-    /// (DESIGN §5.4 mirror).
+    /// Resolved command at sub-session creation time. Persisted so a later edit to the underlying [`CustomProcessDef`] doesn't change what the
+    /// restored sub-session would relaunch — matches the "compose once, store-and-reuse" invariant for top-level sessions (DESIGN §5.4 mirror).
     #[serde(default)]
     pub composed_command: String,
 }
 
-// ---------------------------------------------------------------------------
-// Workspace switch (in-app pivot to a different workspace root)
+// --------------------------------------------------------------------------- Workspace switch (in-app pivot to a different workspace root)
 // ---------------------------------------------------------------------------
 
 /// Arguments for `workspace_switch` (Phase 7 — in-app workspace switch).
@@ -1096,20 +941,14 @@ pub struct WorkspaceSwitchArgs {
     pub path: String,
 }
 
-/// Result of `workspace_switch`. `workspaceRoot` is the **canonical** path
-/// the backend bound to (which may differ in casing / separators from the
-/// path the frontend submitted). `noOp` is `true` if the requested path
-/// resolved to the workspace already in use; in that case `config` and
-/// `sessions` mirror the *current* (unchanged) workspace's state so the
-/// wire payload is non-nullable but the frontend can short-circuit
-/// adoption on the flag.
+/// Result of `workspace_switch`. `workspaceRoot` is the **canonical** path the backend bound to (which may differ in casing / separators from the
+/// path the frontend submitted). `noOp` is `true` if the requested path resolved to the workspace already in use; in that case `config` and
+/// `sessions` mirror the *current* (unchanged) workspace's state so the wire payload is non-nullable but the frontend can short-circuit adoption on
+/// the flag.
 ///
-/// On a real swap, `config` and `sessions` reflect the **new** workspace's
-/// state *after* the inline restore loop has run — sessions are already
-/// in `Starting` (or `Error` if the restore preflight failed), so the
-/// frontend can adopt everything in one render with no flicker. The
-/// `workspace://changed` event was deleted in PR5; this result is now
-/// the sole authoritative state-transfer channel for in-app switches.
+/// On a real swap, `config` and `sessions` reflect the **new** workspace's state *after* the inline restore loop has run — sessions are already in
+/// `Starting` (or `Error` if the restore preflight failed), so the frontend can adopt everything in one render with no flicker. The
+/// `workspace://changed` event was deleted in PR5; this result is now the sole authoritative state-transfer channel for in-app switches.
 ///
 /// MIRROR: `src/types/arborist.ts::WorkspaceSwitchResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1121,12 +960,10 @@ pub struct WorkspaceSwitchResult {
     pub sessions: Vec<SessionView>,
 }
 
-// ---------------------------------------------------------------------------
-// Errors
+// --------------------------------------------------------------------------- Errors
 // ---------------------------------------------------------------------------
 
-/// Crate-wide error type. Internal Rust code consumes this via `?`; at the
-/// Tauri command boundary it is converted to [`AppError`] so the frontend
+/// Crate-wide error type. Internal Rust code consumes this via `?`; at the Tauri command boundary it is converted to [`AppError`] so the frontend
 /// gets a stable, serde-friendly shape it can branch on.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -1154,54 +991,45 @@ pub enum Error {
     #[error("pty kill failed: {0}")]
     PtyKillFailed(String),
 
-    /// An instruction file exceeds the 1 MiB cap from DESIGN §8.2. The
-    /// payload is the offending file's path for diagnostics.
+    /// An instruction file exceeds the 1 MiB cap from DESIGN §8.2. The payload is the offending file's path for diagnostics.
     #[error("instruction file too large: {0}")]
     InstructionFileTooLarge(std::path::PathBuf),
 
-    /// A session's persisted instruction temp file is missing on disk and
-    /// could not be re-materialised. Surfaces during restore (Phase 7)
-    /// when both the on-disk file and the persisted contents are gone.
+    /// A session's persisted instruction temp file is missing on disk and could not be re-materialised. Surfaces during restore (Phase 7) when both
+    /// the on-disk file and the persisted contents are gone.
     #[error("instruction file missing: {0}")]
     InstructionFileMissing(std::path::PathBuf),
 
-    /// The selected instruction set's `tool` does not match the requested
-    /// session tool (e.g. asking to spawn a Claude session with a
+    /// The selected instruction set's `tool` does not match the requested session tool (e.g. asking to spawn a Claude session with a
     /// `copilot-default` instruction set).
     #[error("tool/instruction-set mismatch: {0}")]
     ToolMismatch(String),
 
-    /// A custom-process def submitted to `config_set` failed validation
-    /// (empty `id`/`name`/`command`, malformed `id`, or duplicate `id`).
+    /// A custom-process def submitted to `config_set` failed validation (empty `id`/`name`/`command`, malformed `id`, or duplicate `id`).
     #[error("invalid custom process def: {0}")]
     InvalidCustomProcessDef(String),
 
-    /// A required external tool (e.g. `wmctrl` for Linux window focus,
-    /// `code` for the VS Code launcher) is not on `PATH`. The payload is
-    /// the missing tool's name so the frontend can surface a hint.
+    /// A required external tool (e.g. `wmctrl` for Linux window focus, `code` for the VS Code launcher) is not on `PATH`. The payload is the missing
+    /// tool's name so the frontend can surface a hint.
     #[error("tool missing: {0}")]
     ToolMissing(String),
 
-    /// The requested operation does not apply to this resource (e.g.
-    /// sending PTY input to an application-kind sub-session). Distinct
-    /// from `NotImplemented` — the operation is by design unavailable.
+    /// The requested operation does not apply to this resource (e.g. sending PTY input to an application-kind sub-session). Distinct from
+    /// `NotImplemented` — the operation is by design unavailable.
     #[error("not applicable: {0}")]
     NotApplicable(String),
 
-    /// An OS-level permission was denied (e.g. macOS Accessibility for
-    /// `osascript` window activation). Surfaced as a distinct code so
-    /// the frontend can prompt the user to grant the permission.
+    /// An OS-level permission was denied (e.g. macOS Accessibility for `osascript` window activation). Surfaced as a distinct code so the frontend
+    /// can prompt the user to grant the permission.
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 
-    /// The platform does not support the requested feature (e.g. window
-    /// focus on Wayland without a compositor extension). Distinct from
-    /// `ToolMissing` — installing a tool will not help.
+    /// The platform does not support the requested feature (e.g. window focus on Wayland without a compositor extension). Distinct from `ToolMissing`
+    /// — installing a tool will not help.
     #[error("unsupported: {0}")]
     Unsupported(String),
 
-    /// Spawning an application-kind process failed. Carries the
-    /// underlying error message for diagnostics.
+    /// Spawning an application-kind process failed. Carries the underlying error message for diagnostics.
     #[error("app spawn failed: {0}")]
     AppSpawnFailed(String),
 
@@ -1216,9 +1044,8 @@ pub enum Error {
 }
 
 impl Error {
-    /// Stable string discriminant exposed to the frontend via [`AppError`].
-    /// **Never rename these without updating the TypeScript callers** — the
-    /// UI may branch on them.
+    /// Stable string discriminant exposed to the frontend via [`AppError`]. **Never rename these without updating the TypeScript callers** — the UI
+    /// may branch on them.
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
@@ -1246,8 +1073,7 @@ impl Error {
     }
 }
 
-/// Wire shape of an error sent from Rust to the frontend. Always
-/// `{ "code": "<variant>", "message": "<human-readable>" }`.
+/// Wire shape of an error sent from Rust to the frontend. Always `{ "code": "<variant>", "message": "<human-readable>" }`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppError {
@@ -1282,8 +1108,7 @@ impl From<Error> for AppError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
+// --------------------------------------------------------------------------- Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1292,8 +1117,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::{json, Value};
 
-    /// Round-trip a value through JSON and assert the resulting [`Value`]
-    /// equals the supplied fixture, *and* that deserialising the fixture
+    /// Round-trip a value through JSON and assert the resulting [`Value`] equals the supplied fixture, *and* that deserialising the fixture
     /// reproduces the original value. This is the canonical drift detector.
     fn assert_roundtrip<T>(value: &T, fixture: Value)
     where
@@ -1381,10 +1205,7 @@ mod tests {
 
     fn app_config_fixture() -> (AppConfig, Value) {
         let mut overrides = BTreeMap::new();
-        overrides.insert(
-            "/repo/feature-x".to_owned(),
-            vec!["nvm use".to_owned(), "asdf reshim".to_owned()],
-        );
+        overrides.insert("/repo/feature-x".to_owned(), vec!["nvm use".to_owned(), "asdf reshim".to_owned()]);
         let value = AppConfig {
             config_version: 4,
             default_instruction_sets: DefaultInstructionSets {
@@ -1402,15 +1223,9 @@ mod tests {
                 claude_icon_data_uri: None,
                 copilot_icon_data_uri: None,
             },
-            last_open_sessions: vec![SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            )],
-            tab_order: vec![SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            )],
-            active_session_id: Some(SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            )),
+            last_open_sessions: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
+            tab_order: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
+            active_session_id: Some(SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))),
             custom_processes: vec![CustomProcessDef {
                 id: CustomProcessDefId::new("shell"),
                 name: "Shell".to_owned(),
@@ -1421,12 +1236,8 @@ mod tests {
                 icon_data_uri: None,
             }],
             last_open_sub_sessions: vec![SubSessionRecord {
-                id: SubSessionId(
-                    Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
-                ),
-                parent_session_id: SessionId(
-                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-                ),
+                id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
+                parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
                 def_id: CustomProcessDefId::new("shell"),
                 kind: CustomProcessKind::Terminal,
                 label: "Shell".to_owned(),
@@ -1499,12 +1310,8 @@ mod tests {
 
     fn sub_session_fixture() -> (SubSession, Value) {
         let value = SubSession {
-            id: SubSessionId(
-                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
-            ),
-            parent_session_id: SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            ),
+            id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
+            parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -1529,12 +1336,8 @@ mod tests {
 
     fn sub_session_record_fixture() -> (SubSessionRecord, Value) {
         let value = SubSessionRecord {
-            id: SubSessionId(
-                Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
-            ),
-            parent_session_id: SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"),
-            ),
+            id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
+            parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -1593,14 +1396,8 @@ mod tests {
         let view = SessionView::from(&sample_session());
         let serialized: Value = serde_json::to_value(&view).expect("serialize");
         let obj = serialized.as_object().expect("object");
-        assert!(
-            !obj.contains_key("composedCommand"),
-            "SessionView must not expose composedCommand"
-        );
-        assert!(
-            !obj.contains_key("tempFiles"),
-            "SessionView must not expose tempFiles"
-        );
+        assert!(!obj.contains_key("composedCommand"), "SessionView must not expose composedCommand");
+        assert!(!obj.contains_key("tempFiles"), "SessionView must not expose tempFiles");
     }
 
     #[test]
@@ -1651,14 +1448,8 @@ mod tests {
 
     #[test]
     fn custom_process_kind_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_value(CustomProcessKind::Terminal).expect("v"),
-            json!("terminal")
-        );
-        assert_eq!(
-            serde_json::to_value(CustomProcessKind::Application).expect("v"),
-            json!("application")
-        );
+        assert_eq!(serde_json::to_value(CustomProcessKind::Terminal).expect("v"), json!("terminal"));
+        assert_eq!(serde_json::to_value(CustomProcessKind::Application).expect("v"), json!("application"));
     }
 
     #[test]
@@ -1675,12 +1466,8 @@ mod tests {
 
     #[test]
     fn sub_session_id_is_transparent_string() {
-        let id =
-            SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"));
-        assert_eq!(
-            serde_json::to_value(id).expect("v"),
-            json!("11111111-1111-1111-1111-111111111111")
-        );
+        let id = SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"));
+        assert_eq!(serde_json::to_value(id).expect("v"), json!("11111111-1111-1111-1111-111111111111"));
     }
 
     #[test]
@@ -1718,12 +1505,10 @@ mod tests {
         let absent: PartialAppConfig = serde_json::from_value(json!({})).expect("absent");
         assert_eq!(absent.workspace_root, None);
 
-        let cleared: PartialAppConfig =
-            serde_json::from_value(json!({ "workspaceRoot": null })).expect("clear");
+        let cleared: PartialAppConfig = serde_json::from_value(json!({ "workspaceRoot": null })).expect("clear");
         assert_eq!(cleared.workspace_root, Some(None));
 
-        let set: PartialAppConfig =
-            serde_json::from_value(json!({ "workspaceRoot": "/repo" })).expect("set");
+        let set: PartialAppConfig = serde_json::from_value(json!({ "workspaceRoot": "/repo" })).expect("set");
         assert_eq!(set.workspace_root, Some(Some(PathBuf::from("/repo"))));
 
         let serialised = serde_json::to_value(&cleared).expect("ser");
@@ -1737,8 +1522,7 @@ mod tests {
         assert_eq!(absent.active_session_id, None);
 
         // null: deserialised as `Some(None)` → "clear".
-        let cleared: PartialAppConfig =
-            serde_json::from_value(json!({ "activeSessionId": null })).expect("clear");
+        let cleared: PartialAppConfig = serde_json::from_value(json!({ "activeSessionId": null })).expect("clear");
         assert_eq!(cleared.active_session_id, Some(None));
 
         // string: deserialised as `Some(Some(uuid))` → "set".
@@ -1748,9 +1532,7 @@ mod tests {
         .expect("set");
         assert_eq!(
             set.active_session_id,
-            Some(Some(SessionId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")
-            )))
+            Some(Some(SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))))
         );
 
         // Round-trip: Some(None) serialises to null.
@@ -1763,14 +1545,8 @@ mod tests {
 
     #[test]
     fn tool_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_value(Tool::Claude).expect("v"),
-            json!("claude")
-        );
-        assert_eq!(
-            serde_json::to_value(Tool::Copilot).expect("v"),
-            json!("copilot")
-        );
+        assert_eq!(serde_json::to_value(Tool::Claude).expect("v"), json!("claude"));
+        assert_eq!(serde_json::to_value(Tool::Copilot).expect("v"), json!("copilot"));
     }
 
     #[test]
@@ -1788,19 +1564,13 @@ mod tests {
     #[test]
     fn session_id_is_transparent_string() {
         let id = SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"));
-        assert_eq!(
-            serde_json::to_value(id).expect("v"),
-            json!("550e8400-e29b-41d4-a716-446655440000")
-        );
+        assert_eq!(serde_json::to_value(id).expect("v"), json!("550e8400-e29b-41d4-a716-446655440000"));
     }
 
     #[test]
     fn instruction_set_id_is_transparent_string() {
         let id = InstructionSetId::new("claude-default");
-        assert_eq!(
-            serde_json::to_value(&id).expect("v"),
-            json!("claude-default")
-        );
+        assert_eq!(serde_json::to_value(&id).expect("v"), json!("claude-default"));
     }
 
     #[test]
@@ -1816,10 +1586,7 @@ mod tests {
     fn error_codes_are_stable() {
         // Frontend may branch on these strings — keep them stable across phases.
         assert_eq!(Error::InvalidPath("p".into()).code(), "InvalidPath");
-        assert_eq!(
-            Error::WorktreeMissing(std::path::PathBuf::from("/x")).code(),
-            "WorktreeMissing"
-        );
+        assert_eq!(Error::WorktreeMissing(std::path::PathBuf::from("/x")).code(), "WorktreeMissing");
         assert_eq!(Error::NotFound("p".into()).code(), "NotFound");
         assert_eq!(Error::Io(std::io::Error::other("e")).code(), "Io");
         assert_eq!(Error::Internal("e".into()).code(), "Internal");
@@ -1836,19 +1603,10 @@ mod tests {
             "InstructionFileMissing"
         );
         assert_eq!(Error::ToolMismatch("x".into()).code(), "ToolMismatch");
-        assert_eq!(
-            Error::InvalidCustomProcessDef("x".into()).code(),
-            "InvalidCustomProcessDef"
-        );
+        assert_eq!(Error::InvalidCustomProcessDef("x".into()).code(), "InvalidCustomProcessDef");
         assert_eq!(Error::ToolMissing("wmctrl".into()).code(), "ToolMissing");
-        assert_eq!(
-            Error::NotApplicable("no PTY".into()).code(),
-            "NotApplicable"
-        );
-        assert_eq!(
-            Error::PermissionDenied("Accessibility".into()).code(),
-            "PermissionDenied"
-        );
+        assert_eq!(Error::NotApplicable("no PTY".into()).code(), "NotApplicable");
+        assert_eq!(Error::PermissionDenied("Accessibility".into()).code(), "PermissionDenied");
         assert_eq!(Error::Unsupported("Wayland".into()).code(), "Unsupported");
         assert_eq!(Error::AppSpawnFailed("e".into()).code(), "AppSpawnFailed");
     }
@@ -1863,9 +1621,7 @@ mod tests {
     #[test]
     fn session_output_event_roundtrip() {
         let value = SessionOutputEvent {
-            session_id: SessionId(
-                Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid"),
-            ),
+            session_id: SessionId(Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid")),
             data: "hello from PTY".to_owned(),
         };
         let fixture = json!({
@@ -1878,9 +1634,7 @@ mod tests {
     #[test]
     fn session_status_event_roundtrip() {
         let value = SessionStatusEvent {
-            session_id: SessionId(
-                Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid"),
-            ),
+            session_id: SessionId(Uuid::parse_str("8a3e1c5e-2b41-4b31-9dc7-1d77a3a51f00").expect("uuid")),
             status: SessionStatus::Running,
             message: None,
         };
