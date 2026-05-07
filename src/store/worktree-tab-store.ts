@@ -111,6 +111,10 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
     },
 
     async close(id: WorktreeTabId) {
+      // Capture the path BEFORE the backend call so we can converge frontend caches even if the result payload were missing it. Backend
+      // cascade closes child sessions/sub-sessions but we don't get per-child UI events for that — the session-store would otherwise leave
+      // zombie rows. Lazy-import session-store to avoid a circular import (session-store already imports this module).
+      const closingTab = get().tabs.find((t) => t.id === id);
       const result = await worktreeTabClose({ id });
       if (result.childErrors && result.childErrors.length > 0) {
         console.warn('[worktree-tab-store] close had child errors:', result.childErrors);
@@ -120,6 +124,15 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
         const newActiveId = s.activeId === id ? (newTabs[0]?.id ?? null) : s.activeId;
         return { tabs: newTabs, activeId: newActiveId };
       });
+      if (closingTab) {
+        try {
+          // Lazy require to break the import cycle session-store -> worktree-tab-store at module-load time.
+          const { useSessionStore } = await import('@/store/session-store');
+          useSessionStore.getState().actions.removeLocalForPath(closingTab.path);
+        } catch (err) {
+          console.warn(`[worktree-tab-store] removeLocalForPath(${closingTab.path}) failed: ${formatError(err)}`);
+        }
+      }
     },
 
     async focus(id: WorktreeTabId) {

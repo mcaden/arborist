@@ -249,6 +249,18 @@ describe('useWorktreeTabStore', () => {
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+
+    it('purges sessions whose worktreePath matches the closed tab via removeLocalForPath (issue #44 cascade)', async () => {
+      const a = makeTab(TAB_A, { path: '/repo/a' });
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+      const { useSessionStore } = await import('./session-store');
+      const removeSpy = vi.spyOn(useSessionStore.getState().actions, 'removeLocalForPath').mockReturnValue([]);
+
+      await useWorktreeTabStore.getState().actions.close(TAB_A);
+
+      expect(removeSpy).toHaveBeenCalledWith('/repo/a');
+      removeSpy.mockRestore();
+    });
   });
 
   describe('focus', () => {

@@ -105,6 +105,49 @@ describe('create', () => {
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['old', 'new']);
     expect(useSessionStore.getState().activeId).toBe('new');
   });
+
+  it('autolinks the new session to its parent worktree tab via worktreeTabOpen + setActiveChild (issue #44)', async () => {
+    const created = makeView({ id: 'new', worktreePath: '/repo/new' });
+    bridgeMock.sessionCreate.mockResolvedValueOnce(created);
+    bridgeMock.worktreeTabOpen.mockResolvedValueOnce({
+      id: 'wt-1' as never,
+      path: '/repo/new',
+      name: 'new',
+      tabIndex: 0,
+    });
+
+    await useSessionStore.getState().actions.create({
+      tool: 'claude',
+      worktreePath: '/repo/new',
+      cols: 80,
+      rows: 24,
+    });
+
+    expect(bridgeMock.worktreeTabOpen).toHaveBeenCalledWith({ path: '/repo/new' });
+    expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({
+      id: 'wt-1',
+      childId: { kind: 'session', id: 'new' },
+    });
+  });
+
+  it('does not propagate worktree-tab autolink failure to the create caller (graceful degradation)', async () => {
+    const created = makeView({ id: 'new', worktreePath: '/repo/new' });
+    bridgeMock.sessionCreate.mockResolvedValueOnce(created);
+    bridgeMock.worktreeTabOpen.mockRejectedValueOnce(new Error('autolink failed'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const view = await useSessionStore.getState().actions.create({
+      tool: 'claude',
+      worktreePath: '/repo/new',
+      cols: 80,
+      rows: 24,
+    });
+
+    expect(view).toEqual(created);
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['new']);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 describe('close', () => {
@@ -279,6 +322,81 @@ describe('focus', () => {
     expect(useSessionStore.getState().activeId).toBe('b');
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it('autolinks focus to the parent worktree tab when one exists in the cache (issue #44)', async () => {
+    const { useWorktreeTabStore } = await import('./worktree-tab-store');
+    useWorktreeTabStore.setState({
+      tabs: [{ id: 'wt-a' as never, path: '/repo/a', name: 'a', tabIndex: 0 }],
+      activeId: null,
+      isHydrated: true,
+    });
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'sa', worktreePath: '/repo/a' })],
+      activeId: undefined,
+    });
+
+    await useSessionStore.getState().actions.focus('sa');
+
+    expect(bridgeMock.worktreeTabFocus).toHaveBeenCalledWith({ id: 'wt-a' });
+    expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({ id: 'wt-a', childId: { kind: 'session', id: 'sa' } });
+    // The parent tab's local activeChildId mirrors immediately (synchronously) so MainArea reacts without waiting on the backend round-trip.
+    const tab = useWorktreeTabStore.getState().tabs[0]!;
+    expect(tab.activeChildId).toEqual({ kind: 'session', id: 'sa' });
+  });
+
+  it('skips worktree-tab autolink when no parent tab exists for the session (no-op, no error)', async () => {
+    const { useWorktreeTabStore } = await import('./worktree-tab-store');
+    useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'sa', worktreePath: '/repo/a' })],
+      activeId: undefined,
+    });
+
+    await useSessionStore.getState().actions.focus('sa');
+
+    expect(bridgeMock.worktreeTabFocus).not.toHaveBeenCalled();
+    expect(bridgeMock.worktreeTabSetActiveChild).not.toHaveBeenCalled();
+  });
+});
+
+describe('removeLocalForPath', () => {
+  it('drops every session matching the path and cascades to sub-sessions via dropForParent', () => {
+    useSessionStore.setState({
+      sessions: [
+        makeView({ id: 's1', worktreePath: '/repo/a' }),
+        makeView({ id: 's2', worktreePath: '/repo/b' }),
+        makeView({ id: 's3', worktreePath: '/repo/a' }),
+      ],
+      activeId: 's3',
+    });
+    const dropForParent = vi.spyOn(useSubSessionStore.getState().actions, 'dropForParent').mockImplementation(() => undefined);
+
+    const dropped = useSessionStore.getState().actions.removeLocalForPath('/repo/a');
+
+    expect(dropped).toEqual(['s1', 's3']);
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['s2']);
+    // Active session was removed so a neighbour is picked.
+    expect(useSessionStore.getState().activeId).toBe('s2');
+    expect(dropForParent).toHaveBeenCalledWith('s1');
+    expect(dropForParent).toHaveBeenCalledWith('s3');
+    dropForParent.mockRestore();
+  });
+
+  it('returns an empty list when no session matches the path (no-op)', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 's1', worktreePath: '/repo/a' })],
+      activeId: 's1',
+    });
+    const dropForParent = vi.spyOn(useSubSessionStore.getState().actions, 'dropForParent').mockImplementation(() => undefined);
+
+    const dropped = useSessionStore.getState().actions.removeLocalForPath('/repo/none');
+
+    expect(dropped).toEqual([]);
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['s1']);
+    expect(useSessionStore.getState().activeId).toBe('s1');
+    expect(dropForParent).not.toHaveBeenCalled();
+    dropForParent.mockRestore();
   });
 });
 
