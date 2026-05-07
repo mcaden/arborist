@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use arborist_lib::commands::session::AppContext;
-use arborist_lib::commands::worktree_tab::{worktree_tab_open_impl, worktree_tab_reorder_impl};
+use arborist_lib::commands::worktree_tab::{worktree_tab_focus_impl, worktree_tab_open_impl, worktree_tab_reorder_impl};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
@@ -43,7 +43,7 @@ fn null_sink() -> PtySink {
 
 struct Harness {
     ctx: Arc<AppContext>,
-    _config_dir: TempDir,
+    config_dir: TempDir,
     worktree_dirs: Mutex<Vec<TempDir>>,
 }
 
@@ -62,9 +62,14 @@ fn build_harness() -> Harness {
     ));
     Harness {
         ctx,
-        _config_dir: config_dir,
+        config_dir,
         worktree_dirs: Mutex::new(Vec::new()),
     }
+}
+
+/// Path to the on-disk `config.json` for this harness. Used by no-op-no-write regression tests that assert disk state is unchanged across calls.
+fn config_path(h: &Harness) -> PathBuf {
+    h.config_dir.path().join("config.json")
 }
 
 /// Creates a real on-disk directory and returns its absolute path. The TempDir handle is parked on the harness so it lives for the test's lifetime
@@ -251,4 +256,86 @@ fn reorder_applies_new_order_and_updates_tab_index() {
     assert_eq!(by_id[&id_c], 0);
     assert_eq!(by_id[&id_a], 1);
     assert_eq!(by_id[&id_b], 2);
+}
+
+// ---------------------------------------------------------------------------
+// disk-churn: idempotent / NotFound calls must not rewrite config.json (PR #65 sixth-review-round feedback)
+// ---------------------------------------------------------------------------
+
+/// Snapshot a file's contents + last-modified time. Used by no-op-no-write tests to assert the file was *not* touched between two calls.
+fn snapshot_file(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let bytes = std::fs::read(path).expect("read config.json snapshot");
+    let mtime = std::fs::metadata(path).expect("stat config.json").modified().expect("mtime");
+    (bytes, mtime)
+}
+
+#[test]
+fn open_existing_active_tab_does_not_rewrite_config_json() {
+    // Re-opening a worktree-tab path that already exists AND is already active is a true no-op. Without an early-return fast path, every such call
+    // would re-enter `save_config_with`, which writes `config.json` unconditionally — producing pointless disk churn (and config-mtime changes the
+    // frontend or filesystem watchers might react to) on every UI re-trigger.
+    let h = build_harness();
+    let path = fresh_worktree_dir(&h);
+    let id = open(&h, &path);
+
+    let cfg_path = config_path(&h);
+    assert!(cfg_path.exists(), "config.json must be on disk after the first open");
+    let (bytes_before, mtime_before) = snapshot_file(&cfg_path);
+
+    // Sleep to step past mtime resolution boundaries (NTFS is fine but FAT is 2s; 50ms is comfortable on the platforms we ship to). If the no-op
+    // call rewrites the file, mtime will visibly advance.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let id_again = open(&h, &path);
+    assert_eq!(id_again, id);
+
+    let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
+    assert_eq!(bytes_before, bytes_after, "no-op open must leave config.json byte-identical");
+    assert_eq!(mtime_before, mtime_after, "no-op open must NOT rewrite config.json (mtime changed)");
+}
+
+#[test]
+fn focus_with_unknown_id_does_not_rewrite_config_json() {
+    // `worktree_tab_focus` for a stale id (e.g. one racing a close) must surface `NotFound` without touching the disk. Without an early-return,
+    // every such call re-entered `save_config_with` (which always writes), producing one unnecessary write per stale id from the UI.
+    let h = build_harness();
+    // Open one tab so config.json materialises on disk.
+    let _id = open(&h, &fresh_worktree_dir(&h));
+
+    let cfg_path = config_path(&h);
+    let (bytes_before, mtime_before) = snapshot_file(&cfg_path);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let bogus = WorktreeTabId::new();
+    let err = worktree_tab_focus_impl(&h.ctx, bogus).expect_err("focus on unknown id must error");
+    assert_eq!(err.code, "NotFound", "expected NotFound, got {err:?}");
+
+    let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
+    assert_eq!(bytes_before, bytes_after, "NotFound focus must leave config.json byte-identical");
+    assert_eq!(mtime_before, mtime_after, "NotFound focus must NOT rewrite config.json (mtime changed)");
+}
+
+#[test]
+fn focus_existing_tab_persists_active_id_and_does_rewrite_config_json() {
+    // Companion to the no-op tests above: when focus *does* change the active tab, it must persist that change — i.e. the early-return fast paths
+    // must not over-eagerly skip writes that are real mutations. Open A, open B (B becomes active), focus A → expect A to become active AND
+    // config.json to be rewritten.
+    let h = build_harness();
+    let id_a = open(&h, &fresh_worktree_dir(&h));
+    let id_b = open(&h, &fresh_worktree_dir(&h));
+    assert_eq!(h.ctx.store().load_config().active_worktree_tab_id, Some(id_b));
+
+    let cfg_path = config_path(&h);
+    let (bytes_before, mtime_before) = snapshot_file(&cfg_path);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    worktree_tab_focus_impl(&h.ctx, id_a).expect("focus A must succeed");
+
+    assert_eq!(h.ctx.store().load_config().active_worktree_tab_id, Some(id_a));
+    let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
+    assert_ne!(bytes_before, bytes_after, "focus that changes the active tab MUST rewrite config.json");
+    assert!(
+        mtime_after > mtime_before,
+        "focus that changes the active tab MUST advance config.json mtime"
+    );
 }

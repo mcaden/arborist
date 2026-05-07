@@ -523,11 +523,25 @@ pub fn session_list_impl(ctx: &AppContext) -> Result<Vec<SessionView>, AppError>
 // --------------------------------------------------------------------------- session_close
 // ---------------------------------------------------------------------------
 
+/// Public, **gated** session-close entrypoint. Acquires the workspace switch read-guard for the full call (including across `pool.kill().await`),
+/// then delegates to [`session_close_locked`]. Use this from any handler that does *not* already hold a `acquire_switch_read` guard.
 pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree: bool) -> Result<SessionCloseResult, AppError> {
     // Reject if a workspace switch is queued/active. Held for the full lifetime of this call (including across `pool.kill().await`) so the switch's
     // `write().await` cannot proceed until our teardown completes against the old store. See [`AppContext::switch_lock`].
     let _switch = acquire_switch_read(ctx)?;
+    session_close_locked(ctx, id, delete_worktree).await
+}
 
+/// Inner body of [`session_close_impl`] **without** the workspace-switch read guard. Callers that have already acquired the guard for the full
+/// cascade (e.g. the `session_close` command wrapper in `commands/mod.rs`, and `worktree_tab_close_impl`'s child-cascade loop) must call this
+/// directly instead of [`session_close_impl`]. Otherwise the cascade is **self-rejecting**: a workspace switch queued mid-cascade bumps
+/// `AppContext::switch_pending`, which the inner `acquire_switch_read` then observes and rejects with `WorkspaceSwitchInProgress` — even though the
+/// outer guard is still held by the same task. The cascade would then leave child sessions teardown-failed but the parent (worktree tab / session
+/// record) already removed, producing orphan records in the store.
+///
+/// **Precondition (caller-enforced):** the caller must already be holding a guard from [`acquire_switch_read`] on the same `AppContext`. Calling this
+/// without the outer guard removes the workspace-switch barrier from this code path entirely.
+pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktree: bool) -> Result<SessionCloseResult, AppError> {
     // 0. Stop the metrics watcher (Issue #3) before tearing the rest down so it
     //    never observes a half-cleaned session.
     ctx.metrics.stop(&id);

@@ -47,6 +47,21 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
     // dialog (this path), and any error-routing it does (e.g. "show a friendlier message for missing worktrees") would silently miss this entry.
     let canonical = compose::validate_worktree(&path).map_err(AppError::from)?;
 
+    // Hot-path early return: if a tab already exists at this canonical path AND it is already the active worktree tab, the call is a true no-op.
+    // Returning before `save_config_with` avoids rewriting `config.json` (and bumping its mtime) on every idempotent re-open from the UI — without
+    // this, a tight loop of "open same path" calls would produce a disk write each time even though nothing changed. The race window between this
+    // load and the `save_config_with` below is benign: if the tab is removed by another caller in the gap, the closure below re-checks under the
+    // config write lock and falls through to the create-new path. The create-new path produces a fresh tab at the requested path, which is the
+    // correct post-condition for `worktree_tab_open` regardless of whether the previous tab was a re-use or a fresh create.
+    {
+        let cfg = ctx.store().load_config();
+        if let Some(existing) = cfg.worktree_tabs.iter().find(|t| t.path == canonical) {
+            if cfg.active_worktree_tab_id == Some(existing.id) {
+                return Ok(existing.clone());
+            }
+        }
+    }
+
     // Atomic read-modify-write: duplicate check + insert (or focus-existing) under the config write lock. "Open" also acts as "focus" — the
     // backend's persisted `active_worktree_tab_id` is updated to point at the (existing or new) tab so restore-on-launch lands on it.
     let mut result_tab: Option<WorktreeTab> = None;
@@ -57,7 +72,10 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
                 let existing_id = existing.id;
                 result_tab = Some(existing.clone());
                 if cfg.active_worktree_tab_id == Some(existing_id) {
-                    return false; // already focused — nothing to persist
+                    // Reachable on the rare race where the tab was *not* active at the pre-check above but became active in the gap before we took
+                    // the write lock. The bool is currently informational (the framework writes unconditionally), but signalling "no mutation" keeps
+                    // the callsite honest and lets a future variant of `save_config_with` skip the write generically.
+                    return false;
                 }
                 cfg.active_worktree_tab_id = Some(existing_id);
                 return true;
@@ -98,8 +116,9 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
 
 /// Close a worktree tab and cascade-close all child sessions and sub-sessions. Returns a result with any per-child errors that occurred (the tab
 /// itself is always removed). The switch-read guard is held for the full body so the workspace cannot be swapped mid-cascade — which would otherwise
-/// leave the wrong workspace's config mutated. Holding the guard across awaits is correct: tokio guards are `Send`, and `session_close_impl`'s own
-/// `acquire_switch_read` permits multiple concurrent readers (see DESIGN §locking).
+/// leave the wrong workspace's config mutated. Holding the guard across awaits is correct: tokio guards are `Send`, and the cascade calls
+/// `session_close_locked` (the unguarded inner helper) so the inner close cannot self-reject mid-cascade if a workspace switch queues in the gap (see
+/// the doc on `session_close_locked` for why calling `session_close_impl` here would orphan child records).
 pub async fn worktree_tab_close_impl(
     ctx: &AppContext,
     sub_ctx: std::sync::Arc<crate::sub_sessions::SubAppContext>,
@@ -128,7 +147,10 @@ pub async fn worktree_tab_close_impl(
     for sid in &child_session_ids {
         let _guard = ctx.mark_parent_closing(*sid);
         super::subsession::close_for_parent_impl(ctx, &sub_ctx, *sid).await;
-        match super::session::session_close_impl(ctx, *sid, false).await {
+        // `session_close_locked` (NOT `_impl`) — we already hold the switch read guard for the entire cascade. Calling `_impl` would re-enter
+        // `acquire_switch_read`, which checks `AppContext::switch_pending` independently of guard ownership and would reject mid-cascade if a
+        // workspace switch were queued in the gap, leaving the parent worktree tab removed below but the child session record still present.
+        match super::session::session_close_locked(ctx, *sid, false).await {
             Ok(_) => {}
             Err(e) => {
                 warn!(session_id = %sid, error = %e.message, "worktree tab close: child session close failed");
@@ -161,6 +183,17 @@ pub async fn worktree_tab_close_impl(
 /// Set the active worktree tab. Persists the selection to config.
 pub fn worktree_tab_focus_impl(ctx: &AppContext, id: WorktreeTabId) -> Result<(), AppError> {
     let _switch = session::acquire_switch_read(ctx)?;
+
+    // Cold-path early return: if the tab does not exist, fail fast WITHOUT calling `save_config_with` (which would otherwise rewrite `config.json`
+    // on every NotFound — `save_config_with` writes unconditionally regardless of the closure's bool return). Repeated calls with stale ids (e.g.
+    // racing a close) used to produce one disk write per call. The race window between this load and the closure below is benign: if the tab
+    // disappears in the gap the closure sets `found = false` and we still report NotFound.
+    {
+        let cfg = ctx.store().load_config();
+        if !cfg.worktree_tabs.iter().any(|t| t.id == id) {
+            return Err(AppError::new("NotFound", format!("worktree tab {id} not found")));
+        }
+    }
 
     // Validate before mutation. Holding `_switch` and the config write lock inside `save_config_with` makes this check-then-write effectively atomic
     // wrt other commands in this process.

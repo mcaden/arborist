@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arborist_lib::commands::session::{
-    frontend_ready_impl, restore_all_sessions, session_close_impl, session_create_impl, session_focus_impl, session_input_impl, session_list_impl,
-    session_resize_impl, session_restart_impl, AppContext,
+    frontend_ready_impl, restore_all_sessions, session_close_impl, session_close_locked, session_create_impl, session_focus_impl, session_input_impl,
+    session_list_impl, session_resize_impl, session_restart_impl, AppContext,
 };
 use arborist_lib::compose::session_temp_dir;
 use arborist_lib::config_store::ConfigStore;
@@ -671,6 +671,50 @@ async fn lifecycle_handlers_refuse_when_switch_writer_is_queued() {
     // `switch_pending` is back to zero (the writer's `Decr` guard dropped). After the switch's writer finishes, lifecycle handlers succeed again.
     assert_eq!(h.ctx.switch_pending.load(Ordering::SeqCst), 0);
     session_focus_impl(&h.ctx, v.id).expect("focus succeeds once writer drains");
+}
+
+/// Regression for PR #65 sixth-review-round thread on `worktree_tab_close_impl`'s child-cascade self-rejection.
+///
+/// The bug: cascading close paths (`session_close` command wrapper in `commands/mod.rs`, and `worktree_tab_close_impl`) acquire a switch
+/// read-guard for the full cascade, then call `session_close_impl` per child — which **also** calls `acquire_switch_read` internally. Because
+/// `acquire_switch_read` rejects whenever `switch_pending > 0` (regardless of whether the same task already holds a read guard), a workspace
+/// switch queued mid-cascade caused the inner per-child close to fail with `WorkspaceSwitchInProgress` while the outer code proceeded to remove
+/// the parent record — orphaning the child sessions in the store.
+///
+/// The fix: extract the body of `session_close_impl` into `session_close_locked`, which assumes the caller has already passed `acquire_switch_read`.
+/// Cascading callers now invoke `session_close_locked` directly so the inner close cannot self-reject.
+///
+/// This test pins the precondition: with `switch_pending == 1` (a switch queued just after the outer guard was acquired), `session_close_locked`
+/// must succeed. The companion `session_close_impl` call below must still reject — proving the gated wrapper retains its standalone barrier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_close_locked_does_not_self_reject_when_switch_pending_is_set() {
+    let h = build_harness();
+    let v_locked = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    let v_impl = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+
+    // Simulate the cascade prologue: outer caller already holds a read guard, then a workspace switch bumps `switch_pending` while preparing to
+    // queue for write. The outer guard is intentionally NOT held by *this* test task (we are exercising the inner helper directly), but the
+    // counter-bump is what matters — `acquire_switch_read` checks the counter, not the guard's task ownership.
+    h.ctx.switch_pending.fetch_add(1, Ordering::SeqCst);
+    struct Decr<'a>(&'a std::sync::atomic::AtomicUsize);
+    impl<'a> Drop for Decr<'a> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    let _decr = Decr(&h.ctx.switch_pending);
+
+    // The locked helper must complete despite the queued switch. Without the fix, the cascade's per-child close would reject here.
+    session_close_locked(&h.ctx, v_locked.id, false)
+        .await
+        .expect("session_close_locked must NOT consult switch_pending; the cascade caller already passed the barrier");
+
+    // The gated wrapper, in contrast, MUST still reject — its job is to reject when the counter is non-zero so standalone callers without an outer
+    // guard cannot enter the close path during a switch.
+    let err = session_close_impl(&h.ctx, v_impl.id, false)
+        .await
+        .expect_err("session_close_impl must reject when switch_pending is set; only the locked variant skips the check");
+    assert_eq!(err.code, "WorkspaceSwitchInProgress");
 }
 
 #[tokio::test]

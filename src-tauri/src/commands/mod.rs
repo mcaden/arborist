@@ -128,18 +128,19 @@ pub async fn session_list(app: tauri::AppHandle) -> Result<Vec<SessionView>, App
 pub async fn session_close(app: tauri::AppHandle, args: SessionCloseArgs) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
-    // Refuse the entire close (parent + sub-session cascade) while a workspace switch is in progress. Without this guard, the cascade below would
-    // tear down sub-sessions even when `session_close_impl` is about to reject with `WorkspaceSwitchInProgress`, orphaning the parent in a broken
-    // half-closed state.
+    // Refuse the entire close (parent + sub-session cascade) while a workspace switch is in progress. This **outer** guard is held for the full
+    // body — including across `close_for_parent_impl` and `session_close_locked` — so the switch's `write().await` cannot proceed until both halves
+    // of the cascade complete.
     let _switch = session::acquire_switch_read(&ctx)?;
     // Phase 7 cascade: mark the parent as closing (RAII guard ensures removal even on panic), tear down its sub-sessions, then close the parent
     // itself. The tombstone closes the door on a concurrent `subsession_create` racing into the close window.
     //
-    // Workspace-switch rejection *also* lives inside `session_close_impl` (it takes its own `try_read()` on `AppContext::switch_lock` for the full
-    // body, including across `pool.kill().await`) — keep the impl as the single source of truth for the gating policy.
+    // The parent close uses `session_close_locked` (NOT `session_close_impl`) because we already hold the switch read-guard; calling the gated
+    // wrapper would re-enter `acquire_switch_read`, which checks `AppContext::switch_pending` independently of guard ownership and would reject
+    // mid-cascade if a workspace switch were queued in the gap — leaving sub-sessions torn down but the parent record orphaned.
     let _guard = ctx.mark_parent_closing(args.session_id);
     subsession::close_for_parent_impl(&ctx, &sub_ctx, args.session_id).await;
-    session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
+    session::session_close_locked(&ctx, args.session_id, args.delete_worktree).await
 }
 
 #[tauri::command]
