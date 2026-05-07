@@ -25,8 +25,8 @@ pnpm run lint
 pnpm test --run
 pnpm run build
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo test --workspace --features test-helpers
 ```
 
 Additionally:

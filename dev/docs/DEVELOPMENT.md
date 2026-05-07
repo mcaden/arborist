@@ -116,7 +116,7 @@ pnpm run lint:fix       # auto-apply fixes
 pnpm run dev:typecheck  # tsc --noEmit --watch (run continuously while coding)
 cargo fmt --all -- --check
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 ```
 
 ### Test
@@ -125,12 +125,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 pnpm test               # vitest in watch mode (default for inner loop)
 pnpm test --run      # vitest once (CI mode); used by pre-push and CI
 pnpm run build          # tsc --noEmit + vite build
-cargo test --workspace # unit + integration tests including the PTY pool
+cargo test --workspace --features test-helpers  # unit + integration tests including the PTY pool
 ```
 
-`cargo test --workspace` automatically builds the in-tree `arborist-test-child`
-binary and exposes its path to integration tests via the
-`CARGO_BIN_EXE_arborist-test-child` environment variable.
+`cargo test --workspace --features test-helpers` builds the in-tree
+`arborist-test-child` binary (gated behind the `test-helpers` feature) and
+exposes its path to integration tests via the `CARGO_BIN_EXE_arborist-test-child`
+environment variable. Without `--features test-helpers`, the test-helper binaries
+are excluded — this is how release builds avoid bundling them.
 
 ### Acceptance gate (before declaring "done")
 
@@ -141,8 +143,8 @@ pnpm run lint
 pnpm test --run
 pnpm run build
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo test --workspace --features test-helpers
 ```
 
 All six must be green. Anything red is a blocker per
@@ -160,8 +162,8 @@ pnpm run test:watch       # vitest in watch mode
 
 # Two terminals for Rust (cargo-watch is optional but recommended)
 cargo install cargo-watch
-cargo watch -x check -x clippy
-cargo watch -x 'test --workspace'
+cargo watch -x 'clippy --all-targets --features test-helpers -- -D warnings'
+cargo watch -x 'test --workspace --features test-helpers'
 ```
 
 Editor recommendations:
@@ -181,10 +183,10 @@ Husky v9 is wired up by `pnpm install` (via the `prepare` script).
   - `lint-staged` runs `eslint --fix` + Prettier on staged JS / TS / JSON /
     CSS / MD.
   - When any `.rs` file is staged, `cargo fmt --all -- --check` and
-    `cargo clippy --workspace --all-targets -- -D warnings` also run.
+    `cargo clippy --workspace --all-targets --features test-helpers -- -D warnings` also run.
 - **pre-push** (`.husky/pre-push`):
   - `pnpm test --run` (Vitest CI mode).
-  - `cargo test --workspace`.
+  - `cargo test --workspace --features test-helpers`.
 
 Bypassing with `--no-verify` is allowed for WIP branches that won't be
 merged — never on `main` (per `.github/copilot-instructions.md`).
@@ -214,7 +216,7 @@ merged — never on `main` (per `.github/copilot-instructions.md`).
   ```
 - For ad-hoc PTY experiments, run the test child directly:
   ```sh
-  cargo run -p arborist --bin arborist-test-child
+  cargo run -p arborist --features test-helpers --bin arborist-test-child
   ```
 
 ### Persistent state
@@ -260,7 +262,7 @@ There is no automated release pipeline yet — bundles are produced manually.
 | `error: linking with cl.exe failed` on Windows                   | Visual Studio C++ Build Tools not installed; install the workload above.                                            |
 | `failed to find tool. Is gtk+-3.0 installed?` on Linux           | Missing GTK / WebKit2GTK dev packages — see prerequisites.                                                          |
 | `pnpm run tauri:dev` opens a blank window                         | Frontend crashed during boot; open DevTools and check the console for an `ErrorOverlay` reason.                     |
-| `cargo test --workspace` fails with `claude: command not found`  | A test path is calling the real CLI — file a bug, the integration tests must use `arborist-test-child`.                |
+| `cargo test --workspace --features test-helpers` fails with `claude: command not found` | A test path is calling the real CLI — file a bug, the integration tests must use `arborist-test-child`.             |
 | Pre-commit hook does nothing                                     | `pnpm install` wasn't re-run after pulling — Husky hooks are installed by the `prepare` script.                      |
 | `config.json.bad-<timestamp>` keeps appearing                    | The loader is rejecting the file. Diff it against the minimum valid example in [`CONFIGURATION.md`](./CONFIGURATION.md). |
 | Sessions silently fail to restore on launch                      | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in the trace log; affected sessions stay in the sidebar with `status = error`. |

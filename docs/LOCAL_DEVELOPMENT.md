@@ -59,7 +59,7 @@ pnpm run lint:fix        # auto-apply fixes
 pnpm run dev:typecheck   # tsc --noEmit --watch — run this continuously while coding
 cargo fmt --all -- --check
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 ```
 
 ### Test
@@ -67,13 +67,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```sh
 pnpm test                      # vitest watch mode (inner loop)
 pnpm test --run             # vitest once (CI / pre-push)
-cargo test --workspace        # unit + integration tests; also builds arborist-test-child
+cargo test --workspace --features test-helpers  # unit + integration tests; also builds arborist-test-child
 ```
 
 Run a specific Rust test by name prefix:
 
 ```sh
-cargo test --workspace <name>
+cargo test --workspace --features test-helpers <name>
 ```
 
 ### Acceptance gate
@@ -85,8 +85,8 @@ pnpm run lint
 pnpm test --run
 pnpm run build
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo test --workspace --features test-helpers
 ```
 
 ## Inner-loop watcher setup
@@ -99,8 +99,8 @@ pnpm run dev:typecheck    # tsc --noEmit --watch
 pnpm run test:watch       # vitest watch
 
 # Rust (requires cargo-watch: cargo install cargo-watch)
-cargo watch -x check -x clippy
-cargo watch -x 'test --workspace'
+cargo watch -x 'clippy --all-targets --features test-helpers -- -D warnings'
+cargo watch -x 'test --workspace --features test-helpers'
 ```
 
 Recommended VS Code extensions: `rust-analyzer`, `ESLint`, `Prettier - Code formatter`, `Tailwind CSS IntelliSense`. Set `editor.formatOnSave: true` and `rust-analyzer.check.command = "clippy"`.
@@ -110,7 +110,7 @@ Recommended VS Code extensions: `rust-analyzer`, `ESLint`, `Prettier - Code form
 Husky v9 installs two hooks via `pnpm install`:
 
 - **pre-commit** — `lint-staged` runs ESLint + Prettier on staged JS/TS/JSON/CSS/MD; also runs `cargo fmt --check` and `cargo clippy` when any `.rs` file is staged.
-- **pre-push** — `pnpm test --run` (Vitest CI mode) + `cargo test --workspace`.
+- **pre-push** — `pnpm test --run` (Vitest CI mode) + `cargo test --workspace --features test-helpers`.
 
 `--no-verify` is allowed on personal WIP branches; never use it on `main`.
 
@@ -138,7 +138,7 @@ cargo run -p arborist --example config_smoke
 Poke the PTY test child interactively (echoes stdin, exits on `quit`):
 
 ```sh
-cargo run -p arborist --bin arborist-test-child
+cargo run -p arborist --features test-helpers --bin arborist-test-child
 ```
 
 ### Persistent state
@@ -155,13 +155,13 @@ To debug persistence issues: stop Arborist, inspect/edit `config.json` or `sessi
 
 ## Troubleshooting
 
-| Symptom                                                         | Fix                                                                                                                                      |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `error: linking with cl.exe failed` (Windows)                   | Install the Visual Studio 2022 "Desktop development with C++" workload                                                                   |
-| `failed to find tool. Is gtk+-3.0 installed?` (Linux)           | Install GTK / WebKit2GTK dev packages (see Prerequisites)                                                                                |
-| `pnpm run tauri:dev` opens a blank window                       | Frontend crashed at boot — open DevTools and check the console                                                                           |
-| `cargo test --workspace` fails with `claude: command not found` | A test is calling the real CLI; integration tests must use `arborist-test-child` — file a bug                                            |
-| Pre-commit hook does nothing                                    | Re-run `pnpm install` — Husky hooks are set up by the `prepare` script                                                                   |
-| `config.json.bad-<timestamp>` keeps appearing                   | The loader is rejecting the file; diff it against the minimum valid example in [dev/docs/CONFIGURATION.md](../dev/docs/CONFIGURATION.md) |
-| Sessions don't restore on launch                                | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in `RUST_LOG=debug` output                                             |
-| Garbled xterm output after high-throughput burst                | Expected — the PTY pool's drop-newest backpressure prepends `ESC c`; output continues correctly after the reset                          |
+| Symptom                                                                                 | Fix                                                                                                                                      |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `error: linking with cl.exe failed` (Windows)                                           | Install the Visual Studio 2022 "Desktop development with C++" workload                                                                   |
+| `failed to find tool. Is gtk+-3.0 installed?` (Linux)                                   | Install GTK / WebKit2GTK dev packages (see Prerequisites)                                                                                |
+| `pnpm run tauri:dev` opens a blank window                                               | Frontend crashed at boot — open DevTools and check the console                                                                           |
+| `cargo test --workspace --features test-helpers` fails with `claude: command not found` | A test is calling the real CLI; integration tests must use `arborist-test-child` — file a bug                                            |
+| Pre-commit hook does nothing                                                            | Re-run `pnpm install` — Husky hooks are set up by the `prepare` script                                                                   |
+| `config.json.bad-<timestamp>` keeps appearing                                           | The loader is rejecting the file; diff it against the minimum valid example in [dev/docs/CONFIGURATION.md](../dev/docs/CONFIGURATION.md) |
+| Sessions don't restore on launch                                                        | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in `RUST_LOG=debug` output                                             |
+| Garbled xterm output after high-throughput burst                                        | Expected — the PTY pool's drop-newest backpressure prepends `ESC c`; output continues correctly after the reset                          |

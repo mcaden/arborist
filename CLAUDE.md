@@ -45,7 +45,7 @@ pnpm run lint:fix        # auto-apply
 pnpm run dev:typecheck   # tsc --noEmit --watch (run continuously while coding)
 cargo fmt --all -- --check
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 ```
 
 ### Test
@@ -53,15 +53,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```sh
 pnpm test                         # vitest watch mode (inner loop)
 pnpm test --run                # vitest once (CI / pre-push)
-cargo test --workspace           # unit + integration tests; also builds arborist-test-child
-cargo test --workspace <name>    # single Rust test by name prefix
+cargo test --workspace --features test-helpers  # unit + integration tests; also builds arborist-test-child
+cargo test --workspace --features test-helpers <name>  # single Rust test by name prefix
 ```
 
 ### Acceptance gate (all must be green before merge)
 
 ```sh
 pnpm run lint && pnpm test --run && pnpm run build
-cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets --features test-helpers -- -D warnings && cargo test --workspace --features test-helpers
 ```
 
 ### Debugging helpers
@@ -69,7 +69,7 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 ```sh
 RUST_LOG=arborist_lib=debug pnpm run tauri:dev   # verbose backend tracing
 cargo run -p arborist --example config_smoke    # config-store end-to-end without Tauri
-cargo run -p arborist --bin arborist-test-child # poke the PTY test child interactively
+cargo run -p arborist --features test-helpers --bin arborist-test-child # poke the PTY test child interactively
 ```
 
 ## Architecture

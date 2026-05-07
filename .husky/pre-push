@@ -14,4 +14,4 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
       GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
 
 pnpm test --run || exit 1
-cargo test --workspace || exit 1
+cargo test --workspace --features test-helpers || exit 1
