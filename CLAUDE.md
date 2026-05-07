@@ -132,6 +132,7 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 
 ### Code conventions
 
+- **Line length is 150 characters** for all code and comments, in both Rust and TypeScript. Enforced by `rustfmt.toml` (`max_width = 150`) and Prettier (`.prettierrc.json`, `printWidth: 150`).
 - No `any` in TypeScript; no `.unwrap()`/`.expect()` in Rust outside tests.
 - Zustand selectors are granular: `useSessionStore(s => s.tabs)`, never `useStore(s => s)`.
 - Rust command handlers are always `async fn`, return `Result<T, AppError>` (AppError is `serde::Serialize`), and contain no business logic — delegate to `commands/session.rs`.
