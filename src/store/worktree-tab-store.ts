@@ -92,8 +92,16 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
     },
 
     async focus(id: WorktreeTabId) {
-      await worktreeTabFocus({ id });
+      // Optimistic: switching the active worktree tab must feel instant. Backend rejections (NotFound, WorkspaceSwitchInProgress, etc.) just
+      // mean the persisted active marker is stale — the user's intent stands. Mirrors `session-store.focus` and the terminal-kind branch in
+      // `sub-session-store.focus`. We deliberately do NOT roll back `activeId` on rejection: that would yank the UI back to the previously
+      // focused tab while the user is trying to interact with the new one, and would surface backend bookkeeping errors as visible flicker.
       set({ activeId: id });
+      try {
+        await worktreeTabFocus({ id });
+      } catch (err) {
+        console.warn(`[worktree-tab-store] worktree_tab_focus(${id}) rejected: ${formatError(err)}`);
+      }
     },
 
     async reorder(ids: WorktreeTabId[]) {

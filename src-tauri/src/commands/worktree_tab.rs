@@ -11,11 +11,23 @@ use tracing::{info, warn};
 use crate::compose;
 use crate::config_store::ConfigStore;
 use crate::types::{
-    AppError, ChildId, PartialAppConfig, SessionId, WorktreeTab, WorktreeTabCloseResult, WorktreeTabId, WorktreeTabOpenArgs,
+    AppConfig, AppError, ChildId, PartialAppConfig, SessionId, WorktreeTab, WorktreeTabCloseResult, WorktreeTabId, WorktreeTabOpenArgs,
     WorktreeTabSetActiveChildArgs,
 };
 
 use super::session::{self, AppContext};
+
+/// Renumber every tab's `tab_index` to match its slot in `worktree_tab_order`. Pure helper called from any code path that mutates the order
+/// (close, future merge/split flows). `reorder` does the same renumbering inline; centralising the logic here means the close path can no longer
+/// drift out of sync with the order list and produce stale `tab_index` values that subsequently collide with newly-opened tabs (see issue #44 PR
+/// #65 review feedback).
+pub(crate) fn renormalize_worktree_tab_indices(cfg: &mut AppConfig) {
+    for (idx, tid) in cfg.worktree_tab_order.iter().enumerate() {
+        if let Some(tab) = cfg.worktree_tabs.iter_mut().find(|t| t.id == *tid) {
+            tab.tab_index = idx;
+        }
+    }
+}
 
 /// Open (or return an existing) worktree tab for the given path. Idempotent on canonical path — if a tab already exists for the same directory, it is
 /// returned without creating a duplicate. Atomicity: the duplicate check and insert run under `save_config_with`'s write lock.
@@ -130,6 +142,11 @@ pub async fn worktree_tab_close_impl(
         .save_config_with(PartialAppConfig::default(), |cfg| {
             cfg.worktree_tabs.retain(|t| t.id != id);
             cfg.worktree_tab_order.retain(|tid| *tid != id);
+            // Re-normalize `tab_index` on every surviving tab so the value matches the tab's slot in `worktree_tab_order`. Without this, a subsequent
+            // `worktree_tab_open` (which assigns the new tab `tab_index = worktree_tab_order.len()`) can collide with the stale `tab_index` carried by
+            // a tab that was originally past the just-closed slot — e.g. open A, B, C → close B → C still carries `tab_index = 2`; opening D then
+            // also assigns `tab_index = 2`. `reorder` already does this same renumbering pass.
+            renormalize_worktree_tab_indices(cfg);
             if cfg.active_worktree_tab_id == Some(id) {
                 cfg.active_worktree_tab_id = cfg.worktree_tab_order.first().copied();
             }
@@ -317,4 +334,81 @@ pub fn resolve_worktree_path(store: &ConfigStore, id: WorktreeTabId) -> Result<P
         .find(|t| t.id == id)
         .map(|t| t.path.clone())
         .ok_or_else(|| AppError::new("NotFound", format!("worktree tab {id} not found")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn tab(id: WorktreeTabId, idx: usize) -> WorktreeTab {
+        WorktreeTab {
+            id,
+            path: PathBuf::from(format!("/repo/{id}")),
+            name: id.to_string(),
+            branch: None,
+            label: id.to_string(),
+            tab_index: idx,
+            active_child_id: None,
+        }
+    }
+
+    #[test]
+    fn renormalize_tab_indices_assigns_each_tab_its_slot_in_the_order() {
+        // Simulate the post-close state: A, B, C were originally at indices 0, 1, 2; B was just removed from `worktree_tab_order` but C still
+        // carries `tab_index = 2` (stale). The helper must rewrite C → 1 so subsequent `worktree_tab_open` (which uses `worktree_tab_order.len()` for
+        // the new tab's `tab_index`) doesn't collide with the stale value.
+        let id_a = WorktreeTabId::new();
+        let id_c = WorktreeTabId::new();
+        let mut cfg = AppConfig {
+            worktree_tabs: vec![tab(id_a, 0), tab(id_c, 2)],
+            worktree_tab_order: vec![id_a, id_c],
+            ..AppConfig::default()
+        };
+
+        renormalize_worktree_tab_indices(&mut cfg);
+
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.tab_index)).collect();
+        assert_eq!(by_id[&id_a], 0);
+        assert_eq!(by_id[&id_c], 1, "C must be renumbered to slot 1, not left at the stale 2");
+    }
+
+    #[test]
+    fn renormalize_tab_indices_is_a_noop_when_indices_already_match() {
+        let id_a = WorktreeTabId::new();
+        let id_b = WorktreeTabId::new();
+        let mut cfg = AppConfig {
+            worktree_tabs: vec![tab(id_a, 0), tab(id_b, 1)],
+            worktree_tab_order: vec![id_a, id_b],
+            ..AppConfig::default()
+        };
+
+        renormalize_worktree_tab_indices(&mut cfg);
+
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.tab_index)).collect();
+        assert_eq!(by_id[&id_a], 0);
+        assert_eq!(by_id[&id_b], 1);
+    }
+
+    #[test]
+    fn renormalize_tab_indices_skips_tabs_missing_from_order_list() {
+        // Defensive: if `worktree_tabs` and `worktree_tab_order` have ever drifted (shouldn't happen on the close path, which retains both in sync),
+        // tabs not in the order list keep their existing `tab_index` rather than panicking or re-using a slot value.
+        let id_a = WorktreeTabId::new();
+        let id_orphan = WorktreeTabId::new();
+        let mut cfg = AppConfig {
+            worktree_tabs: vec![tab(id_a, 5), tab(id_orphan, 99)],
+            worktree_tab_order: vec![id_a],
+            ..AppConfig::default()
+        };
+
+        renormalize_worktree_tab_indices(&mut cfg);
+
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.tab_index)).collect();
+        assert_eq!(by_id[&id_a], 0);
+        assert_eq!(
+            by_id[&id_orphan], 99,
+            "orphan tab keeps its existing index — helper does not invent slots"
+        );
+    }
 }

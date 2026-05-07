@@ -217,6 +217,40 @@ describe('useWorktreeTabStore', () => {
       expect(useWorktreeTabStore.getState().activeId).toBe(TAB_B);
       expect(bridgeMock.worktreeTabFocus).toHaveBeenCalledWith({ id: TAB_B });
     });
+
+    it('updates activeId synchronously before the backend call resolves (optimistic UI)', async () => {
+      // PR #65 review: the focus action used to `await worktreeTabFocus` before flipping `activeId`, making tab switches feel laggy under
+      // backend contention. The optimistic update must take effect before the promise settles, matching the convention in `session-store`
+      // and `sub-session-store`.
+      const a = makeTab(TAB_A);
+      const b = makeTab(TAB_B);
+      useWorktreeTabStore.setState({ tabs: [a, b], activeId: TAB_A });
+      // A pending promise that never resolves — proves the store doesn't wait on the backend before switching.
+      bridgeMock.worktreeTabFocus.mockImplementationOnce(() => new Promise<void>(() => {}));
+
+      const pending = useWorktreeTabStore.getState().actions.focus(TAB_B);
+
+      expect(useWorktreeTabStore.getState().activeId).toBe(TAB_B);
+      expect(bridgeMock.worktreeTabFocus).toHaveBeenCalledWith({ id: TAB_B });
+      // Don't await `pending` — the test asserts the synchronous behaviour. The dangling promise is intentional and harmless.
+      void pending;
+    });
+
+    it('does not roll back activeId when the backend rejects, only logs a warning', async () => {
+      // PR #65 review: a backend rejection (e.g. tab raced a close) used to bubble out of `focus`, leaving callers to handle the error and
+      // potentially leaving the UI in an inconsistent state. The user's intent stands; the rejection is downgraded to a warn log.
+      const a = makeTab(TAB_A);
+      const b = makeTab(TAB_B);
+      useWorktreeTabStore.setState({ tabs: [a, b], activeId: TAB_A });
+      bridgeMock.worktreeTabFocus.mockRejectedValueOnce(new Error('NotFound: tab gone'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await expect(useWorktreeTabStore.getState().actions.focus(TAB_B)).resolves.toBeUndefined();
+
+      expect(useWorktreeTabStore.getState().activeId).toBe(TAB_B);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('worktree_tab_focus'));
+      warnSpy.mockRestore();
+    });
   });
 
   describe('reorder', () => {
