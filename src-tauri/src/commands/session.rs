@@ -1510,14 +1510,25 @@ pub async fn workspace_switch_impl(
         .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
     let result = workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await?;
 
-    // Refresh the OS window title so the new workspace name is visible (issue #56). Read the *currently bound* workspace from `ctx.workspace` rather
-    // than `result.workspace_root`, so if two switches race and resume out of order after the inner barrier releases, the title still ends up
-    // matching the workspace the runtime is actually bound to. Best-effort: failures only affect the title, not the switch result.
+    // Refresh the OS window title so the new workspace name is visible (issue #56). To make this deterministic across rapid back-to-back switches we
+    // hold the `ctx.workspace` READ guard across the `set_title` call rather than read-clone-drop-then-set: the inner's commit takes
+    // `ctx.workspace.write()`, which cannot acquire while any reader is active, so no newer scope can be committed between our `window_title`
+    // computation and the OS title-set. A delayed wrapper therefore can never overwrite a newer correct title with a stale value. The hold spans one
+    // synchronous OS call (`SetWindowTextW` / `NSWindow.title=` / `gtk_window_set_title`) — none re-enter into Arborist workspace code, so there is
+    // no deadlock surface. Lock-poisoning is treated as best-effort: log and skip rather than crash the whole process for a non-essential title
+    // refresh (matches the pattern in `commands::mod.rs` PtySink callbacks).
     if let Some(window) = app_handle.get_webview_window("main") {
-        let current_root = ctx.workspace.read().expect("workspace lock poisoned").workspace_root.clone();
-        let title = crate::window_title(crate::BUILD_BRANCH, current_root.as_deref());
-        if let Err(err) = window.set_title(&title) {
-            tracing::warn!(%err, "failed to update main window title after workspace switch");
+        match ctx.workspace.read() {
+            Ok(guard) => {
+                let title = crate::window_title(crate::BUILD_BRANCH, guard.workspace_root.as_deref());
+                if let Err(err) = window.set_title(&title) {
+                    tracing::warn!(%err, "failed to update main window title after workspace switch");
+                }
+                drop(guard);
+            }
+            Err(_) => {
+                tracing::warn!("workspace lock poisoned; skipping title refresh after workspace switch");
+            }
         }
     }
 
