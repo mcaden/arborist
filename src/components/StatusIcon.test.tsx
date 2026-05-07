@@ -76,9 +76,14 @@ describe('StatusIcon', () => {
     expect(el).toHaveClass('leading-none');
   });
 
-  it('pins the glyph to the proportional Nerd Font family even inside a font-mono ancestor', () => {
+  it('pins the glyph to the dedicated CaskaydiaCove NF icon family (not the body sans stack)', () => {
+    // `font-icon` is a Tailwind family containing only `CaskaydiaCove NF`
+    // (no system fallback) — see `tailwind.config.js`. Asserting it
+    // explicitly catches accidental regressions back to `font-sans`,
+    // whose stack reorganisation could silently swap to a font that
+    // lacks the codicon PUA glyphs.
     render(<StatusIcon status="working" />);
-    expect(screen.getByTestId('status-icon-working')).toHaveClass('font-sans');
+    expect(screen.getByTestId('status-icon-working')).toHaveClass('font-icon');
   });
 
   it('emits the title as a native title attribute for hover tooltips', () => {
@@ -101,6 +106,37 @@ describe('StatusIcon', () => {
     render(<StatusIcon status="working" title="Working" />);
     const el = screen.getByTestId('status-icon-working');
     expect(el).toHaveAttribute('aria-label', 'Working');
+    expect(el).toHaveAttribute('role', 'img');
+    expect(el).not.toHaveAttribute('aria-hidden');
+  });
+
+  it('treats an empty-string title as decorative (no contradictory aria signals)', () => {
+    // `??` does not coerce empty strings to undefined, so the previous
+    // `aria-label={title ?? undefined}` paired with `aria-hidden={title ? … : true}`
+    // emitted both `aria-label=""` and `aria-hidden="true"` for `title=""`,
+    // which screen readers warn on. Treat empty as absent.
+    render(<StatusIcon status="working" title="" />);
+    const el = screen.getByTestId('status-icon-working');
+    expect(el).toHaveAttribute('aria-hidden', 'true');
+    expect(el).not.toHaveAttribute('aria-label');
+    expect(el).not.toHaveAttribute('role');
+    expect(el).not.toHaveAttribute('title');
+  });
+
+  it('treats a whitespace-only title as decorative', () => {
+    render(<StatusIcon status="working" title="   " />);
+    const el = screen.getByTestId('status-icon-working');
+    expect(el).toHaveAttribute('aria-hidden', 'true');
+    expect(el).not.toHaveAttribute('aria-label');
+    expect(el).not.toHaveAttribute('role');
+    expect(el).not.toHaveAttribute('title');
+  });
+
+  it('trims surrounding whitespace from a meaningful title', () => {
+    render(<StatusIcon status="working" title="  Working  " />);
+    const el = screen.getByTestId('status-icon-working');
+    expect(el).toHaveAttribute('aria-label', 'Working');
+    expect(el).toHaveAttribute('title', 'Working');
     expect(el).toHaveAttribute('role', 'img');
     expect(el).not.toHaveAttribute('aria-hidden');
   });
