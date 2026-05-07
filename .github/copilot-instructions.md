@@ -118,7 +118,7 @@ Match DESIGN.md §7. One concern per file (`pty_pool.rs`, `config_store.rs`, `co
 - Newtype wrappers for IDs (`SessionId(Uuid)`, `InstructionSetId(String)`) — prevents passing the wrong ID into the wrong function.
 
 ### Testing
-Rust-specific principles (procedural detail — test layout, fixtures, virtual-time setup — lives in the `quality-workflow` skill):
+Rust-specific principles (procedural detail — test layout, fixtures, virtual-time setup — lives in the `quality-workflow-gate` skill):
 - Pure logic (label dedup, command composition, path validation) is unit-tested.
 - PTY pool gets integration tests that don't depend on `claude`/`copilot` being installed.
 - `cargo fmt` + `cargo clippy -- -D warnings` must be clean.
@@ -168,7 +168,7 @@ Rust-specific principles (procedural detail — test layout, fixtures, virtual-t
 - Dark mode via `class` strategy; the root `<html>` class is set from system preference at boot.
 
 ### Testing
-Frontend-specific principles (procedural detail in the `quality-workflow` skill):
+Frontend-specific principles (procedural detail in the `quality-workflow-gate` skill):
 - Vitest + React Testing Library. Test behavior, not implementation (no shallow rendering, no snapshot-as-assertion).
 - Mock the `tauri-bridge` module wholesale — never call real `invoke()` from a unit test.
 
@@ -182,7 +182,7 @@ Frontend-specific principles (procedural detail in the `quality-workflow` skill)
 
 **Catch problems on the keystroke, not in CI.** The feedback ladder runs fastest → slowest: editor type/lint on save → unit-test watch → pre-commit hook → pre-push hook → CI. Run the editor and watcher loops continuously while coding; never bypass hooks with `--no-verify` on `main`.
 
-For exact commands, watcher setup, Husky configuration, test layout, and end-of-feature smoke tests, **invoke the `quality-workflow` skill**.
+For exact commands, watcher setup, Husky configuration, test layout, and end-of-feature smoke tests, **invoke the `quality-workflow-gate` skill**.
 
 ## Addressing PR review comments
 

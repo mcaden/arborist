@@ -1,6 +1,7 @@
 ---
 name: pr-comments
 description: Procedural reference for addressing GitHub PR review comments end-to-end — discover open review threads, triage each one, implement accepted changes, push, reply in-thread with the required AI-agent disclaimer, and resolve only the threads where code actually changed. Invoke when the user asks to "address PR comments", "respond to review", "handle PR feedback", or names a specific PR/comment to act on. Covers exact `gh api` / `gh api graphql` invocations for listing threads, posting replies, and resolving threads, plus the rules for what *not* to auto-resolve. The load-bearing *principles* (always disclose AI authorship, never resolve threads the agent didn't act on, never push to `main`, never force-push a branch with commits from multiple contributors, never `--no-verify`) are restated here so the skill is self-contained.
+license: MIT
 ---
 
 # Address PR review comments — procedural reference
@@ -147,7 +148,7 @@ The `outdated` triage class is therefore narrow on purpose: it only applies to t
 ## 5. Implement accepted changes
 
 - One logical change per commit when practical; group only when changes are genuinely interdependent.
-- Run the local quality gate **before pushing** (the recipe in §8 has it as step 3, after the commit, so the staged-file lint that runs in the pre-commit hook can do its job first). The exact set lives in the `quality-workflow` skill, but for self-containment the required commands are:
+- Run the local quality gate **before pushing** (the recipe in §8 has it as step 3, after the commit, so the staged-file lint that runs in the pre-commit hook can do its job first). The exact set lives in the `quality-workflow-gate` skill, but for self-containment the required commands are:
 
   ```sh
   npm run lint
