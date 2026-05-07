@@ -754,3 +754,114 @@ async fn subsession_close_returns_ok_when_config_cleanup_fails_after_runtime_tea
     assert!(h.sub_ctx.store.get(&sub.id).is_none(), "in-memory store must drop the sub");
     assert!(!h.sub_pool.contains(&sub.id), "PTY pool must drop the sub");
 }
+
+// --------------------------------------------------------------------------- close_for_parent_impl conditional save (PR #65 review-9)
+// ---------------------------------------------------------------------------
+
+/// Roll back `path`'s mtime by 60s (and snapshot its bytes) so a subsequent rewrite is detectable across filesystems with coarse mtime resolution
+/// (FAT 2s, HFS+ 1s). Mirrors the helper of the same name in `tests/worktree_tab_command.rs` — each Rust integration test file is its own crate, so
+/// duplication here is the standard pattern.
+fn snapshot_with_rolled_back_mtime(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let bytes = std::fs::read(path).expect("read config.json snapshot");
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open config.json for set_modified (write(true) does not truncate)");
+    f.set_modified(old)
+        .expect("set_modified must succeed (Rust 1.75+); fail loudly on platforms without timestamp support");
+    drop(f);
+    let mtime = std::fs::metadata(path).expect("stat").modified().expect("mtime");
+    (bytes, mtime)
+}
+
+fn snapshot_file(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let bytes = std::fs::read(path).expect("read config.json snapshot");
+    let mtime = std::fs::metadata(path).expect("stat config.json").modified().expect("mtime");
+    (bytes, mtime)
+}
+
+/// PR #65 review-9: `close_for_parent_impl` must skip its `save_config_with` cleanup when no worktree tab's `active_child_id` references any sub in
+/// the cascade. Without the conditional pre-check, every parent close with subs rewrites `config.json` (since `save_config_with` writes
+/// unconditionally regardless of the closure's bool return) — pure disk churn for the common case where the user wasn't focused on a sub when
+/// closing.
+///
+/// To isolate the pre-pass write from the per-iteration `remove_last_open_sub_session` writes that prune `last_open_sub_sessions`, we manually
+/// pre-prune that record before snapshotting — making the per-iteration prune a no-op (the helper exits early when the id isn't found, see
+/// `ConfigStore::remove_last_open_sub_session`). With both writes silent, any mtime advance proves the pre-pass write fired unnecessarily.
+#[tokio::test]
+async fn cascade_with_no_matching_active_child_skips_config_write() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+    let sub = create_sub(&h, parent).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    // Seed a tab with `active_child_id = None` — explicitly NOT pointing at the cascade sub.
+    let tab_id = WorktreeTabId::new();
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.worktree_tabs.push(WorktreeTab {
+                id: tab_id,
+                path: h.worktree.path().to_path_buf(),
+                name: "wt".into(),
+                branch: None,
+                label: "wt".into(),
+                tab_index: 0,
+                active_child_id: None,
+            });
+            cfg.worktree_tab_order.push(tab_id);
+            true
+        })
+        .expect("seed tab");
+
+    // Pre-prune the sub record so the per-iteration `remove_last_open_sub_session` call below is a no-op (helper exits before `write_atomic` when the
+    // id is absent). This isolates the mtime check to the pre-pass write that we're testing.
+    h.ctx.store().remove_last_open_sub_session(&sub.id).expect("pre-prune");
+
+    let cfg_path = h.config_dir.path().join("config.json");
+    let (bytes_before, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
+
+    close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
+
+    let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
+    assert_eq!(
+        mtime_before, mtime_after,
+        "cascade pre-pass must NOT rewrite config.json when no tab's active_child_id matches any cascade sub"
+    );
+    assert_eq!(bytes_before, bytes_after, "config.json bytes must be unchanged");
+}
+
+/// Conjugate of the previous test: when a tab DOES point at a cascade sub, the cleanup must run and the file must be rewritten with the pointer
+/// cleared. Confirms the conditional pre-check doesn't accidentally suppress the legitimate cleanup write.
+#[tokio::test]
+async fn cascade_with_matching_active_child_rewrites_config_and_clears_pointer() {
+    let h = build_harness();
+    let parent = create_parent(&h).id;
+    let sub = create_sub(&h, parent).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    let tab_id = seed_tab_with_active_child(&h, h.worktree.path(), ChildId::SubSession(sub.id));
+
+    let cfg_path = h.config_dir.path().join("config.json");
+    let (_, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
+
+    close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
+
+    let (_, mtime_after) = snapshot_file(&cfg_path);
+    assert!(
+        mtime_after > mtime_before,
+        "cascade pre-pass MUST rewrite config.json when a tab's active_child_id matches a cascade sub (mtime advanced)"
+    );
+
+    let cfg = h.ctx.store().load_config();
+    let tab = cfg
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .expect("tab still present after cascade");
+    assert_eq!(
+        tab.active_child_id, None,
+        "active_child_id pointing at a cascade sub must be cleared by the pre-pass"
+    );
+}

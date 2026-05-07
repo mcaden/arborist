@@ -11,6 +11,7 @@
 //!   PTY; lifecycle limited to spawn / wait / kill. `subsession_focus`
 //!   delegates to a [`crate::window_focus::WindowFocuser`].
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tracing::{info, warn};
@@ -326,23 +327,43 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
     );
 
     // Pre-pass: clear any worktree-tab `active_child_id` referencing a sub of the closing parent. Done once up-front (not per-iteration) so we take
-    // the config write lock exactly once for this concern, regardless of sub count. We clear *every* sub in the cascade — including orphan-keep
+    // the config write lock at most once for this concern, regardless of sub count. We clear *every* sub in the cascade — including orphan-keep
     // paths below where the sub record stays visible — because once the parent session is gone, the worktree-tab validation in
     // `worktree_tab_set_active_child_impl` would refuse to re-set this pointer anyway (the sub's parent no longer matches any tab's path). Without
     // this, a UI restore could silently land on a sub-session whose parent is gone, breaking the focus model. (PR #65 review-7.)
+    //
+    // PR #65 review-9: skip `save_config_with` entirely when no tab references any cascade sub. `save_config_with` writes `config.json`
+    // unconditionally regardless of the closure's bool return, so an unguarded call rewrites the file on every parent-with-subs close even when
+    // there's nothing to clear. The cheap pre-check below (`load_config()` is lock-free) avoids that disk churn for the common case.
+    //
+    // Race-protection contract for skipping the write: a concurrent `worktree_tab_set_active_child_impl` could otherwise observe the sub still in
+    // `sub_ctx.store` and the parent still in `sessions` (both true throughout this cascade) and write a fresh `Some(ChildId::SubSession(sid))`
+    // pointer between our pre-check and the per-iteration `sub_ctx.store.remove`. That pointer would survive as a dangling reference. The
+    // `parent_is_closing` predicate threaded into `validate_active_child_belongs_to_tab` (PR #65 review-9) closes that hole: while the close
+    // wrappers (`commands::mod::session_close` and `worktree_tab_close_impl`) hold the parent's `mark_parent_closing` tombstone, any concurrent
+    // set-active-child for a sub of this parent is rejected before it can reach the config write lock.
     let sub_ids: Vec<SubSessionId> = subs.iter().map(|s| s.id).collect();
-    if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
-        let mut changed = false;
-        for sid in &sub_ids {
-            changed |= clear_active_child_in_config(cfg, ChildId::SubSession(*sid));
+    let cascade_set: HashSet<SubSessionId> = sub_ids.iter().copied().collect();
+    let needs_cleanup = ctx
+        .store()
+        .load_config()
+        .worktree_tabs
+        .iter()
+        .any(|t| matches!(t.active_child_id, Some(ChildId::SubSession(sid)) if cascade_set.contains(&sid)));
+    if needs_cleanup {
+        if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
+            let mut changed = false;
+            for sid in &sub_ids {
+                changed |= clear_active_child_in_config(cfg, ChildId::SubSession(*sid));
+            }
+            changed
+        }) {
+            warn!(
+                parent_session_id = %parent_id,
+                error = ?e,
+                "cascade: active_child_id cleanup failed (continuing — orphan tab pointers may persist)"
+            );
         }
-        changed
-    }) {
-        warn!(
-            parent_session_id = %parent_id,
-            error = ?e,
-            "cascade: active_child_id cleanup failed (continuing — orphan tab pointers may persist)"
-        );
     }
 
     for sub in subs {

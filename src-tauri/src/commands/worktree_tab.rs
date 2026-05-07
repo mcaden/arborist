@@ -331,7 +331,7 @@ pub fn worktree_tab_set_active_child_impl(
             .ok_or_else(|| AppError::new("NotFound", format!("worktree tab {} not found", args.id)))?;
         let tab_path = tab.path.clone();
         let sessions = ctx.store().load_sessions();
-        validate_active_child_belongs_to_tab(args.id, &tab_path, &sessions, &sub_ctx.store, *child)?;
+        validate_active_child_belongs_to_tab(args.id, &tab_path, &sessions, &sub_ctx.store, *child, |sid| ctx.is_parent_closing(sid))?;
     }
 
     // Mutation under the config write lock. We re-validate the child inside the closure to close the TOCTOU race the pre-check above leaves open: a
@@ -339,8 +339,10 @@ pub fn worktree_tab_set_active_child_impl(
     // happily write `tab.active_child_id = Some(stale_id)` after the close path's `clear_active_child_in_config` ran, leaving a dangling pointer
     // persisted to disk (PR #65 review-8). The re-validation runs against `load_sessions()` *while we hold `ConfigStore::write_lock`*, so no
     // production writer to `sessions.json` can race us; sub-session removal in `SubSessionStore` is independent of `write_lock`, so a tiny window
-    // remains for sub-session children where `sub_ctx.store.remove` happens concurrently — that residual race is closed by the matching
-    // `clear_active_child_in_config` call inside `subsession_close_impl`'s own `save_config_with`, which is serialised by `write_lock` against ours.
+    // remains for sub-session children where `sub_ctx.store.remove` happens concurrently — that residual race is closed by two layers: (1) the
+    // matching `clear_active_child_in_config` call inside `subsession_close_impl`'s own `save_config_with`, which is serialised by `write_lock`
+    // against ours, and (2) the `parent_is_closing` predicate threaded into the validator below, which rejects new SubSession writes for any
+    // sub whose parent is in the close-tombstone — covering the cascade pre-check optimisation in `close_for_parent_impl` (PR #65 review-9).
     let mut validation_error: Option<AppError> = None;
     let mut found = false;
     ctx.store()
@@ -353,7 +355,9 @@ pub fn worktree_tab_set_active_child_impl(
 
             if let Some(child) = args.child_id {
                 let sessions = ctx.store().load_sessions();
-                if let Err(err) = validate_active_child_belongs_to_tab(args.id, &tab_path, &sessions, &sub_ctx.store, child) {
+                if let Err(err) =
+                    validate_active_child_belongs_to_tab(args.id, &tab_path, &sessions, &sub_ctx.store, child, |sid| ctx.is_parent_closing(sid))
+                {
                     validation_error = Some(err);
                     return false;
                 }
@@ -383,13 +387,18 @@ pub fn worktree_tab_set_active_child_impl(
 ///
 /// Returns `Ok(())` if `child` exists and belongs to the worktree at `tab_path`. Error codes preserve the pre-existing distinctions:
 /// - `NotFound` when the child (or its parent, for sub-sessions) is missing from the live store
-/// - `InvalidArgument` when the child exists but its worktree path doesn't match
+/// - `InvalidArgument` when the child exists but its worktree path doesn't match, or when the child is a sub-session whose parent is currently mid-
+///   close (the parent-closing tombstone is set by the close wrappers in `commands::mod::session_close` and `worktree_tab_close_impl` before they
+///   call `close_for_parent_impl`). Refusing during the close window is what lets `close_for_parent_impl` skip its `save_config_with` cleanup pass
+///   when no tab references any cascade sub — a concurrent set-active-child write that would re-introduce a dangling pointer is rejected here
+///   before it can reach the config write lock (PR #65 review-9).
 fn validate_active_child_belongs_to_tab(
     tab_id: WorktreeTabId,
     tab_path: &std::path::Path,
     sessions: &std::collections::BTreeMap<SessionId, crate::types::Session>,
     sub_store: &crate::sub_sessions::SubSessionStore,
     child: ChildId,
+    parent_is_closing: impl Fn(&SessionId) -> bool,
 ) -> Result<(), AppError> {
     match child {
         ChildId::Session(sid) => {
@@ -414,6 +423,15 @@ fn validate_active_child_belongs_to_tab(
                 return Err(AppError::new(
                     "InvalidArgument",
                     format!("sub-session {ssid} parent worktree path does not match worktree tab {tab_id}"),
+                ));
+            }
+            if parent_is_closing(&sub.parent_session_id) {
+                return Err(AppError::new(
+                    "InvalidArgument",
+                    format!(
+                        "sub-session {ssid} parent session {} is closing; refusing to set as active child",
+                        sub.parent_session_id
+                    ),
                 ));
             }
         }
@@ -661,8 +679,15 @@ mod tests {
         sessions.insert(sid, session_with(sid, "/repo/wt"));
         let sub_store = crate::sub_sessions::SubSessionStore::new();
 
-        validate_active_child_belongs_to_tab(tab_id, std::path::Path::new("/repo/wt"), &sessions, &sub_store, ChildId::Session(sid))
-            .expect("session child under matching tab path is valid");
+        validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::Session(sid),
+            |_| false,
+        )
+        .expect("session child under matching tab path is valid");
     }
 
     #[test]
@@ -672,8 +697,15 @@ mod tests {
         let sessions = std::collections::BTreeMap::new();
         let sub_store = crate::sub_sessions::SubSessionStore::new();
 
-        let err = validate_active_child_belongs_to_tab(tab_id, std::path::Path::new("/repo/wt"), &sessions, &sub_store, ChildId::Session(sid))
-            .expect_err("missing session must error");
+        let err = validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::Session(sid),
+            |_| false,
+        )
+        .expect_err("missing session must error");
         assert_eq!(err.code, "NotFound");
     }
 
@@ -686,8 +718,15 @@ mod tests {
         sessions.insert(sid, session_with(sid, "/repo/other"));
         let sub_store = crate::sub_sessions::SubSessionStore::new();
 
-        let err = validate_active_child_belongs_to_tab(tab_id, std::path::Path::new("/repo/wt"), &sessions, &sub_store, ChildId::Session(sid))
-            .expect_err("path mismatch must error");
+        let err = validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::Session(sid),
+            |_| false,
+        )
+        .expect_err("path mismatch must error");
         assert_eq!(err.code, "InvalidArgument");
     }
 
@@ -707,6 +746,7 @@ mod tests {
             &sessions,
             &sub_store,
             ChildId::SubSession(sub_id),
+            |_| false,
         )
         .expect("sub-session under matching parent worktree is valid");
     }
@@ -724,6 +764,7 @@ mod tests {
             &sessions,
             &sub_store,
             ChildId::SubSession(sub_id),
+            |_| false,
         )
         .expect_err("missing sub must error");
         assert_eq!(err.code, "NotFound");
@@ -746,6 +787,7 @@ mod tests {
             &sessions,
             &sub_store,
             ChildId::SubSession(sub_id),
+            |_| false,
         )
         .expect_err("missing parent must error");
         assert_eq!(err.code, "NotFound");
@@ -768,8 +810,80 @@ mod tests {
             &sessions,
             &sub_store,
             ChildId::SubSession(sub_id),
+            |_| false,
         )
         .expect_err("parent path mismatch must error");
         assert_eq!(err.code, "InvalidArgument");
+    }
+
+    // ---- parent-closing rejection (PR #65 review-9) ----
+
+    #[test]
+    fn validate_subsession_under_closing_parent_returns_invalid_argument() {
+        // PR #65 review-9: the cascade pre-pass in `close_for_parent_impl` may skip its `save_config_with` when no tab references any cascade sub.
+        // For that to be safe, `set_active_child` must refuse to set a sub whose parent is mid-close — otherwise a concurrent UI focus could write a
+        // pointer that the cascade then leaves dangling.
+        let tab_id = WorktreeTabId::new();
+        let parent_id = crate::types::SessionId::new();
+        let sub_id = crate::types::SubSessionId::new();
+        let mut sessions = std::collections::BTreeMap::new();
+        sessions.insert(parent_id, session_with(parent_id, "/repo/wt"));
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+        sub_store.insert(sub_with(sub_id, parent_id)).unwrap();
+
+        let err = validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::SubSession(sub_id),
+            |sid| sid == &parent_id,
+        )
+        .expect_err("closing parent must reject set_active_child");
+        assert_eq!(err.code, "InvalidArgument");
+        assert!(err.message.contains("closing"), "error must mention closing: {}", err.message);
+    }
+
+    #[test]
+    fn validate_session_child_ignores_parent_closing_predicate() {
+        // The closing-parent rule applies only to sub-sessions: `Session` children have no parent in the tombstone sense (they *are* the parent in
+        // the cascade). A predicate that returns `true` for the session's own id must not affect Session-child validation.
+        let tab_id = WorktreeTabId::new();
+        let sid = crate::types::SessionId::new();
+        let mut sessions = std::collections::BTreeMap::new();
+        sessions.insert(sid, session_with(sid, "/repo/wt"));
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+
+        validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::Session(sid),
+            |s| s == &sid,
+        )
+        .expect("Session-child path should ignore parent_is_closing predicate");
+    }
+
+    #[test]
+    fn validate_subsession_with_non_closing_parent_predicate_succeeds() {
+        // Sanity: a predicate that returns `false` for *all* ids must not affect a valid sub-session under a live parent.
+        let tab_id = WorktreeTabId::new();
+        let parent_id = crate::types::SessionId::new();
+        let sub_id = crate::types::SubSessionId::new();
+        let mut sessions = std::collections::BTreeMap::new();
+        sessions.insert(parent_id, session_with(parent_id, "/repo/wt"));
+        let sub_store = crate::sub_sessions::SubSessionStore::new();
+        sub_store.insert(sub_with(sub_id, parent_id)).unwrap();
+
+        validate_active_child_belongs_to_tab(
+            tab_id,
+            std::path::Path::new("/repo/wt"),
+            &sessions,
+            &sub_store,
+            ChildId::SubSession(sub_id),
+            |_| false,
+        )
+        .expect("non-closing parent must be valid");
     }
 }
