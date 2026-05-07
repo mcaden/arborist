@@ -16,10 +16,12 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::commands::session::acquire_switch_read;
+use crate::commands::worktree_tab::clear_active_child_in_config;
 use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
-    AppError, CustomProcessKind, Error, SubSession, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionId, SubSessionRecord, SubSessionStatus,
+    AppError, ChildId, CustomProcessKind, Error, PartialAppConfig, SubSession, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionId,
+    SubSessionRecord, SubSessionStatus,
 };
 
 /// Create a new sub-session under `parent_session_id` using the `CustomProcessDef` identified by `def_id`. Validates:
@@ -195,7 +197,18 @@ pub async fn subsession_close_impl(
         },
     }
     sub_ctx.store.remove(&id);
-    let _ = ctx.store().remove_last_open_sub_session(&id);
+    // Atomic config cleanup: drop the sub-session from `last_open_sub_sessions` AND clear any worktree-tab `active_child_id` referencing it.
+    // Combined into one `save_config_with` to take the write lock once. Errors propagate (intentional behaviour change vs. the old
+    // `let _ = remove_last_open_sub_session(...)` swallow): a config-write failure now fails the close so the frontend retains the tab and the user
+    // can retry, rather than producing a "closed in memory but visible after restart" anomaly. The in-memory store removal above is reversible by
+    // re-issuing `subsession_create`; the persisted-state divergence the old swallow created is not.
+    ctx.store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.last_open_sub_sessions.retain(|r| r.id != id);
+            clear_active_child_in_config(cfg, ChildId::SubSession(id));
+            true
+        })
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -298,6 +311,27 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
         sub_count = subs.len(),
         "cascade: tearing down sub-sessions for closing parent"
     );
+
+    // Pre-pass: clear any worktree-tab `active_child_id` referencing a sub of the closing parent. Done once up-front (not per-iteration) so we take
+    // the config write lock exactly once for this concern, regardless of sub count. We clear *every* sub in the cascade — including orphan-keep
+    // paths below where the sub record stays visible — because once the parent session is gone, the worktree-tab validation in
+    // `worktree_tab_set_active_child_impl` would refuse to re-set this pointer anyway (the sub's parent no longer matches any tab's path). Without
+    // this, a UI restore could silently land on a sub-session whose parent is gone, breaking the focus model. (PR #65 review-7.)
+    let sub_ids: Vec<SubSessionId> = subs.iter().map(|s| s.id).collect();
+    if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
+        let mut changed = false;
+        for sid in &sub_ids {
+            changed |= clear_active_child_in_config(cfg, ChildId::SubSession(*sid));
+        }
+        changed
+    }) {
+        warn!(
+            parent_session_id = %parent_id,
+            error = ?e,
+            "cascade: active_child_id cleanup failed (continuing — orphan tab pointers may persist)"
+        );
+    }
+
     for sub in subs {
         match sub.kind {
             CustomProcessKind::Terminal => {
@@ -363,6 +397,19 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
 // --------------------------------------------------------------------------- Phase 7: restore-on-launch second pass
 // ---------------------------------------------------------------------------
 
+/// Drop a sub-session id from `AppConfig.last_open_sub_sessions` AND clear any worktree-tab `active_child_id` referencing it. Single atomic write
+/// under the config write lock. Errors are logged at `warn` (with `tag` for source attribution) but **not** propagated — the restore prune paths and
+/// other best-effort cleanup callers must always make forward progress; a config-write hiccup at restore must not strand the rest of the records.
+fn forget_sub_session(ctx: &AppContext, id: SubSessionId, tag: &'static str) {
+    if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
+        cfg.last_open_sub_sessions.retain(|r| r.id != id);
+        clear_active_child_in_config(cfg, ChildId::SubSession(id));
+        true
+    }) {
+        warn!(sub_session_id = %id, error = ?e, tag, "forget_sub_session: persistence cleanup failed");
+    }
+}
+
 /// Re-materialise every sub-session persisted in `AppConfig.lastOpenSubSessions`. Called from the `frontend_ready` wrapper AFTER
 /// `session::restore_all_sessions` so parent sessions are already present in `sessions.json` (we look up worktree paths from there).
 ///
@@ -402,7 +449,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
                     parent_session_id = %record.parent_session_id,
                     "restore: dropping orphan sub-session (parent gone)"
                 );
-                let _ = ctx.store().remove_last_open_sub_session(&record.id);
+                forget_sub_session(ctx, record.id, "restore-orphan");
                 continue;
             }
         };
@@ -412,7 +459,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
                 parent_session_id = %record.parent_session_id,
                 "restore: dropping sub-session under closing parent"
             );
-            let _ = ctx.store().remove_last_open_sub_session(&record.id);
+            forget_sub_session(ctx, record.id, "restore-parent-closing");
             continue;
         }
 

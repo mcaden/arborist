@@ -259,13 +259,25 @@ fn reorder_applies_new_order_and_updates_tab_index() {
 }
 
 // ---------------------------------------------------------------------------
-// disk-churn: idempotent / NotFound calls must not rewrite config.json (PR #65 sixth-review-round feedback)
+// disk-churn: idempotent / NotFound calls must not rewrite config.json (PR #65 sixth/seventh-review-round feedback)
 // ---------------------------------------------------------------------------
 
-/// Snapshot a file's contents + last-modified time. Used by no-op-no-write tests to assert the file was *not* touched between two calls.
-fn snapshot_file(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+/// Read the file's bytes, then **roll its mtime back ~60s** and return both. Combined with a post-call comparison
+/// (`mtime_after == mtime_before` for no-op tests), this makes the rewrite-detection independent of filesystem timestamp resolution: if anything
+/// rewrites the file, `mtime_after` will jump to ~now (visibly different from "60s ago" even on coarse-resolution filesystems like FAT 2s/HFS+ 1s).
+/// The previous "sleep 50ms; expect mtime to advance" approach was false-negative on those filesystems — a real rewrite within the same mtime tick
+/// would not visibly change `modified()`. (PR #65 review-7 fix.)
+fn snapshot_with_rolled_back_mtime(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
     let bytes = std::fs::read(path).expect("read config.json snapshot");
-    let mtime = std::fs::metadata(path).expect("stat config.json").modified().expect("mtime");
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open config.json for set_modified (write(true) does not truncate)");
+    f.set_modified(old)
+        .expect("set_modified must succeed (Rust 1.75+); fail loudly on platforms without timestamp support");
+    drop(f);
+    let mtime = std::fs::metadata(path).expect("stat").modified().expect("mtime");
     (bytes, mtime)
 }
 
@@ -280,18 +292,17 @@ fn open_existing_active_tab_does_not_rewrite_config_json() {
 
     let cfg_path = config_path(&h);
     assert!(cfg_path.exists(), "config.json must be on disk after the first open");
-    let (bytes_before, mtime_before) = snapshot_file(&cfg_path);
-
-    // Sleep to step past mtime resolution boundaries (NTFS is fine but FAT is 2s; 50ms is comfortable on the platforms we ship to). If the no-op
-    // call rewrites the file, mtime will visibly advance.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    let (bytes_before, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
 
     let id_again = open(&h, &path);
     assert_eq!(id_again, id);
 
     let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
     assert_eq!(bytes_before, bytes_after, "no-op open must leave config.json byte-identical");
-    assert_eq!(mtime_before, mtime_after, "no-op open must NOT rewrite config.json (mtime changed)");
+    assert_eq!(
+        mtime_before, mtime_after,
+        "no-op open must NOT rewrite config.json (mtime advanced from rolled-back snapshot)"
+    );
 }
 
 #[test]
@@ -303,8 +314,7 @@ fn focus_with_unknown_id_does_not_rewrite_config_json() {
     let _id = open(&h, &fresh_worktree_dir(&h));
 
     let cfg_path = config_path(&h);
-    let (bytes_before, mtime_before) = snapshot_file(&cfg_path);
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    let (bytes_before, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
 
     let bogus = WorktreeTabId::new();
     let err = worktree_tab_focus_impl(&h.ctx, bogus).expect_err("focus on unknown id must error");
@@ -312,7 +322,10 @@ fn focus_with_unknown_id_does_not_rewrite_config_json() {
 
     let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
     assert_eq!(bytes_before, bytes_after, "NotFound focus must leave config.json byte-identical");
-    assert_eq!(mtime_before, mtime_after, "NotFound focus must NOT rewrite config.json (mtime changed)");
+    assert_eq!(
+        mtime_before, mtime_after,
+        "NotFound focus must NOT rewrite config.json (mtime advanced from rolled-back snapshot)"
+    );
 }
 
 #[test]
@@ -326,16 +339,24 @@ fn focus_existing_tab_persists_active_id_and_does_rewrite_config_json() {
     assert_eq!(h.ctx.store().load_config().active_worktree_tab_id, Some(id_b));
 
     let cfg_path = config_path(&h);
-    let (bytes_before, mtime_before) = snapshot_file(&cfg_path);
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    let (bytes_before, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
 
     worktree_tab_focus_impl(&h.ctx, id_a).expect("focus A must succeed");
 
     assert_eq!(h.ctx.store().load_config().active_worktree_tab_id, Some(id_a));
     let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
     assert_ne!(bytes_before, bytes_after, "focus that changes the active tab MUST rewrite config.json");
+    // mtime_before was rolled back ~60s; a real rewrite stamps mtime to ~now, so the diff is enormous regardless of FS resolution.
+    let advance = mtime_after.duration_since(mtime_before).expect("mtime moved forward");
     assert!(
-        mtime_after > mtime_before,
-        "focus that changes the active tab MUST advance config.json mtime"
+        advance > std::time::Duration::from_secs(30),
+        "rewrite must visibly advance mtime by tens of seconds (rolled-back snapshot → ~now); got {advance:?}",
     );
+}
+
+/// Helper retained for post-call snapshots (no rollback needed — we just want bytes + current mtime).
+fn snapshot_file(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let bytes = std::fs::read(path).expect("read config.json snapshot");
+    let mtime = std::fs::metadata(path).expect("stat config.json").modified().expect("mtime");
+    (bytes, mtime)
 }

@@ -18,13 +18,14 @@ use arborist_lib::commands::session::{
     frontend_ready_impl, restore_all_sessions, session_close_impl, session_close_locked, session_create_impl, session_focus_impl, session_input_impl,
     session_list_impl, session_resize_impl, session_restart_impl, AppContext,
 };
+use arborist_lib::commands::worktree_tab::worktree_tab_open_impl;
 use arborist_lib::compose::session_temp_dir;
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::types::{
-    InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs,
-    SessionRestartArgs, SessionStatus, Tool, WorktreeInfo,
+    ChildId, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs,
+    SessionRestartArgs, SessionStatus, Tool, WorktreeInfo, WorktreeTabOpenArgs,
 };
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
@@ -715,6 +716,98 @@ async fn session_close_locked_does_not_self_reject_when_switch_pending_is_set() 
         .await
         .expect_err("session_close_impl must reject when switch_pending is set; only the locked variant skips the check");
     assert_eq!(err.code, "WorkspaceSwitchInProgress");
+}
+
+/// Regression for PR #65 seventh-review-round thread on `session_close_locked` leaving a dangling `WorktreeTab.active_child_id`.
+///
+/// The bug: a worktree tab can persist a `ChildId::Session(sid)` pointer (set by migration or by `worktree_tab_set_active_child`). When that session
+/// is later closed via `session_close_impl` (or its locked inner), the tab's pointer was NOT cleared, so the persisted config could reference a
+/// non-existent session — surfacing as broken restore/focus on the next launch.
+///
+/// The fix: `session_close_locked`'s atomic config mutation now also clears any tab whose `active_child_id == Some(ChildId::Session(id))`.
+#[tokio::test]
+async fn session_close_clears_worktree_tab_active_child_id_pointing_at_closed_session() {
+    let h = build_harness();
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("session create ok");
+
+    // Open a worktree tab for the same path the session is bound to (worktree_tab_open is idempotent on canonical path), then directly seed its
+    // `active_child_id` to point at the session. Bypassing `worktree_tab_set_active_child_impl` keeps this test independent of `SubAppContext`
+    // wiring — what matters for the regression is that close clears any pre-existing pointer, regardless of how it got there (real callers can
+    // seed it via the public command, the v4→v5 migration in `config_store.rs::migrate_v4_to_v5`, or any future code path).
+    let tab = worktree_tab_open_impl(
+        &h.ctx,
+        WorktreeTabOpenArgs {
+            path: h.worktree.path().to_string_lossy().into_owned(),
+        },
+    )
+    .expect("worktree_tab_open must succeed for the session's worktree path");
+    let tab_id = tab.id;
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            let t = cfg.worktree_tabs.iter_mut().find(|t| t.id == tab_id).expect("tab present after open");
+            t.active_child_id = Some(ChildId::Session(view.id));
+            true
+        })
+        .expect("seed active_child_id");
+
+    // Sanity: the seed actually landed.
+    let cfg_pre = h.ctx.store().load_config();
+    let tab_pre = cfg_pre.worktree_tabs.iter().find(|t| t.id == tab_id).expect("tab persisted");
+    assert_eq!(tab_pre.active_child_id, Some(ChildId::Session(view.id)), "seed precondition");
+
+    // Close the session via the gated wrapper (the production path the frontend uses).
+    session_close_impl(&h.ctx, view.id, false).await.expect("close ok");
+
+    // Post-condition: the tab survives (this isn't a worktree-tab close), but its dangling pointer is cleared.
+    let cfg_post = h.ctx.store().load_config();
+    let tab_post = cfg_post
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .expect("tab must survive standalone session close");
+    assert_eq!(
+        tab_post.active_child_id, None,
+        "session close MUST clear any worktree-tab `active_child_id` pointing at the closed session — see PR #65 review-7"
+    );
+    // Companion: a non-matching tab pointer would have been left alone (covered by helper unit test); here we just pin the cleanup wiring works at
+    // the integration level.
+}
+
+/// Companion to the above: when a worktree-tab's `active_child_id` points at a DIFFERENT session, closing the unrelated session must NOT clear the
+/// pointer. Pins that the cleanup is targeted (only matching pointers cleared), not a blanket reset of every tab.
+#[tokio::test]
+async fn session_close_does_not_clear_unrelated_worktree_tab_active_child_id() {
+    let h = build_harness();
+    let view_keep = session_create_impl(&h.ctx, create_args(&h)).expect("first session ok");
+    let view_close = session_create_impl(&h.ctx, create_args(&h)).expect("second session ok");
+
+    let tab = worktree_tab_open_impl(
+        &h.ctx,
+        WorktreeTabOpenArgs {
+            path: h.worktree.path().to_string_lossy().into_owned(),
+        },
+    )
+    .expect("worktree_tab_open ok");
+    let tab_id = tab.id;
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            let t = cfg.worktree_tabs.iter_mut().find(|t| t.id == tab_id).expect("tab present");
+            t.active_child_id = Some(ChildId::Session(view_keep.id));
+            true
+        })
+        .expect("seed");
+
+    session_close_impl(&h.ctx, view_close.id, false).await.expect("close unrelated ok");
+
+    let cfg_post = h.ctx.store().load_config();
+    let tab_post = cfg_post.worktree_tabs.iter().find(|t| t.id == tab_id).expect("tab survives");
+    assert_eq!(
+        tab_post.active_child_id,
+        Some(ChildId::Session(view_keep.id)),
+        "closing an unrelated session must not touch the tab's pointer to a still-live session"
+    );
 }
 
 #[tokio::test]

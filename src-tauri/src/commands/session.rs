@@ -589,20 +589,21 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
     // 3. Drop the persisted record.
     ctx.store().remove_session(&id).map_err(AppError::from)?;
 
-    // 4. Trim AppConfig ordering & active selection.
-    let cfg = ctx.store().load_config();
-    let new_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| s != &id).collect();
-    let new_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
-    let active_patch: Option<Option<SessionId>> = match cfg.active_session_id {
-        Some(active) if active == id => Some(new_order.first().copied()),
-        _ => None,
-    };
-    ctx.store()
-        .save_config(PartialAppConfig {
-            last_open_sessions: Some(new_last),
-            tab_order: Some(new_order),
-            active_session_id: active_patch,
-            ..Default::default()
+    // 4. Trim AppConfig ordering & active selection AND clear any worktree-tab `active_child_id` referencing this session — atomically. Doing the
+    //    whole mutation inside `save_config_with`'s write lock closes the read-modify-write race that the previous `load_config` + `save_config`
+    //    pattern carried (a concurrent config update between the load and the save could be overwritten by stale `last_open_sessions` / `tab_order`
+    //    vectors). The `active_child_id` cleanup is the PR #65 review-7 correctness fix: without it, a worktree tab whose last-focused child was this
+    //    session would persist a dangling pointer to a non-existent record and the next restore/focus would land on nothing.
+    let cfg_after = ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.last_open_sessions.retain(|s| s != &id);
+            cfg.tab_order.retain(|s| s != &id);
+            if cfg.active_session_id == Some(id) {
+                cfg.active_session_id = cfg.tab_order.first().copied();
+            }
+            crate::commands::worktree_tab::clear_active_child_in_config(cfg, crate::types::ChildId::Session(id));
+            true
         })
         .map_err(AppError::from)?;
 
@@ -613,7 +614,7 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
     let mut result = SessionCloseResult::default();
     match worktree_intent {
         WorktreeDeleteIntent::Path(wt) => {
-            if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root) {
+            if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg_after.workspace_root) {
                 warn!(
                     session_id = %id,
                     worktree_path = %wt.display(),
@@ -1107,31 +1108,41 @@ fn ai_session_transcript_exists(tool: Tool, worktree_path: &std::path::Path, ai_
 /// No-op when nothing needs trimming, so the common path doesn't rewrite `config.json` on every launch.
 fn trim_unknown_session_refs_with_store(store: &ConfigStore, known: &std::collections::HashSet<SessionId>) -> Result<(), Error> {
     let cfg = store.load_config();
-    let mut patch = PartialAppConfig::default();
-    let mut dirty = false;
+
+    // Determine which sessions need to be dropped — used both to compute the patch AND to clear any worktree-tab `active_child_id` pointers that
+    // reference them. Without the latter, a tab whose last-focused child was a now-deleted session would keep a dangling `ChildId::Session(...)`
+    // pointer and the next restore/focus would land on nothing. (PR #65 review-7.)
+    let unknown: Vec<SessionId> = cfg
+        .last_open_sessions
+        .iter()
+        .chain(cfg.tab_order.iter())
+        .copied()
+        .filter(|s| !known.contains(s))
+        .collect();
+    let active_unknown = matches!(cfg.active_session_id, Some(active) if !known.contains(&active));
+    if unknown.is_empty() && !active_unknown {
+        return Ok(());
+    }
 
     let trimmed_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| known.contains(s)).collect();
-    if trimmed_last.len() != cfg.last_open_sessions.len() {
-        patch.last_open_sessions = Some(trimmed_last);
-        dirty = true;
-    }
-
     let trimmed_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| known.contains(s)).collect();
-    if trimmed_order.len() != cfg.tab_order.len() {
-        patch.tab_order = Some(trimmed_order);
-        dirty = true;
-    }
+    let active_patch: Option<Option<SessionId>> = if active_unknown { Some(None) } else { None };
 
-    if let Some(active) = cfg.active_session_id {
-        if !known.contains(&active) {
-            patch.active_session_id = Some(None);
-            dirty = true;
-        }
-    }
-
-    if dirty {
-        store.save_config(patch)?;
-    }
+    store.save_config_with(
+        PartialAppConfig {
+            last_open_sessions: Some(trimmed_last),
+            tab_order: Some(trimmed_order),
+            active_session_id: active_patch,
+            ..Default::default()
+        },
+        |cfg| {
+            let mut changed = false;
+            for sid in &unknown {
+                changed |= crate::commands::worktree_tab::clear_active_child_in_config(cfg, crate::types::ChildId::Session(*sid));
+            }
+            changed
+        },
+    )?;
     Ok(())
 }
 
@@ -1204,20 +1215,17 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 warn!(session_id = %id, error = ?e, "restore: remove_session failed for stale-worktree drop");
                 continue;
             }
-            let cfg = store.load_config();
-            let new_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| s != &id).collect();
-            let new_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
-            let active_patch: Option<Option<SessionId>> = match cfg.active_session_id {
-                Some(active) if active == id => Some(new_order.first().copied()),
-                _ => None,
-            };
-            if let Err(e) = store.save_config(PartialAppConfig {
-                last_open_sessions: Some(new_last),
-                tab_order: Some(new_order),
-                active_session_id: active_patch,
-                ..Default::default()
+            // Atomic config cleanup AND `active_child_id` clear for any worktree-tab pointing at this dropped session. (PR #65 review-7.)
+            if let Err(e) = store.save_config_with(PartialAppConfig::default(), |cfg| {
+                cfg.last_open_sessions.retain(|s| s != &id);
+                cfg.tab_order.retain(|s| s != &id);
+                if cfg.active_session_id == Some(id) {
+                    cfg.active_session_id = cfg.tab_order.first().copied();
+                }
+                crate::commands::worktree_tab::clear_active_child_in_config(cfg, crate::types::ChildId::Session(id));
+                true
             }) {
-                warn!(session_id = %id, error = ?e, "restore: save_config failed for stale-worktree drop");
+                warn!(session_id = %id, error = ?e, "restore: save_config_with failed for stale-worktree drop");
             }
             continue;
         }

@@ -29,6 +29,25 @@ pub(crate) fn renormalize_worktree_tab_indices(cfg: &mut AppConfig) {
     }
 }
 
+/// Clear any `WorktreeTab.active_child_id` in `cfg` that matches `target`. Called from the close paths
+/// ([`crate::commands::session::session_close_locked`], [`crate::commands::subsession::subsession_close_impl`],
+/// [`crate::commands::subsession::close_for_parent_impl`]) and from the restore-prune paths that drop sessions/sub-sessions whose backing record is no
+/// longer valid ([`crate::commands::session::trim_unknown_session_refs_with_store`], the worktree-missing branch of
+/// [`crate::commands::session::restore_all_sessions`], and the orphan/closing-parent branches of `subsession::restore_*`). Without this, a tab's
+/// last-focused-child pointer can dangle past the child's removal — surfacing as incorrect restore/focus when the tab is next visited (PR #65 review).
+///
+/// Returns `true` if anything was cleared. Always safe to call; a no-op when no tab references `target`.
+pub(crate) fn clear_active_child_in_config(cfg: &mut AppConfig, target: ChildId) -> bool {
+    let mut changed = false;
+    for tab in cfg.worktree_tabs.iter_mut() {
+        if tab.active_child_id == Some(target) {
+            tab.active_child_id = None;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Open (or return an existing) worktree tab for the given path. Idempotent on canonical path — if a tab already exists for the same directory, it is
 /// returned without creating a duplicate. Atomicity: the duplicate check and insert run under `save_config_with`'s write lock.
 pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Result<WorktreeTab, AppError> {
@@ -443,5 +462,117 @@ mod tests {
             by_id[&id_orphan], 99,
             "orphan tab keeps its existing index — helper does not invent slots"
         );
+    }
+
+    // ---- clear_active_child_in_config (PR #65 review-7) ----
+
+    fn tab_with_child(id: WorktreeTabId, child: Option<ChildId>) -> WorktreeTab {
+        let mut t = tab(id, 0);
+        t.active_child_id = child;
+        t
+    }
+
+    #[test]
+    fn clear_active_child_clears_only_matching_session_pointer() {
+        let id_target = crate::types::SessionId::new();
+        let id_other = crate::types::SessionId::new();
+        let tab_a = WorktreeTabId::new();
+        let tab_b = WorktreeTabId::new();
+        let tab_c = WorktreeTabId::new();
+        let mut cfg = AppConfig {
+            worktree_tabs: vec![
+                tab_with_child(tab_a, Some(ChildId::Session(id_target))),
+                tab_with_child(tab_b, Some(ChildId::Session(id_other))),
+                tab_with_child(tab_c, None),
+            ],
+            ..AppConfig::default()
+        };
+
+        let changed = clear_active_child_in_config(&mut cfg, ChildId::Session(id_target));
+
+        assert!(changed, "must report changed");
+        assert_eq!(cfg.worktree_tabs[0].active_child_id, None, "matching session pointer must be cleared");
+        assert_eq!(
+            cfg.worktree_tabs[1].active_child_id,
+            Some(ChildId::Session(id_other)),
+            "non-matching session pointer must be left alone"
+        );
+        assert_eq!(cfg.worktree_tabs[2].active_child_id, None, "already-None must remain None");
+    }
+
+    #[test]
+    fn clear_active_child_clears_only_matching_subsession_pointer_not_the_session_kind() {
+        // Sub-session ids and session ids both wrap UUIDs but are different types in the discriminated `ChildId` enum. A clear request for one kind
+        // must NOT match a tab whose pointer is the other kind, even if (hypothetically) the underlying UUIDs happened to coincide.
+        let shared_uuid = uuid::Uuid::new_v4();
+        let sid = crate::types::SessionId(shared_uuid);
+        let ssid = crate::types::SubSessionId(shared_uuid);
+        let tab_a = WorktreeTabId::new();
+        let tab_b = WorktreeTabId::new();
+        let mut cfg = AppConfig {
+            worktree_tabs: vec![
+                tab_with_child(tab_a, Some(ChildId::Session(sid))),
+                tab_with_child(tab_b, Some(ChildId::SubSession(ssid))),
+            ],
+            ..AppConfig::default()
+        };
+
+        let changed = clear_active_child_in_config(&mut cfg, ChildId::SubSession(ssid));
+
+        assert!(changed);
+        assert_eq!(
+            cfg.worktree_tabs[0].active_child_id,
+            Some(ChildId::Session(sid)),
+            "ChildId::Session pointer must NOT be cleared by a SubSession clear request even on coincident UUIDs"
+        );
+        assert_eq!(cfg.worktree_tabs[1].active_child_id, None, "matching SubSession pointer must be cleared");
+    }
+
+    #[test]
+    fn clear_active_child_returns_false_when_no_tab_matches() {
+        let bystander = crate::types::SessionId::new();
+        let target = crate::types::SessionId::new();
+        let tab_a = WorktreeTabId::new();
+        let mut cfg = AppConfig {
+            worktree_tabs: vec![tab_with_child(tab_a, Some(ChildId::Session(bystander)))],
+            ..AppConfig::default()
+        };
+
+        let changed = clear_active_child_in_config(&mut cfg, ChildId::Session(target));
+
+        assert!(
+            !changed,
+            "no match → returns false → callers can elide a write if combined with a no-op short-circuit"
+        );
+        assert_eq!(
+            cfg.worktree_tabs[0].active_child_id,
+            Some(ChildId::Session(bystander)),
+            "bystander untouched"
+        );
+    }
+
+    #[test]
+    fn clear_active_child_clears_multiple_tabs_pointing_at_same_target() {
+        // Pathological but persistable: two tabs simultaneously pointing at the same child (e.g. via a buggy migration). The helper must clear ALL of
+        // them in a single pass, not just the first.
+        let target = crate::types::SessionId::new();
+        let tab_a = WorktreeTabId::new();
+        let tab_b = WorktreeTabId::new();
+        let tab_c = WorktreeTabId::new();
+        let mut cfg = AppConfig {
+            worktree_tabs: vec![
+                tab_with_child(tab_a, Some(ChildId::Session(target))),
+                tab_with_child(tab_b, Some(ChildId::Session(target))),
+                tab_with_child(tab_c, None),
+            ],
+            ..AppConfig::default()
+        };
+
+        let changed = clear_active_child_in_config(&mut cfg, ChildId::Session(target));
+
+        assert!(changed);
+        assert_eq!(cfg.worktree_tabs[0].active_child_id, None);
+        assert_eq!(cfg.worktree_tabs[1].active_child_id, None);
+        assert_eq!(cfg.worktree_tabs[2].active_child_id, None);
     }
 }
