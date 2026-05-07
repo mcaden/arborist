@@ -45,7 +45,7 @@ npm run lint:fix        # auto-apply
 npm run dev:typecheck   # tsc --noEmit --watch (run continuously while coding)
 cargo fmt --all -- --check
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 ```
 
 ### Test
@@ -53,15 +53,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```sh
 npm test                         # vitest watch mode (inner loop)
 npm test -- --run                # vitest once (CI / pre-push)
-cargo test --workspace           # unit + integration tests; also builds arborist-test-child
-cargo test --workspace <name>    # single Rust test by name prefix
+cargo test --workspace --features test-helpers  # unit + integration tests; also builds arborist-test-child
+cargo test --workspace --features test-helpers <name>  # single Rust test by name prefix
 ```
 
 ### Acceptance gate (all must be green before merge)
 
 ```sh
 npm run lint && npm test -- --run && npm run build
-cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets --features test-helpers -- -D warnings && cargo test --workspace --features test-helpers
 ```
 
 ### Debugging helpers

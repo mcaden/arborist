@@ -199,7 +199,7 @@ at least a minimal in-app settings surface is needed.
   - **Lint & type-check** (`npm run lint`, `npm run build`, `cargo fmt --check`,
     `cargo clippy -D warnings`) on `ubuntu-latest`.
   - **Frontend tests** (`npm test -- --run`) on `ubuntu-latest`.
-  - **Rust tests** (`cargo test --workspace`) on `ubuntu-latest`,
+  - **Rust tests** (`cargo test --workspace --features test-helpers`) on `ubuntu-latest`,
     `windows-latest`, and `macos-latest`.
   - (Optional) Tauri build smoke-test on all three platforms.
 

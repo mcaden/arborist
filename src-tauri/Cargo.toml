@@ -17,19 +17,21 @@ name = "arborist"
 path = "src/main.rs"
 
 # Purpose-built deterministic child process used by the PTY-pool integration
-# tests (`tests/pty_pool.rs`). Cargo automatically exposes its built path to
-# integration tests via the `CARGO_BIN_EXE_arborist-test-child` env var.
+# tests (`tests/pty_pool.rs`). Gated behind the `test-helpers` feature so
+# `tauri build` (which doesn't enable it) excludes them from the bundle.
+# Cargo exposes the built path via `CARGO_BIN_EXE_arborist-test-child`.
 [[bin]]
 name = "arborist-test-child"
 path = "src/bin/arborist_test_child.rs"
+required-features = ["test-helpers"]
 
 # Helper used by `tests/workspace_lock_multiprocess.rs` to verify that
 # cross-process contention on `WorkspaceLockGuard` produces
-# `LockError::Contention`. Same Cargo convention as the test child:
-# its built path is exposed via `CARGO_BIN_EXE_arborist-test-locker`.
+# `LockError::Contention`. Same convention as the test child above.
 [[bin]]
 name = "arborist-test-locker"
 path = "src/bin/arborist_test_locker.rs"
+required-features = ["test-helpers"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -69,3 +71,7 @@ serial_test = "3"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# Enables building test-only helper binaries (arborist-test-child,
+# arborist-test-locker). Excluded from Tauri release builds to prevent
+# the bundler from trying to include them in the app bundle.
+test-helpers = []

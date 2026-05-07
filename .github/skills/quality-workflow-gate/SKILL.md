@@ -21,8 +21,8 @@ npm test                                        # vitest (watch by default in de
 npm test -- --run                               # vitest single-shot (CI mode)
 npm test -- --run --coverage                    # with coverage report
 cargo fmt --all -- --check                      # format check (workspace root)
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo test --workspace --features test-helpers
 cargo watch -C src-tauri -x check -x clippy    # Rust inner loop
 ```
 
@@ -41,7 +41,7 @@ npm run test:watch       # vitest
 
 # Rust watchers (run in two terminals)
 cargo watch -x check -x clippy            # type + lint feedback (workspace root)
-cargo watch -x 'test --workspace'         # tests
+cargo watch -x 'test --workspace --features test-helpers'         # tests
 ```
 
 **Editor configuration**: ESLint + Prettier on save, `rust-analyzer` with `clippy` as the check command. No "I'll lint at the end" — by then it's a wall of changes.
@@ -55,7 +55,7 @@ Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for bra
   - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on the Rust workspace if any `.rs` file is staged
 - **pre-push**:
   - `npm test -- --run` (vitest in CI mode)
-  - `cargo test --workspace`
+  - `cargo test --workspace --features test-helpers`
 
 ## 4. Test architecture rules
 

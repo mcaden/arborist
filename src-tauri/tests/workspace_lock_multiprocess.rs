@@ -5,7 +5,10 @@
 //! uniqueness guarantee that matters in production is *cross-process*, so we exercise it here by spawning `arborist-test-locker` as a real second
 //! process.
 //!
-//! The locker binary path is provided by Cargo via `env!("CARGO_BIN_EXE_arborist-test-locker")` because both crates live in the same workspace.
+//! The locker binary path is provided by Cargo via `env!("CARGO_BIN_EXE_arborist-test-locker")`. The binary requires the `test-helpers` feature:
+//! `cargo test --features test-helpers`.
+
+#![cfg(feature = "test-helpers")]
 
 use arborist_lib::workspace_lock::{LockError, WorkspaceLockGuard};
 use std::io::{BufRead, BufReader};

@@ -59,7 +59,7 @@ npm run lint:fix        # auto-apply fixes
 npm run dev:typecheck   # tsc --noEmit --watch — run this continuously while coding
 cargo fmt --all -- --check
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 ```
 
 ### Test
@@ -67,13 +67,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```sh
 npm test                      # vitest watch mode (inner loop)
 npm test -- --run             # vitest once (CI / pre-push)
-cargo test --workspace        # unit + integration tests; also builds arborist-test-child
+cargo test --workspace --features test-helpers  # unit + integration tests; also builds arborist-test-child
 ```
 
 Run a specific Rust test by name prefix:
 
 ```sh
-cargo test --workspace <name>
+cargo test --workspace --features test-helpers <name>
 ```
 
 ### Acceptance gate
@@ -85,8 +85,8 @@ npm run lint
 npm test -- --run
 npm run build
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo test --workspace --features test-helpers
 ```
 
 ## Inner-loop watcher setup
@@ -110,7 +110,7 @@ Recommended VS Code extensions: `rust-analyzer`, `ESLint`, `Prettier - Code form
 Husky v9 installs two hooks via `npm install`:
 
 - **pre-commit** — `lint-staged` runs ESLint + Prettier on staged JS/TS/JSON/CSS/MD; also runs `cargo fmt --check` and `cargo clippy` when any `.rs` file is staged.
-- **pre-push** — `npm test -- --run` (Vitest CI mode) + `cargo test --workspace`.
+- **pre-push** — `npm test -- --run` (Vitest CI mode) + `cargo test --workspace --features test-helpers`.
 
 `--no-verify` is allowed on personal WIP branches; never use it on `main`.
 
@@ -160,7 +160,7 @@ To debug persistence issues: stop Arborist, inspect/edit `config.json` or `sessi
 | `error: linking with cl.exe failed` (Windows)                   | Install the Visual Studio 2022 "Desktop development with C++" workload                                                                   |
 | `failed to find tool. Is gtk+-3.0 installed?` (Linux)           | Install GTK / WebKit2GTK dev packages (see Prerequisites)                                                                                |
 | `npm run tauri:dev` opens a blank window                        | Frontend crashed at boot — open DevTools and check the console                                                                           |
-| `cargo test --workspace` fails with `claude: command not found` | A test is calling the real CLI; integration tests must use `arborist-test-child` — file a bug                                            |
+| `cargo test --workspace --features test-helpers` fails with `claude: command not found` | A test is calling the real CLI; integration tests must use `arborist-test-child` — file a bug                                            |
 | Pre-commit hook does nothing                                    | Re-run `npm install` — Husky hooks are set up by the `prepare` script                                                                    |
 | `config.json.bad-<timestamp>` keeps appearing                   | The loader is rejecting the file; diff it against the minimum valid example in [dev/docs/CONFIGURATION.md](../dev/docs/CONFIGURATION.md) |
 | Sessions don't restore on launch                                | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in `RUST_LOG=debug` output                                             |

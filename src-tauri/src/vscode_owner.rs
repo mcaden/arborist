@@ -35,6 +35,8 @@ use crate::cmd_resolver::ShellTokens;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const POLL_DEADLINE: Duration = Duration::from_secs(8);
+// Used by the Windows platform module today; macOS/Linux support planned (see follow-up issue).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const TITLE_SUFFIX: &str = " - Visual Studio Code";
 
 /// First-token program names recognised as launching VS Code. Matched case-insensitively against the first whitespace-delimited token of
