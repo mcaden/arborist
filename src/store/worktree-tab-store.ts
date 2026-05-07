@@ -35,7 +35,13 @@ export interface WorktreeTabStoreState {
 }
 
 export interface WorktreeTabStoreActions {
-  hydrate: () => Promise<void>;
+  /**
+   * Load persisted worktree tabs and reconcile against the live session list. Any session whose `worktreePath` has no matching tab triggers an
+   * idempotent `worktreeTabOpen` to self-heal — covers the orphan case where a previous run crashed between `session_create` and the frontend's
+   * follow-up `worktreeTabOpen`. Pass `knownPaths` from the freshly hydrated session-store so this store stays free of cross-store imports.
+   * Throws on bridge failure so `App.boot`'s error overlay can surface the underlying problem instead of silently rendering an empty sidebar.
+   */
+  hydrate: (knownPaths?: ReadonlyArray<string>) => Promise<void>;
   open: (path: string) => Promise<WorktreeTab>;
   close: (id: WorktreeTabId) => Promise<void>;
   focus: (id: WorktreeTabId) => Promise<void>;
@@ -53,18 +59,43 @@ type Store = WorktreeTabStoreState & { actions: WorktreeTabStoreActions };
 
 export const useWorktreeTabStore = create<Store>((set, get) => {
   const actions: WorktreeTabStoreActions = {
-    async hydrate() {
-      try {
-        const [tabs, cfg] = await Promise.all([worktreeTabList(), configGet()]);
-        // Reconcile activeId against the freshly loaded tabs: prefer the persisted id only when it still exists, else fall back to the first
-        // tab, else null. Mirrors `session-store.adoptWorkspace`'s reconciliation rule — without this, a stale `activeWorktreeTabId` (e.g.
-        // left over from a deleted tab) would leave `useActiveWorktreeTab()` returning `undefined` even though tabs are present.
-        const persistedId = cfg.activeWorktreeTabId ?? null;
-        const activeId = persistedId !== null && tabs.some((t) => t.id === persistedId) ? persistedId : (tabs[0]?.id ?? null);
-        set({ tabs, isHydrated: true, activeId });
-      } catch (err) {
-        console.error('[worktree-tab-store] hydrate failed:', formatError(err));
+    async hydrate(knownPaths?: ReadonlyArray<string>) {
+      // Bridge failures here are fatal at boot: they signal a corrupt config or a backend that's refusing the command. Letting them propagate
+      // routes them to App.boot's error overlay, which surfaces the actual error to the user instead of silently rendering an empty sidebar
+      // (the previous behaviour silently swallowed every failure to console.error).
+      const [tabs, cfg] = await Promise.all([worktreeTabList(), configGet()]);
+
+      // Self-heal orphan sessions: any session whose `worktreePath` is not represented by a tab gets one created via the idempotent backend
+      // command. This recovers from the rare case where a previous boot crashed between `session_create` and the frontend's follow-up
+      // `worktreeTabOpen` — without this, the orphan session would never render in the new sidebar (top-level iterates worktree tabs only).
+      // Order is preserved so deterministic iteration matches `tabIndex` ordering for the original tabs and append-order for healed ones.
+      const reconciled: WorktreeTab[] = [...tabs];
+      if (knownPaths && knownPaths.length > 0) {
+        const havePaths = new Set(tabs.map((t) => t.path));
+        const seenMissing = new Set<string>();
+        for (const path of knownPaths) {
+          if (havePaths.has(path) || seenMissing.has(path)) continue;
+          seenMissing.add(path);
+          try {
+            const newTab = await worktreeTabOpen({ path });
+            // Backend may return an existing tab if a concurrent caller raced us; dedupe defensively before appending.
+            if (!reconciled.some((t) => t.id === newTab.id)) {
+              reconciled.push(newTab);
+            }
+          } catch (err) {
+            // A single self-heal failure must not block boot — log and continue. Worst case, the orphan session still won't render under any
+            // tab, which is the same outcome as before this self-heal existed.
+            console.warn(`[worktree-tab-store] self-heal worktreeTabOpen(${path}) failed: ${formatError(err)}`);
+          }
+        }
       }
+
+      // Reconcile activeId against the (possibly extended) tab list: prefer the persisted id only when it still exists, else fall back to the
+      // first tab, else null. Mirrors `session-store.adoptWorkspace`'s rule — a stale `activeWorktreeTabId` left over from a deleted tab would
+      // otherwise leave `useActiveWorktreeTab()` returning `undefined` even though tabs are present.
+      const persistedId = cfg.activeWorktreeTabId ?? null;
+      const activeId = persistedId !== null && reconciled.some((t) => t.id === persistedId) ? persistedId : (reconciled[0]?.id ?? null);
+      set({ tabs: reconciled, isHydrated: true, activeId });
     },
 
     async open(path: string) {

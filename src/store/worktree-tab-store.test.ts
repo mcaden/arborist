@@ -116,13 +116,58 @@ describe('useWorktreeTabStore', () => {
       expect(s.isHydrated).toBe(true);
     });
 
-    it('does not set isHydrated when the bridge throws', async () => {
+    it('propagates bridge errors so App boot can surface them', async () => {
       bridgeMock.worktreeTabList.mockRejectedValueOnce(new Error('disk read failed'));
       bridgeMock.configGet.mockResolvedValueOnce(configWith(null));
 
-      await useWorktreeTabStore.getState().actions.hydrate();
+      await expect(useWorktreeTabStore.getState().actions.hydrate()).rejects.toThrow('disk read failed');
 
       expect(useWorktreeTabStore.getState().isHydrated).toBe(false);
+    });
+
+    it('self-heals an orphan session by opening a tab for its worktreePath', async () => {
+      // Persisted tabs cover only TAB_A's worktree; the running session lives in /repo/orphan with no matching tab.
+      const a = makeTab(TAB_A, { path: '/repo/a', tabIndex: 0 });
+      const healed = makeTab(TAB_C, { path: '/repo/orphan', tabIndex: 1 });
+      bridgeMock.worktreeTabList.mockResolvedValueOnce([a]);
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(TAB_A));
+      bridgeMock.worktreeTabOpen.mockResolvedValueOnce(healed);
+
+      await useWorktreeTabStore.getState().actions.hydrate(['/repo/a', '/repo/orphan']);
+
+      const s = useWorktreeTabStore.getState();
+      expect(bridgeMock.worktreeTabOpen).toHaveBeenCalledTimes(1);
+      expect(bridgeMock.worktreeTabOpen).toHaveBeenCalledWith({ path: '/repo/orphan' });
+      expect(s.tabs.map((t) => t.id)).toEqual([TAB_A, TAB_C]);
+      // Persisted activeId still points at TAB_A; not overridden by the healed tab.
+      expect(s.activeId).toBe(TAB_A);
+    });
+
+    it('does not re-open tabs that already exist (idempotent dedupe by path)', async () => {
+      const a = makeTab(TAB_A, { path: '/repo/a' });
+      bridgeMock.worktreeTabList.mockResolvedValueOnce([a]);
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(TAB_A));
+
+      await useWorktreeTabStore.getState().actions.hydrate(['/repo/a', '/repo/a']);
+
+      // Path /repo/a is already covered; duplicate in knownPaths must not trigger a redundant open.
+      expect(bridgeMock.worktreeTabOpen).not.toHaveBeenCalled();
+    });
+
+    it('continues self-heal when a single open call rejects, but logs', async () => {
+      const a = makeTab(TAB_A, { path: '/repo/a' });
+      const ok = makeTab(TAB_B, { path: '/repo/healed' });
+      bridgeMock.worktreeTabList.mockResolvedValueOnce([a]);
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(TAB_A));
+      // First missing path rejects; second succeeds. Hydrate must not throw — boot-time best-effort.
+      bridgeMock.worktreeTabOpen.mockRejectedValueOnce(new Error('cwd missing')).mockResolvedValueOnce(ok);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await useWorktreeTabStore.getState().actions.hydrate(['/repo/a', '/repo/missing', '/repo/healed']);
+
+      expect(useWorktreeTabStore.getState().tabs.map((t) => t.id)).toEqual([TAB_A, TAB_B]);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
     });
   });
 

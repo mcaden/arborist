@@ -43,6 +43,7 @@ import { configGet, frontendReady, resetBridgeMocks, sessionList } from '@/lib/t
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 
 interface MediaQueryListLike {
@@ -99,6 +100,7 @@ function resetStores(): void {
     pendingClose: undefined,
     isHydrated: false,
   });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
 }
 
 // `window.location` is replaced by the reload-button test below; capture
@@ -130,7 +132,10 @@ afterEach(() => {
 describe('App boot sequence', () => {
   it('shows BootSplash before hydration completes and main UI after', async () => {
     let resolveCfg: (() => void) | null = null;
-    configGet.mockImplementation(
+    // Use `mockImplementationOnce` so the gated promise only governs the FIRST configGet call (configStore.hydrate). Subsequent
+    // configGet calls (e.g. from worktreeTabStore.hydrate) fall back to the default mock that resolves immediately, so boot can
+    // complete after we manually resolve the first one.
+    configGet.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolveCfg = () =>
@@ -167,7 +172,7 @@ describe('App boot sequence', () => {
     });
   });
 
-  it('calls boot steps in order: configStore.hydrate -> subscribeToStatus -> sessionStore.hydrate -> subSessionStore.hydrate -> initTerminalRouter -> frontendReady', async () => {
+  it('calls boot steps in order: config -> status -> session -> subsession -> worktreeTab -> router -> ready', async () => {
     const order: string[] = [];
     const cfgSpy = vi.spyOn(useConfigStore.getState(), 'hydrate').mockImplementation(async () => {
       order.push('config');
@@ -177,6 +182,9 @@ describe('App boot sequence', () => {
     });
     const subSpy = vi.spyOn(useSubSessionStore.getState().actions, 'hydrate').mockImplementation(async () => {
       order.push('subsession');
+    });
+    const wttSpy = vi.spyOn(useWorktreeTabStore.getState().actions, 'hydrate').mockImplementation(async () => {
+      order.push('worktreeTab');
     });
     initTerminalRouterMock.mockImplementation(() => order.push('router'));
     subscribeToStatusMock.mockImplementation(() => {
@@ -190,10 +198,36 @@ describe('App boot sequence', () => {
     render(<App />);
     await waitFor(() => expect(frontendReady).toHaveBeenCalled());
 
-    expect(order).toEqual(['config', 'status', 'session', 'subsession', 'router', 'ready']);
+    expect(order).toEqual(['config', 'status', 'session', 'subsession', 'worktreeTab', 'router', 'ready']);
     cfgSpy.mockRestore();
     sessSpy.mockRestore();
     subSpy.mockRestore();
+    wttSpy.mockRestore();
+  });
+
+  it('passes the live session worktreePath set into worktreeTabStore.hydrate so orphan tabs can be self-healed', async () => {
+    // Seed the session store with two sessions on different worktrees BEFORE App boots, then assert hydrate sees those paths. Use a no-op
+    // implementation for sessionStore.hydrate so the seeded state survives.
+    useSessionStore.setState({
+      sessions: [
+        { id: 's1', tool: 'claude', worktreePath: '/repo/a', worktreeName: 'a', label: 'a', tabIndex: 0, status: 'running', composedCommand: '' },
+        { id: 's2', tool: 'copilot', worktreePath: '/repo/b', worktreeName: 'b', label: 'b', tabIndex: 1, status: 'running', composedCommand: '' },
+        { id: 's3', tool: 'claude', worktreePath: '/repo/a', worktreeName: 'a', label: 'a 2', tabIndex: 2, status: 'running', composedCommand: '' },
+      ] as never,
+      activeId: undefined,
+      pendingClose: undefined,
+      isHydrated: true,
+    });
+    const sessSpy = vi.spyOn(useSessionStore.getState().actions, 'hydrate').mockImplementation(async () => undefined);
+    const wttSpy = vi.spyOn(useWorktreeTabStore.getState().actions, 'hydrate').mockImplementation(async () => undefined);
+
+    render(<App />);
+    await waitFor(() => expect(wttSpy).toHaveBeenCalled());
+
+    // Hydrate is invoked with the freshly hydrated session paths (duplicates included — the store dedupes internally).
+    expect(wttSpy).toHaveBeenCalledWith(['/repo/a', '/repo/b', '/repo/a']);
+    sessSpy.mockRestore();
+    wttSpy.mockRestore();
   });
 
   it('renders the error overlay when hydrate throws and Reload calls window.location.reload', async () => {

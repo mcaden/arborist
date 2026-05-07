@@ -35,6 +35,7 @@ import { formatError, frontendReady } from '@/lib/tauri-bridge';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import { selectIsSwitching, useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 
 type BootStatus = 'booting' | 'ready' | 'error';
@@ -134,6 +135,12 @@ export function App(): JSX.Element {
         await useSessionStore.getState().actions.hydrate();
         if (cancelled) return;
         await useSubSessionStore.getState().actions.hydrate();
+        if (cancelled) return;
+        // Worktree-tab hydration runs AFTER session hydration so the self-heal step (open a tab for any session whose worktreePath has no
+        // matching tab) sees a populated session list. Without this, an orphan session created before a previous crash would never render
+        // under the new sidebar's worktree-keyed iteration. Hydrate's bridge errors propagate so App.boot's error overlay surfaces them.
+        const knownPaths = useSessionStore.getState().sessions.map((s) => s.worktreePath);
+        await useWorktreeTabStore.getState().actions.hydrate(knownPaths);
         if (cancelled) return;
         initTerminalRouter();
         if (cancelled) return;
