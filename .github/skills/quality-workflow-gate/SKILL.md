@@ -23,7 +23,7 @@ npm test -- --run --coverage                    # with coverage report
 cargo fmt --all -- --check                      # format check (workspace root)
 cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 cargo test --workspace --features test-helpers
-cargo watch -C src-tauri -x check -x clippy    # Rust inner loop
+cargo watch -C src-tauri -x 'clippy --all-targets --features test-helpers -- -D warnings'  # Rust inner loop
 ```
 
 These commands are wired up in `package.json` and the workspace
@@ -40,7 +40,7 @@ npm run dev:typecheck    # tsc --noEmit --watch
 npm run test:watch       # vitest
 
 # Rust watchers (run in two terminals)
-cargo watch -x check -x clippy            # type + lint feedback (workspace root)
+cargo watch -x 'clippy --all-targets --features test-helpers -- -D warnings'  # type + lint feedback (workspace root)
 cargo watch -x 'test --workspace --features test-helpers'         # tests
 ```
 
