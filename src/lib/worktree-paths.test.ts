@@ -39,8 +39,6 @@ describe('isInsideWorktreesDir', () => {
   });
 
   it('handles UNC paths case-insensitively', () => {
-    expect(isInsideWorktreesDir('\\\\server\\Share', '\\\\Server\\share\\.worktrees\\foo')).toBe(
-      true,
-    );
+    expect(isInsideWorktreesDir('\\\\server\\Share', '\\\\Server\\share\\.worktrees\\foo')).toBe(true);
   });
 });

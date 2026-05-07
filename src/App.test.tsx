@@ -169,16 +169,12 @@ describe('App boot sequence', () => {
     const cfgSpy = vi.spyOn(useConfigStore.getState(), 'hydrate').mockImplementation(async () => {
       order.push('config');
     });
-    const sessSpy = vi
-      .spyOn(useSessionStore.getState().actions, 'hydrate')
-      .mockImplementation(async () => {
-        order.push('session');
-      });
-    const subSpy = vi
-      .spyOn(useSubSessionStore.getState().actions, 'hydrate')
-      .mockImplementation(async () => {
-        order.push('subsession');
-      });
+    const sessSpy = vi.spyOn(useSessionStore.getState().actions, 'hydrate').mockImplementation(async () => {
+      order.push('session');
+    });
+    const subSpy = vi.spyOn(useSubSessionStore.getState().actions, 'hydrate').mockImplementation(async () => {
+      order.push('subsession');
+    });
     initTerminalRouterMock.mockImplementation(() => order.push('router'));
     subscribeToStatusMock.mockImplementation(() => {
       order.push('status');

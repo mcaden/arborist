@@ -27,14 +27,7 @@ import { useMemo } from 'react';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
-import {
-  formatError,
-  subSessionClose,
-  subSessionCreate,
-  subSessionFocus,
-  subSessionList,
-  subSessionRelaunch,
-} from '@/lib/tauri-bridge';
+import { formatError, subSessionClose, subSessionCreate, subSessionFocus, subSessionList, subSessionRelaunch } from '@/lib/tauri-bridge';
 import type {
   SessionId,
   SubSession,
@@ -162,11 +155,7 @@ function isTerminalStatus(status: SubStatus): boolean {
  * conditionally clear the PID (e.g. relaunch flip, terminal-state
  * fallback in `applyExited`, snapshot rollback).
  */
-function withStatusAndPid(
-  current: SubSession,
-  status: SubStatus,
-  pid: number | undefined,
-): SubSession {
+function withStatusAndPid(current: SubSession, status: SubStatus, pid: number | undefined): SubSession {
   const { pid: _omit, ...rest } = current;
   void _omit;
   const next: SubSession = { ...rest, status };
@@ -289,19 +278,14 @@ export const useSubSessionStore = create<Store>((set, get) => {
         const nextActive = { ...s.activeByParent };
         delete nextActive[parentId];
         // Drop status messages for the orphaned ids.
-        const droppedIds = new Set(
-          s.subSessions.filter((sub) => sub.parentSessionId === parentId).map((sub) => sub.id),
-        );
+        const droppedIds = new Set(s.subSessions.filter((sub) => sub.parentSessionId === parentId).map((sub) => sub.id));
         const nextMsgs: Record<SubSessionId, string> = {};
         for (const [k, v] of Object.entries(s.statusMessages)) {
           if (!droppedIds.has(k as SubSessionId)) nextMsgs[k as SubSessionId] = v;
         }
         // If a close-confirm dialog was open for one of the removed
         // rows, drop it — the row is gone so the dialog has no target.
-        const nextPending =
-          s.pendingClose !== undefined && droppedIds.has(s.pendingClose)
-            ? undefined
-            : s.pendingClose;
+        const nextPending = s.pendingClose !== undefined && droppedIds.has(s.pendingClose) ? undefined : s.pendingClose;
         return {
           subSessions: next,
           activeByParent: nextActive,
@@ -425,8 +409,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
         if (idx === -1) return {};
         const current = s.subSessions[idx]!;
         if (isTerminalStatus(current.status)) return {};
-        const synthetic: SubSession['status'] =
-          event.exitCode !== undefined && event.exitCode !== 0 ? 'error' : 'exited';
+        const synthetic: SubSession['status'] = event.exitCode !== undefined && event.exitCode !== 0 ? 'error' : 'exited';
         const nextSubs = [...s.subSessions];
         nextSubs[idx] = withStatusAndPid(current, synthetic, undefined);
         return { subSessions: nextSubs };
@@ -474,11 +457,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
   };
 });
 
-function pickNeighbour(
-  list: SubSession[],
-  parentId: SessionId,
-  removingId: SubSessionId,
-): SubSessionId | undefined {
+function pickNeighbour(list: SubSession[], parentId: SessionId, removingId: SubSessionId): SubSessionId | undefined {
   const siblings = list.filter((s) => s.parentSessionId === parentId);
   const idx = siblings.findIndex((s) => s.id === removingId);
   if (idx === -1) return siblings[0]?.id;
@@ -509,11 +488,7 @@ export const selectPendingSubClose = (s: Store): SubSessionId | undefined => s.p
 export const useAllSubSessions = (): SubSession[] => useSubSessionStore(selectAllSubSessions);
 
 export function useSubSessionsForParent(parentId: SessionId | undefined): SubSession[] {
-  return useSubSessionStore(
-    useShallow((s) =>
-      parentId ? s.subSessions.filter((sub) => sub.parentSessionId === parentId) : [],
-    ),
-  );
+  return useSubSessionStore(useShallow((s) => (parentId ? s.subSessions.filter((sub) => sub.parentSessionId === parentId) : [])));
 }
 
 export function useActiveSubSessionId(parentId: SessionId | undefined): SubSessionId | undefined {
@@ -529,8 +504,7 @@ export const useIsSubHydrated = (): boolean => useSubSessionStore(selectIsHydrat
 export const useSubStatusMessage = (id: SubSessionId | undefined): string | undefined =>
   useSubSessionStore(useMemo(() => selectSubStatusMessage(id), [id]));
 
-export const usePendingSubClose = (): SubSessionId | undefined =>
-  useSubSessionStore(selectPendingSubClose);
+export const usePendingSubClose = (): SubSessionId | undefined => useSubSessionStore(selectPendingSubClose);
 
 export function useSubSessionActions(): SubSessionStoreActions {
   return useSubSessionStore((s) => s.actions);

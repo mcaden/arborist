@@ -80,9 +80,7 @@ describe('SidebarSubTab', () => {
   });
 
   it('returns null for unknown sub-session id', () => {
-    const { container } = render(
-      <SidebarSubTab parentId={PARENT} subSessionId={id('99')} parentIsActive />,
-    );
+    const { container } = render(<SidebarSubTab parentId={PARENT} subSessionId={id('99')} parentIsActive />);
     expect(container.firstChild).toBeNull();
   });
 
@@ -166,9 +164,7 @@ describe('SidebarSubTab', () => {
       activeByParent: { [PARENT]: sub.id },
     });
     render(<SidebarSubTab parentId={PARENT} subSessionId={sub.id} parentIsActive />);
-    expect(screen.getByRole('button', { name: sub.label }).getAttribute('aria-current')).toBe(
-      'true',
-    );
+    expect(screen.getByRole('button', { name: sub.label }).getAttribute('aria-current')).toBe('true');
   });
 
   it('application kind is never aria-current by viewport rule', () => {

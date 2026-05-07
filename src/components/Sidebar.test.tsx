@@ -162,9 +162,7 @@ describe('Sidebar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
     await act(async () => {
-      fireEvent.click(
-        within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }),
-      );
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
     });
 
     expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a', deleteWorktree: false });
@@ -245,9 +243,7 @@ describe('Sidebar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
     await act(async () => {
-      fireEvent.click(
-        within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }),
-      );
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
     });
 
     // UI converges to "tab gone" so the user is never stuck with a stale row.
@@ -280,9 +276,7 @@ describe('Sidebar', () => {
 
     fireEvent.keyDown(tablist, { key: 'Delete' });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(within(screen.getByRole('dialog')).getByText(/terminate session/i)).toHaveTextContent(
-      'b',
-    );
+    expect(within(screen.getByRole('dialog')).getByText(/terminate session/i)).toHaveTextContent('b');
   });
 
   it('Alt+ArrowDown swaps focused tab with the one below and persists tabOrder', async () => {
@@ -351,9 +345,7 @@ describe('Sidebar', () => {
     tabByLabel('claude session b').focus();
     fireEvent.click(screen.getByRole('button', { name: /close session b/i }));
     await act(async () => {
-      fireEvent.click(
-        within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }),
-      );
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
     });
 
     expect(tabByLabel('claude session c')).toHaveFocus();
@@ -366,9 +358,7 @@ describe('Sidebar', () => {
     tabByLabel('claude session a').focus();
     fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
     await act(async () => {
-      fireEvent.click(
-        within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }),
-      );
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
     });
 
     expect(screen.getByRole('button', { name: /new session/i })).toHaveFocus();
@@ -459,10 +449,7 @@ describe('Sidebar unread accessibility', () => {
     seed([makeView('a'), makeView('b')], 'b');
     useSessionStore.setState({ hasUnread: { a: true } });
     render(<Sidebar />);
-    expect(tabByLabel('claude session a')).toHaveAttribute(
-      'aria-label',
-      'claude session a (unread output)',
-    );
+    expect(tabByLabel('claude session a')).toHaveAttribute('aria-label', 'claude session a (unread output)');
     // Active tab never carries the unread suffix — focusing it clears the flag.
     expect(tabByLabel('claude session b')).toHaveAttribute('aria-label', 'claude session b');
   });

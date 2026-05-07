@@ -1,12 +1,10 @@
 //! Phase 6 integration tests for the PTY pool.
 //!
-//! These tests exercise both the production [`PortablePtySpawner`] (against
-//! the purpose-built `arborist-test-child` binary) and a deterministic fake
+//! These tests exercise both the production [`PortablePtySpawner`] (against the purpose-built `arborist-test-child` binary) and a deterministic fake
 //! spawner for backpressure / lifecycle / UTF-8 correctness.
 //!
-//! The path to the test child binary is provided automatically by Cargo via
-//! `env!("CARGO_BIN_EXE_arborist-test-child")` because both the test child and
-//! these tests live in the same crate.
+//! The path to the test child binary is provided automatically by Cargo via `env!("CARGO_BIN_EXE_arborist-test-child")` because both the test child
+//! and these tests live in the same crate.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,27 +14,22 @@ use std::time::{Duration, Instant};
 
 use arborist_lib::compose::{copilot_otel_path, session_temp_dir};
 use arborist_lib::pty_pool::{
-    cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink,
-    PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET, DEFAULT_PTY_SIZE,
-    OUTPUT_CHANNEL_CAPACITY,
+    cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET,
+    DEFAULT_PTY_SIZE, OUTPUT_CHANNEL_CAPACITY,
 };
-use arborist_lib::types::{
-    InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool,
-};
+use arborist_lib::types::{InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool};
 use portable_pty::{ExitStatus, PtySize};
 use uuid::Uuid;
 
-// ---------------------------------------------------------------------------
-// Shared test helpers
+// --------------------------------------------------------------------------- Shared test helpers
 // ---------------------------------------------------------------------------
 
 const TEST_CHILD_PATH: &str = env!("CARGO_BIN_EXE_arborist-test-child");
 
 /// Build a minimal `Session` whose `composed_command` runs the test child.
 ///
-/// On Windows the platform shell is `cmd.exe /c "<command>"` which strips
-/// surrounding quotes, so we pass the full path through the same quoting
-/// path as the production composer would.
+/// On Windows the platform shell is `cmd.exe /c "<command>"` which strips surrounding quotes, so we pass the full path through the same quoting path
+/// as the production composer would.
 fn make_session(workdir: &Path) -> Session {
     let composed = quote_program(TEST_CHILD_PATH);
     Session {
@@ -58,13 +51,9 @@ fn make_session(workdir: &Path) -> Session {
 
 #[cfg(windows)]
 fn quote_program(p: &str) -> String {
-    // cmd.exe /c parses the command string with its own rules. The
-    // portable-pty CommandBuilder already builds a properly escaped
-    // CreateProcess line with `cmd.exe /c "<our-string>"`, so what we hand
-    // back here must be a valid cmd-shell expression. Wrap the path in
-    // double quotes and use cmd's `^` escape on inner quotes (the test
-    // child path comes from Cargo, never has them, but we wrap for the
-    // "path may contain spaces" case).
+    // cmd.exe /c parses the command string with its own rules. The portable-pty CommandBuilder already builds a properly escaped CreateProcess line
+    // with `cmd.exe /c "<our-string>"`, so what we hand back here must be a valid cmd-shell expression. Wrap the path in double quotes and use cmd's
+    // `^` escape on inner quotes (the test child path comes from Cargo, never has them, but we wrap for the "path may contain spaces" case).
     if p.contains(' ') {
         format!("\"{p}\"")
     } else {
@@ -77,8 +66,7 @@ fn quote_program(p: &str) -> String {
     arborist_lib::compose::shell_quote_posix(p)
 }
 
-/// Construct a `(sink, recordings)` pair where output and status updates are
-/// pushed into shared `Vec`s for inspection.
+/// Construct a `(sink, recordings)` pair where output and status updates are pushed into shared `Vec`s for inspection.
 type OutputLog = Arc<Mutex<Vec<String>>>;
 type StatusLog = Arc<Mutex<Vec<(SessionStatus, Option<u32>)>>>;
 
@@ -99,13 +87,8 @@ fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
     (sink, outs, stats)
 }
 
-/// Block (with a budget) until `pred(joined_output)` is true. Returns the
-/// joined output on success.
-fn wait_for<F: FnMut(&str) -> bool>(
-    log: &OutputLog,
-    mut pred: F,
-    budget: Duration,
-) -> Option<String> {
+/// Block (with a budget) until `pred(joined_output)` is true. Returns the joined output on success.
+fn wait_for<F: FnMut(&str) -> bool>(log: &OutputLog, mut pred: F, budget: Duration) -> Option<String> {
     let start = Instant::now();
     loop {
         let joined = log.lock().unwrap().concat();
@@ -119,11 +102,7 @@ fn wait_for<F: FnMut(&str) -> bool>(
     }
 }
 
-fn wait_for_status<F: Fn(&[(SessionStatus, Option<u32>)]) -> bool>(
-    log: &StatusLog,
-    pred: F,
-    budget: Duration,
-) -> bool {
+fn wait_for_status<F: Fn(&[(SessionStatus, Option<u32>)]) -> bool>(log: &StatusLog, pred: F, budget: Duration) -> bool {
     let start = Instant::now();
     loop {
         if pred(&log.lock().unwrap()) {
@@ -137,23 +116,15 @@ fn wait_for_status<F: Fn(&[(SessionStatus, Option<u32>)]) -> bool>(
 }
 
 fn rt() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
 }
 
-// ---------------------------------------------------------------------------
-// Real-spawner end-to-end tests
+// --------------------------------------------------------------------------- Real-spawner end-to-end tests
 //
-// Every test in this section drives a real ConPTY/portable-pty child. Spawning
-// many ConPTY consoles in parallel is contended on Windows: under load (e.g.
-// the husky pre-push hook running `npm test` and `cargo test --workspace`
-// concurrently with linker work), the initial banner from the test child can
-// stall well past the per-test 5s budget, causing intermittent
-// `banner not seen` failures. Force these tests to run serially so they only
-// ever compete with one PTY at a time.
-// ---------------------------------------------------------------------------
+// Every test in this section drives a real ConPTY/portable-pty child. Spawning many ConPTY consoles in parallel is contended on Windows: under load
+// (e.g. the husky pre-push hook running `npm test` and `cargo test --workspace` concurrently with linker work), the initial banner from the test
+// child can stall well past the per-test 5s budget, causing intermittent `banner not seen` failures. Force these tests to run serially so they only
+// ever compete with one PTY at a time. ---------------------------------------------------------------------------
 
 #[test]
 #[serial_test::serial(real_pty)]
@@ -169,12 +140,7 @@ fn spawn_banner_then_quit_yields_exited_status() {
     assert!(pid > 0);
 
     assert!(
-        wait_for(
-            &outs,
-            |s| s.contains("ARBORIST-TEST-CHILD READY"),
-            Duration::from_secs(5)
-        )
-        .is_some(),
+        wait_for(&outs, |s| s.contains("ARBORIST-TEST-CHILD READY"), Duration::from_secs(5)).is_some(),
         "banner not seen: {:?}",
         outs.lock().unwrap()
     );
@@ -258,9 +224,7 @@ fn nonzero_exit_yields_error_status() {
     assert!(
         wait_for_status(
             &stats,
-            |s| s
-                .iter()
-                .any(|(st, pid)| matches!(st, SessionStatus::Error) && pid.is_none()),
+            |s| s.iter().any(|(st, pid)| matches!(st, SessionStatus::Error) && pid.is_none()),
             Duration::from_secs(5)
         ),
         "no Error status: {:?}",
@@ -305,16 +269,12 @@ fn respawn_existing_yields_a_new_pid() {
 
     let rt = rt();
     let _g = rt.enter();
-    let pid1 = pool
-        .spawn(&session, sink.clone(), DEFAULT_PTY_SIZE)
-        .expect("spawn 1");
+    let pid1 = pool.spawn(&session, sink.clone(), DEFAULT_PTY_SIZE).expect("spawn 1");
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready 1");
     rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
 
     let (sink2, outs2, _stats2) = recording_sink();
-    let pid2 = pool
-        .respawn_existing(&session, sink2, DEFAULT_PTY_SIZE)
-        .expect("respawn");
+    let pid2 = pool.respawn_existing(&session, sink2, DEFAULT_PTY_SIZE).expect("respawn");
     assert_ne!(pid1, pid2, "respawn should yield a new pid");
     assert!(
         wait_for(&outs2, |s| s.contains("READY"), Duration::from_secs(5)).is_some(),
@@ -324,9 +284,8 @@ fn respawn_existing_yields_a_new_pid() {
     pool.write(&session.id, b"quit\r\n").ok();
 }
 
-// ---------------------------------------------------------------------------
-// Pool spawn-prep (env injection / temp-dir setup / stale-otel truncation)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Pool spawn-prep (env injection / temp-dir setup / stale-otel
+// truncation) ---------------------------------------------------------------------------
 
 fn make_copilot_session(workdir: &Path) -> Session {
     Session {
@@ -336,9 +295,7 @@ fn make_copilot_session(workdir: &Path) -> Session {
         worktree_name: "test".into(),
         label: "test".into(),
         instruction_set_id: None,
-        // Composed command can be anything — the FakeSpawner doesn't run
-        // it. We just need pool.spawn to reach the spawner with the env
-        // populated.
+        // Composed command can be anything — the FakeSpawner doesn't run it. We just need pool.spawn to reach the spawner with the env populated.
         composed_command: "true".into(),
         status: SessionStatus::Starting,
         pid: None,
@@ -354,9 +311,8 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_copilot_session(dir.path());
 
-    // Pre-create the deterministic temp dir + a stale OTel JSONL from a
-    // hypothetical previous run. The pool must wipe it before spawn so
-    // the watcher doesn't replay old totals.
+    // Pre-create the deterministic temp dir + a stale OTel JSONL from a hypothetical previous run. The pool must wipe it before spawn so the watcher
+    // doesn't replay old totals.
     let temp = session_temp_dir(&session.id);
     std::fs::create_dir_all(&temp).unwrap();
     let stale = copilot_otel_path(&session.id);
@@ -373,47 +329,24 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
     pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
     // Assert: the spawner saw a ChildCommand with the three OTel env keys.
-    let cmd = spawner_for_assert
-        .last_cmd
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("spawner received a command");
+    let cmd = spawner_for_assert.last_cmd.lock().unwrap().clone().expect("spawner received a command");
     let env: std::collections::HashMap<String, std::ffi::OsString> = cmd.env.into_iter().collect();
     let expected_path = copilot_otel_path(&session.id).into_os_string();
-    assert_eq!(
-        env.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
-        Some(&expected_path),
-    );
-    assert_eq!(
-        env.get("COPILOT_OTEL_ENABLED"),
-        Some(&std::ffi::OsString::from("true"))
-    );
-    assert_eq!(
-        env.get("OTEL_BSP_SCHEDULE_DELAY"),
-        Some(&std::ffi::OsString::from("1000"))
-    );
+    assert_eq!(env.get("COPILOT_OTEL_FILE_EXPORTER_PATH"), Some(&expected_path),);
+    assert_eq!(env.get("COPILOT_OTEL_ENABLED"), Some(&std::ffi::OsString::from("true")));
+    assert_eq!(env.get("OTEL_BSP_SCHEDULE_DELAY"), Some(&std::ffi::OsString::from("1000")));
 
     // Assert: the temp dir still exists, and the stale file is gone.
     assert!(temp.exists(), "session temp dir must exist after prep");
-    assert!(
-        !stale.exists(),
-        "stale otel.jsonl must be removed before spawn"
-    );
+    assert!(!stale.exists(), "stale otel.jsonl must be removed before spawn");
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();
     });
-    // Post-kill cleanup: pool.kill removes session_temp_dir wholesale, so
-    // an otel.jsonl that the (real) child would have written goes with
-    // it. This is the Copilot equivalent of the system-prompt.md cleanup
-    // covered by `kill_terminates_child_and_removes_entry_and_temp_dir`,
-    // and is the regression assertion for the temp-cleanup-verify todo.
-    assert!(
-        !temp.exists(),
-        "session_temp_dir must be removed by kill: {}",
-        temp.display(),
-    );
+    // Post-kill cleanup: pool.kill removes session_temp_dir wholesale, so an otel.jsonl that the (real) child would have written goes with it. This
+    // is the Copilot equivalent of the system-prompt.md cleanup covered by `kill_terminates_child_and_removes_entry_and_temp_dir`, and is the
+    // regression assertion for the temp-cleanup-verify todo.
+    assert!(!temp.exists(), "session_temp_dir must be removed by kill: {}", temp.display(),);
 }
 
 #[test]
@@ -421,9 +354,8 @@ fn pool_spawn_prep_is_noop_for_claude_session() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
 
-    // Confirm the temp dir does NOT exist before spawn — the pool should
-    // not create one for Claude sessions that have no compose-time temp
-    // files (matches today's `materialise_temp_files`-only behaviour).
+    // Confirm the temp dir does NOT exist before spawn — the pool should not create one for Claude sessions that have no compose-time temp files
+    // (matches today's `materialise_temp_files`-only behaviour).
     let temp = session_temp_dir(&session.id);
     assert!(!temp.exists(), "precondition: no Claude temp dir");
 
@@ -436,25 +368,16 @@ fn pool_spawn_prep_is_noop_for_claude_session() {
     let _g = rt.enter();
     pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
-    let cmd = spawner_for_assert
-        .last_cmd
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("spawner received a command");
+    let cmd = spawner_for_assert.last_cmd.lock().unwrap().clone().expect("spawner received a command");
     assert!(cmd.env.is_empty(), "Claude must not get any extra env");
-    assert!(
-        !temp.exists(),
-        "Claude spawn must not create the OTel temp dir"
-    );
+    assert!(!temp.exists(), "Claude spawn must not create the OTel temp dir");
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();
     });
 }
 
-// ---------------------------------------------------------------------------
-// Fake spawner for deterministic lifecycle / backpressure / UTF-8 tests
+// --------------------------------------------------------------------------- Fake spawner for deterministic lifecycle / backpressure / UTF-8 tests
 // ---------------------------------------------------------------------------
 
 /// Reader that yields a fixed sequence of byte chunks then EOFs.
@@ -479,8 +402,7 @@ impl Read for ScriptedReader {
     }
 }
 
-/// Reader controlled by a flag — blocks (sleeping) until `eof` flips, then
-/// returns 0. Used to keep the wait thread parked while we test the pool's
+/// Reader controlled by a flag — blocks (sleeping) until `eof` flips, then returns 0. Used to keep the wait thread parked while we test the pool's
 /// runtime behaviour.
 struct ParkedReader {
     eof: Arc<AtomicBool>,
@@ -497,11 +419,9 @@ impl Read for ParkedReader {
 
 struct FakeKiller {
     eof_flag: Arc<AtomicBool>,
-    /// When true, `kill()` returns an `Err` even though it still flips
-    /// the eof flag so the reader/waiter unblock. Used by the
-    /// `kill_returns_unconfirmed_when_killer_errors` regression test
-    /// to drive the `KillOutcome::Unconfirmed` branch deterministically
-    /// without waiting out `KILL_GRACE`.
+    /// When true, `kill()` returns an `Err` even though it still flips the eof flag so the reader/waiter unblock. Used by the
+    /// `kill_returns_unconfirmed_when_killer_errors` regression test to drive the `KillOutcome::Unconfirmed` branch deterministically without waiting
+    /// out `KILL_GRACE`.
     fail: bool,
 }
 
@@ -509,9 +429,7 @@ impl PtyKiller for FakeKiller {
     fn kill(&self) -> Result<(), arborist_lib::types::Error> {
         self.eof_flag.store(true, Ordering::Relaxed);
         if self.fail {
-            Err(arborist_lib::types::Error::PtyKillFailed(
-                "simulated kill failure".into(),
-            ))
+            Err(arborist_lib::types::Error::PtyKillFailed("simulated kill failure".into()))
         } else {
             Ok(())
         }
@@ -549,17 +467,12 @@ impl PtyWaiter for FakeWaiter {
 #[derive(Clone)]
 enum FakeMode {
     /// Use a scripted reader with the given chunks, sleeping `pause` between.
-    Scripted {
-        chunks: Vec<Vec<u8>>,
-        pause: Duration,
-        exit_code: u32,
-    },
+    Scripted { chunks: Vec<Vec<u8>>, pause: Duration, exit_code: u32 },
     /// Use a parked reader that never returns until killed.
     Parked,
     /// Park reader; auto-exit waiter after `delay`.
     AutoExit { delay: Duration, exit_code: u32 },
-    /// Parked reader, but `killer.kill()` returns `Err`. Used to
-    /// exercise the `KillOutcome::Unconfirmed` branch of `pool.kill`.
+    /// Parked reader, but `killer.kill()` returns `Err`. Used to exercise the `KillOutcome::Unconfirmed` branch of `pool.kill`.
     ParkedKillFails,
 }
 
@@ -584,12 +497,7 @@ impl FakeSpawner {
 }
 
 impl PtySpawner for FakeSpawner {
-    fn spawn(
-        &self,
-        cmd: ChildCommand,
-        cwd: &Path,
-        _size: PtySize,
-    ) -> Result<SpawnedChild, arborist_lib::types::Error> {
+    fn spawn(&self, cmd: ChildCommand, cwd: &Path, _size: PtySize) -> Result<SpawnedChild, arborist_lib::types::Error> {
         *self.last_cwd.lock().unwrap() = Some(cwd.to_path_buf());
         *self.last_cmd.lock().unwrap() = Some(cmd);
         let pid = self.next_pid.fetch_add(1, Ordering::Relaxed) as u32;
@@ -597,47 +505,17 @@ impl PtySpawner for FakeSpawner {
         *self.last_eof.lock().unwrap() = Some(Arc::clone(&eof));
 
         let mode = self.mode.lock().unwrap().clone();
-        let (reader, exit_code, auto_exit, fail_kill): (
-            Box<dyn Read + Send>,
-            u32,
-            Option<Duration>,
-            bool,
-        ) = match mode {
-            FakeMode::Scripted {
-                chunks,
-                pause,
-                exit_code,
-            } => {
+        let (reader, exit_code, auto_exit, fail_kill): (Box<dyn Read + Send>, u32, Option<Duration>, bool) = match mode {
+            FakeMode::Scripted { chunks, pause, exit_code } => {
                 let r = ScriptedReader {
                     chunks: chunks.into_iter(),
                     pause,
                 };
                 (Box::new(r), exit_code, None, false)
             }
-            FakeMode::Parked => (
-                Box::new(ParkedReader {
-                    eof: Arc::clone(&eof),
-                }),
-                0,
-                None,
-                false,
-            ),
-            FakeMode::AutoExit { delay, exit_code } => (
-                Box::new(ParkedReader {
-                    eof: Arc::clone(&eof),
-                }),
-                exit_code,
-                Some(delay),
-                false,
-            ),
-            FakeMode::ParkedKillFails => (
-                Box::new(ParkedReader {
-                    eof: Arc::clone(&eof),
-                }),
-                0,
-                None,
-                true,
-            ),
+            FakeMode::Parked => (Box::new(ParkedReader { eof: Arc::clone(&eof) }), 0, None, false),
+            FakeMode::AutoExit { delay, exit_code } => (Box::new(ParkedReader { eof: Arc::clone(&eof) }), exit_code, Some(delay), false),
+            FakeMode::ParkedKillFails => (Box::new(ParkedReader { eof: Arc::clone(&eof) }), 0, None, true),
         };
 
         Ok(SpawnedChild {
@@ -658,19 +536,16 @@ impl PtySpawner for FakeSpawner {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Backpressure
+// --------------------------------------------------------------------------- Backpressure
 // ---------------------------------------------------------------------------
 
 #[test]
 fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
-    // A scripted reader that emits MANY tiny chunks faster than the test
-    // can drain them — we make the sink "stall" so the channel fills up.
+    // A scripted reader that emits MANY tiny chunks faster than the test can drain them — we make the sink "stall" so the channel fills up.
     let chunks: Vec<Vec<u8>> = (0..2000).map(|i| format!("c{i}|").into_bytes()).collect();
     let spawner = Arc::new(FakeSpawner::new(FakeMode::Scripted {
         chunks,
-        // Small pause so the producer is still emitting after the consumer is
-        // released — otherwise all chunks are produced before the consumer
+        // Small pause so the producer is still emitting after the consumer is released — otherwise all chunks are produced before the consumer
         // unblocks and there's no chunk left to carry the ESC-c reset.
         pause: Duration::from_micros(500),
         exit_code: 0,
@@ -680,8 +555,7 @@ fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
 
-    // A "stalling" sink that holds onto a Mutex while pretending to write.
-    // We block the consumer for ~200 ms so the channel saturates.
+    // A "stalling" sink that holds onto a Mutex while pretending to write. We block the consumer for ~200 ms so the channel saturates.
     let outs: OutputLog = Arc::new(Mutex::new(Vec::new()));
     let allow = Arc::new(AtomicBool::new(false));
     let outs_cb = Arc::clone(&outs);
@@ -701,8 +575,7 @@ fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
     let _g = rt.enter();
     pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
-    // Wait for the read thread to finish producing AND for the channel to
-    // fill up. The channel cap is 512; 2000 chunks > 512 so drops must occur.
+    // Wait for the read thread to finish producing AND for the channel to fill up. The channel cap is 512; 2000 chunks > 512 so drops must occur.
     let dropped = pool.dropped_chunks(&session.id).expect("counter");
     let start = Instant::now();
     while dropped.load(Ordering::Relaxed) == 0 {
@@ -714,12 +587,10 @@ fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
 
     let n_dropped = dropped.load(Ordering::Relaxed);
     assert!(n_dropped > 0, "expected drops, got {n_dropped}");
-    // The bounded channel cap is 512; channel can never grow beyond that.
-    // We can't directly inspect length, but we can assert producer + consumer
+    // The bounded channel cap is 512; channel can never grow beyond that. We can't directly inspect length, but we can assert producer + consumer
     // didn't deadlock by completing the test.
 
-    // Now release the consumer. The next emitted chunk must be ESC-c
-    // prefixed.
+    // Now release the consumer. The next emitted chunk must be ESC-c prefixed.
     allow.store(true, Ordering::Relaxed);
     rt.block_on(async {
         // Wait for everything to flush.
@@ -732,8 +603,7 @@ fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
         &joined.chars().take(200).collect::<String>()
     );
 
-    // Also: the channel cap is exactly OUTPUT_CHANNEL_CAPACITY; verify the
-    // const hasn't drifted.
+    // Also: the channel cap is exactly OUTPUT_CHANNEL_CAPACITY; verify the const hasn't drifted.
     assert_eq!(OUTPUT_CHANNEL_CAPACITY, 512);
 
     // Trigger the wait thread to end so the test cleanly exits.
@@ -742,14 +612,12 @@ fn backpressure_drops_chunks_and_inserts_reset_after_drain() {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Late-output suppression after kill
+// --------------------------------------------------------------------------- Late-output suppression after kill
 // ---------------------------------------------------------------------------
 
 #[test]
 fn no_output_delivered_after_kill_returns() {
-    // Scripted reader with one chunk so we know the read thread has emitted
-    // before kill.
+    // Scripted reader with one chunk so we know the read thread has emitted before kill.
     let spawner = Arc::new(FakeSpawner::new(FakeMode::Parked));
     let pool = PtyPool::new(spawner);
 
@@ -773,8 +641,7 @@ fn no_output_delivered_after_kill_returns() {
         pool.kill(&session.id).await.expect("kill");
     });
     let after = count.load(Ordering::Relaxed);
-    // Sleep then re-check; nothing should have been delivered after kill
-    // returned.
+    // Sleep then re-check; nothing should have been delivered after kill returned.
     rt.block_on(async {
         tokio::time::sleep(Duration::from_millis(100)).await;
     });
@@ -782,8 +649,7 @@ fn no_output_delivered_after_kill_returns() {
     assert!(!pool.contains(&session.id));
 }
 
-// ---------------------------------------------------------------------------
-// UTF-8 split across reads
+// --------------------------------------------------------------------------- UTF-8 split across reads
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -811,10 +677,7 @@ fn utf8_character_split_across_reads_emerges_intact() {
         outs.lock().unwrap()
     );
     let joined = outs.lock().unwrap().concat();
-    assert!(
-        !joined.contains('\u{FFFD}'),
-        "no replacement char expected: {joined:?}"
-    );
+    assert!(!joined.contains('\u{FFFD}'), "no replacement char expected: {joined:?}");
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();
@@ -822,9 +685,8 @@ fn utf8_character_split_across_reads_emerges_intact() {
     let _ = stats; // silence unused
 }
 
-// ---------------------------------------------------------------------------
-// Wait-thread → status callback (sink-level — Phase 7 will wire persistence)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Wait-thread → status callback (sink-level — Phase 7 will wire
+// persistence) ---------------------------------------------------------------------------
 
 #[test]
 fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
@@ -842,9 +704,7 @@ fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
     assert!(
         wait_for_status(
             &stats,
-            |s| s
-                .iter()
-                .any(|(st, pid)| matches!(st, SessionStatus::Exited) && pid.is_none()),
+            |s| s.iter().any(|(st, pid)| matches!(st, SessionStatus::Exited) && pid.is_none()),
             Duration::from_secs(3)
         ),
         "no Exited+pid:None status: {:?}",
@@ -852,8 +712,7 @@ fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// cleanup_orphans
+// --------------------------------------------------------------------------- cleanup_orphans
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -885,10 +744,7 @@ fn cleanup_orphans_deletes_only_unpersisted_stale_dirs() {
     let deleted = cleanup_orphans(&[persisted_id]).expect("cleanup");
 
     assert!(young.exists(), "young dir was incorrectly deleted");
-    assert!(
-        persisted.exists(),
-        "persisted-old dir was incorrectly deleted"
-    );
+    assert!(persisted.exists(), "persisted-old dir was incorrectly deleted");
     assert!(!orphan.exists(), "orphan-old dir was not deleted");
     assert!(deleted >= 1, "deleted count was {deleted}");
 
@@ -908,28 +764,21 @@ fn set_mtime(path: &Path, when: std::time::SystemTime) {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
         .unwrap();
-    let times = std::fs::FileTimes::new()
-        .set_modified(when)
-        .set_accessed(when);
+    let times = std::fs::FileTimes::new().set_modified(when).set_accessed(when);
     f.set_times(times).unwrap();
 }
 
 #[cfg(not(windows))]
 fn set_mtime(path: &Path, when: std::time::SystemTime) {
     let f = std::fs::OpenOptions::new().read(true).open(path).unwrap();
-    let times = std::fs::FileTimes::new()
-        .set_modified(when)
-        .set_accessed(when);
+    let times = std::fs::FileTimes::new().set_modified(when).set_accessed(when);
     f.set_times(times).unwrap();
 }
 
 // Sanity: ensure the test child path constant points at something on disk.
 #[test]
 fn test_child_binary_exists() {
-    assert!(
-        Path::new(TEST_CHILD_PATH).exists(),
-        "missing: {TEST_CHILD_PATH}"
-    );
+    assert!(Path::new(TEST_CHILD_PATH).exists(), "missing: {TEST_CHILD_PATH}");
 }
 
 // Sanity: ensure SessionId helpers are usable in tests too.
@@ -941,12 +790,9 @@ fn session_id_new_yields_unique_uuids() {
     assert_ne!(a, b);
 }
 
-// ---------------------------------------------------------------------------
-// KillOutcome (PR #32 round-12 review): pool.kill must distinguish
-// "process reaped" from "kill issued but reap unconfirmed" so callers
-// like park_session_for_switch_impl can log a possible orphan PID
-// instead of silently dropping the signal.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- KillOutcome (PR #32 round-12 review): pool.kill must distinguish
+// "process reaped" from "kill issued but reap unconfirmed" so callers like park_session_for_switch_impl can log a possible orphan PID instead of
+// silently dropping the signal. ---------------------------------------------------------------------------
 
 #[test]
 fn kill_returns_reaped_on_clean_kill_and_join() {
@@ -972,21 +818,13 @@ fn kill_returns_reaped_on_clean_kill_and_join() {
 
 #[test]
 fn kill_returns_unconfirmed_when_killer_errors() {
-    // Regression for PR #32 round-12 review finding: previously
-    // `pool.kill` did `let _ = rt.killer.kill()` and returned `Ok(())`
-    // even when the OS-level kill primitive itself reported failure.
-    // `park_session_for_switch_impl` then proceeded as if the child
-    // had died — but the persisted session record still said "live"
-    // and the next switch-back would respawn it as a SECOND live
-    // process for the same SessionId. The fix surfaces the kill
-    // failure as `KillOutcome::Unconfirmed { pid }` so the caller can
-    // log the orphan PID for human cleanup.
+    // Regression for PR #32 round-12 review finding: previously `pool.kill` did `let _ = rt.killer.kill()` and returned `Ok(())` even when the
+    // OS-level kill primitive itself reported failure. `park_session_for_switch_impl` then proceeded as if the child had died — but the persisted
+    // session record still said "live" and the next switch-back would respawn it as a SECOND live process for the same SessionId. The fix surfaces
+    // the kill failure as `KillOutcome::Unconfirmed { pid }` so the caller can log the orphan PID for human cleanup.
     //
-    // Here we drive the killer-error branch in isolation by flipping
-    // the FakeKiller's `fail` flag (the killer still nudges the eof
-    // flag so the read/wait threads exit promptly, keeping the test
-    // fast — KILL_GRACE is 2s, which we don't want to wait through
-    // for every CI run).
+    // Here we drive the killer-error branch in isolation by flipping the FakeKiller's `fail` flag (the killer still nudges the eof flag so the
+    // read/wait threads exit promptly, keeping the test fast — KILL_GRACE is 2s, which we don't want to wait through for every CI run).
     let spawner = Arc::new(FakeSpawner::new(FakeMode::ParkedKillFails));
     let pool = PtyPool::new(spawner);
 
@@ -1007,19 +845,14 @@ fn kill_returns_unconfirmed_when_killer_errors() {
                 "Unconfirmed must carry the recorded PID so the caller can log it for human cleanup"
             );
         }
-        other => panic!(
-            "expected Unconfirmed when killer.kill() returns Err; got {:?}",
-            other
-        ),
+        other => panic!("expected Unconfirmed when killer.kill() returns Err; got {:?}", other),
     }
 
-    // Even on Unconfirmed, the runtime entry must be evicted so the
-    // SessionId is free for a fresh respawn (this matches the existing
-    // pool-eviction contract that callers already rely on).
+    // Even on Unconfirmed, the runtime entry must be evicted so the SessionId is free for a fresh respawn (this matches the existing pool-eviction
+    // contract that callers already rely on).
     assert!(!pool.contains(&session.id));
 }
 
-// Silence unused-import lints when the platform-specific quoter selects
-// only one of the two variants.
+// Silence unused-import lints when the platform-specific quoter selects only one of the two variants.
 #[allow(dead_code)]
 fn _silence_temp_file_spec(_: TempFileSpec) {}

@@ -23,9 +23,7 @@ const PORT_RANGE = 100;
 const PORT_MAX = 65535;
 
 function failInvalidPortOverride(override) {
-  console.error(
-    `[arborist] ARBORIST_DEV_PORT must be an integer between 1 and ${PORT_MAX}; received "${override}"`,
-  );
+  console.error(`[arborist] ARBORIST_DEV_PORT must be an integer between 1 and ${PORT_MAX}; received "${override}"`);
   process.exit(1);
 }
 
@@ -75,9 +73,7 @@ const tauriDevArgs = ['dev', '--config', overridePath, ...process.argv.slice(2)]
 // on `npx` (which can misresolve under some Node versions / setups).
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
-const tauriBin = isWindows
-  ? join(projectRoot, 'node_modules', '.bin', 'tauri.cmd')
-  : join(projectRoot, 'node_modules', '.bin', 'tauri');
+const tauriBin = isWindows ? join(projectRoot, 'node_modules', '.bin', 'tauri.cmd') : join(projectRoot, 'node_modules', '.bin', 'tauri');
 
 // On POSIX we can spawn the binary directly without a shell and put the child
 // in its own process group (`detached: true`); this lets us deliver signals to
@@ -99,16 +95,11 @@ function quoteCmdArg(value) {
 }
 
 const child = isWindows
-  ? spawn(
-      process.env.ComSpec ?? 'cmd.exe',
-      [
-        '/d',
-        '/s',
-        '/c',
-        `"${[quoteCmdArg(tauriBin), ...tauriDevArgs.map(quoteCmdArg)].join(' ')}"`,
-      ],
-      { stdio: 'inherit', env: process.env, windowsVerbatimArguments: true },
-    )
+  ? spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `"${[quoteCmdArg(tauriBin), ...tauriDevArgs.map(quoteCmdArg)].join(' ')}"`], {
+      stdio: 'inherit',
+      env: process.env,
+      windowsVerbatimArguments: true,
+    })
   : spawn(tauriBin, tauriDevArgs, {
       stdio: 'inherit',
       env: process.env,
@@ -142,9 +133,7 @@ function killChildTree(sig) {
 
 // SIGBREAK is Windows-only; registering it on POSIX would crash with
 // `ERR_UNKNOWN_SIGNAL`.
-const forwardSignals = isWindows
-  ? ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']
-  : ['SIGINT', 'SIGTERM', 'SIGHUP'];
+const forwardSignals = isWindows ? ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] : ['SIGINT', 'SIGTERM', 'SIGHUP'];
 for (const sig of forwardSignals) {
   process.on(sig, () => killChildTree(sig));
 }

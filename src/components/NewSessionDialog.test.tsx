@@ -356,20 +356,14 @@ describe('NewSessionDialog', () => {
     await act(async () => {
       resolveFreshList(fresh);
     });
-    expect(
-      await screen.findByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /\.worktrees\/old-feature.*old-feature/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /\.worktrees\/old-feature.*old-feature/i })).toBeInTheDocument();
 
     // Now the slow stale Step-2 request resolves — it must be ignored.
     await act(async () => {
       resolveStaleList(stale);
     });
-    expect(
-      screen.getByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i })).toBeInTheDocument();
   });
 
   it('Step 2 New tab validates the trimmed name and submits the trimmed value', async () => {
@@ -651,9 +645,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('Confirm submits without an instructionSetId so the backend launches the CLI from the worktree cwd', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
-    ]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false)]);
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'new-id',
       tool: 'claude',
@@ -689,9 +681,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('Confirm surfaces backend AppError objects as readable text (not [object Object])', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false),
-    ]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(`${REPO_ROOT}/.worktrees/main`, 'main', false)]);
     bridgeMock.instructionsList.mockResolvedValue([makeInstr('copilot-default', 'copilot', true)]);
     // Tauri serialises Rust `AppError` as `{ code, message }` and rejects
     // the invoke promise with that bare object — not an `Error`. Without
@@ -738,9 +728,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('moves focus to the first interactive control of the new step on advance/back (#8.1)', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/feature`, 'feature'),
-    ]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(`${REPO_ROOT}/.worktrees/feature`, 'feature')]);
     render(<NewSessionDialog />);
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
@@ -752,9 +740,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('focuses the currently-selected tab on Step 2 re-entry after Back/Next (#8.1)', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([
-      makeWt(`${REPO_ROOT}/.worktrees/feature`, 'feature'),
-    ]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(`${REPO_ROOT}/.worktrees/feature`, 'feature')]);
     render(<NewSessionDialog />);
     openDialog();
     fireEvent.click(screen.getByRole('radio', { name: /claude/i }));

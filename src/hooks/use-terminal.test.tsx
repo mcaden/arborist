@@ -54,8 +54,7 @@ vi.mock('@xterm/xterm', () => {
   return { Terminal };
 });
 
-const mockFitAddons: Array<{ fit: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }> =
-  [];
+const mockFitAddons: Array<{ fit: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }> = [];
 vi.mock('@xterm/addon-fit', () => {
   const FitAddon = vi.fn().mockImplementation(() => {
     const inst = { fit: vi.fn(), dispose: vi.fn() };
@@ -77,14 +76,7 @@ import {
   useSubTerminal,
   useTerminal,
 } from './use-terminal';
-import {
-  onSessionOutput,
-  resetBridgeMocks,
-  sessionInput,
-  sessionResize,
-  subSessionInput,
-  subSessionResize,
-} from '@/lib/tauri-bridge.mock';
+import { onSessionOutput, resetBridgeMocks, sessionInput, sessionResize, subSessionInput, subSessionResize } from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
 
 function makeHost(width = 600, height = 400): HTMLDivElement {
@@ -102,8 +94,7 @@ beforeEach(() => {
   resetBridgeMocks();
   mockTerminals.length = 0;
   mockFitAddons.length = 0;
-  originalResizeObserver = (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver })
-    .ResizeObserver;
+  originalResizeObserver = (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
 });
 
 afterEach(() => {
@@ -119,8 +110,7 @@ afterEach(() => {
   if (originalResizeObserver === undefined) {
     delete (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
   } else {
-    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-      originalResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalResizeObserver;
   }
 });
 
@@ -958,8 +948,7 @@ describe('useTerminal', () => {
       disconnect = disconnect;
       unobserve = vi.fn();
     }
-    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-      FakeRO as unknown as typeof ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = FakeRO as unknown as typeof ResizeObserver;
 
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
@@ -1080,8 +1069,7 @@ describe('useTerminal', () => {
       disconnect = vi.fn();
       unobserve = vi.fn();
     }
-    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-      FakeRO as unknown as typeof ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = FakeRO as unknown as typeof ResizeObserver;
 
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
@@ -1304,9 +1292,7 @@ describe('wake/visibility/DPI refit', () => {
       initTerminalRouter();
       initTerminalRouter();
 
-      const visibilityRegistrations = docSpy.mock.calls.filter(
-        (call) => call[0] === 'visibilitychange',
-      );
+      const visibilityRegistrations = docSpy.mock.calls.filter((call) => call[0] === 'visibilitychange');
       const focusRegistrations = winSpy.mock.calls.filter((call) => call[0] === 'focus');
       expect(visibilityRegistrations).toHaveLength(1);
       expect(focusRegistrations).toHaveLength(1);

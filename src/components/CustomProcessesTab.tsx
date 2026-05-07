@@ -202,8 +202,8 @@ export function CustomProcessesTab({ onClose }: CustomProcessesTabProps): JSX.El
   return (
     <div data-testid="custom-processes-tab" className="flex min-h-0 flex-1 flex-col">
       <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-        Define launchers shown in a session tab’s right-click menu. Terminal launchers run inside a
-        sub-tab; application launchers spawn external GUI processes.
+        Define launchers shown in a session tab’s right-click menu. Terminal launchers run inside a sub-tab; application launchers spawn external GUI
+        processes.
       </p>
 
       <div className="-mx-1 flex-1 space-y-3 overflow-y-auto px-1">
@@ -239,10 +239,7 @@ export function CustomProcessesTab({ onClose }: CustomProcessesTabProps): JSX.El
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs read-only:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:read-only:bg-slate-800"
                     />
                     {rowErr.id ? (
-                      <span
-                        role="alert"
-                        className="mt-0.5 block text-[11px] text-red-600 dark:text-red-400"
-                      >
+                      <span role="alert" className="mt-0.5 block text-[11px] text-red-600 dark:text-red-400">
                         {rowErr.id}
                       </span>
                     ) : null}
@@ -258,10 +255,7 @@ export function CustomProcessesTab({ onClose }: CustomProcessesTabProps): JSX.El
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900"
                     />
                     {rowErr.name ? (
-                      <span
-                        role="alert"
-                        className="mt-0.5 block text-[11px] text-red-600 dark:text-red-400"
-                      >
+                      <span role="alert" className="mt-0.5 block text-[11px] text-red-600 dark:text-red-400">
                         {rowErr.name}
                       </span>
                     ) : null}
@@ -272,9 +266,7 @@ export function CustomProcessesTab({ onClose }: CustomProcessesTabProps): JSX.El
                     <select
                       value={row.kind}
                       aria-label={`Kind for ${row.id || row.name || 'new launcher'}`}
-                      onChange={(e) =>
-                        updateRow(row.rowKey, { kind: e.target.value as CustomProcessKind })
-                      }
+                      onChange={(e) => updateRow(row.rowKey, { kind: e.target.value as CustomProcessKind })}
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900"
                     >
                       <option value="terminal">Terminal (in-app PTY)</option>
@@ -302,10 +294,7 @@ export function CustomProcessesTab({ onClose }: CustomProcessesTabProps): JSX.El
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
                     />
                     {rowErr.command ? (
-                      <span
-                        role="alert"
-                        className="mt-0.5 block text-[11px] text-red-600 dark:text-red-400"
-                      >
+                      <span role="alert" className="mt-0.5 block text-[11px] text-red-600 dark:text-red-400">
                         {rowErr.command}
                       </span>
                     ) : null}

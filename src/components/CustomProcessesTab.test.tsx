@@ -68,9 +68,7 @@ describe('CustomProcessesTab', () => {
     });
     expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      customProcesses: [
-        { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: false },
-      ],
+      customProcesses: [{ id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: false }],
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -100,9 +98,7 @@ describe('CustomProcessesTab', () => {
       screen.getByTestId('custom-processes-save').click();
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      customProcesses: [
-        { id: 'lazygit', name: 'Lazygit', kind: 'terminal', command: 'lazygit', enabled: true },
-      ],
+      customProcesses: [{ id: 'lazygit', name: 'Lazygit', kind: 'terminal', command: 'lazygit', enabled: true }],
     });
   });
 
@@ -153,9 +149,7 @@ describe('CustomProcessesTab', () => {
       screen.getByTestId('custom-processes-save').click();
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      customProcesses: [
-        { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: true },
-      ],
+      customProcesses: [{ id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: true }],
     });
   });
 
@@ -168,9 +162,7 @@ describe('CustomProcessesTab', () => {
       screen.getByTestId('custom-processes-save').click();
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      customProcesses: [
-        { id: 'shell', name: 'Shell', kind: 'application', command: 'sh', enabled: true },
-      ],
+      customProcesses: [{ id: 'shell', name: 'Shell', kind: 'application', command: 'sh', enabled: true }],
     });
   });
 
@@ -194,9 +186,7 @@ describe('CustomProcessesTab', () => {
   });
 
   it('preserves the optional icon hint across an unrelated edit', async () => {
-    seedDefs([
-      { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: true, icon: '🐚' },
-    ]);
+    seedDefs([{ id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: true, icon: '🐚' }]);
     render(<CustomProcessesTab onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText(/^Name for shell$/i), { target: { value: 'My Shell' } });
     await act(async () => {
@@ -222,9 +212,7 @@ describe('CustomProcessesTab', () => {
     // (icon backfill produces no URI for the bare `sh` test stub).
     bridgeMock.configSet.mockResolvedValueOnce({
       ...useConfigStore.getState().config,
-      customProcesses: [
-        { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: false },
-      ],
+      customProcesses: [{ id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh', enabled: false }],
     });
     render(<CustomProcessesTab onClose={() => {}} />);
     fireEvent.click(screen.getByLabelText(/^Enabled: shell$/i));

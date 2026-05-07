@@ -105,14 +105,7 @@ describe('TabContextMenu', () => {
     document.body.appendChild(trigger);
     const focusSpy = vi.spyOn(trigger, 'focus');
     const onClose = vi.fn();
-    render(
-      <TabContextMenu
-        parentSessionId={PARENT}
-        anchor={{ x: 10, y: 10 }}
-        onClose={onClose}
-        restoreFocusTo={trigger}
-      />,
-    );
+    render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} restoreFocusTo={trigger} />);
     fireEvent.keyDown(screen.getByTestId('tab-context-menu'), { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
     // Focus restoration happens on rAF; flush.
@@ -141,9 +134,7 @@ describe('TabContextMenu', () => {
     const onClose = vi.fn();
     render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
     fireEvent.click(screen.getByRole('menuitem', { name: /restart/i }));
-    expect(bridgeMock.sessionRestart).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: PARENT }),
-    );
+    expect(bridgeMock.sessionRestart).toHaveBeenCalledWith(expect.objectContaining({ sessionId: PARENT }));
     const call = bridgeMock.sessionRestart.mock.calls[0]?.[0];
     expect(call?.cols).toBeGreaterThan(0);
     expect(call?.rows).toBeGreaterThan(0);
@@ -177,9 +168,7 @@ describe('TabContextMenu', () => {
 
   it('clicking a Launch item invokes sub_session_create with the right def', async () => {
     seed({
-      customProcesses: [
-        { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh -i', enabled: true },
-      ],
+      customProcesses: [{ id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh -i', enabled: true }],
     });
     const onClose = vi.fn();
     render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
@@ -196,9 +185,7 @@ describe('TabContextMenu', () => {
 
   it('launching a terminal sub focuses both parent (session) and the new sub-tab so the viewport swaps to it', async () => {
     seed({
-      customProcesses: [
-        { id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh -i', enabled: true },
-      ],
+      customProcesses: [{ id: 'shell', name: 'Shell', kind: 'terminal', command: 'sh -i', enabled: true }],
     });
     const onClose = vi.fn();
     render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
@@ -218,9 +205,7 @@ describe('TabContextMenu', () => {
 
   it('launching an application sub does NOT focus parent or sub (no viewport swap, no OS-window steal)', async () => {
     seed({
-      customProcesses: [
-        { id: 'vscode', name: 'VS Code', kind: 'application', command: 'code .', enabled: true },
-      ],
+      customProcesses: [{ id: 'vscode', name: 'VS Code', kind: 'application', command: 'code .', enabled: true }],
     });
     bridgeMock.subSessionCreate.mockResolvedValueOnce({
       id: '22222222-2222-2222-2222-222222222222',
@@ -250,14 +235,7 @@ describe('TabContextMenu', () => {
     seed({ customProcesses: [] });
     const onClose = vi.fn();
     const onOpenSettings = vi.fn();
-    render(
-      <TabContextMenu
-        parentSessionId={PARENT}
-        anchor={{ x: 10, y: 10 }}
-        onClose={onClose}
-        onOpenSettings={onOpenSettings}
-      />,
-    );
+    render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} onOpenSettings={onOpenSettings} />);
     fireEvent.click(screen.getByRole('menuitem', { name: /launch/i }));
     fireEvent.click(screen.getByTestId('tab-context-menu-empty'));
     expect(onClose).toHaveBeenCalledTimes(1);

@@ -56,13 +56,7 @@ export interface TabContextMenuProps {
 type Item = 'restart' | 'close' | 'launch';
 const ITEM_ORDER: Item[] = ['restart', 'close', 'launch'];
 
-export function TabContextMenu({
-  parentSessionId,
-  anchor,
-  onClose,
-  restoreFocusTo,
-  onOpenSettings,
-}: TabContextMenuProps): JSX.Element {
+export function TabContextMenu({ parentSessionId, anchor, onClose, restoreFocusTo, onOpenSettings }: TabContextMenuProps): JSX.Element {
   const sessionActions = useSessionActions();
   const subActions = useSubSessionActions();
   const customProcesses = useEnabledCustomProcesses();
@@ -161,12 +155,10 @@ export function TabContextMenu({
     // child paints at the size xterm currently shows. Falls back to a
     // fresh measurement if the terminal isn't attached.
     const dims = getTerminalDimensions(parentSessionId) ?? measureInitialPtyDimensions();
-    void sessionRestart({ sessionId: parentSessionId, cols: dims.cols, rows: dims.rows }).catch(
-      (err: unknown) => {
-        const message = formatError(err);
-        console.warn(`[TabContextMenu] session_restart failed: ${message}`);
-      },
-    );
+    void sessionRestart({ sessionId: parentSessionId, cols: dims.cols, rows: dims.rows }).catch((err: unknown) => {
+      const message = formatError(err);
+      console.warn(`[TabContextMenu] session_restart failed: ${message}`);
+    });
     closeMenu();
   };
 
@@ -344,10 +336,7 @@ export function TabContextMenu({
           style={{
             position: 'fixed',
             // Open to the right of the parent menu; clamp similarly.
-            left: Math.min(
-              position.left + 200,
-              (typeof window !== 'undefined' ? window.innerWidth : 1024) - 200,
-            ),
+            left: Math.min(position.left + 200, (typeof window !== 'undefined' ? window.innerWidth : 1024) - 200),
             top: position.top + 60,
             zIndex: 1001,
           }}
@@ -381,10 +370,7 @@ export function TabContextMenu({
                 className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-700 dark:focus:bg-slate-700"
               >
                 <span className="truncate">{def.name}</span>
-                <span
-                  aria-hidden="true"
-                  className="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500"
-                >
+                <span aria-hidden="true" className="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">
                   {def.kind === 'application' ? 'app' : 'term'}
                 </span>
               </button>
@@ -407,27 +393,25 @@ interface MenuItemProps {
   'aria-expanded'?: boolean;
 }
 
-const MenuItem = forwardRef<HTMLButtonElement, MenuItemProps>(
-  function MenuItem(props, ref): JSX.Element {
-    const { onClick, isFocused, onMouseEnter, rightAdornment, children, ...aria } = props;
-    return (
-      <button
-        ref={ref}
-        type="button"
-        role="menuitem"
-        tabIndex={isFocused ? 0 : -1}
-        onClick={onClick}
-        onMouseEnter={onMouseEnter}
-        className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-700 dark:focus:bg-slate-700"
-        {...aria}
-      >
-        <span>{children}</span>
-        {rightAdornment !== undefined && (
-          <span aria-hidden="true" className="text-slate-400">
-            {rightAdornment}
-          </span>
-        )}
-      </button>
-    );
-  },
-);
+const MenuItem = forwardRef<HTMLButtonElement, MenuItemProps>(function MenuItem(props, ref): JSX.Element {
+  const { onClick, isFocused, onMouseEnter, rightAdornment, children, ...aria } = props;
+  return (
+    <button
+      ref={ref}
+      type="button"
+      role="menuitem"
+      tabIndex={isFocused ? 0 : -1}
+      onClick={onClick}
+      onMouseEnter={onMouseEnter}
+      className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-700 dark:focus:bg-slate-700"
+      {...aria}
+    >
+      <span>{children}</span>
+      {rightAdornment !== undefined && (
+        <span aria-hidden="true" className="text-slate-400">
+          {rightAdornment}
+        </span>
+      )}
+    </button>
+  );
+});

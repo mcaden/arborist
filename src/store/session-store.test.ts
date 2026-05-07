@@ -232,9 +232,7 @@ describe('close', () => {
     });
     bridgeMock.sessionClose.mockRejectedValueOnce(new Error('boom'));
 
-    await expect(
-      useSessionStore.getState().actions.close('a', false, { pruneOnError: false }),
-    ).rejects.toThrow('boom');
+    await expect(useSessionStore.getState().actions.close('a', false, { pruneOnError: false })).rejects.toThrow('boom');
 
     // Session row remains so the caller (e.g. workspace switch) can ask
     // the user to resolve and retry.
@@ -418,9 +416,7 @@ describe('applyStatus', () => {
       message: 'Worktree path no longer exists: /tmp/gone',
     });
 
-    expect(useSessionStore.getState().statusMessages['a']).toBe(
-      'Worktree path no longer exists: /tmp/gone',
-    );
+    expect(useSessionStore.getState().statusMessages['a']).toBe('Worktree path no longer exists: /tmp/gone');
   });
 
   it('clears prior statusMessages when a later event omits message', () => {
@@ -589,9 +585,7 @@ describe('applyActivity', () => {
 
   it('non-surfaced kinds (title, prompt) are ignored', () => {
     useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
-    useSessionStore
-      .getState()
-      .actions.applyActivity({ sessionId: 'a', kind: 'title', value: 'claude' });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'title', value: 'claude' });
     useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'promptStart' });
     expect(useSessionStore.getState().activity).toEqual({});
   });
@@ -673,9 +667,7 @@ describe('close + metrics', () => {
         a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
       },
     });
-    bridgeMock.sessionClose.mockImplementation(() =>
-      Promise.resolve({ worktreeDeleteError: null }),
-    );
+    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve({ worktreeDeleteError: null }));
     await useSessionStore.getState().actions.close('a');
     expect(useSessionStore.getState().metrics['a']).toBeUndefined();
   });
@@ -685,9 +677,7 @@ describe('applyActivity (turnEnd)', () => {
   it('records the wall-clock arrival time and (when present) the source duration', () => {
     useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
     const beforeSec = Math.floor(Date.now() / 1000);
-    useSessionStore
-      .getState()
-      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: 4321 });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: 4321 });
     const ts = useSessionStore.getState().lastTurnEndAt['a'];
     expect(ts).toBeDefined();
     expect(ts!).toBeGreaterThanOrEqual(beforeSec);
@@ -696,9 +686,7 @@ describe('applyActivity (turnEnd)', () => {
 
   it('omits duration when the source did not provide one (Claude transcript)', () => {
     useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
-    useSessionStore
-      .getState()
-      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
     expect(useSessionStore.getState().lastTurnEndAt['a']).toBeDefined();
     expect(useSessionStore.getState().lastTurnDurationMs['a']).toBeUndefined();
   });
@@ -711,9 +699,7 @@ describe('applyActivity (turnEnd)', () => {
       activeId: 'a',
       lastTurnDurationMs: { a: 3400 },
     });
-    useSessionStore
-      .getState()
-      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: null });
     expect(useSessionStore.getState().lastTurnDurationMs['a']).toBeUndefined();
   });
 
@@ -723,9 +709,7 @@ describe('applyActivity (turnEnd)', () => {
       activeId: 'a',
       activity: { a: 'working' },
     });
-    useSessionStore
-      .getState()
-      .actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: 100 });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'a', kind: 'turnEnd', durationMs: 100 });
     expect(useSessionStore.getState().activity['a']).toBeUndefined();
   });
 
@@ -735,17 +719,13 @@ describe('applyActivity (turnEnd)', () => {
       activeId: 'a',
       activity: { b: 'attention' },
     });
-    useSessionStore
-      .getState()
-      .actions.applyActivity({ sessionId: 'b', kind: 'turnEnd', durationMs: 100 });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'b', kind: 'turnEnd', durationMs: 100 });
     expect(useSessionStore.getState().activity['b']).toBe('attention');
   });
 
   it('drops events for unknown sessions', () => {
     useSessionStore.setState({ sessions: [makeView({ id: 'a' })], activeId: 'a' });
-    useSessionStore
-      .getState()
-      .actions.applyActivity({ sessionId: 'ghost', kind: 'turnEnd', durationMs: 100 });
+    useSessionStore.getState().actions.applyActivity({ sessionId: 'ghost', kind: 'turnEnd', durationMs: 100 });
     expect(useSessionStore.getState().lastTurnEndAt).toEqual({});
   });
 
@@ -766,9 +746,7 @@ describe('applyActivity (turnEnd)', () => {
       lastTurnEndAt: { a: 1700000000 },
       lastTurnDurationMs: { a: 500 },
     });
-    bridgeMock.sessionClose.mockImplementation(() =>
-      Promise.resolve({ worktreeDeleteError: null }),
-    );
+    bridgeMock.sessionClose.mockImplementation(() => Promise.resolve({ worktreeDeleteError: null }));
     await useSessionStore.getState().actions.close('a');
     expect(useSessionStore.getState().lastTurnEndAt).toEqual({});
     expect(useSessionStore.getState().lastTurnDurationMs).toEqual({});
@@ -974,36 +952,29 @@ describe('applyActivity (events.jsonl variants)', () => {
       openPermissions: { a: { r1: { requestId: 'r1', permissionKind: 'shell', summary: null } } },
       inTurn: { a: true },
     });
-    useSessionStore
-      .getState()
-      .actions.applyStatus({ sessionId: 'a', status: 'starting' } as SessionStatusEvent);
+    useSessionStore.getState().actions.applyStatus({ sessionId: 'a', status: 'starting' } as SessionStatusEvent);
     const s = useSessionStore.getState();
     expect(s.openTools).toEqual({});
     expect(s.openPermissions).toEqual({});
     expect(s.inTurn).toEqual({});
   });
 
-  it.each(['exited', 'error'] as const)(
-    'applyStatus → %s clears stale openTools, openPermissions, inTurn (hygiene)',
-    (terminalStatus) => {
-      // selectDisplayStatus short-circuits on `error`/`exited`, so the
-      // stale maps can't display the wrong icon — but they can leak to
-      // tooltip enumeration and any future consumer that reads them
-      // directly. Clear on every terminal transition for hygiene.
-      useSessionStore.setState({
-        openTools: { a: { t1: { toolName: 'shell', toolCallId: 't1' } } },
-        openPermissions: {
-          a: { r1: { requestId: 'r1', permissionKind: 'shell', summary: 'rm -rf /' } },
-        },
-        inTurn: { a: true },
-      });
-      useSessionStore
-        .getState()
-        .actions.applyStatus({ sessionId: 'a', status: terminalStatus } as SessionStatusEvent);
-      const s = useSessionStore.getState();
-      expect(s.openTools).toEqual({});
-      expect(s.openPermissions).toEqual({});
-      expect(s.inTurn).toEqual({});
-    },
-  );
+  it.each(['exited', 'error'] as const)('applyStatus → %s clears stale openTools, openPermissions, inTurn (hygiene)', (terminalStatus) => {
+    // selectDisplayStatus short-circuits on `error`/`exited`, so the
+    // stale maps can't display the wrong icon — but they can leak to
+    // tooltip enumeration and any future consumer that reads them
+    // directly. Clear on every terminal transition for hygiene.
+    useSessionStore.setState({
+      openTools: { a: { t1: { toolName: 'shell', toolCallId: 't1' } } },
+      openPermissions: {
+        a: { r1: { requestId: 'r1', permissionKind: 'shell', summary: 'rm -rf /' } },
+      },
+      inTurn: { a: true },
+    });
+    useSessionStore.getState().actions.applyStatus({ sessionId: 'a', status: terminalStatus } as SessionStatusEvent);
+    const s = useSessionStore.getState();
+    expect(s.openTools).toEqual({});
+    expect(s.openPermissions).toEqual({});
+    expect(s.inTurn).toEqual({});
+  });
 });
