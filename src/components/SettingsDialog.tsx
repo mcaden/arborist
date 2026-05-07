@@ -273,7 +273,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={generalPanelId}
               aria-labelledby={generalTabId}
               data-testid="settings-panel-general"
-              className="min-h-0 flex-1 overflow-y-auto"
+              className="min-h-0 flex-1 overflow-y-auto pr-2"
             >
               <section className="mb-4">
                 <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Workspace</h3>
@@ -425,7 +425,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={customProcessesPanelId}
               aria-labelledby={customProcessesTabId}
               data-testid="settings-panel-custom-processes"
-              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
             >
               <CustomProcessesTab onClose={onClose} />
             </div>
