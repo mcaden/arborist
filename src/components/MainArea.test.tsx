@@ -43,7 +43,8 @@ import { __resetTerminalRegistryForTests } from '@/hooks/use-terminal';
 import { resetBridgeMocks } from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { SessionView, SubSession, SubSessionId } from '@/types/arborist';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type { ChildId, SessionView, SubSession, SubSessionId, WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
 function makeSession(id: string, label = id): SessionView {
   return {
@@ -57,6 +58,32 @@ function makeSession(id: string, label = id): SessionView {
     createdAt: 0,
     tabIndex: 0,
   };
+}
+
+function tabFor(session: SessionView, activeChildId?: ChildId): WorktreeTab {
+  const t: WorktreeTab = {
+    id: `tab-${session.id}` as WorktreeTabId,
+    path: session.worktreePath,
+    name: session.worktreeName,
+    label: session.worktreeName,
+    tabIndex: 0,
+  };
+  if (activeChildId) t.activeChildId = activeChildId;
+  return t;
+}
+
+/**
+ * Set up worktree tabs to match a list of sessions, with the worktree-tab `activeChildId` pointing at `activeId` so the new MainArea
+ * derivation (which reads `(activeWorktreeTabId, tab.activeChildId)`) lights up the same session that the pre-#44 `activeId` would have.
+ */
+function seedWorktreeTabs(sessions: SessionView[], activeId: string | undefined): void {
+  const tabs = sessions.map((s) => tabFor(s, s.id === activeId ? ({ kind: 'session', id: s.id } as ChildId) : undefined));
+  const activeTab = tabs.find((t) => sessions.find((s) => s.id === activeId)?.worktreePath === t.path);
+  useWorktreeTabStore.setState({
+    tabs,
+    activeId: activeTab ? activeTab.id : null,
+    isHydrated: true,
+  });
 }
 
 beforeEach(() => {
@@ -74,6 +101,7 @@ beforeEach(() => {
     statusMessages: {},
     isHydrated: false,
   });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
 });
 
 afterEach(() => {
@@ -87,11 +115,9 @@ describe('MainArea', () => {
   });
 
   it('renders one TerminalView per session, only the active one visible', () => {
-    useSessionStore.setState({
-      sessions: [makeSession('s1'), makeSession('s2')],
-      activeId: 's1',
-      isHydrated: true,
-    });
+    const sessions = [makeSession('s1'), makeSession('s2')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    seedWorktreeTabs(sessions, 's1');
     render(<MainArea />);
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels).toHaveLength(2);
@@ -106,17 +132,16 @@ describe('MainArea', () => {
   });
 
   it('switching active session does NOT unmount the previously-active TerminalView', () => {
-    useSessionStore.setState({
-      sessions: [makeSession('s1'), makeSession('s2')],
-      activeId: 's1',
-      isHydrated: true,
-    });
+    const sessions = [makeSession('s1'), makeSession('s2')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    seedWorktreeTabs(sessions, 's1');
     const { rerender } = render(<MainArea />);
     expect(mockTerminals).toHaveLength(2);
     const initialDisposeCalls = mockTerminals.map((t) => t.dispose.mock.calls.length);
 
     act(() => {
       useSessionStore.setState({ activeId: 's2' });
+      seedWorktreeTabs(sessions, 's2');
     });
     rerender(<MainArea />);
 
@@ -127,15 +152,15 @@ describe('MainArea', () => {
   });
 
   it('disposes the terminal when its session is removed from the store', () => {
-    useSessionStore.setState({
-      sessions: [makeSession('s1'), makeSession('s2')],
-      activeId: 's1',
-      isHydrated: true,
-    });
+    const sessions = [makeSession('s1'), makeSession('s2')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    seedWorktreeTabs(sessions, 's1');
     render(<MainArea />);
     expect(mockTerminals).toHaveLength(2);
     act(() => {
-      useSessionStore.setState({ sessions: [makeSession('s1')] });
+      const next = [makeSession('s1')];
+      useSessionStore.setState({ sessions: next });
+      seedWorktreeTabs(next, 's1');
     });
     expect(mockTerminals[1]!.dispose).toHaveBeenCalled();
     expect(mockTerminals[0]!.dispose).not.toHaveBeenCalled();
@@ -158,11 +183,9 @@ describe('MainArea', () => {
   }
 
   it('mounts every terminal sub-session even when not visible (T-03)', () => {
-    useSessionStore.setState({
-      sessions: [makeSession('s1')],
-      activeId: 's1',
-      isHydrated: true,
-    });
+    const sessions = [makeSession('s1')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    seedWorktreeTabs(sessions, 's1');
     useSubSessionStore.setState({
       subSessions: [makeSub('sub-1', 's1'), makeSub('sub-2', 's1')],
       activeByParent: {},
@@ -175,11 +198,9 @@ describe('MainArea', () => {
   });
 
   it('terminal sub-session swaps the visible viewport for its parent', () => {
-    useSessionStore.setState({
-      sessions: [makeSession('s1')],
-      activeId: 's1',
-      isHydrated: true,
-    });
+    const sessions = [makeSession('s1')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    seedWorktreeTabs(sessions, 's1');
     useSubSessionStore.setState({
       subSessions: [makeSub('sub-1', 's1')],
       activeByParent: { s1: 'sub-1' as SubSessionId },
@@ -198,11 +219,9 @@ describe('MainArea', () => {
   });
 
   it('application sub-session does NOT swap the viewport', () => {
-    useSessionStore.setState({
-      sessions: [makeSession('s1')],
-      activeId: 's1',
-      isHydrated: true,
-    });
+    const sessions = [makeSession('s1')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    seedWorktreeTabs(sessions, 's1');
     useSubSessionStore.setState({
       subSessions: [makeSub('app-1', 's1', { kind: 'application' })],
       activeByParent: { s1: 'app-1' as SubSessionId },
@@ -217,11 +236,9 @@ describe('MainArea', () => {
   });
 
   it('inactive parent: its sub-sessions stay hidden even when active there', () => {
-    useSessionStore.setState({
-      sessions: [makeSession('s1'), makeSession('s2')],
-      activeId: 's2',
-      isHydrated: true,
-    });
+    const sessions = [makeSession('s1'), makeSession('s2')];
+    useSessionStore.setState({ sessions, activeId: 's2', isHydrated: true });
+    seedWorktreeTabs(sessions, 's2');
     useSubSessionStore.setState({
       subSessions: [makeSub('sub-1', 's1')],
       // s1 has a sub active, but s1 is NOT the active session.

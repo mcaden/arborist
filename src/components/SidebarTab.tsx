@@ -2,12 +2,9 @@
 // an error indicator dot when the session has crashed, and a small close
 // button that opens the close-confirmation dialog.
 //
-// The whole tab is the @dnd-kit drag handle. The close button stops the
-// pointer-down event so dragging from the close glyph doesn't accidentally
-// initiate a reorder.
-
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+// Drag-to-reorder of session tabs was removed in the worktree-tab UI
+// roll-out (issue #44). The grouped layout invalidated the previous flat
+// reorder model; per-group reorder is a planned follow-up.
 
 import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
@@ -61,17 +58,7 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
     tool === 'claude' ? s.config.aiLaunchCommands.claudeIconDataUri : tool === 'copilot' ? s.config.aiLaunchCommands.copilotIconDataUri : undefined,
   );
 
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id,
-  });
-
   if (!session) return null;
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.6 : 1,
-  };
 
   const baseClasses =
     'flex w-full flex-col items-stretch gap-0.5 rounded-md py-2 pl-2 pr-7 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
@@ -80,11 +67,9 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
     : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800';
 
   return (
-    <li ref={setNodeRef} style={style} className="group relative px-2">
+    <li className="group relative px-2">
       <button
         ref={(el) => onFocusableMounted(id, el)}
-        {...attributes}
-        {...listeners}
         type="button"
         role="tab"
         id={`session-tab-${id}`}
@@ -146,10 +131,6 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
       <button
         type="button"
         aria-label={`Close session ${session.label}`}
-        onPointerDown={(e) => {
-          // Don't let the drag listeners on the parent treat this as a drag.
-          e.stopPropagation();
-        }}
         onClick={(e) => {
           e.stopPropagation();
           actions.requestClose(id);
@@ -165,7 +146,7 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
 // ---------------------------------------------------------------------------
 // MetricsLine — compact second line under the label showing context-window
 // usage and total token count. Non-interactive (no nested focusables): the
-// whole tab remains the single keyboard/DnD target.
+// whole tab remains the single keyboard target.
 // ---------------------------------------------------------------------------
 
 interface MetricsLineProps {

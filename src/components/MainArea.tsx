@@ -13,28 +13,57 @@
 //   2. Keeps SPEC T-03 (scrollback persists across tab switches) honest:
 //      hidden views still receive `session://output` (because the listener
 //      is keyed by id in the registry, not by mount status) and keep their
-//      xterm scrollback intact. The same rule applies to terminal
-//      sub-sessions, whose output flows through the same channel.
+//      xterm scrollback intact.
 //
-// Visible-id derivation:
-//   * Default: the active parent session.
-//   * If `activeByParent[activeId]` points at a **terminal** sub-session,
-//     that sub-session is shown instead. Application sub-sessions never
-//     swap the viewport (they get OS-window focus only — see
-//     `sub-session-store.focus`).
+// Visible-id derivation (issue #44):
+//   * If no worktree tabs exist → empty placeholder.
+//   * Otherwise we read `(activeWorktreeTabId, tab.activeChildId)` as the
+//     single source of truth:
+//       - `activeChildId` undefined / null     → `<WorktreeDashboard>`.
+//       - `activeChildId.kind === 'session'`   → that session's terminal.
+//         If that session also has an active *terminal* sub-tab in
+//         `activeByParent`, the sub-tab's terminal takes the viewport
+//         (matches pre-#44 behaviour for sub-sessions).
+//       - `activeChildId.kind === 'subSession'` → that sub-session's
+//         terminal (or its parent session's terminal for application kind).
 
 import { SubTerminalView } from './SubTerminalView';
 import { TerminalView } from './TerminalView';
-import { useActiveSessionId, useSessions } from '@/store/session-store';
+import { WorktreeDashboard } from './WorktreeDashboard';
+import { useSessions } from '@/store/session-store';
 import { useActiveSubSessionId, useAllSubSessions } from '@/store/sub-session-store';
+import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
+import type { SessionId, SubSessionId } from '@/types/arborist';
 
 export function MainArea(): JSX.Element {
   const sessions = useSessions();
-  const activeId = useActiveSessionId();
-  const activeSubForActiveParent = useActiveSubSessionId(activeId);
+  const worktreeTabs = useWorktreeTabs();
+  const activeWorktreeTabId = useActiveWorktreeTabId();
   const allSubs = useAllSubSessions();
 
-  if (sessions.length === 0) {
+  const activeWorktreeTab = worktreeTabs.find((t) => t.id === activeWorktreeTabId) ?? null;
+
+  // Resolve the active session id from worktree-tab activeChildId. When activeChildId.kind is 'subSession', look up the sub to find its
+  // parent session — sub-tabs swap the viewport via the activeByParent path (existing behaviour).
+  let activeSessionId: SessionId | undefined;
+  if (activeWorktreeTab) {
+    const child = activeWorktreeTab.activeChildId;
+    if (child?.kind === 'session') {
+      activeSessionId = child.id;
+    } else if (child?.kind === 'subSession') {
+      const sub = allSubs.find((s) => s.id === child.id);
+      if (sub) activeSessionId = sub.parentSessionId;
+    }
+  }
+
+  const activeSubForActiveParent = useActiveSubSessionId(activeSessionId);
+
+  const showDashboard =
+    worktreeTabs.length > 0 &&
+    activeWorktreeTab !== null &&
+    (activeWorktreeTab.activeChildId === undefined || activeWorktreeTab.activeChildId === null);
+
+  if (sessions.length === 0 && worktreeTabs.length === 0) {
     return (
       <main className="flex h-full min-w-0 flex-1 items-center justify-center bg-white text-slate-700 dark:bg-slate-950 dark:text-slate-200">
         <p className="text-sm text-slate-400">No session selected — create one to begin.</p>
@@ -42,21 +71,22 @@ export function MainArea(): JSX.Element {
     );
   }
 
-  // Resolve the visible terminal: a terminal sub-session if `activeByParent`
-  // points to one for the active parent, else the parent session itself.
-  // We lookup the candidate sub-session by id to confirm it is (still) a
-  // terminal kind — application kinds never swap the viewport.
-  const activeSub = activeSubForActiveParent ? allSubs.find((s) => s.id === activeSubForActiveParent) : undefined;
-  const visibleSubId = activeSub && activeSub.kind === 'terminal' ? activeSub.id : undefined;
+  // Resolve visible terminal sub-id. Either explicitly via activeChildId.kind === 'subSession', or via the existing activeByParent path.
+  let visibleSubId: SubSessionId | undefined;
+  if (activeWorktreeTab?.activeChildId?.kind === 'subSession') {
+    const sub = allSubs.find((s) => s.id === activeWorktreeTab.activeChildId!.id);
+    if (sub && sub.kind === 'terminal') visibleSubId = sub.id;
+  } else if (activeSessionId !== undefined && activeSubForActiveParent) {
+    const sub = allSubs.find((s) => s.id === activeSubForActiveParent);
+    if (sub && sub.kind === 'terminal') visibleSubId = sub.id;
+  }
 
-  // All terminal sub-sessions get mounted (hidden) so their xterm
-  // scrollback keeps accumulating output, matching parent-session behaviour.
   const terminalSubs = allSubs.filter((s) => s.kind === 'terminal');
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 bg-black">
       {sessions.map((session) => {
-        const active = visibleSubId === undefined && session.id === activeId;
+        const active = !showDashboard && visibleSubId === undefined && session.id === activeSessionId;
         return (
           <div
             key={session.id}
@@ -65,13 +95,6 @@ export function MainArea(): JSX.Element {
               active
                 ? undefined
                 : {
-                    // Keep hidden panels laid out so xterm.js can measure
-                    // character dimensions correctly on first open and so
-                    // `fitAddon.fit()` has a real container to size against.
-                    // `display: none` zeroes the box and produces a
-                    // "squished" banner once the tab is shown again because
-                    // the PTY had already emitted output against bogus
-                    // metrics.
                     visibility: 'hidden',
                     pointerEvents: 'none',
                   }
@@ -83,7 +106,7 @@ export function MainArea(): JSX.Element {
         );
       })}
       {terminalSubs.map((sub) => {
-        const active = sub.id === visibleSubId;
+        const active = !showDashboard && sub.id === visibleSubId;
         return (
           <div
             key={sub.id}
@@ -102,6 +125,7 @@ export function MainArea(): JSX.Element {
           </div>
         );
       })}
+      {showDashboard && activeWorktreeTab && <WorktreeDashboard tabId={activeWorktreeTab.id} />}
     </main>
   );
 }

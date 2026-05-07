@@ -20,7 +20,8 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { SessionStatus, SessionView, SubSession } from '@/types/arborist';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type { ChildId, SessionStatus, SessionView, SubSession, WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
 import { Sidebar } from './Sidebar';
 
@@ -39,11 +40,36 @@ function makeView(id: string, overrides: Partial<SessionView> = {}): SessionView
   };
 }
 
+function tabFor(session: SessionView, overrides: Partial<WorktreeTab> = {}): WorktreeTab {
+  return {
+    id: `tab-${session.id}` as WorktreeTabId,
+    path: session.worktreePath,
+    name: session.worktreeName,
+    label: session.worktreeName,
+    tabIndex: 0,
+    ...overrides,
+  };
+}
+
 function seed(sessions: SessionView[], activeId: string | undefined): void {
+  // Seed both stores so the Sidebar's worktree-tab-driven `isActive` derivation reflects the test's intended active session. Each session
+  // gets a synthetic worktree tab whose `activeChildId` points at the session itself. This mirrors what the production autolink in
+  // session-store.create does at runtime — without it the new grouped Sidebar would render every tab as inactive.
+  const tabs = sessions.map((s, i) => tabFor(s, { tabIndex: i }));
+  const activeSession = sessions.find((s) => s.id === activeId);
+  const activeTab = activeSession ? tabs.find((t) => t.path === activeSession.worktreePath) : undefined;
+  if (activeTab && activeSession) {
+    activeTab.activeChildId = { kind: 'session', id: activeSession.id } as ChildId;
+  }
   useSessionStore.setState({
     sessions,
     activeId,
     pendingClose: undefined,
+    isHydrated: true,
+  });
+  useWorktreeTabStore.setState({
+    tabs,
+    activeId: activeTab ? activeTab.id : null,
     isHydrated: true,
   });
 }
@@ -60,6 +86,7 @@ beforeEach(() => {
     activity: {},
     metrics: {},
   });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
   // versions; provide minimal shims so CloseConfirmDialog can mount.
   const proto = HTMLDialogElement.prototype as unknown as {
@@ -279,7 +306,7 @@ describe('Sidebar', () => {
     expect(within(screen.getByRole('dialog')).getByText(/terminate session/i)).toHaveTextContent('b');
   });
 
-  it('Alt+ArrowDown swaps focused tab with the one below and persists tabOrder', async () => {
+  it('Alt+ArrowDown is a no-op (session reorder deferred for v1 worktree-tab UI)', async () => {
     seed([makeView('a'), makeView('b'), makeView('c')], 'a');
     render(<Sidebar />);
 
@@ -290,8 +317,10 @@ describe('Sidebar', () => {
       fireEvent.keyDown(tablist, { key: 'ArrowDown', altKey: true });
     });
 
-    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b', 'a', 'c']);
-    expect(bridgeMock.configSet).toHaveBeenCalledWith({ tabOrder: ['b', 'a', 'c'] });
+    // Order unchanged. Per-group session reorder is a planned follow-up; the v1 grouped sidebar drops Alt+arrow because the visual
+    // grouping no longer matches a flat session id array.
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['a', 'b', 'c']);
+    expect(bridgeMock.configSet).not.toHaveBeenCalledWith({ tabOrder: expect.any(Array) });
   });
 
   it('drag-to-reorder pipeline (handleDragEnd) persists order via config_set', async () => {

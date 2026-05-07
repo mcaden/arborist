@@ -1,0 +1,105 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
+
+import * as bridgeMock from '@/lib/tauri-bridge.mock';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type { WorktreeTab, WorktreeTabId } from '@/types/arborist';
+
+import { WorktreeTabContextMenu } from './WorktreeTabContextMenu';
+
+const TAB_ID = 'tab-feature-x' as WorktreeTabId;
+
+function tab(): WorktreeTab {
+  return {
+    id: TAB_ID,
+    path: '/repo/feature-x',
+    name: 'feature-x',
+    label: 'feature-x',
+    tabIndex: 0,
+  };
+}
+
+beforeEach(() => {
+  bridgeMock.resetBridgeMocks();
+  useWorktreeTabStore.setState({ tabs: [tab()], activeId: TAB_ID, isHydrated: true });
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('WorktreeTabContextMenu', () => {
+  const noop = () => {};
+
+  it('renders Close and Launch items', () => {
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    expect(screen.getByTestId('worktree-tab-context-menu-close')).toBeInTheDocument();
+    expect(screen.getByTestId('worktree-tab-context-menu-launch')).toBeInTheDocument();
+  });
+
+  it('Close calls worktreeTabClose for this tab and dismisses the menu', () => {
+    const onClose = vi.fn();
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-close'));
+    expect(bridgeMock.worktreeTabClose).toHaveBeenCalledWith({ id: TAB_ID });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('Launch opens the agent submenu (Claude + Copilot)', () => {
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch'));
+    expect(screen.getByTestId('worktree-tab-context-menu-launch-claude')).toBeInTheDocument();
+    expect(screen.getByTestId('worktree-tab-context-menu-launch-copilot')).toBeInTheDocument();
+  });
+
+  it('clicking Launch ▸ Claude calls sessionCreate with this worktree path', () => {
+    bridgeMock.sessionCreate.mockResolvedValueOnce({
+      id: 'new-id',
+      tool: 'claude',
+      worktreePath: '/repo/feature-x',
+      worktreeName: 'feature-x',
+      label: 'feature-x',
+      instructionSetId: 'default-claude',
+      status: 'starting',
+      createdAt: 0,
+      tabIndex: 0,
+    });
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch'));
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-claude'));
+    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude', worktreePath: '/repo/feature-x' }));
+  });
+
+  it('clicking Launch ▸ Copilot calls sessionCreate with copilot tool', () => {
+    bridgeMock.sessionCreate.mockResolvedValueOnce({
+      id: 'new-id',
+      tool: 'copilot',
+      worktreePath: '/repo/feature-x',
+      worktreeName: 'feature-x',
+      label: 'feature-x',
+      instructionSetId: 'default-copilot',
+      status: 'starting',
+      createdAt: 0,
+      tabIndex: 0,
+    });
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch'));
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-copilot'));
+    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'copilot', worktreePath: '/repo/feature-x' }));
+  });
+
+  it('returns null when the tab has been removed from the store', () => {
+    useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+    const { container } = render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('Escape closes the menu', () => {
+    const onClose = vi.fn();
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+    fireEvent.keyDown(screen.getByTestId('worktree-tab-context-menu'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
+});
