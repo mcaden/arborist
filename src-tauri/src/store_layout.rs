@@ -28,7 +28,7 @@
 //! ```
 //!
 //! The "canonical" build (empty `BUILD_BRANCH` or the literal `"main"`) collapses the `branches/<branch>/` segment so existing installs see no path
-//! change at the branch axis. The same collapse rule is already used by the title bar — see [`crate::window_title_for_branch`].
+//! change at the branch axis. The same collapse rule is already used by the title bar — see [`crate::window_title`].
 //!
 //! All functions in this module are pure and deterministic: they do not touch the filesystem. Disk I/O (lock acquisition, seeding, atomic writes)
 //! lives in the modules that consume these paths.
@@ -104,7 +104,7 @@ impl std::fmt::Display for CanonicalPath {
 /// Returns `true` if `branch` represents the canonical (top-level) build.
 ///
 /// Both an empty string (no git info / detached HEAD / shallow clone) and the literal `"main"` collapse to the canonical layout. This mirrors
-/// [`crate::window_title_for_branch`] so the title-bar story and the
+/// [`crate::window_title`] so the title-bar story and the
 /// storage-key story stay aligned.
 #[must_use]
 pub fn is_canonical_build(branch: &str) -> bool {

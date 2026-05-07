@@ -69,16 +69,42 @@ pub fn init_tracing(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
     }
 }
 
-/// Compute the main window title for a given build branch.
+/// Compute the main window title for a given build branch and (optionally) bound workspace.
 ///
-/// On `main` (or when no branch could be detected) the title is just `"Arborist"`. On any other branch the title becomes `"Arborist - <branch>"` so
-/// it is obvious which build is running.
-pub(crate) fn window_title_for_branch(branch: &str) -> String {
-    let trimmed = branch.trim();
-    if trimmed.is_empty() || trimmed == "main" {
-        "Arborist".to_string()
+/// Format (issue #56):
+/// * canonical build, no workspace → `Arborist`
+/// * canonical build, workspace bound → `Arborist - <workspace>`
+/// * feature build, no workspace → `Arborist {<branch>}`
+/// * feature build, workspace bound → `Arborist - <workspace> {<branch>}`
+///
+/// "Canonical" matches [`store_layout::is_canonical_build`] (empty branch or the literal `"main"`) so the title-bar story and the storage-scoping
+/// story stay aligned to one rule. The branch in the title is the **build-time** `BUILD_BRANCH` — same axis as storage scoping — not the workspace's
+/// currently-checked-out branch. The workspace name is the path's trailing component (see [`workspace_basename`]).
+pub(crate) fn window_title(branch: &str, workspace_root: Option<&std::path::Path>) -> String {
+    let trimmed_branch = branch.trim();
+    let workspace_name = workspace_root.and_then(workspace_basename);
+
+    let mut title = String::from("Arborist");
+    if let Some(ws) = workspace_name {
+        title.push_str(" - ");
+        title.push_str(&ws);
+    }
+    if !store_layout::is_canonical_build(branch) {
+        title.push_str(" {");
+        title.push_str(trimmed_branch);
+        title.push('}');
+    }
+    title
+}
+
+/// Display name for a workspace path: the trailing path component, lossily stringified. Returns `None` when the path has no usable component (e.g.
+/// a filesystem root like `/` or `C:\`), so callers can decide to omit the workspace segment entirely rather than print an empty name.
+fn workspace_basename(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    if name.is_empty() {
+        None
     } else {
-        format!("Arborist - {trimmed}")
+        Some(name)
     }
 }
 
@@ -108,9 +134,11 @@ pub fn run() {
             tracing::info!("Arborist starting up");
 
             // If this build came from a branch other than `main`, surface the branch name in the window title bar so it's obvious which build is
-            // running.
+            // running. We set the title twice: once here with no workspace bound (covers the brief startup window before `boot_select_workspace`
+            // returns), and again after the workspace binding succeeds with the bound `workspace_root` so the workspace name is included
+            // (issue #56).
             if let Some(window) = app.get_webview_window("main") {
-                let title = window_title_for_branch(BUILD_BRANCH);
+                let title = window_title(BUILD_BRANCH, None);
                 if let Err(err) = window.set_title(&title) {
                     tracing::warn!(%err, "failed to set main window title");
                 }
@@ -187,6 +215,15 @@ pub fn run() {
             // Boot succeeded — hand the WorkerGuard off to Tauri's managed state so logs continue to flush for the lifetime of the running app.
             if let Some(guard) = log_guard {
                 app.manage(LogGuard(guard));
+            }
+
+            // Re-set the window title now that we know which workspace we bound (issue #56). The earlier set above used `None` so users see the build
+            // branch immediately; this update adds the workspace name. Best-effort: a failure here only affects the title, not the boot.
+            if let Some(window) = app.get_webview_window("main") {
+                let title = window_title(BUILD_BRANCH, Some(&binding.workspace_root));
+                if let Err(err) = window.set_title(&title) {
+                    tracing::warn!(%err, "failed to update main window title after workspace bind");
+                }
             }
 
             // Build the production AppContext: portable-pty spawner, the workspace-bound ConfigStore (held behind RwLock so phase 7 workspace_switch
@@ -287,6 +324,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn init_tracing_is_idempotent() {
@@ -295,20 +333,87 @@ mod tests {
         init_tracing(None);
     }
 
+    // ----- window_title — full matrix of (canonical-build × workspace-bound). Issue #56.
+
     #[test]
-    fn title_on_main_is_plain() {
-        assert_eq!(window_title_for_branch("main"), "Arborist");
+    fn title_canonical_build_no_workspace_is_plain() {
+        assert_eq!(window_title("main", None), "Arborist");
+        assert_eq!(window_title("", None), "Arborist");
+        assert_eq!(window_title("   ", None), "Arborist");
     }
 
     #[test]
-    fn title_on_empty_branch_is_plain() {
-        assert_eq!(window_title_for_branch(""), "Arborist");
-        assert_eq!(window_title_for_branch("   "), "Arborist");
+    fn title_canonical_build_with_workspace_appends_dash_workspace() {
+        assert_eq!(window_title("main", Some(Path::new("/Users/dev/projects/grove"))), "Arborist - grove");
+        assert_eq!(window_title("", Some(Path::new("/Users/dev/projects/grove"))), "Arborist - grove");
     }
 
     #[test]
-    fn title_on_feature_branch_includes_name() {
-        assert_eq!(window_title_for_branch("feature/x"), "Arborist - feature/x");
-        assert_eq!(window_title_for_branch("  branch-name  "), "Arborist - branch-name");
+    fn title_feature_build_no_workspace_wraps_branch_in_braces() {
+        assert_eq!(window_title("feature/x", None), "Arborist {feature/x}");
+        assert_eq!(window_title("branch-name", None), "Arborist {branch-name}");
+    }
+
+    #[test]
+    fn title_feature_build_with_workspace_includes_both() {
+        assert_eq!(
+            window_title("my-feature-branch", Some(Path::new("/Users/dev/projects/my-workspace"))),
+            "Arborist - my-workspace {my-feature-branch}",
+        );
+    }
+
+    #[test]
+    fn title_trims_branch_whitespace_in_braces() {
+        assert_eq!(
+            window_title("  feature/x  ", Some(Path::new("/Users/dev/projects/grove"))),
+            "Arborist - grove {feature/x}",
+        );
+        assert_eq!(window_title("  branch-name  ", None), "Arborist {branch-name}");
+    }
+
+    // ----- workspace_basename edge cases.
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_basename_unix_returns_trailing_component() {
+        assert_eq!(workspace_basename(Path::new("/Users/dev/projects/grove")), Some("grove".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_basename_unix_handles_trailing_separator() {
+        // Path::file_name skips the trailing separator and returns the real basename.
+        assert_eq!(workspace_basename(Path::new("/Users/dev/projects/grove/")), Some("grove".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_basename_unix_returns_none_for_root() {
+        assert_eq!(workspace_basename(Path::new("/")), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_basename_windows_returns_trailing_component() {
+        assert_eq!(workspace_basename(Path::new(r"C:\repos\grove")), Some("grove".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_basename_windows_handles_trailing_separator() {
+        assert_eq!(workspace_basename(Path::new(r"C:\repos\grove\")), Some("grove".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_basename_windows_returns_none_for_drive_root() {
+        assert_eq!(workspace_basename(Path::new(r"C:\")), None);
+    }
+
+    #[test]
+    fn workspace_basename_preserves_unicode() {
+        // file_name + to_string_lossy preserves valid UTF-8 unchanged.
+        let path = std::env::temp_dir().join("プロジェクト");
+        assert_eq!(workspace_basename(&path).as_deref(), Some("プロジェクト"));
     }
 }
