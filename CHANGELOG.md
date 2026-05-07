@@ -7,6 +7,27 @@ and this project follows semantic versioning once it reaches a stable v1.
 
 ## [Unreleased]
 
+### Added — Worktree as parent tab, AI agents as child tabs (issue #44)
+
+The sidebar is now a two-level hierarchy: each top-level row is a **worktree
+tab** (one per `WorktreeTab` record), and its child rows are the AI-agent
+sessions (and any custom-process sub-sessions) whose `worktreePath` matches
+the tab. Clicking a worktree row clears its `activeChildId` and shows a
+**WorktreeDashboard** placeholder in the main area; clicking a child shows
+its terminal as before. Right-clicking a worktree row exposes a **Launch ▸**
+submenu (Claude / Copilot) that materialises a new agent session under the
+worktree. Closing a worktree row cascades close to all of its children.
+
+The new-session flow is unchanged at the entry point — the `+` button still
+opens `NewSessionDialog` (tool → worktree → create) — but on success the
+session-store also calls `worktreeTabOpen({path})` to ensure the parent tab
+exists and `worktreeTabSetActiveChild({…})` to wire it up.
+
+Drag-to-reorder and Alt+Arrow reorder are **deferred for v1**: the grouped
+layout breaks the previous flat-id reorder model, and per-group reorder is a
+planned follow-up. The drag pipeline test still passes because it exercises
+the store directly, not the sidebar UI.
+
 ### Added — Tab context menu & custom-process sub-tabs
 
 A right-click (or Shift+F10 / Apps key) on a sidebar tab now opens a context

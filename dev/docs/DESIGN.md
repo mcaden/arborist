@@ -291,25 +291,37 @@ with a warn log rather than poisoning the whole config.
 ```
 <App>
   <Sidebar>
-    <SidebarTab />          // One per session (icon + worktree name)
-      <SidebarSubTab />     // Indented sub-tab (one per SubSession)
-      <SidebarSubTab />
-    <SidebarTab />
+    <SidebarWorktreeTab />     // One per WorktreeTab (worktree name + branch + status rollup)
+      <SidebarTab />           // Child session under that worktree (Claude/Copilot)
+        <SidebarSubTab />      // Indented under its session (one per SubSession)
+        <SidebarSubTab />
+      <SidebarTab />
+    <SidebarWorktreeTab />
     <NewSessionButton />
   </Sidebar>
   <MainArea>
-    <TerminalView />        // Active session's xterm.js instance, OR…
-    <SubTerminalView />     // …active terminal sub-session's xterm.js instance
-                            //   (application sub-tabs leave the previous viewport visible)
+    <WorktreeDashboard />      // Active worktree tab has no activeChildId, OR…
+    <TerminalView />           // …active session's xterm.js instance, OR…
+    <SubTerminalView />        // …active terminal sub-session's xterm.js instance
+                               //   (application sub-tabs leave the previous viewport visible)
   </MainArea>
-  <TabContextMenu />        // Right-click / Shift+F10 / Apps key on a SidebarTab
-  <NewSessionDialog />      // Modal: tool picker → worktree picker → confirm
-  <SettingsDialog>          // Tabbed: General / Custom Processes
+  <TabContextMenu />           // Right-click / Shift+F10 / Apps key on a SidebarTab (child)
+  <WorktreeTabContextMenu />   // Right-click on a SidebarWorktreeTab (Close + Launch ▸ Claude/Copilot)
+  <NewSessionDialog />         // Modal: tool picker → worktree picker → confirm
+  <SettingsDialog>             // Tabbed: General / Custom Processes
     <GeneralTab />
-    <CustomProcessesTab />  // CRUD over AppConfig.customProcesses
+    <CustomProcessesTab />     // CRUD over AppConfig.customProcesses
   </SettingsDialog>
 </App>
 ```
+
+The visible content of `<MainArea>` is derived from `(activeWorktreeTabId, tab.activeChildId)`:
+
+- `tab.activeChildId == undefined` → `<WorktreeDashboard tabId={…} />` placeholder.
+- `tab.activeChildId.kind == 'session'` → that session's `<TerminalView>`.
+- `tab.activeChildId.kind == 'subSession'` → that sub-session's `<SubTerminalView>` (terminal kind only).
+
+Old `session-store.activeId` is kept as bookkeeping for legacy callers but is not the source of truth for visible content; the worktree-tab store's `activeChildId` is.
 
 ## 5. Key Flows
 
