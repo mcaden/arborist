@@ -309,6 +309,7 @@ impl AppSpawner for RealAppSpawner {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        strip_arborist_env(&mut command);
         configure_detach(&mut command);
 
         let child = command
@@ -376,6 +377,20 @@ fn which_in_path(tool: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Strip `ARBORIST_*` env vars from the spawned command so they don't leak
+/// into children (e.g. VSCode terminals inheriting `ARBORIST_DEV_PORT`).
+/// Mirror of `pty_pool::strip_arborist_env` adapted for `std::process::Command`.
+fn strip_arborist_env(command: &mut std::process::Command) {
+    const PREFIX: &[u8] = b"ARBORIST_";
+    for (k, _) in std::env::vars_os() {
+        let key_bytes = k.as_encoded_bytes();
+        if key_bytes.len() >= PREFIX.len() && key_bytes[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+        {
+            command.env_remove(&k);
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
