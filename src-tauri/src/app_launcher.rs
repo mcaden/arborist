@@ -1609,6 +1609,10 @@ mod tests {
     }
 
     /// Real-process smoke test: spawn a trivial cross-platform "exits quickly" command and observe the lifecycle. Cheap, deterministic.
+    ///
+    /// The wait deadline is generous (30 s) on purpose: this test spawns a real OS process and Windows process creation can stall for many seconds
+    /// when the test suite runs under heavy parallel load (multiple worktrees / test binaries fighting for CPU and disk). The `wait_until` loop
+    /// exits as soon as `pool.contains` returns false, so the slack is free on the happy path and only paid when the OS scheduler is overloaded.
     #[test]
     fn real_spawner_smoke_test() {
         let spawner = Arc::new(RealAppSpawner);
@@ -1623,7 +1627,7 @@ mod tests {
         let cwd = std::env::temp_dir();
         pool.spawn(id, cmd, cwd, sink, None).expect("real spawn");
 
-        wait_until(|| !pool.contains(&id), Duration::from_secs(5), "real child should exit");
+        wait_until(|| !pool.contains(&id), Duration::from_secs(30), "real child should exit");
         let statuses = status_obs.lock().unwrap().clone();
         assert!(matches!(statuses.first(), Some((SubSessionStatus::Running, Some(_)))));
         assert!(!exit_obs.lock().unwrap().is_empty());

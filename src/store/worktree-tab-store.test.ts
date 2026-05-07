@@ -1,0 +1,298 @@
+// Behavioural tests for `useWorktreeTabStore`. The Tauri bridge is mocked
+// wholesale (see `tauri-bridge.mock.ts`) so no real `invoke()` runs.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
+
+import * as bridgeMock from '@/lib/tauri-bridge.mock';
+import type { AppConfig, ChildId, SessionId, SubSessionId, WorktreeTab, WorktreeTabId } from '@/types/arborist';
+
+import { useWorktreeTabStore } from './worktree-tab-store';
+
+const TAB_A: WorktreeTabId = '00000000-0000-0000-0000-00000000000a' as WorktreeTabId;
+const TAB_B: WorktreeTabId = '00000000-0000-0000-0000-00000000000b' as WorktreeTabId;
+const TAB_C: WorktreeTabId = '00000000-0000-0000-0000-00000000000c' as WorktreeTabId;
+const SESSION_X: SessionId = '11111111-1111-1111-1111-111111111111' as SessionId;
+const SUB_Y: SubSessionId = '22222222-2222-2222-2222-222222222222' as SubSessionId;
+
+function makeTab(id: WorktreeTabId, overrides: Partial<WorktreeTab> = {}): WorktreeTab {
+  return {
+    id,
+    path: `/repo/${id}`,
+    name: id,
+    label: id,
+    tabIndex: 0,
+    ...overrides,
+  };
+}
+
+function configWith(activeWorktreeTabId: WorktreeTabId | null = null): AppConfig {
+  return {
+    configVersion: 5,
+    defaultInstructionSets: { claude: '', copilot: '' },
+    instructionSetsDir: '/cfg/instr',
+    workspaceRoot: null,
+    worktreeRoots: [],
+    prelaunchCommands: [],
+    worktreePrelaunchCommands: {},
+    aiLaunchCommands: { claude: '', copilot: '' },
+    lastOpenSessions: [],
+    tabOrder: [],
+    activeSessionId: null,
+    customProcesses: [],
+    lastOpenSubSessions: [],
+    worktreeTabs: [],
+    worktreeTabOrder: [],
+    activeWorktreeTabId,
+  };
+}
+
+function resetStore(): void {
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
+}
+
+beforeEach(() => {
+  bridgeMock.resetBridgeMocks();
+  resetStore();
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('useWorktreeTabStore', () => {
+  describe('hydrate', () => {
+    it('loads tabs and adopts persisted activeId when it matches', async () => {
+      const a = makeTab(TAB_A, { tabIndex: 0 });
+      const b = makeTab(TAB_B, { tabIndex: 1 });
+      bridgeMock.worktreeTabList.mockResolvedValueOnce([a, b]);
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(TAB_B));
+
+      await useWorktreeTabStore.getState().hydrate();
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.isHydrated).toBe(true);
+      expect(s.tabs).toEqual([a, b]);
+      expect(s.activeId).toBe(TAB_B);
+    });
+
+    it('falls back to first tab when persisted activeId is stale', async () => {
+      const a = makeTab(TAB_A, { tabIndex: 0 });
+      const b = makeTab(TAB_B, { tabIndex: 1 });
+      bridgeMock.worktreeTabList.mockResolvedValueOnce([a, b]);
+      // configGet returns a stale id that does not appear in the freshly loaded tabs.
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(TAB_C));
+
+      await useWorktreeTabStore.getState().hydrate();
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs).toEqual([a, b]);
+      // Stale id dropped → fall back to first tab so MainArea isn't blank.
+      expect(s.activeId).toBe(TAB_A);
+    });
+
+    it('falls back to first tab when persisted activeId is null', async () => {
+      const a = makeTab(TAB_A);
+      bridgeMock.worktreeTabList.mockResolvedValueOnce([a]);
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(null));
+
+      await useWorktreeTabStore.getState().hydrate();
+
+      expect(useWorktreeTabStore.getState().activeId).toBe(TAB_A);
+    });
+
+    it('settles to null activeId when there are no tabs', async () => {
+      bridgeMock.worktreeTabList.mockResolvedValueOnce([]);
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(TAB_A));
+
+      await useWorktreeTabStore.getState().hydrate();
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs).toEqual([]);
+      expect(s.activeId).toBeNull();
+      expect(s.isHydrated).toBe(true);
+    });
+
+    it('does not set isHydrated when the bridge throws', async () => {
+      bridgeMock.worktreeTabList.mockRejectedValueOnce(new Error('disk read failed'));
+      bridgeMock.configGet.mockResolvedValueOnce(configWith(null));
+
+      await useWorktreeTabStore.getState().hydrate();
+
+      expect(useWorktreeTabStore.getState().isHydrated).toBe(false);
+    });
+  });
+
+  describe('open', () => {
+    it('appends a new tab and activates it', async () => {
+      const tab = makeTab(TAB_A);
+      bridgeMock.worktreeTabOpen.mockResolvedValueOnce(tab);
+
+      const returned = await useWorktreeTabStore.getState().open('/repo/a');
+
+      expect(returned).toEqual(tab);
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs).toEqual([tab]);
+      expect(s.activeId).toBe(TAB_A);
+      expect(bridgeMock.worktreeTabOpen).toHaveBeenCalledWith({ path: '/repo/a' });
+    });
+
+    it('replaces the matching tab in place when the backend returns an existing id (focus-existing)', async () => {
+      const original = makeTab(TAB_A, { label: 'original', tabIndex: 0 });
+      const other = makeTab(TAB_B, { tabIndex: 1 });
+      useWorktreeTabStore.setState({ tabs: [original, other], activeId: TAB_B, isHydrated: true });
+      // Backend returned the same tab id (label may have been refreshed).
+      const focused = makeTab(TAB_A, { label: 'refreshed', tabIndex: 0 });
+      bridgeMock.worktreeTabOpen.mockResolvedValueOnce(focused);
+
+      await useWorktreeTabStore.getState().open('/repo/a');
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs.map((t) => t.id)).toEqual([TAB_A, TAB_B]);
+      expect(s.tabs[0]).toEqual(focused);
+      // open() doubles as focus — active id moves to the opened tab.
+      expect(s.activeId).toBe(TAB_A);
+    });
+  });
+
+  describe('close', () => {
+    it('removes the tab and picks the first remaining as active when the closed one was active', async () => {
+      const a = makeTab(TAB_A, { tabIndex: 0 });
+      const b = makeTab(TAB_B, { tabIndex: 1 });
+      useWorktreeTabStore.setState({ tabs: [a, b], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().close(TAB_A);
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs.map((t) => t.id)).toEqual([TAB_B]);
+      expect(s.activeId).toBe(TAB_B);
+    });
+
+    it('preserves the active id when a non-active tab is closed', async () => {
+      const a = makeTab(TAB_A);
+      const b = makeTab(TAB_B);
+      useWorktreeTabStore.setState({ tabs: [a, b], activeId: TAB_B });
+
+      await useWorktreeTabStore.getState().close(TAB_A);
+
+      expect(useWorktreeTabStore.getState().activeId).toBe(TAB_B);
+    });
+
+    it('clears active id to null when the last tab is closed', async () => {
+      const a = makeTab(TAB_A);
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().close(TAB_A);
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs).toEqual([]);
+      expect(s.activeId).toBeNull();
+    });
+
+    it('does not throw when backend reports child errors and still removes the tab', async () => {
+      const a = makeTab(TAB_A);
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+      bridgeMock.worktreeTabClose.mockResolvedValueOnce({ childErrors: ['session 123: failed'] });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await useWorktreeTabStore.getState().close(TAB_A);
+
+      expect(useWorktreeTabStore.getState().tabs).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('focus', () => {
+    it('forwards to backend and updates activeId', async () => {
+      const a = makeTab(TAB_A);
+      const b = makeTab(TAB_B);
+      useWorktreeTabStore.setState({ tabs: [a, b], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().focus(TAB_B);
+
+      expect(useWorktreeTabStore.getState().activeId).toBe(TAB_B);
+      expect(bridgeMock.worktreeTabFocus).toHaveBeenCalledWith({ id: TAB_B });
+    });
+  });
+
+  describe('reorder', () => {
+    it('replaces tab list in the new order with refreshed tabIndex values', async () => {
+      const a = makeTab(TAB_A, { tabIndex: 0 });
+      const b = makeTab(TAB_B, { tabIndex: 1 });
+      const c = makeTab(TAB_C, { tabIndex: 2 });
+      useWorktreeTabStore.setState({ tabs: [a, b, c], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().reorder([TAB_C, TAB_A, TAB_B]);
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs.map((t) => t.id)).toEqual([TAB_C, TAB_A, TAB_B]);
+      expect(s.tabs.map((t) => t.tabIndex)).toEqual([0, 1, 2]);
+      expect(bridgeMock.worktreeTabReorder).toHaveBeenCalledWith({ ids: [TAB_C, TAB_A, TAB_B] });
+    });
+  });
+
+  describe('setActiveChild', () => {
+    const sessionChild: ChildId = { kind: 'session', id: SESSION_X };
+    const subChild: ChildId = { kind: 'subSession', id: SUB_Y };
+
+    it('omits childId from the args when clearing (matches exactOptionalPropertyTypes contract)', async () => {
+      const a = makeTab(TAB_A, { activeChildId: sessionChild });
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().setActiveChild(TAB_A, null);
+
+      // Args must NOT carry an explicit `childId: undefined` — the backend payload type forbids it.
+      expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({ id: TAB_A });
+      const tab = useWorktreeTabStore.getState().tabs[0]!;
+      expect('activeChildId' in tab).toBe(false);
+    });
+
+    it('includes childId for session children', async () => {
+      const a = makeTab(TAB_A);
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().setActiveChild(TAB_A, sessionChild);
+
+      expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({ id: TAB_A, childId: sessionChild });
+      expect(useWorktreeTabStore.getState().tabs[0]!.activeChildId).toEqual(sessionChild);
+    });
+
+    it('includes childId for sub-session children', async () => {
+      const a = makeTab(TAB_A);
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().setActiveChild(TAB_A, subChild);
+
+      expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({ id: TAB_A, childId: subChild });
+      expect(useWorktreeTabStore.getState().tabs[0]!.activeChildId).toEqual(subChild);
+    });
+  });
+
+  describe('patchActiveChild', () => {
+    it('only mutates the targeted tab', () => {
+      const a = makeTab(TAB_A);
+      const b = makeTab(TAB_B);
+      useWorktreeTabStore.setState({ tabs: [a, b], activeId: TAB_A });
+      const child: ChildId = { kind: 'session', id: SESSION_X };
+
+      useWorktreeTabStore.getState().patchActiveChild(TAB_B, child);
+
+      const s = useWorktreeTabStore.getState();
+      expect(s.tabs[0]).toEqual(a);
+      expect(s.tabs[1]!.activeChildId).toEqual(child);
+    });
+
+    it('clears activeChildId by removing the property (no `undefined` retained)', () => {
+      const child: ChildId = { kind: 'session', id: SESSION_X };
+      const a = makeTab(TAB_A, { activeChildId: child });
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+
+      useWorktreeTabStore.getState().patchActiveChild(TAB_A, null);
+
+      const tab = useWorktreeTabStore.getState().tabs[0]!;
+      expect('activeChildId' in tab).toBe(false);
+    });
+  });
+});

@@ -37,14 +37,20 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
         ));
     }
 
-    // Atomic read-modify-write: duplicate check + insert under the config write lock.
+    // Atomic read-modify-write: duplicate check + insert (or focus-existing) under the config write lock. "Open" also acts as "focus" — the
+    // backend's persisted `active_worktree_tab_id` is updated to point at the (existing or new) tab so restore-on-launch lands on it.
     let mut result_tab: Option<WorktreeTab> = None;
     ctx.store()
         .save_config_with(PartialAppConfig::default(), |cfg| {
             // Check for an existing tab at the same canonical path.
             if let Some(existing) = cfg.worktree_tabs.iter().find(|t| t.path == canonical) {
+                let existing_id = existing.id;
                 result_tab = Some(existing.clone());
-                return false; // no mutation needed
+                if cfg.active_worktree_tab_id == Some(existing_id) {
+                    return false; // already focused — nothing to persist
+                }
+                cfg.active_worktree_tab_id = Some(existing_id);
+                return true;
             }
 
             let name = canonical
@@ -73,7 +79,9 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
         })
         .map_err(AppError::from)?;
 
-    let tab = result_tab.expect("result_tab set in closure");
+    // The closure always populates `result_tab` on both branches; this `ok_or_else` exists only to remove the production `expect()` panic path so
+    // future refactors that introduce an early return inside the closure surface as a regular AppError instead of a panic.
+    let tab = result_tab.ok_or_else(|| AppError::new("Internal", "worktree_tab_open: result_tab not set after save_config_with"))?;
     info!(worktree_tab_id = %tab.id, path = %tab.path.display(), "worktree tab opened");
     Ok(tab)
 }
@@ -197,6 +205,18 @@ pub fn worktree_tab_reorder_impl(ctx: &AppContext, ids: Vec<WorktreeTabId>) -> R
                     format!("reorder list must contain all {} tabs, got {}", known.len(), ids.len()),
                 ));
                 return false;
+            }
+            // Reject duplicates explicitly. Without this, `[A, A, B]` against `{A, B, C}` would pass len-equality and per-id "is known" but silently
+            // drop tab `C` from the persisted order, violating the "exactly once" contract.
+            let mut seen: HashSet<WorktreeTabId> = HashSet::with_capacity(ids.len());
+            for id in &ids {
+                if !seen.insert(*id) {
+                    validation_error = Some(AppError::new(
+                        "InvalidArgument",
+                        format!("reorder list contains duplicate worktree tab id {id}"),
+                    ));
+                    return false;
+                }
             }
             for id in &ids {
                 if !known.contains(id) {

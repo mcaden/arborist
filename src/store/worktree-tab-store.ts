@@ -53,7 +53,11 @@ export const useWorktreeTabStore = create<WorktreeTabStoreState>()((set, get) =>
   async hydrate() {
     try {
       const [tabs, cfg] = await Promise.all([worktreeTabList(), configGet()]);
-      const activeId = cfg.activeWorktreeTabId ?? tabs[0]?.id ?? null;
+      // Reconcile activeId against the freshly loaded tabs: prefer the persisted id only when it still exists, else fall back to the first tab,
+      // else null. Mirrors `session-store.adoptWorkspace`'s reconciliation rule — without this, a stale `activeWorktreeTabId` (e.g. left over
+      // from a deleted tab) would leave `useActiveWorktreeTab()` returning `undefined` even though tabs are present.
+      const persistedId = cfg.activeWorktreeTabId ?? null;
+      const activeId = persistedId !== null && tabs.some((t) => t.id === persistedId) ? persistedId : (tabs[0]?.id ?? null);
       set({ tabs, isHydrated: true, activeId });
     } catch (err) {
       console.error('[worktree-tab-store] hydrate failed:', formatError(err));
