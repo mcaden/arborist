@@ -907,7 +907,7 @@ pub struct SubSessionRestoredEvent {
 /// checks it exists on disk, and returns an existing tab if one matches
 /// the canonical path (idempotent) or creates a new one.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabOpenArgs`.
+/// MIRROR: `src/types/arborist.ts::WorktreeTabOpenArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeTabOpenArgs {
@@ -917,7 +917,7 @@ pub struct WorktreeTabOpenArgs {
 /// Arguments for `worktree_tab_close`. Cascades close to all child
 /// sessions and sub-sessions under the tab.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabCloseArgs`.
+/// MIRROR: `src/types/arborist.ts::WorktreeTabCloseArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeTabCloseArgs {
@@ -926,7 +926,7 @@ pub struct WorktreeTabCloseArgs {
 
 /// Arguments for `worktree_tab_focus`.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabFocusArgs`.
+/// MIRROR: `src/types/arborist.ts::WorktreeTabFocusArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeTabFocusArgs {
@@ -936,7 +936,7 @@ pub struct WorktreeTabFocusArgs {
 /// Arguments for `worktree_tab_reorder`. The full ordered list replaces
 /// the persisted `worktree_tab_order` and updates each tab's `tab_index`.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabReorderArgs`.
+/// MIRROR: `src/types/arborist.ts::WorktreeTabReorderArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeTabReorderArgs {
@@ -946,7 +946,7 @@ pub struct WorktreeTabReorderArgs {
 /// Arguments for `worktree_tab_set_active_child`. `child_id` of `None`
 /// clears the active child, causing the worktree dashboard to show.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabSetActiveChildArgs`.
+/// MIRROR: `src/types/arborist.ts::WorktreeTabSetActiveChildArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeTabSetActiveChildArgs {
@@ -959,7 +959,7 @@ pub struct WorktreeTabSetActiveChildArgs {
 /// cascading close to child sessions/sub-sessions without failing the
 /// whole operation.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeTabCloseResult`.
+/// MIRROR: `src/types/arborist.ts::WorktreeTabCloseResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeTabCloseResult {

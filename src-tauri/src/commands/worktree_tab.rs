@@ -29,13 +29,11 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
             format!("worktree tab path must be absolute, got {}", path.display()),
         ));
     }
-    let canonical = dunce::canonicalize(&path).map_err(|e| AppError::new("InvalidPath", format!("cannot canonicalize {}: {e}", path.display())))?;
-    if !canonical.is_dir() {
-        return Err(AppError::new(
-            "InvalidPath",
-            format!("worktree tab path is not a directory: {}", canonical.display()),
-        ));
-    }
+    // Delegate canonicalisation to `compose::validate_worktree` so missing-vs-not-a-directory failures map to the same stable error codes the
+    // session-create path returns (`WorktreeMissing` vs `InvalidPath`). Without this, the frontend would see two different code values for the
+    // "directory doesn't exist" case depending on whether the user picked the worktree via the picker (session path) or the upcoming worktree-tab
+    // dialog (this path), and any error-routing it does (e.g. "show a friendlier message for missing worktrees") would silently miss this entry.
+    let canonical = compose::validate_worktree(&path).map_err(AppError::from)?;
 
     // Atomic read-modify-write: duplicate check + insert (or focus-existing) under the config write lock. "Open" also acts as "focus" — the
     // backend's persisted `active_worktree_tab_id` is updated to point at the (existing or new) tab so restore-on-launch lands on it.

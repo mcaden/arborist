@@ -2,6 +2,8 @@
 //!
 //! Coverage focuses on the bugs surfaced by the PR review:
 //! * `worktree_tab_open` is idempotent on path AND must promote the existing tab to active so "open" doubles as "focus".
+//! * `worktree_tab_open` returns the stable `WorktreeMissing` / `InvalidPath` error codes (matching `session_create` via `compose::validate_worktree`)
+//!   so the frontend can branch on a single shared set of codes regardless of which command surfaced the failure.
 //! * `worktree_tab_reorder` rejects duplicate ids (`[A, A, B]` against `{A, B, C}`) instead of silently dropping `C`.
 //! * `worktree_tab_reorder` rejects partial lists and leaves both `worktree_tab_order` and per-tab `tab_index` unchanged on validation failure.
 
@@ -128,6 +130,63 @@ fn open_existing_tab_when_already_active_is_a_no_op_at_storage_level() {
     let after = h.ctx.store().load_config();
     assert_eq!(after.worktree_tabs.len(), 1);
     assert_eq!(after.active_worktree_tab_id, Some(id));
+}
+
+// ---------------------------------------------------------------------------
+// open: input validation — error codes must stay aligned with the session-create path so the frontend can branch on a single shared set of
+// codes regardless of which surface routed the request.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn open_rejects_relative_path_with_invalid_argument() {
+    let h = build_harness();
+    let err = worktree_tab_open_impl(&h.ctx, WorktreeTabOpenArgs { path: "relative/dir".into() }).expect_err("relative path must be rejected");
+    assert_eq!(err.code, "InvalidArgument", "expected InvalidArgument, got {err:?}");
+    assert!(
+        err.message.to_lowercase().contains("absolute"),
+        "error should mention absolute requirement, got {:?}",
+        err.message
+    );
+}
+
+#[test]
+fn open_returns_worktree_missing_for_nonexistent_path() {
+    // Regression for PR #65 review feedback — must return the stable `WorktreeMissing` code (same code `session_create` returns via
+    // `compose::validate_worktree`) so the frontend can route both API surfaces through the same error-handling branch.
+    let h = build_harness();
+    let missing = std::env::temp_dir().join(format!("arborist-test-missing-{}", uuid::Uuid::new_v4()));
+    assert!(!missing.exists(), "test setup invariant: path must not exist");
+
+    let err = worktree_tab_open_impl(
+        &h.ctx,
+        WorktreeTabOpenArgs {
+            path: missing.to_string_lossy().into_owned(),
+        },
+    )
+    .expect_err("missing path must be rejected");
+    assert_eq!(err.code, "WorktreeMissing", "expected WorktreeMissing, got {err:?}");
+}
+
+#[test]
+fn open_returns_invalid_path_when_path_exists_but_is_not_a_directory() {
+    let h = build_harness();
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("a-file.txt");
+    std::fs::write(&file, b"not a directory").unwrap();
+
+    let err = worktree_tab_open_impl(
+        &h.ctx,
+        WorktreeTabOpenArgs {
+            path: file.to_string_lossy().into_owned(),
+        },
+    )
+    .expect_err("non-directory path must be rejected");
+    assert_eq!(err.code, "InvalidPath", "expected InvalidPath, got {err:?}");
+    assert!(
+        err.message.to_lowercase().contains("not a directory"),
+        "error should mention not-a-directory, got {:?}",
+        err.message
+    );
 }
 
 // ---------------------------------------------------------------------------
