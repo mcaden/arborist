@@ -1,0 +1,67 @@
+/* CaskaydiaCove Nerd Font — proportional variant for application UI */
+
+@font-face {
+  font-family: 'CaskaydiaCove NF';
+  src: url('./CaskaydiaCoveNerdFont-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'CaskaydiaCove NF';
+  src: url('./CaskaydiaCoveNerdFont-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'CaskaydiaCove NF';
+  src: url('./CaskaydiaCoveNerdFont-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'CaskaydiaCove NF';
+  src: url('./CaskaydiaCoveNerdFont-Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* CaskaydiaCove Nerd Font Mono — monospace variant for xterm.js terminal */
+
+@font-face {
+  font-family: 'CaskaydiaCove NF Mono';
+  src: url('./CaskaydiaCoveNerdFontMono-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'CaskaydiaCove NF Mono';
+  src: url('./CaskaydiaCoveNerdFontMono-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'CaskaydiaCove NF Mono';
+  src: url('./CaskaydiaCoveNerdFontMono-Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'CaskaydiaCove NF Mono';
+  src: url('./CaskaydiaCoveNerdFontMono-BoldItalic.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
