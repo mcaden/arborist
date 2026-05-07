@@ -7,7 +7,7 @@ import type { DisplayStatus } from '@/store/session-store';
 describe('StatusIcon', () => {
   // Every non-idle DisplayStatus variant must have a glyph; the test ids
   // below are kebab-case (the camelCase enum values are normalised in
-  // `StatusIcon.tsx`'s `STATUS_TESTID_SUFFIX` map).
+  // `StatusIcon.tsx`'s `STATUS_META` entries via their `testIdSuffix` values).
   const cases: ReadonlyArray<{ status: Exclude<DisplayStatus, 'idle'>; testIdSuffix: string }> = [
     { status: 'starting', testIdSuffix: 'starting' },
     { status: 'working', testIdSuffix: 'working' },
