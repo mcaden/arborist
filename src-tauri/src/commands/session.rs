@@ -1508,7 +1508,20 @@ pub async fn workspace_switch_impl(
         .path()
         .app_data_dir()
         .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
-    workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await
+    let result = workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await?;
+
+    // Refresh the OS window title so the new workspace name is visible (issue #56). Read the *currently bound* workspace from `ctx.workspace` rather
+    // than `result.workspace_root`, so if two switches race and resume out of order after the inner barrier releases, the title still ends up
+    // matching the workspace the runtime is actually bound to. Best-effort: failures only affect the title, not the switch result.
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let current_root = ctx.workspace.read().expect("workspace lock poisoned").workspace_root.clone();
+        let title = crate::window_title(crate::BUILD_BRANCH, current_root.as_deref());
+        if let Err(err) = window.set_title(&title) {
+            tracing::warn!(%err, "failed to update main window title after workspace switch");
+        }
+    }
+
+    Ok(result)
 }
 
 /// Testable inner of [`workspace_switch_impl`]. See module-level docs on the public wrapper for the full pipeline. Split out so unit tests can drive
