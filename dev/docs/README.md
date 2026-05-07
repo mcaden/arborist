@@ -19,7 +19,7 @@ Authoritative documentation for the Arborist desktop app.
 - [`.github/copilot-instructions.md`](../../.github/copilot-instructions.md) —
   load-bearing engineering principles (test-first, determinism, "what done
   means", common pitfalls).
-- [`.github/skills/quality-workflow/SKILL.md`](../../.github/skills/quality-workflow/SKILL.md)
+- [`.github/skills/quality-workflow-gate/SKILL.md`](../../.github/skills/quality-workflow-gate/SKILL.md)
   — exact build / lint / test commands and end-of-feature smoke procedures.
 - [`dev/ai/`](../ai/) — agent-authored artefacts: implementation plan,
   smoke-test results, and review reports.

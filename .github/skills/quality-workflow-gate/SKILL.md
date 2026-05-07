@@ -1,6 +1,7 @@
 ---
-name: quality-workflow
-description: Arborist's procedural quality reference. Use it as a lookup for one task at a time: command reference, watcher setup, Husky hooks, test architecture, or end-of-feature smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `npm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill provides the concrete commands and setup details.
+name: quality-workflow-gate
+description: Procedural reference for quality. Use it as a lookup for one task at a time for command reference, watcher setup, Husky hooks, test architecture, or end-of-feature smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `npm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill provides the concrete commands and setup details.
+license: MIT
 ---
 
 # Quality workflow — procedural reference

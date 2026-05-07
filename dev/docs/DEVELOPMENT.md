@@ -92,13 +92,13 @@ arborist/
 │   └── ai/                      # agent-authored artefacts (plan, review, smoke results)
 └── .github/
     ├── copilot-instructions.md  # engineering principles loaded into every agent run
-    └── skills/quality-workflow/SKILL.md   # procedural lookup
+    └── skills/quality-workflow-gate/SKILL.md   # procedural lookup
 ```
 
 ## 4. Day-to-day commands
 
 The full command reference also lives in
-[`.github/skills/quality-workflow/SKILL.md`](../../.github/skills/quality-workflow/SKILL.md);
+[`.github/skills/quality-workflow-gate/SKILL.md`](../../.github/skills/quality-workflow-gate/SKILL.md);
 keep both pages in sync.
 
 ### Run the app
