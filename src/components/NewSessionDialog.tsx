@@ -353,24 +353,11 @@ export function NewSessionDialog(): JSX.Element | null {
           <fieldset className="mb-4">
             <legend className="mb-2 text-sm font-medium">Choose a tool</legend>
             <label className="mb-1 flex items-center gap-2 text-sm">
-              <input
-                ref={firstFocusRef}
-                type="radio"
-                name="tool"
-                value="claude"
-                checked={tool === 'claude'}
-                onChange={() => setTool('claude')}
-              />
+              <input ref={firstFocusRef} type="radio" name="tool" value="claude" checked={tool === 'claude'} onChange={() => setTool('claude')} />
               Claude
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="tool"
-                value="copilot"
-                checked={tool === 'copilot'}
-                onChange={() => setTool('copilot')}
-              />
+              <input type="radio" name="tool" value="copilot" checked={tool === 'copilot'} onChange={() => setTool('copilot')} />
               Copilot
             </label>
           </fieldset>
@@ -385,23 +372,10 @@ export function NewSessionDialog(): JSX.Element | null {
               aria-label="Worktree source"
               className="mb-3 flex gap-1"
               onKeyDown={(e) => {
-                if (
-                  e.key !== 'ArrowLeft' &&
-                  e.key !== 'ArrowRight' &&
-                  e.key !== 'Home' &&
-                  e.key !== 'End'
-                )
-                  return;
+                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
                 if (creating || submitting) return;
                 e.preventDefault();
-                const nextMode: WorktreeMode =
-                  e.key === 'Home'
-                    ? 'new'
-                    : e.key === 'End'
-                      ? 'existing'
-                      : worktreeMode === 'new'
-                        ? 'existing'
-                        : 'new';
+                const nextMode: WorktreeMode = e.key === 'Home' ? 'new' : e.key === 'End' ? 'existing' : worktreeMode === 'new' ? 'existing' : 'new';
                 setWorktreeMode(nextMode);
                 const id = nextMode === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
                 document.getElementById(id)?.focus();
@@ -452,20 +426,15 @@ export function NewSessionDialog(): JSX.Element | null {
             {/* Both tabpanels are always rendered so `aria-controls` on the tabs
                 always points at a node in the DOM. The inactive panel is hidden
                 via the native `hidden` attribute. */}
-            <div
-              role="tabpanel"
-              id="worktree-panel-existing"
-              aria-labelledby="worktree-tab-existing"
-              hidden={worktreeMode !== 'existing'}
-            >
+            <div role="tabpanel" id="worktree-panel-existing" aria-labelledby="worktree-tab-existing" hidden={worktreeMode !== 'existing'}>
               {worktreeMode === 'existing' && (
                 <>
                   {worktreesLoading ? (
                     <p className="text-sm text-slate-500">Loading...</p>
                   ) : worktrees.length === 0 ? (
                     <p className="mb-2 text-sm text-slate-500">
-                      No worktrees found in <span className="font-mono">.worktrees/</span> — create
-                      one in the New tab, or use Browse for a path elsewhere.
+                      No worktrees found in <span className="font-mono">.worktrees/</span> — create one in the New tab, or use Browse for a path
+                      elsewhere.
                     </p>
                   ) : (
                     <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
@@ -486,11 +455,7 @@ export function NewSessionDialog(): JSX.Element | null {
                           >
                             <span className="truncate font-mono">{w.path}</span>
                             <span className="flex shrink-0 items-center gap-1">
-                              {w.branch && (
-                                <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">
-                                  {w.branch}
-                                </span>
-                              )}
+                              {w.branch && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">{w.branch}</span>}
                               {w.isMain && (
                                 <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
                                   main
@@ -514,12 +479,7 @@ export function NewSessionDialog(): JSX.Element | null {
                 </>
               )}
             </div>
-            <div
-              role="tabpanel"
-              id="worktree-panel-new"
-              aria-labelledby="worktree-tab-new"
-              hidden={worktreeMode !== 'new'}
-            >
+            <div role="tabpanel" id="worktree-panel-new" aria-labelledby="worktree-tab-new" hidden={worktreeMode !== 'new'}>
               <label htmlFor="new-worktree-name" className="block text-sm font-medium">
                 Branch / worktree name
               </label>
@@ -533,29 +493,20 @@ export function NewSessionDialog(): JSX.Element | null {
                 }}
                 aria-invalid={newNameError !== null}
                 aria-describedby={
-                  newNameError !== null
-                    ? 'new-worktree-name-error'
-                    : createError !== null
-                      ? 'new-worktree-create-error'
-                      : 'new-worktree-name-help'
+                  newNameError !== null ? 'new-worktree-name-error' : createError !== null ? 'new-worktree-create-error' : 'new-worktree-name-help'
                 }
                 placeholder="my-feature"
                 className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
               />
               {newNameError !== null ? (
-                <p
-                  id="new-worktree-name-error"
-                  role="alert"
-                  className="mt-1 text-xs text-red-600 dark:text-red-400"
-                >
+                <p id="new-worktree-name-error" role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
                   {newNameError}
                 </p>
               ) : (
                 <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
                   Will run{' '}
                   <span className="font-mono">
-                    git worktree add .worktrees/{newName.trim() || 'NAME'} -b{' '}
-                    {newName.trim() || 'NAME'}
+                    git worktree add .worktrees/{newName.trim() || 'NAME'} -b {newName.trim() || 'NAME'}
                   </span>
                 </p>
               )}
@@ -570,14 +521,10 @@ export function NewSessionDialog(): JSX.Element | null {
               )}
             </div>
 
-            {worktree && (
-              <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>
-            )}
+            {worktree && <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>}
 
             <details className="mt-3 rounded border border-slate-200 px-2 py-1 text-xs dark:border-slate-700">
-              <summary className="cursor-pointer">
-                Pre-launch commands ({previewPrelaunch.length})
-              </summary>
+              <summary className="cursor-pointer">Pre-launch commands ({previewPrelaunch.length})</summary>
               {previewPrelaunch.length === 0 ? (
                 <p className="px-1 py-1 text-slate-500">(none)</p>
               ) : (
@@ -599,11 +546,7 @@ export function NewSessionDialog(): JSX.Element | null {
       </div>
 
       {submitError && (
-        <p
-          role="alert"
-          aria-live="polite"
-          className="mb-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
-        >
+        <p role="alert" aria-live="polite" className="mb-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100">
           {submitError}
         </p>
       )}
@@ -642,9 +585,7 @@ export function NewSessionDialog(): JSX.Element | null {
             <button
               type="button"
               onClick={() => void onCreateWorktree()}
-              disabled={
-                creating || submitting || newName.trim().length === 0 || newNameError !== null
-              }
+              disabled={creating || submitting || newName.trim().length === 0 || newNameError !== null}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
               {creating ? 'Creating…' : 'Create worktree & session'}

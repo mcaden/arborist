@@ -145,9 +145,7 @@ describe('useSubSessionStore', () => {
         activeByParent: { [PARENT_A]: sub.id },
       });
       bridgeMock.subSessionClose.mockRejectedValueOnce(new Error('disk full'));
-      await expect(useSubSessionStore.getState().actions.close(sub.id)).rejects.toThrow(
-        'disk full',
-      );
+      await expect(useSubSessionStore.getState().actions.close(sub.id)).rejects.toThrow('disk full');
       const s = useSubSessionStore.getState();
       expect(s.subSessions).toEqual([]);
       expect(PARENT_A in s.activeByParent).toBe(false);
@@ -249,9 +247,7 @@ describe('useSubSessionStore', () => {
     it('records and clears status message', () => {
       const sub = makeSub({ id: id('16') });
       useSubSessionStore.setState({ subSessions: [sub] });
-      useSubSessionStore
-        .getState()
-        .actions.applyStatus({ id: sub.id, status: 'error', message: 'oops' });
+      useSubSessionStore.getState().actions.applyStatus({ id: sub.id, status: 'error', message: 'oops' });
       expect(useSubSessionStore.getState().statusMessages[sub.id]).toBe('oops');
       useSubSessionStore.getState().actions.applyStatus({ id: sub.id, status: 'running' });
       expect(sub.id in useSubSessionStore.getState().statusMessages).toBe(false);

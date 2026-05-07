@@ -43,9 +43,7 @@ export const sessionCreate: Mock<typeof realBridge.sessionCreate> = vi.fn(reject
 
 export const sessionList: Mock<typeof realBridge.sessionList> = vi.fn(() => Promise.resolve([]));
 
-export const sessionClose: Mock<typeof realBridge.sessionClose> = vi.fn(() =>
-  Promise.resolve({ worktreeDeleteError: null }),
-);
+export const sessionClose: Mock<typeof realBridge.sessionClose> = vi.fn(() => Promise.resolve({ worktreeDeleteError: null }));
 
 export const sessionFocus: Mock<typeof realBridge.sessionFocus> = vi.fn(() => Promise.resolve());
 
@@ -53,9 +51,7 @@ export const sessionResize: Mock<typeof realBridge.sessionResize> = vi.fn(() => 
 
 export const sessionInput: Mock<typeof realBridge.sessionInput> = vi.fn(() => Promise.resolve());
 
-export const sessionRestart: Mock<typeof realBridge.sessionRestart> = vi.fn(() =>
-  Promise.resolve(),
-);
+export const sessionRestart: Mock<typeof realBridge.sessionRestart> = vi.fn(() => Promise.resolve());
 
 export const frontendReady: Mock<typeof realBridge.frontendReady> = vi.fn(() => Promise.resolve());
 
@@ -80,103 +76,56 @@ const defaultAppConfig = (): AppConfig => ({
   lastOpenSubSessions: [],
 });
 
-export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() =>
-  Promise.resolve(defaultAppConfig()),
-);
+export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
-export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() =>
-  Promise.resolve(defaultAppConfig()),
-);
+export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
-export const instructionsList: Mock<typeof realBridge.instructionsList> = vi.fn(() =>
-  Promise.resolve([]),
-);
+export const instructionsList: Mock<typeof realBridge.instructionsList> = vi.fn(() => Promise.resolve([]));
 
-export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() =>
-  Promise.resolve([]),
-);
+export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() => Promise.resolve([]));
 
-export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.fn(() =>
-  Promise.resolve({ valid: true }),
-);
+export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.fn(() => Promise.resolve({ valid: true }));
 
 export const worktreeCreate: Mock<typeof realBridge.worktreeCreate> = vi.fn(rejectNotImplemented);
 
 export const workspaceSwitch: Mock<typeof realBridge.workspaceSwitch> = vi.fn(rejectNotImplemented);
 
-export const pickDirectory: Mock<typeof realBridge.pickDirectory> = vi.fn(() =>
-  Promise.resolve(null),
-);
+export const pickDirectory: Mock<typeof realBridge.pickDirectory> = vi.fn(() => Promise.resolve(null));
 
-export const onSessionOutput: Mock<typeof realBridge.onSessionOutput> = vi.fn(() =>
-  Promise.resolve(noopUnlisten),
-);
+export const onSessionOutput: Mock<typeof realBridge.onSessionOutput> = vi.fn(() => Promise.resolve(noopUnlisten));
 
-export const onSessionStatus: Mock<typeof realBridge.onSessionStatus> = vi.fn(() =>
-  Promise.resolve(noopUnlisten),
-);
+export const onSessionStatus: Mock<typeof realBridge.onSessionStatus> = vi.fn(() => Promise.resolve(noopUnlisten));
 
-export const onSessionActivity: Mock<typeof realBridge.onSessionActivity> = vi.fn(() =>
-  Promise.resolve(noopUnlisten),
-);
+export const onSessionActivity: Mock<typeof realBridge.onSessionActivity> = vi.fn(() => Promise.resolve(noopUnlisten));
 
-export const onSessionMetrics: Mock<typeof realBridge.onSessionMetrics> = vi.fn(() =>
-  Promise.resolve(noopUnlisten),
-);
+export const onSessionMetrics: Mock<typeof realBridge.onSessionMetrics> = vi.fn(() => Promise.resolve(noopUnlisten));
 
 // Phase 2: sub-session command/event mocks.
-export const subSessionCreate: Mock<typeof realBridge.subSessionCreate> =
-  vi.fn(rejectNotImplemented);
+export const subSessionCreate: Mock<typeof realBridge.subSessionCreate> = vi.fn(rejectNotImplemented);
 
-export const subSessionClose: Mock<typeof realBridge.subSessionClose> = vi.fn(() =>
-  Promise.resolve(),
-);
+export const subSessionClose: Mock<typeof realBridge.subSessionClose> = vi.fn(() => Promise.resolve());
 
-export const subSessionFocus: Mock<typeof realBridge.subSessionFocus> = vi.fn(() =>
-  Promise.resolve(),
-);
+export const subSessionFocus: Mock<typeof realBridge.subSessionFocus> = vi.fn(() => Promise.resolve());
 
-export const subSessionList: Mock<typeof realBridge.subSessionList> = vi.fn(() =>
-  Promise.resolve([]),
-);
+export const subSessionList: Mock<typeof realBridge.subSessionList> = vi.fn(() => Promise.resolve([]));
 
-export const subSessionInput: Mock<typeof realBridge.subSessionInput> = vi.fn(() =>
-  Promise.resolve(),
-);
+export const subSessionInput: Mock<typeof realBridge.subSessionInput> = vi.fn(() => Promise.resolve());
 
-export const subSessionResize: Mock<typeof realBridge.subSessionResize> = vi.fn(() =>
-  Promise.resolve(),
-);
+export const subSessionResize: Mock<typeof realBridge.subSessionResize> = vi.fn(() => Promise.resolve());
 
-export const subSessionRelaunch: Mock<typeof realBridge.subSessionRelaunch> =
-  vi.fn(rejectNotImplemented);
+export const subSessionRelaunch: Mock<typeof realBridge.subSessionRelaunch> = vi.fn(rejectNotImplemented);
 
-export const subSessionIcon: Mock<typeof realBridge.subSessionIcon> = vi.fn(() =>
-  Promise.resolve(null),
-);
+export const subSessionIcon: Mock<typeof realBridge.subSessionIcon> = vi.fn(() => Promise.resolve(null));
 
-export const onSubSessionStatus: Mock<typeof realBridge.onSubSessionStatus> = vi.fn(() =>
-  Promise.resolve(noopUnlisten),
-);
+export const onSubSessionStatus: Mock<typeof realBridge.onSubSessionStatus> = vi.fn(() => Promise.resolve(noopUnlisten));
 
-export const onSubSessionExited: Mock<typeof realBridge.onSubSessionExited> = vi.fn(() =>
-  Promise.resolve(noopUnlisten),
-);
+export const onSubSessionExited: Mock<typeof realBridge.onSubSessionExited> = vi.fn(() => Promise.resolve(noopUnlisten));
 
-export const onSubSessionRestored: Mock<typeof realBridge.onSubSessionRestored> = vi.fn(() =>
-  Promise.resolve(noopUnlisten),
-);
+export const onSubSessionRestored: Mock<typeof realBridge.onSubSessionRestored> = vi.fn(() => Promise.resolve(noopUnlisten));
 
 // Re-export the bridge's argument-shape interfaces so consumers importing
 // from the mock get identical types.
-export type {
-  SessionCreateArgs,
-  SessionIdArg,
-  SessionCloseArgs,
-  SessionCloseResult,
-  SessionResizeArgs,
-  SessionInputArgs,
-} from './tauri-bridge';
+export type { SessionCreateArgs, SessionIdArg, SessionCloseArgs, SessionCloseResult, SessionResizeArgs, SessionInputArgs } from './tauri-bridge';
 
 /**
  * Reset every mock function's call history AND restore its default

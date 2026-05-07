@@ -2,12 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { validateWorktreeName } from './worktree-validation';
 
 describe('validateWorktreeName', () => {
-  it.each(['feature-x', 'fix/123', 'release-1.2.3', 'a', 'user/topic-2024'])(
-    'accepts %j',
-    (name) => {
-      expect(validateWorktreeName(name)).toBeNull();
-    },
-  );
+  it.each(['feature-x', 'fix/123', 'release-1.2.3', 'a', 'user/topic-2024'])('accepts %j', (name) => {
+    expect(validateWorktreeName(name)).toBeNull();
+  });
 
   it.each<[string, string]>([
     ['', 'name cannot be empty'],

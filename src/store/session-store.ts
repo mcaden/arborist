@@ -36,14 +36,7 @@ import {
 } from '@/lib/tauri-bridge';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { useConfigStore } from '@/store/config-store';
-import type {
-  SessionActivityEvent,
-  SessionId,
-  SessionMetrics,
-  SessionMetricsEvent,
-  SessionStatusEvent,
-  SessionView,
-} from '@/types/arborist';
+import type { SessionActivityEvent, SessionId, SessionMetrics, SessionMetricsEvent, SessionStatusEvent, SessionView } from '@/types/arborist';
 
 export interface SessionStoreState {
   sessions: SessionView[];
@@ -191,11 +184,7 @@ export interface SessionStoreActions {
    */
   adoptWorkspace: (sessions: SessionView[], activeSessionId: SessionId | null) => void;
   create: (args: SessionCreateArgs) => Promise<SessionView>;
-  close: (
-    id: SessionId,
-    deleteWorktree?: boolean,
-    opts?: { pruneOnError?: boolean },
-  ) => Promise<SessionCloseResult>;
+  close: (id: SessionId, deleteWorktree?: boolean, opts?: { pruneOnError?: boolean }) => Promise<SessionCloseResult>;
   focus: (id: SessionId) => Promise<void>;
   reorder: (ids: SessionId[]) => Promise<void>;
   requestClose: (id: SessionId) => void;
@@ -245,10 +234,7 @@ const INITIAL_STATE: SessionStoreState = {
  * `undefined`. `previousSessions` is the list *before* removal, ordered as
  * the user sees it (i.e. by `tabIndex`).
  */
-function pickNeighbour(
-  previousSessions: SessionView[],
-  closedId: SessionId,
-): SessionId | undefined {
+function pickNeighbour(previousSessions: SessionView[], closedId: SessionId): SessionId | undefined {
   const idx = previousSessions.findIndex((s) => s.id === closedId);
   if (idx === -1) return undefined;
   const right = previousSessions[idx + 1];
@@ -586,16 +572,7 @@ export const useSessionStore = create<Store>((set, get) => {
     },
 
     applyActivity: (evt) => {
-      const {
-        sessions,
-        activity,
-        activeId,
-        lastTurnEndAt,
-        lastTurnDurationMs,
-        openTools,
-        openPermissions,
-        inTurn,
-      } = get();
+      const { sessions, activity, activeId, lastTurnEndAt, lastTurnDurationMs, openTools, openPermissions, inTurn } = get();
       // Defensive: drop events for unknown sessions (race with close).
       if (!sessions.some((s) => s.id === evt.sessionId)) return;
 
@@ -641,11 +618,7 @@ export const useSessionStore = create<Store>((set, get) => {
       if (evt.kind === 'awaitingPermission') {
         const prev = openPermissions[evt.sessionId] ?? {};
         const existing = prev[evt.requestId];
-        if (
-          existing &&
-          existing.permissionKind === evt.permissionKind &&
-          existing.summary === evt.summary
-        ) {
+        if (existing && existing.permissionKind === evt.permissionKind && existing.summary === evt.summary) {
           return;
         }
         set({
@@ -842,10 +815,7 @@ export const selectOpenPermissions =
  *
  * `nowSec` is injected so tests can pin time deterministically.
  */
-export function selectDisplayStatus(
-  id: SessionId | undefined,
-  nowSec: number = Math.floor(Date.now() / 1000),
-): (s: Store) => DisplayStatus {
+export function selectDisplayStatus(id: SessionId | undefined, nowSec: number = Math.floor(Date.now() / 1000)): (s: Store) => DisplayStatus {
   return (s: Store): DisplayStatus => {
     if (id === undefined) return 'idle';
     const session = s.sessions.find((x) => x.id === id);
@@ -873,23 +843,15 @@ export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
 export const usePendingClose = (): SessionId | undefined => useSessionStore(selectPendingClose);
 export const useIsHydrated = (): boolean => useSessionStore(selectIsHydrated);
-export const useStatusMessage = (id: SessionId | undefined): string | undefined =>
-  useSessionStore(selectStatusMessage(id));
-export const useHasUnread = (id: SessionId | undefined): boolean =>
-  useSessionStore(selectHasUnread(id));
-export const useActivity = (id: SessionId | undefined): SessionActivity | undefined =>
-  useSessionStore(selectActivity(id));
-export const useMetrics = (id: SessionId | undefined): SessionMetrics | undefined =>
-  useSessionStore(selectMetrics(id));
-export const useLastTurnEndAt = (id: SessionId | undefined): number | undefined =>
-  useSessionStore(selectLastTurnEndAt(id));
-export const useLastTurnDurationMs = (id: SessionId | undefined): number | undefined =>
-  useSessionStore(selectLastTurnDurationMs(id));
-export const useOpenTools = (id: SessionId | undefined): Record<string, OpenTool> | undefined =>
-  useSessionStore(selectOpenTools(id));
-export const useOpenPermissions = (
-  id: SessionId | undefined,
-): Record<string, OpenPermission> | undefined => useSessionStore(selectOpenPermissions(id));
+export const useStatusMessage = (id: SessionId | undefined): string | undefined => useSessionStore(selectStatusMessage(id));
+export const useHasUnread = (id: SessionId | undefined): boolean => useSessionStore(selectHasUnread(id));
+export const useActivity = (id: SessionId | undefined): SessionActivity | undefined => useSessionStore(selectActivity(id));
+export const useMetrics = (id: SessionId | undefined): SessionMetrics | undefined => useSessionStore(selectMetrics(id));
+export const useLastTurnEndAt = (id: SessionId | undefined): number | undefined => useSessionStore(selectLastTurnEndAt(id));
+export const useLastTurnDurationMs = (id: SessionId | undefined): number | undefined => useSessionStore(selectLastTurnDurationMs(id));
+export const useOpenTools = (id: SessionId | undefined): Record<string, OpenTool> | undefined => useSessionStore(selectOpenTools(id));
+export const useOpenPermissions = (id: SessionId | undefined): Record<string, OpenPermission> | undefined =>
+  useSessionStore(selectOpenPermissions(id));
 
 /**
  * Subscribe to the derived `DisplayStatus` for `id`. Recomputes (and
@@ -970,10 +932,7 @@ function useNowTickSeconds(): number {
 export function useActiveSession(): SessionView | undefined {
   const sessions = useSessions();
   const activeId = useActiveSessionId();
-  return useMemo(
-    () => (activeId ? sessions.find((s) => s.id === activeId) : undefined),
-    [sessions, activeId],
-  );
+  return useMemo(() => (activeId ? sessions.find((s) => s.id === activeId) : undefined), [sessions, activeId]);
 }
 
 export function useSessionById(id: SessionId | undefined): SessionView | undefined {

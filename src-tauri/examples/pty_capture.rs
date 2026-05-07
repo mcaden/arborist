@@ -33,10 +33,7 @@ fn main() {
     let program = args.next().expect("program (claude|copilot|...)");
     let cwd = PathBuf::from(args.next().expect("cwd"));
     let out_path = PathBuf::from(args.next().expect("out path"));
-    let seconds: u64 = args
-        .next()
-        .map(|s| s.parse().expect("seconds must be u64"))
-        .unwrap_or(6);
+    let seconds: u64 = args.next().map(|s| s.parse().expect("seconds must be u64")).unwrap_or(6);
 
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent).expect("create out dir");

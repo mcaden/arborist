@@ -112,12 +112,7 @@ void _workspaceSwitchResult;
  * non-optional field of the corresponding interface. Optional fields are
  * checked separately so a fixture may legitimately omit them.
  */
-function assertExactKeys(
-  fixture: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[],
-  label: string,
-): void {
+function assertExactKeys(fixture: Record<string, unknown>, required: readonly string[], optional: readonly string[], label: string): void {
   const fixtureKeys = new Set(Object.keys(fixture));
   const allowed = new Set([...required, ...optional]);
 
@@ -132,18 +127,7 @@ describe('arborist type mirrors', () => {
   it('Session fixture matches TS interface key set', () => {
     assertExactKeys(
       sessionFixture as unknown as Record<string, unknown>,
-      [
-        'id',
-        'tool',
-        'worktreePath',
-        'worktreeName',
-        'label',
-        'composedCommand',
-        'status',
-        'createdAt',
-        'tabIndex',
-        'tempFiles',
-      ],
+      ['id', 'tool', 'worktreePath', 'worktreeName', 'label', 'composedCommand', 'status', 'createdAt', 'tabIndex', 'tempFiles'],
       ['pid', 'instructionSetId', 'aiSessionId'],
       'Session',
     );
@@ -214,39 +198,19 @@ describe('arborist type mirrors', () => {
   });
 
   it('AppError fixture matches { code, message }', () => {
-    assertExactKeys(
-      appErrorFixture as unknown as Record<string, unknown>,
-      ['code', 'message'],
-      [],
-      'AppError',
-    );
+    assertExactKeys(appErrorFixture as unknown as Record<string, unknown>, ['code', 'message'], [], 'AppError');
   });
 
   it('SessionOutputEvent fixture matches TS interface key set', () => {
-    assertExactKeys(
-      sessionOutputEventFixture as unknown as Record<string, unknown>,
-      ['sessionId', 'data'],
-      [],
-      'SessionOutputEvent',
-    );
+    assertExactKeys(sessionOutputEventFixture as unknown as Record<string, unknown>, ['sessionId', 'data'], [], 'SessionOutputEvent');
   });
 
   it('SessionStatusEvent fixture matches TS interface key set', () => {
-    assertExactKeys(
-      sessionStatusEventFixture as unknown as Record<string, unknown>,
-      ['sessionId', 'status'],
-      ['message'],
-      'SessionStatusEvent',
-    );
+    assertExactKeys(sessionStatusEventFixture as unknown as Record<string, unknown>, ['sessionId', 'status'], ['message'], 'SessionStatusEvent');
   });
 
   it('WorkspaceSwitchArgs fixture matches TS interface key set', () => {
-    assertExactKeys(
-      workspaceSwitchArgsFixture as unknown as Record<string, unknown>,
-      ['path'],
-      [],
-      'WorkspaceSwitchArgs',
-    );
+    assertExactKeys(workspaceSwitchArgsFixture as unknown as Record<string, unknown>, ['path'], [], 'WorkspaceSwitchArgs');
   });
 
   it('WorkspaceSwitchResult fixture matches TS interface key set', () => {
@@ -303,21 +267,11 @@ describe('arborist type mirrors', () => {
   });
 
   it('SubSessionExitedEvent fixture matches TS interface key set', () => {
-    assertExactKeys(
-      subSessionExitedEventFixture as unknown as Record<string, unknown>,
-      ['id'],
-      ['exitCode'],
-      'SubSessionExitedEvent',
-    );
+    assertExactKeys(subSessionExitedEventFixture as unknown as Record<string, unknown>, ['id'], ['exitCode'], 'SubSessionExitedEvent');
   });
 
   it('SubSessionRestoredEvent fixture matches TS interface key set', () => {
-    assertExactKeys(
-      subSessionRestoredEventFixture as unknown as Record<string, unknown>,
-      ['subSession'],
-      [],
-      'SubSessionRestoredEvent',
-    );
+    assertExactKeys(subSessionRestoredEventFixture as unknown as Record<string, unknown>, ['subSession'], [], 'SubSessionRestoredEvent');
   });
 
   it('CustomProcessKind wire values are lowercase string literals', () => {
@@ -325,8 +279,6 @@ describe('arborist type mirrors', () => {
   });
 
   it('SubSessionStatus wire values are lowercase string literals', () => {
-    expectTypeOf<SubSession['status']>().toEqualTypeOf<
-      'starting' | 'running' | 'exited' | 'error'
-    >();
+    expectTypeOf<SubSession['status']>().toEqualTypeOf<'starting' | 'running' | 'exited' | 'error'>();
   });
 });

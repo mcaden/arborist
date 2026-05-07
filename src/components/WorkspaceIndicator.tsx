@@ -34,22 +34,12 @@ export function WorkspaceIndicator(): JSX.Element | null {
 
   return (
     <>
-      <div
-        className="flex items-center gap-2 border-b border-slate-200 px-3 py-2 text-xs dark:border-slate-800"
-        data-testid="workspace-indicator"
-      >
+      <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2 text-xs dark:border-slate-800" data-testid="workspace-indicator">
         <div className="min-w-0 flex-1">
-          <p
-            className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400"
-            id="workspace-label"
-          >
+          <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400" id="workspace-label">
             Workspace
           </p>
-          <p
-            className="truncate text-sm font-medium text-slate-800 dark:text-slate-100"
-            title={workspaceRoot}
-            aria-labelledby="workspace-label"
-          >
+          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100" title={workspaceRoot} aria-labelledby="workspace-label">
             {basename(workspaceRoot)}
           </p>
         </div>
@@ -63,12 +53,7 @@ export function WorkspaceIndicator(): JSX.Element | null {
       </div>
       {picking ? (
         <div className="fixed inset-0 z-40 bg-black/40">
-          <WorkspacePicker
-            mode="change"
-            initialPath={workspaceRoot}
-            onConfirm={handleConfirm}
-            onCancel={() => setPicking(false)}
-          />
+          <WorkspacePicker mode="change" initialPath={workspaceRoot} onConfirm={handleConfirm} onCancel={() => setPicking(false)} />
         </div>
       ) : null}
     </>

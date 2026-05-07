@@ -3,29 +3,28 @@
 //! Sub-sessions are user-launched secondary processes attached to a parent
 //! [`Session`]. There are two flavours:
 //!
-//! * **Terminal** — a PTY hosted in-app, owned by the [`SubPtyPool`]
-//!   defined here. Output flows over `session://output` (the existing
-//!   stream — UUID id space is global), status flows over
-//!   `subsession://status`.
-//! * **Application** — a detached external GUI process. Phase 3 will own
-//!   the spawn / window-focus implementation. Phase 2's
-//!   `subsession_create` rejects this kind with `NotImplemented`.
+//! * **Terminal** — a PTY hosted in-app, owned by the [`SubPtyPool`] defined
+//!   here. Output flows over `session://output` (the existing stream — UUID id
+//!   space is global), status flows over `subsession://status`.
+//! * **Application** — a detached external GUI process. Phase 3 will own the
+//!   spawn / window-focus implementation. Phase 2's `subsession_create` rejects
+//!   this kind with `NotImplemented`.
 //!
 //! ## Design choices
 //!
 //! - **Separate pool, not a refactor of [`crate::pty_pool::PtyPool`].** We
-//!   intentionally keep the existing session pool untouched. The
-//!   sub-session pool reuses [`PtySpawner`] / [`ChildCommand`] /
-//!   [`SpawnedChild`] / [`Utf8Stream`] from [`crate::pty_pool`] so the
-//!   spawn primitive itself isn't duplicated, but the per-runtime state
-//!   and lifecycle are owned independently. This matches the
-//!   "compose-once, store-and-reuse" rule from DESIGN §5.4: sub-sessions
-//!   have their own [`composed_command`](SubSession::composed_command).
-//! - **No activity scanner.** Sub-tabs are plain terminals; we don't
-//!   reuse the OTel/title/idle scanning today. Phase 7+ may revisit.
+//!   intentionally keep the existing session pool untouched. The sub-session
+//!   pool reuses [`PtySpawner`] / [`ChildCommand`] / [`SpawnedChild`] /
+//!   [`Utf8Stream`] from [`crate::pty_pool`] so the spawn primitive itself
+//!   isn't duplicated, but the per-runtime state and lifecycle are owned
+//!   independently. This matches the "compose-once, store-and-reuse" rule from
+//!   DESIGN §5.4: sub-sessions have their own
+//!   [`composed_command`](SubSession::composed_command).
+//! - **No activity scanner.** Sub-tabs are plain terminals; we don't reuse the
+//!   OTel/title/idle scanning today. Phase 7+ may revisit.
 //! - **Bounded backpressure mirrors the session pool** (DESIGN §8.3).
-//! - **Locks are never held across `.await`.** All async paths follow
-//!   "lock → take → drop → await".
+//! - **Locks are never held across `.await`.** All async paths follow "lock →
+//!   take → drop → await".
 //!
 //! ## Public surface
 //!
@@ -34,8 +33,8 @@
 //!   callbacks (mirrors [`crate::pty_pool::PtySink`]).
 //! - [`SubSessionStore`] — in-memory metadata store for live sub-sessions
 //!   indexed by id and (orderedly) by parent.
-//! - [`SubAppContext`] — managed Tauri state combining the pool, store,
-//!   and sink for command handlers.
+//! - [`SubAppContext`] — managed Tauri state combining the pool, store, and
+//!   sink for command handlers.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -51,13 +50,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 use crate::pty_pool::{
-    ChildCommand, KillOutcome, PtyKiller, PtyResize, PtySpawner, PtyWaiter, SpawnedChild,
-    Utf8Stream, DROP_LOG_EVERY, KILL_GRACE, OUTPUT_CHANNEL_CAPACITY,
+    ChildCommand, KillOutcome, PtyKiller, PtyResize, PtySpawner, PtyWaiter, SpawnedChild, Utf8Stream, DROP_LOG_EVERY, KILL_GRACE,
+    OUTPUT_CHANNEL_CAPACITY,
 };
 use crate::types::{Error, SessionId, SubSession, SubSessionId, SubSessionStatus};
 
-/// Default initial PTY size for sub-tabs. Identical to the session pool's
-/// default; the frontend re-fits on first attach.
+/// Default initial PTY size for sub-tabs. Identical to the session pool's default; the frontend re-fits on first attach.
 pub const DEFAULT_SUB_PTY_SIZE: PtySize = PtySize {
     rows: 24,
     cols: 80,
@@ -67,26 +65,20 @@ pub const DEFAULT_SUB_PTY_SIZE: PtySize = PtySize {
 
 const DRAIN_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
-// ---------------------------------------------------------------------------
-// Sink — Tauri-agnostic seam
+// --------------------------------------------------------------------------- Sink — Tauri-agnostic seam
 // ---------------------------------------------------------------------------
 
 /// Output bytes from a sub-session's PTY.
 pub type SubOutputCb = Arc<dyn Fn(&SubSessionId, String) + Send + Sync>;
 /// Status update for a sub-session — fires on `Running`, `Exited`, `Error`.
-pub type SubStatusCb =
-    Arc<dyn Fn(&SubSessionId, SubSessionStatus, Option<u32>, Option<String>) + Send + Sync>;
-/// Exit notification used by Phase 3's application launcher. Phase 2's
-/// terminal pool does not call this directly (it uses [`SubStatusCb`] with
+pub type SubStatusCb = Arc<dyn Fn(&SubSessionId, SubSessionStatus, Option<u32>, Option<String>) + Send + Sync>;
+/// Exit notification used by Phase 3's application launcher. Phase 2's terminal pool does not call this directly (it uses [`SubStatusCb`] with
 /// [`SubSessionStatus::Exited`]); kept on the sink so production wiring
 /// has a single place to emit `subsession://exited`.
 pub type SubExitedCb = Arc<dyn Fn(&SubSessionId, Option<i32>) + Send + Sync>;
-/// Phase 7 restore-on-launch notification. Fired once per sub-session
-/// re-materialised from `AppConfig.lastOpenSubSessions` so the frontend
-/// store can insert the entry **before** any subsequent
-/// `subsession://status` event for that id (otherwise the status event
-/// would be ignored as "unknown id"). Carries the full [`SubSession`]
-/// because hydrate has already returned by the time restore runs.
+/// Phase 7 restore-on-launch notification. Fired once per sub-session re-materialised from `AppConfig.lastOpenSubSessions` so the frontend store can
+/// insert the entry **before** any subsequent `subsession://status` event for that id (otherwise the status event would be ignored as "unknown id").
+/// Carries the full [`SubSession`] because hydrate has already returned by the time restore runs.
 pub type SubRestoredCb = Arc<dyn Fn(&SubSession) + Send + Sync>;
 
 #[derive(Clone)]
@@ -99,12 +91,7 @@ pub struct SubPtySink {
 
 impl SubPtySink {
     #[must_use]
-    pub fn new(
-        output: SubOutputCb,
-        status: SubStatusCb,
-        exited: SubExitedCb,
-        restored: SubRestoredCb,
-    ) -> Self {
+    pub fn new(output: SubOutputCb, status: SubStatusCb, exited: SubExitedCb, restored: SubRestoredCb) -> Self {
         Self {
             output,
             status,
@@ -125,8 +112,7 @@ impl SubPtySink {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SubPtyPool — runtime pool for terminal sub-sessions
+// --------------------------------------------------------------------------- SubPtyPool — runtime pool for terminal sub-sessions
 // ---------------------------------------------------------------------------
 
 struct SubRuntime {
@@ -169,29 +155,17 @@ impl SubPtyPool {
     }
 
     pub fn contains(&self, id: &SubSessionId) -> bool {
-        self.inner
-            .lock()
-            .map(|g| g.contains_key(id))
-            .unwrap_or(false)
+        self.inner.lock().map(|g| g.contains_key(id)).unwrap_or(false)
     }
 
     pub fn pid_of(&self, id: &SubSessionId) -> Option<u32> {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|g| g.get(id).map(|rt| rt.pid))
+        self.inner.lock().ok().and_then(|g| g.get(id).map(|rt| rt.pid))
     }
 
     /// Spawn `composed_command` under the platform shell at `cwd`. Reuses
     /// [`crate::compose::platform_shell`] so the wrapper matches the
     /// session pool exactly. Returns the assigned PID.
-    pub fn spawn_terminal(
-        &self,
-        id: SubSessionId,
-        composed_command: String,
-        cwd: PathBuf,
-        sink: SubPtySink,
-    ) -> Result<u32, Error> {
+    pub fn spawn_terminal(&self, id: SubSessionId, composed_command: String, cwd: PathBuf, sink: SubPtySink) -> Result<u32, Error> {
         let shell = crate::compose::platform_shell();
         let cmd = ChildCommand {
             program: shell.program.clone(),
@@ -201,16 +175,9 @@ impl SubPtyPool {
         self.spawn_raw(id, cmd, cwd, sink)
     }
 
-    /// Lower-level spawn used by Phase 3's application launcher tests
-    /// (and the public terminal entrypoint above). Bypasses the platform
-    /// shell wrapper — the caller composes `cmd` directly.
-    pub fn spawn_raw(
-        &self,
-        id: SubSessionId,
-        cmd: ChildCommand,
-        cwd: PathBuf,
-        sink: SubPtySink,
-    ) -> Result<u32, Error> {
+    /// Lower-level spawn used by Phase 3's application launcher tests (and the public terminal entrypoint above). Bypasses the platform shell wrapper
+    /// — the caller composes `cmd` directly.
+    pub fn spawn_raw(&self, id: SubSessionId, cmd: ChildCommand, cwd: PathBuf, sink: SubPtySink) -> Result<u32, Error> {
         let spawned = self.spawner.spawn(cmd, &cwd, DEFAULT_SUB_PTY_SIZE)?;
         let SpawnedChild {
             pid,
@@ -221,10 +188,8 @@ impl SubPtyPool {
             killer,
         } = spawned;
 
-        // ----- transactional setup --------------------------------------
-        // Track resources we have to clean up if any subsequent step
-        // fails. On the happy path we `take()` each piece into the
-        // `SubRuntime` and `forget()` the rollback set.
+        // ----- transactional setup -------------------------------------- Track resources we have to clean up if any subsequent step fails. On the
+        // happy path we `take()` each piece into the `SubRuntime` and `forget()` the rollback set.
         let killer_for_rollback = killer.clone();
         let rollback = |reason: &str| {
             // Best-effort: kill the child if we haven't recorded it yet.
@@ -271,15 +236,11 @@ impl SubPtyPool {
             cancel.cancel();
             drain.abort();
             rollback("read thread spawn failure");
-            return Err(Error::PtySpawnFailed(format!(
-                "spawn sub read thread failed: {e}"
-            )));
+            return Err(Error::PtySpawnFailed(format!("spawn sub read thread failed: {e}")));
         }
 
-        // Hand the wait thread a self-cleanup closure so naturally-
-        // exited sub-sessions don't accumulate runtime state in the
-        // pool. We only Weak-reference `inner` so that pool teardown
-        // (Drop) doesn't have to wait for the thread.
+        // Hand the wait thread a self-cleanup closure so naturally- exited sub-sessions don't accumulate runtime state in the pool. We only
+        // Weak-reference `inner` so that pool teardown (Drop) doesn't have to wait for the thread.
         let wait_id = id;
         let wait_sink = sink.clone();
         let wait_killed = Arc::clone(&killed);
@@ -302,21 +263,14 @@ impl SubPtyPool {
             Err(e) => {
                 cancel.cancel();
                 drain.abort();
-                // The read thread is detached; killing the child closes
-                // its PTY which causes `read` to return Ok(0) and the
-                // loop exits.
+                // The read thread is detached; killing the child closes its PTY which causes `read` to return Ok(0) and the loop exits.
                 rollback("wait thread spawn failure");
-                return Err(Error::PtySpawnFailed(format!(
-                    "spawn sub wait thread failed: {e}"
-                )));
+                return Err(Error::PtySpawnFailed(format!("spawn sub wait thread failed: {e}")));
             }
         };
 
         {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
+            let mut guard = self.inner.lock().map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
             guard.insert(
                 id,
                 SubRuntime {
@@ -340,57 +294,35 @@ impl SubPtyPool {
 
     pub fn write(&self, id: &SubSessionId, data: &[u8]) -> Result<(), Error> {
         let writer = {
-            let guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
-            let rt = guard
-                .get(id)
-                .ok_or_else(|| Error::NotFound(format!("sub session {id} not in pool")))?;
+            let guard = self.inner.lock().map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
+            let rt = guard.get(id).ok_or_else(|| Error::NotFound(format!("sub session {id} not in pool")))?;
             Arc::clone(&rt.writer)
         };
-        let mut g = writer
-            .lock()
-            .map_err(|_| Error::Internal("sub pty writer mutex poisoned".into()))?;
-        g.write_all(data)
-            .map_err(|e| Error::PtyWriteFailed(format!("write failed: {e}")))?;
-        g.flush()
-            .map_err(|e| Error::PtyWriteFailed(format!("flush failed: {e}")))
+        let mut g = writer.lock().map_err(|_| Error::Internal("sub pty writer mutex poisoned".into()))?;
+        g.write_all(data).map_err(|e| Error::PtyWriteFailed(format!("write failed: {e}")))?;
+        g.flush().map_err(|e| Error::PtyWriteFailed(format!("flush failed: {e}")))
     }
 
     pub fn resize(&self, id: &SubSessionId, cols: u16, rows: u16) -> Result<(), Error> {
         let resize = {
-            let guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
-            let rt = guard
-                .get(id)
-                .ok_or_else(|| Error::NotFound(format!("sub session {id} not in pool")))?;
+            let guard = self.inner.lock().map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
+            let rt = guard.get(id).ok_or_else(|| Error::NotFound(format!("sub session {id} not in pool")))?;
             Arc::clone(&rt.resize)
         };
         resize.resize(cols, rows)
     }
 
-    /// Kill the child, tear down its read/wait threads + drain task,
-    /// remove the entry. Mirrors [`PtyPool::kill`] (sans temp-dir cleanup
-    /// since sub-sessions don't own one).
+    /// Kill the child, tear down its read/wait threads + drain task, remove the entry. Mirrors [`PtyPool::kill`] (sans temp-dir cleanup since
+    /// sub-sessions don't own one).
     ///
-    /// Returns [`KillOutcome::Reaped`] when both `killer.kill()` and the
-    /// wait-thread join succeeded within [`KILL_GRACE`]; returns
+    /// Returns [`KillOutcome::Reaped`] when both `killer.kill()` and the wait-thread join succeeded within [`KILL_GRACE`]; returns
     /// [`KillOutcome::Unconfirmed`] when either signalled failure (the
-    /// underlying OS process **may** still be alive at the recorded PID).
-    /// The pool entry has been removed in either case so callers can
-    /// safely re-spawn the same id; `Unconfirmed` is an advisory signal
-    /// for cascade callers to keep an orphan record visible per CP-07
-    /// rather than silently leak a runaway process. `NotFound` is
-    /// returned only when the id was already absent from the pool.
+    /// underlying OS process **may** still be alive at the recorded PID). The pool entry has been removed in either case so callers can safely
+    /// re-spawn the same id; `Unconfirmed` is an advisory signal for cascade callers to keep an orphan record visible per CP-07 rather than silently
+    /// leak a runaway process. `NotFound` is returned only when the id was already absent from the pool.
     pub async fn kill(&self, id: &SubSessionId) -> Result<KillOutcome, Error> {
         let rt = {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
+            let mut guard = self.inner.lock().map_err(|_| Error::Internal("sub pty pool mutex poisoned".into()))?;
             guard.remove(id)
         };
         let Some(rt) = rt else {
@@ -398,11 +330,9 @@ impl SubPtyPool {
         };
         let pid = rt.pid;
         rt.killed.store(true, Ordering::SeqCst);
-        // Capture the killer result instead of swallowing it. SIGKILL /
-        // TerminateProcess rarely fail in practice, but when they do the
-        // OS process can outlive the pool entry; cascade callers need
-        // this signal to keep the orphan visible per CP-07. Mirrors the
-        // change applied to `PtyPool::kill` (see pty_pool.rs §"step 3").
+        // Capture the killer result instead of swallowing it. SIGKILL / TerminateProcess rarely fail in practice, but when they do the OS process can
+        // outlive the pool entry; cascade callers need this signal to keep the orphan visible per CP-07. Mirrors the change applied to
+        // `PtyPool::kill` (see pty_pool.rs §"step 3").
         let killer_result = rt.killer.kill();
         drop(rt.sender);
         rt.cancel.cancel();
@@ -413,16 +343,11 @@ impl SubPtyPool {
         }
         let wait_joined = if let Some(handle) = rt.wait_thread {
             matches!(
-                timeout(
-                    KILL_GRACE,
-                    tokio::task::spawn_blocking(move || handle.join()),
-                )
-                .await,
+                timeout(KILL_GRACE, tokio::task::spawn_blocking(move || handle.join()),).await,
                 Ok(Ok(Ok(()))),
             )
         } else {
-            // No wait thread (some test paths). Treat as confirmed since
-            // there is nothing left to verify.
+            // No wait thread (some test paths). Treat as confirmed since there is nothing left to verify.
             true
         };
         if killer_result.is_err() || !wait_joined {
@@ -464,23 +389,14 @@ impl SubPtyPool {
 
 impl Drop for SubPtyPool {
     fn drop(&mut self) {
-        let ids: Vec<SubSessionId> = self
-            .inner
-            .lock()
-            .map(|g| g.keys().copied().collect())
-            .unwrap_or_default();
+        let ids: Vec<SubSessionId> = self.inner.lock().map(|g| g.keys().copied().collect()).unwrap_or_default();
         for id in ids {
             self.kill_blocking(&id);
         }
     }
 }
 
-fn sub_read_loop(
-    id: SubSessionId,
-    mut reader: Box<dyn Read + Send>,
-    sender: mpsc::Sender<String>,
-    dropped: Arc<AtomicUsize>,
-) {
+fn sub_read_loop(id: SubSessionId, mut reader: Box<dyn Read + Send>, sender: mpsc::Sender<String>, dropped: Arc<AtomicUsize>) {
     let mut decoder = Utf8Stream::default();
     let mut buf = [0u8; 4096];
     loop {
@@ -518,17 +434,10 @@ fn sub_read_loop(
     }
 }
 
-fn sub_wait_loop(
-    id: SubSessionId,
-    waiter: Box<dyn PtyWaiter>,
-    sink: SubPtySink,
-    killed: Arc<AtomicBool>,
-    cleanup: impl FnOnce() + Send + 'static,
-) {
+fn sub_wait_loop(id: SubSessionId, waiter: Box<dyn PtyWaiter>, sink: SubPtySink, killed: Arc<AtomicBool>, cleanup: impl FnOnce() + Send + 'static) {
     let result = waiter.wait();
     let was_killed = killed.load(Ordering::SeqCst);
-    // Always clean up runtime state — whether the exit was natural or
-    // triggered by `kill()` we no longer want to retain writers/handles.
+    // Always clean up runtime state — whether the exit was natural or triggered by `kill()` we no longer want to retain writers/handles.
     cleanup();
     if was_killed {
         return;
@@ -540,14 +449,11 @@ fn sub_wait_loop(
     (sink.status)(&id, status, None, None);
 }
 
-// ---------------------------------------------------------------------------
-// SubSessionStore — in-memory metadata indexed by id and parent
+// --------------------------------------------------------------------------- SubSessionStore — in-memory metadata indexed by id and parent
 // ---------------------------------------------------------------------------
 
-/// Live metadata for the sub-sessions currently tracked by the runtime.
-/// Persistence (the lightweight [`crate::types::SubSessionRecord`] list)
-/// lives in [`crate::config_store`]; this struct is the in-memory view
-/// that command handlers read/write while the app is running.
+/// Live metadata for the sub-sessions currently tracked by the runtime. Persistence (the lightweight [`crate::types::SubSessionRecord`] list) lives
+/// in [`crate::config_store`]; this struct is the in-memory view that command handlers read/write while the app is running.
 #[derive(Default)]
 pub struct SubSessionStore {
     inner: Mutex<StoreInner>,
@@ -556,8 +462,7 @@ pub struct SubSessionStore {
 #[derive(Default)]
 struct StoreInner {
     by_id: BTreeMap<SubSessionId, SubSession>,
-    /// Insertion order per parent, so the sidebar renders sub-tabs
-    /// underneath their parent in the same order they were created.
+    /// Insertion order per parent, so the sidebar renders sub-tabs underneath their parent in the same order they were created.
     by_parent: BTreeMap<SessionId, Vec<SubSessionId>>,
 }
 
@@ -567,38 +472,24 @@ impl SubSessionStore {
         Self::default()
     }
 
-    /// Insert a freshly-created sub-session. Returns an error if the id
-    /// is already present (caller bug — UUIDs collide once per universe).
+    /// Insert a freshly-created sub-session. Returns an error if the id is already present (caller bug — UUIDs collide once per universe).
     pub fn insert(&self, sub: SubSession) -> Result<(), Error> {
         let mut g = self
             .inner
             .lock()
             .map_err(|_| Error::Internal("sub session store mutex poisoned".into()))?;
         if g.by_id.contains_key(&sub.id) {
-            return Err(Error::Internal(format!(
-                "sub session {} already exists",
-                sub.id
-            )));
+            return Err(Error::Internal(format!("sub session {} already exists", sub.id)));
         }
-        g.by_parent
-            .entry(sub.parent_session_id)
-            .or_default()
-            .push(sub.id);
+        g.by_parent.entry(sub.parent_session_id).or_default().push(sub.id);
         g.by_id.insert(sub.id, sub);
         Ok(())
     }
 
-    /// Update the [`SubSessionStatus`] of an existing sub-session and
-    /// optionally its PID. No-op (returns `Ok`) if the id is unknown —
-    /// the wait thread can race `subsession_close` and that's not a
-    /// caller bug. The PID is forced to `None` for terminal states
-    /// (`Exited`/`Error`) regardless of the supplied value.
-    pub fn set_status(
-        &self,
-        id: &SubSessionId,
-        status: SubSessionStatus,
-        pid: Option<u32>,
-    ) -> Result<(), Error> {
+    /// Update the [`SubSessionStatus`] of an existing sub-session and optionally its PID. No-op (returns `Ok`) if the id is unknown — the wait thread
+    /// can race `subsession_close` and that's not a caller bug. The PID is forced to `None` for terminal states (`Exited`/`Error`) regardless of the
+    /// supplied value.
+    pub fn set_status(&self, id: &SubSessionId, status: SubSessionStatus, pid: Option<u32>) -> Result<(), Error> {
         let mut g = self
             .inner
             .lock()
@@ -627,9 +518,8 @@ impl SubSessionStore {
         Some(sub)
     }
 
-    /// Snapshot of all sub-sessions, parent-grouped insertion order
-    /// preserved within each parent group, parents in no guaranteed
-    /// order. Use [`Self::list_for`] when the parent is known.
+    /// Snapshot of all sub-sessions, parent-grouped insertion order preserved within each parent group, parents in no guaranteed order. Use
+    /// [`Self::list_for`] when the parent is known.
     pub fn list_all(&self) -> Vec<SubSession> {
         let g = match self.inner.lock() {
             Ok(g) => g,
@@ -655,37 +545,28 @@ impl SubSessionStore {
         let Some(ids) = g.by_parent.get(parent) else {
             return Vec::new();
         };
-        ids.iter()
-            .filter_map(|id| g.by_id.get(id).cloned())
-            .collect()
+        ids.iter().filter_map(|id| g.by_id.get(id).cloned()).collect()
     }
 
     pub fn get(&self, id: &SubSessionId) -> Option<SubSession> {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|g| g.by_id.get(id).cloned())
+        self.inner.lock().ok().and_then(|g| g.by_id.get(id).cloned())
     }
 }
 
-// ---------------------------------------------------------------------------
-// SubAppContext — managed Tauri state combining pool + store + sink
+// --------------------------------------------------------------------------- SubAppContext — managed Tauri state combining pool + store + sink
 // ---------------------------------------------------------------------------
 
-/// Wiring shared by every Phase 2+ sub-session command handler. Held in
-/// Tauri managed state alongside the existing [`crate::commands::AppContext`].
+/// Wiring shared by every Phase 2+ sub-session command handler. Held in Tauri managed state alongside the existing [`crate::commands::AppContext`].
 pub struct SubAppContext {
     pub pool: Arc<SubPtyPool>,
     pub store: Arc<SubSessionStore>,
     pub sink: SubPtySink,
     /// Phase 3: pool for application-kind sub-sessions (no PTY).
     pub app_pool: Arc<crate::app_launcher::AppPool>,
-    /// Phase 3: window focuser used by `subsession_focus` for
-    /// application-kind sub-sessions.
+    /// Phase 3: window focuser used by `subsession_focus` for application-kind sub-sessions.
     pub focuser: Arc<dyn crate::window_focus::WindowFocuser>,
-    /// Best-effort process-icon cache for application sub-tabs.
-    /// See `crate::process_icon` module docs for the trade-offs (cache
-    /// keyed by exe path, no negative caching).
+    /// Best-effort process-icon cache for application sub-tabs. See `crate::process_icon` module docs for the trade-offs (cache keyed by exe path, no
+    /// negative caching).
     pub icon_cache: Arc<crate::process_icon::IconCache>,
 }
 
@@ -710,21 +591,15 @@ impl SubAppContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
+// --------------------------------------------------------------------------- Helpers
 // ---------------------------------------------------------------------------
 
-/// Make a [`SubSession`] ready to insert into the store. The returned
-/// `composed_command` mirrors the session-pool rule: the launch command
-/// is captured once at creation time (DESIGN §5.4 "compose once,
-/// store-and-reuse"); later edits to the source [`crate::types::CustomProcessDef`]
-/// do not retroactively rewrite already-running sub-sessions.
+/// Make a [`SubSession`] ready to insert into the store. The returned `composed_command` mirrors the session-pool rule: the launch command is
+/// captured once at creation time (DESIGN §5.4 "compose once, store-and-reuse"); later edits to the source
+/// [`crate::types::CustomProcessDef`] do not retroactively rewrite
+/// already-running sub-sessions.
 #[must_use]
-pub fn build_sub_session(
-    parent_session_id: SessionId,
-    def: &crate::types::CustomProcessDef,
-    composed_command: String,
-) -> SubSession {
+pub fn build_sub_session(parent_session_id: SessionId, def: &crate::types::CustomProcessDef, composed_command: String) -> SubSession {
     SubSession {
         id: SubSessionId::default(),
         parent_session_id,
@@ -748,17 +623,14 @@ fn now_unix_seconds() -> i64 {
         })
 }
 
-/// Compute the cwd a sub-session should spawn under: the parent
-/// session's worktree path. Centralised so future tools that need
-/// alternative working directories (e.g. project-root over worktree)
-/// have a single place to override.
+/// Compute the cwd a sub-session should spawn under: the parent session's worktree path. Centralised so future tools that need alternative working
+/// directories (e.g. project-root over worktree) have a single place to override.
 #[must_use]
 pub fn sub_session_cwd(parent: &crate::types::Session) -> &Path {
     parent.worktree_path.as_path()
 }
 
-// ---------------------------------------------------------------------------
-// Tests
+// --------------------------------------------------------------------------- Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -771,8 +643,7 @@ mod tests {
 
     // ----- fakes -------------------------------------------------------
 
-    /// Test-only Read implementation backed by a shared byte queue.
-    /// Blocking-poll model so it behaves like a real PTY reader.
+    /// Test-only Read implementation backed by a shared byte queue. Blocking-poll model so it behaves like a real PTY reader.
     struct FakeReader {
         queue: Arc<StdMutex<Vec<u8>>>,
         eof: Arc<AtomicBool>,
@@ -882,12 +753,7 @@ mod tests {
     }
 
     impl PtySpawner for FakeSpawner {
-        fn spawn(
-            &self,
-            _cmd: ChildCommand,
-            _cwd: &Path,
-            _size: PtySize,
-        ) -> Result<SpawnedChild, Error> {
+        fn spawn(&self, _cmd: ChildCommand, _cwd: &Path, _size: PtySize) -> Result<SpawnedChild, Error> {
             let reader_queue = Arc::new(StdMutex::new(Vec::new()));
             let reader_eof = Arc::new(AtomicBool::new(false));
             let writer_captured = Arc::new(StdMutex::new(Vec::new()));
@@ -905,9 +771,7 @@ mod tests {
             Ok(SpawnedChild {
                 pid,
                 reader: Box::new(FakeReader::new(reader_queue, reader_eof)),
-                writer: Box::new(FakeWriter {
-                    captured: writer_captured,
-                }),
+                writer: Box::new(FakeWriter { captured: writer_captured }),
                 resize: Arc::new(FakeResize),
                 waiter: Box::new(FakeWaiter {
                     exit_signal: Arc::clone(&exit_signal),
@@ -970,9 +834,7 @@ mod tests {
         s.status = SubSessionStatus::Running;
         let id = s.id;
         store.insert(s).unwrap();
-        store
-            .set_status(&id, SubSessionStatus::Exited, None)
-            .unwrap();
+        store.set_status(&id, SubSessionStatus::Exited, None).unwrap();
         let after = store.get(&id).unwrap();
         assert_eq!(after.status, SubSessionStatus::Exited);
         assert_eq!(after.pid, None);
@@ -983,9 +845,7 @@ mod tests {
         let store = SubSessionStore::new();
         let id = SubSessionId::default();
         // Race: wait thread fires after subsession_close already removed.
-        store
-            .set_status(&id, SubSessionStatus::Exited, None)
-            .unwrap();
+        store.set_status(&id, SubSessionStatus::Exited, None).unwrap();
     }
 
     #[test]
@@ -1018,9 +878,7 @@ mod tests {
         );
 
         let id = SubSessionId::default();
-        let pid = pool
-            .spawn_terminal(id, "echo hi".to_owned(), PathBuf::from("."), sink)
-            .expect("spawn");
+        let pid = pool.spawn_terminal(id, "echo hi".to_owned(), PathBuf::from("."), sink).expect("spawn");
         assert!(pid >= 1000);
         assert!(pool.contains(&id));
 
@@ -1032,27 +890,16 @@ mod tests {
         // Wait for the wait-thread to emit Exited.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            if observed
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(s, _)| matches!(s, SubSessionStatus::Exited))
-            {
+            if observed.lock().unwrap().iter().any(|(s, _)| matches!(s, SubSessionStatus::Exited)) {
                 break;
             }
             if std::time::Instant::now() > deadline {
-                panic!(
-                    "never observed Exited; events: {:?}",
-                    observed.lock().unwrap()
-                );
+                panic!("never observed Exited; events: {:?}", observed.lock().unwrap());
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let events = observed.lock().unwrap().clone();
-        assert!(matches!(
-            events.first(),
-            Some((SubSessionStatus::Running, Some(_)))
-        ));
+        assert!(matches!(events.first(), Some((SubSessionStatus::Running, Some(_)))));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1060,13 +907,8 @@ mod tests {
         let spawner = Arc::new(FakeSpawner::new());
         let pool = SubPtyPool::new(spawner.clone());
         let id = SubSessionId::default();
-        pool.spawn_terminal(
-            id,
-            "echo".to_owned(),
-            PathBuf::from("."),
-            SubPtySink::noop(),
-        )
-        .expect("spawn");
+        pool.spawn_terminal(id, "echo".to_owned(), PathBuf::from("."), SubPtySink::noop())
+            .expect("spawn");
         assert!(pool.contains(&id));
 
         // Simulate natural exit: child process ends, reader closes.
@@ -1091,13 +933,8 @@ mod tests {
         let spawner = Arc::new(FakeSpawner::new());
         let pool = SubPtyPool::new(spawner);
         let id = SubSessionId::default();
-        pool.spawn_terminal(
-            id,
-            "sleep".to_owned(),
-            PathBuf::from("."),
-            SubPtySink::noop(),
-        )
-        .expect("spawn");
+        pool.spawn_terminal(id, "sleep".to_owned(), PathBuf::from("."), SubPtySink::noop())
+            .expect("spawn");
         assert!(pool.contains(&id));
         pool.kill(&id).await.expect("kill");
         assert!(!pool.contains(&id));
@@ -1116,8 +953,7 @@ mod tests {
             Arc::new(|_| {}),
         );
         let id = SubSessionId::default();
-        pool.spawn_terminal(id, "x".to_owned(), PathBuf::from("."), sink)
-            .expect("spawn");
+        pool.spawn_terminal(id, "x".to_owned(), PathBuf::from("."), sink).expect("spawn");
         spawner.child(0).push(b"hello world\n");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);

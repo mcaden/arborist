@@ -84,26 +84,14 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   };
 
   return (
-    <div
-      role="tabpanel"
-      aria-label={session ? `Terminal for ${session.label}` : 'Terminal'}
-      className="relative h-full w-full bg-black p-2"
-    >
+    <div role="tabpanel" aria-label={session ? `Terminal for ${session.label}` : 'Terminal'} className="relative h-full w-full bg-black p-2">
       <div ref={containerRef} className="h-full w-full bg-black" />
       {showOverlay && (
-        <div
-          role="alert"
-          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70"
-        >
+        <div role="alert" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70">
           <div className="pointer-events-auto flex max-w-md flex-col items-center gap-3 rounded border border-slate-700 bg-slate-900 p-4 text-slate-100 shadow-lg">
-            <p className="text-sm">
-              {status === 'error' ? 'Session encountered an error.' : 'Session exited.'}
-            </p>
+            <p className="text-sm">{status === 'error' ? 'Session encountered an error.' : 'Session exited.'}</p>
             {statusMessage && (
-              <p
-                data-testid="terminal-status-message"
-                className="max-w-full break-words text-center text-xs text-slate-300"
-              >
+              <p data-testid="terminal-status-message" className="max-w-full break-words text-center text-xs text-slate-300">
                 {statusMessage}
               </p>
             )}

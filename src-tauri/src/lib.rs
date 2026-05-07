@@ -2,8 +2,7 @@
 //!
 //! Phase 2 introduces the shared data model in [`types`]; Phase 3 adds the
 //! [`commands`] module with the typed RPC scaffold (currently just `ping`).
-//! Later phases will add the PTY pool, config store, and real command
-//! handlers.
+//! Later phases will add the PTY pool, config store, and real command handlers.
 
 pub mod activity;
 pub mod app_launcher;
@@ -23,19 +22,16 @@ pub mod vscode_owner;
 pub mod window_focus;
 
 pub use types::{
-    AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
-    PartialAppConfig, PartialDefaultInstructionSets, Session, SessionCreateArgs, SessionId,
-    SessionIdArg, SessionInputArgs, SessionMetricsEvent, SessionOutputEvent, SessionResizeArgs,
-    SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs,
-    WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeInfo,
-    CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
+    SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionMetricsEvent, SessionOutputEvent, SessionResizeArgs, SessionStatus,
+    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    WorktreeInfo, CONFIG_VERSION_CURRENT,
 };
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-/// Keeps the non-blocking file-appender thread alive for the duration of the
-/// app.  Stored in Tauri managed state so it is dropped when the app exits.
+/// Keeps the non-blocking file-appender thread alive for the duration of the app.  Stored in Tauri managed state so it is dropped when the app exits.
 #[allow(dead_code)]
 struct LogGuard(WorkerGuard);
 
@@ -45,15 +41,12 @@ fn make_env_filter() -> EnvFilter {
 
 /// Initialise the global `tracing` subscriber.
 ///
-/// When `log_dir` is `Some`, a rolling daily log file is written alongside
-/// the console output.  The file writer runs on a background thread; the
+/// When `log_dir` is `Some`, a rolling daily log file is written alongside the console output. The file writer runs on a background thread; the
 /// returned `WorkerGuard` must be kept alive for the lifetime of the process.
 ///
-/// When `log_dir` is `None` (e.g. in tests / smoke examples) only the
-/// console layer is installed.
+/// When `log_dir` is `None` (e.g. in tests / smoke examples) only the console layer is installed.
 ///
-/// The log level for both outputs is driven by the `RUST_LOG` environment
-/// variable; if unset it defaults to `info`.
+/// The log level for both outputs is driven by the `RUST_LOG` environment variable; if unset it defaults to `info`.
 pub fn init_tracing(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
     let console_layer = tracing_subscriber::fmt::layer().with_filter(make_env_filter());
 
@@ -65,17 +58,12 @@ pub fn init_tracing(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
             .with_ansi(false)
             .with_filter(make_env_filter());
 
-        let _ = tracing_subscriber::registry()
-            .with(console_layer)
-            .with(file_layer)
-            .try_init();
+        let _ = tracing_subscriber::registry().with(console_layer).with(file_layer).try_init();
 
         tracing::info!(path = %dir.display(), "file logging initialised");
         Some(guard)
     } else {
-        let _ = tracing_subscriber::registry()
-            .with(console_layer)
-            .try_init();
+        let _ = tracing_subscriber::registry().with(console_layer).try_init();
 
         None
     }
@@ -83,9 +71,8 @@ pub fn init_tracing(log_dir: Option<&std::path::Path>) -> Option<WorkerGuard> {
 
 /// Compute the main window title for a given build branch.
 ///
-/// On `main` (or when no branch could be detected) the title is just
-/// `"Arborist"`.  On any other branch the title becomes
-/// `"Arborist - <branch>"` so it is obvious which build is running.
+/// On `main` (or when no branch could be detected) the title is just `"Arborist"`. On any other branch the title becomes `"Arborist - <branch>"` so
+/// it is obvious which build is running.
 pub(crate) fn window_title_for_branch(branch: &str) -> String {
     let trimmed = branch.trim();
     if trimmed.is_empty() || trimmed == "main" {
@@ -112,20 +99,16 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
-            // Initialise logging first so every subsequent log call is
-            // captured. We hold the WorkerGuard locally throughout the
-            // boot block: `std::process::exit` skips destructors, so any
-            // boot-failure exit path below MUST `drop(log_guard)` first
-            // to flush buffered log lines to disk. On success we hand
-            // the guard off to Tauri's managed state.
+            // Initialise logging first so every subsequent log call is captured. We hold the WorkerGuard locally throughout the boot block:
+            // `std::process::exit` skips destructors, so any boot-failure exit path below MUST `drop(log_guard)` first to flush buffered log lines to
+            // disk. On success we hand the guard off to Tauri's managed state.
             let log_dir = app.path().app_log_dir()?;
             std::fs::create_dir_all(&log_dir)?;
             let log_guard = init_tracing(Some(&log_dir));
             tracing::info!("Arborist starting up");
 
-            // If this build came from a branch other than `main`, surface the
-            // branch name in the window title bar so it's obvious which build
-            // is running.
+            // If this build came from a branch other than `main`, surface the branch name in the window title bar so it's obvious which build is
+            // running.
             if let Some(window) = app.get_webview_window("main") {
                 let title = window_title_for_branch(BUILD_BRANCH);
                 if let Err(err) = window.set_title(&title) {
@@ -133,14 +116,11 @@ pub fn run() {
                 }
             }
 
-            // Phase 6: resolve, lock, and bind the per-(branch, workspace)
-            // store before any AppContext is built. This guarantees that
-            // restore-on-launch and every later command operates on the
-            // isolated workspace store, never on the legacy shared one.
+            // Phase 6: resolve, lock, and bind the per-(branch, workspace) store before any AppContext is built. This guarantees that
+            // restore-on-launch and every later command operates on the isolated workspace store, never on the legacy shared one.
             //
-            // Resolution chain: --workspace CLI arg → branch hint file →
-            // legacy `<app_data_dir>/config.json::workspace_root` →
-            // native folder picker (rfd).
+            // Resolution chain: --workspace CLI arg → branch hint file → legacy `<app_data_dir>/config.json::workspace_root` → native folder picker
+            // (rfd).
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
             let cli_args = match boot::parse_cli_args(std::env::args_os()) {
@@ -153,20 +133,12 @@ pub fn run() {
                 }
             };
 
-            // Boot needs a GitRunner to verify resolved workspace paths
-            // are git repository roots before binding (matches the
-            // `workspace_validate` command for the in-app picker).
-            // RealGitRunner is cheap to construct (zero-sized) — we
-            // build one early and reuse the same instance for the
-            // AppContext below so the in-app commands share it.
+            // Boot needs a GitRunner to verify resolved workspace paths are git repository roots before binding (matches the `workspace_validate`
+            // command for the in-app picker). RealGitRunner is cheap to construct (zero-sized) — we build one early and reuse the same instance for
+            // the AppContext below so the in-app commands share it.
             let boot_git_runner = git::RealGitRunner;
 
-            let binding = match boot::boot_select_workspace(
-                &cli_args,
-                &app_data_dir,
-                BUILD_BRANCH,
-                &boot_git_runner,
-            ) {
+            let binding = match boot::boot_select_workspace(&cli_args, &app_data_dir, BUILD_BRANCH, &boot_git_runner) {
                 Ok(Some(b)) => b,
                 Ok(None) => {
                     tracing::info!("user cancelled workspace picker; exiting");
@@ -178,16 +150,9 @@ pub fn run() {
                     drop(log_guard);
                     std::process::exit(1);
                 }
-                Err(boot::BootError::NotARepository {
-                    workspace,
-                    reason,
-                    origin,
-                }) => {
-                    // Only the user-driven picker arm justifies a native
-                    // dialog. CLI / hint / legacy failures are surfaced
-                    // via stderr + tracing::error so headless or
-                    // scripted launches don't pop a modal that nobody
-                    // is sitting in front of (matches the doc comment
+                Err(boot::BootError::NotARepository { workspace, reason, origin }) => {
+                    // Only the user-driven picker arm justifies a native dialog. CLI / hint / legacy failures are surfaced via stderr +
+                    // tracing::error so headless or scripted launches don't pop a modal that nobody is sitting in front of (matches the doc comment
                     // on `show_not_a_repo_dialog`).
                     if matches!(origin, boot::BootSource::Picker) {
                         boot::show_not_a_repo_dialog(&workspace, &reason);
@@ -219,33 +184,23 @@ pub fn run() {
                 }
             };
 
-            // Boot succeeded — hand the WorkerGuard off to Tauri's
-            // managed state so logs continue to flush for the lifetime
-            // of the running app.
+            // Boot succeeded — hand the WorkerGuard off to Tauri's managed state so logs continue to flush for the lifetime of the running app.
             if let Some(guard) = log_guard {
                 app.manage(LogGuard(guard));
             }
 
-            // Build the production AppContext: portable-pty spawner, the
-            // workspace-bound ConfigStore (held behind RwLock so phase 7
-            // workspace_switch can transactionally swap it), and a PtySink
-            // that bridges back into both Tauri events and the persisted
-            // session record. The sink/discover closures take the workspace
-            // handle (not a snapshot) so they always operate on the
-            // currently-bound store, even after a switch.
+            // Build the production AppContext: portable-pty spawner, the workspace-bound ConfigStore (held behind RwLock so phase 7 workspace_switch
+            // can transactionally swap it), and a PtySink that bridges back into both Tauri events and the persisted session record. The
+            // sink/discover closures take the workspace handle (not a snapshot) so they always operate on the currently-bound store, even after a
+            // switch.
             let scope = boot::into_scope(binding);
             let workspace_handle = std::sync::Arc::new(std::sync::RwLock::new(scope));
-            let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(
-                pty_pool::PortablePtySpawner,
-            )));
-            let sink =
-                commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
+            let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(pty_pool::PortablePtySpawner)));
+            let sink = commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
             let metrics_emit = commands::build_production_metrics_emit(app.handle().clone());
-            let ai_session_discover =
-                commands::build_production_ai_session_discover(workspace_handle.clone());
+            let ai_session_discover = commands::build_production_ai_session_discover(workspace_handle.clone());
             let turn_emit = commands::build_production_turn_emit(app.handle().clone());
-            let git_runner: std::sync::Arc<dyn git::GitRunner> =
-                std::sync::Arc::new(git::RealGitRunner);
+            let git_runner: std::sync::Arc<dyn git::GitRunner> = std::sync::Arc::new(git::RealGitRunner);
             let ctx = std::sync::Arc::new(commands::AppContext::with_workspace(
                 pool,
                 workspace_handle,
@@ -255,64 +210,39 @@ pub fn run() {
                 ai_session_discover,
                 turn_emit,
             ));
-            // Hold a local Arc so the startup backfill below can
-            // share the *same* `ConfigStore` (and its write lock)
-            // that subsequent `config_set` calls will use.
+            // Hold a local Arc so the startup backfill below can share the *same* `ConfigStore` (and its write lock) that subsequent `config_set`
+            // calls will use.
             let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
 
-            // Phase 2: parallel sub-session pool + store + sink. Lives
-            // alongside the existing AppContext so existing tests don't
-            // need to know about it.
-            let sub_pool = std::sync::Arc::new(sub_sessions::SubPtyPool::new(std::sync::Arc::new(
-                pty_pool::PortablePtySpawner,
-            )));
+            // Phase 2: parallel sub-session pool + store + sink. Lives alongside the existing AppContext so existing tests don't need to know about
+            // it.
+            let sub_pool = std::sync::Arc::new(sub_sessions::SubPtyPool::new(std::sync::Arc::new(pty_pool::PortablePtySpawner)));
             let sub_store = std::sync::Arc::new(sub_sessions::SubSessionStore::new());
-            let sub_sink =
-                commands::build_production_sub_sink(app.handle().clone(), sub_store.clone());
-            // Phase 3: application sub-tabs. Their pool reuses the same
-            // sink (output is no-op for apps, status / exited flow into
-            // the same Tauri events as terminal sub-tabs).
-            let app_pool = std::sync::Arc::new(app_launcher::AppPool::new(std::sync::Arc::new(
-                app_launcher::RealAppSpawner,
-            )));
-            let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> =
-                std::sync::Arc::new(window_focus::RealFocuser);
-            let icon_cache = std::sync::Arc::new(process_icon::IconCache::new(
-                std::sync::Arc::new(process_icon::RealIconExtractor),
-            ));
+            let sub_sink = commands::build_production_sub_sink(app.handle().clone(), sub_store.clone());
+            // Phase 3: application sub-tabs. Their pool reuses the same sink (output is no-op for apps, status / exited flow into the same Tauri
+            // events as terminal sub-tabs).
+            let app_pool = std::sync::Arc::new(app_launcher::AppPool::new(std::sync::Arc::new(app_launcher::RealAppSpawner)));
+            let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> = std::sync::Arc::new(window_focus::RealFocuser);
+            let icon_cache = std::sync::Arc::new(process_icon::IconCache::new(std::sync::Arc::new(process_icon::RealIconExtractor)));
             let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
                 sub_pool, sub_store, sub_sink, app_pool, focuser, icon_cache,
             ));
             app.manage(sub_ctx.clone());
 
-            // Best-effort: warm the persisted icon cache for every
-            // sidebar entry now, so the first render after startup
-            // doesn't show emoji-then-icon flicker. Failures are
-            // non-fatal — the frontend already has a graceful
-            // fallback (the bundled SVG / emoji glyph).
+            // Best-effort: warm the persisted icon cache for every sidebar entry now, so the first render after startup doesn't show emoji-then-icon
+            // flicker. Failures are non-fatal — the frontend already has a graceful fallback (the bundled SVG / emoji glyph).
             //
-            // Routed through the same `AppContext.store` the rest of
-            // the runtime uses (cloning the `Arc`-backed `write_lock`
-            // so we share it with subsequent `config_set` calls), and
-            // through `save_config_with` so the load/mutate/write
-            // sequence is atomic against any future writers. (Tauri
-            // setup is single-threaded, so today there are no other
-            // writers; we still hold the lock for forward
-            // compatibility.)
+            // Routed through the same `AppContext.store` the rest of the runtime uses (cloning the `Arc`-backed `write_lock` so we share it with
+            // subsequent `config_set` calls), and through `save_config_with` so the load/mutate/write sequence is atomic against any future writers.
+            // (Tauri setup is single-threaded, so today there are no other writers; we still hold the lock for forward compatibility.)
             {
                 let store = ctx_for_backfill.store();
                 let cache = sub_ctx.icon_cache.clone();
-                if let Err(err) =
-                    store.save_config_with(types::PartialAppConfig::default(), move |cfg| {
-                        let cwd = cfg
-                            .workspace_root
-                            .clone()
-                            .filter(|p| p.is_dir())
-                            .unwrap_or_else(std::env::temp_dir);
-                        icon_backfill::backfill_icons(cfg, &cache, &cwd)
-                    })
-                {
+                if let Err(err) = store.save_config_with(types::PartialAppConfig::default(), move |cfg| {
+                    let cwd = cfg.workspace_root.clone().filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir);
+                    icon_backfill::backfill_icons(cfg, &cache, &cwd)
+                }) {
                     tracing::warn!(
                         %err,
                         "startup icon backfill: failed to persist refreshed config"
@@ -379,9 +309,6 @@ mod tests {
     #[test]
     fn title_on_feature_branch_includes_name() {
         assert_eq!(window_title_for_branch("feature/x"), "Arborist - feature/x");
-        assert_eq!(
-            window_title_for_branch("  branch-name  "),
-            "Arborist - branch-name"
-        );
+        assert_eq!(window_title_for_branch("  branch-name  "), "Arborist - branch-name");
     }
 }
