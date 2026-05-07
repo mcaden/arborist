@@ -1,6 +1,5 @@
 // Tests for the CloseConfirmDialog busy-state behavior (issue #47).
-// Verifies that controls are disabled, a spinner appears, and repeated
-// clicks / Esc are blocked while the close action is in flight.
+// Verifies that controls are disabled, a spinner appears, and repeated clicks / Esc are blocked while close is in flight.
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +11,8 @@ import { useSessionStore } from '@/store/session-store';
 import type { SessionView } from '@/types/arborist';
 
 import { CloseConfirmDialog } from './CloseConfirmDialog';
+
+type CloseResult = { worktreeDeleteError: null };
 
 function makeView(id: string, overrides: Partial<SessionView> = {}): SessionView {
   return {
@@ -29,13 +30,23 @@ function makeView(id: string, overrides: Partial<SessionView> = {}): SessionView
 }
 
 function seed(sessionId: string): void {
-  const view = makeView(sessionId);
-  useSessionStore.setState({
-    sessions: [view],
-    activeId: sessionId,
-    pendingClose: sessionId,
-    isHydrated: true,
-  });
+  useSessionStore.setState({ sessions: [makeView(sessionId)], activeId: sessionId, pendingClose: sessionId, isHydrated: true });
+}
+
+/** Make `sessionClose` hang until the returned `resolve` is called. */
+function hangClose(): { resolve: (v: CloseResult) => void } {
+  let resolve!: (v: CloseResult) => void;
+  bridgeMock.sessionClose.mockImplementation(
+    () =>
+      new Promise<CloseResult>((r) => {
+        resolve = r;
+      }),
+  );
+  return {
+    get resolve() {
+      return resolve;
+    },
+  };
 }
 
 beforeEach(() => {
@@ -52,10 +63,7 @@ beforeEach(() => {
   });
 
   // jsdom shims for <dialog>
-  const proto = HTMLDialogElement.prototype as unknown as {
-    showModal?: () => void;
-    close?: () => void;
-  };
+  const proto = HTMLDialogElement.prototype as unknown as { showModal?: () => void; close?: () => void };
   if (typeof proto.showModal !== 'function') {
     proto.showModal = function showModal(this: HTMLDialogElement) {
       this.setAttribute('open', '');
@@ -70,14 +78,7 @@ beforeEach(() => {
 
 describe('CloseConfirmDialog busy state', () => {
   it('disables buttons and checkbox while close is in flight', async () => {
-    // Make sessionClose hang until we resolve it manually.
-    let resolveClose!: (v: { worktreeDeleteError: null }) => void;
-    bridgeMock.sessionClose.mockImplementation(
-      () =>
-        new Promise((r) => {
-          resolveClose = r;
-        }),
-    );
+    const pending = hangClose();
     seed('s1');
     render(<CloseConfirmDialog />);
 
@@ -90,7 +91,6 @@ describe('CloseConfirmDialog busy state', () => {
     expect(cancelBtn).not.toBeDisabled();
     expect(checkbox).not.toBeDisabled();
 
-    // Click terminate — enters busy state.
     await act(async () => {
       fireEvent.click(terminateBtn);
     });
@@ -98,27 +98,16 @@ describe('CloseConfirmDialog busy state', () => {
     expect(terminateBtn).toBeDisabled();
     expect(cancelBtn).toBeDisabled();
     expect(checkbox).toBeDisabled();
-
-    // Spinner visible.
     expect(screen.getByRole('status')).toBeInTheDocument();
-
-    // aria-busy set on dialog.
     expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true');
 
-    // Resolve to clean up.
     await act(async () => {
-      resolveClose({ worktreeDeleteError: null });
+      pending.resolve({ worktreeDeleteError: null });
     });
   });
 
   it('shows spinner with accessible label while busy', async () => {
-    let resolveClose!: (v: { worktreeDeleteError: null }) => void;
-    bridgeMock.sessionClose.mockImplementation(
-      () =>
-        new Promise((r) => {
-          resolveClose = r;
-        }),
-    );
+    const pending = hangClose();
     seed('s1');
     render(<CloseConfirmDialog />);
 
@@ -126,51 +115,36 @@ describe('CloseConfirmDialog busy state', () => {
       fireEvent.click(screen.getByRole('button', { name: /terminate/i }));
     });
 
-    const spinner = screen.getByRole('status');
-    expect(spinner).toHaveAttribute('aria-label', 'Closing…');
+    expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'Closing…');
 
     await act(async () => {
-      resolveClose({ worktreeDeleteError: null });
+      pending.resolve({ worktreeDeleteError: null });
     });
   });
 
   it('prevents duplicate close calls on repeated clicks', async () => {
-    let resolveClose!: (v: { worktreeDeleteError: null }) => void;
-    bridgeMock.sessionClose.mockImplementation(
-      () =>
-        new Promise((r) => {
-          resolveClose = r;
-        }),
-    );
+    const pending = hangClose();
     seed('s1');
     render(<CloseConfirmDialog />);
 
     const terminateBtn = screen.getByRole('button', { name: /terminate/i });
 
-    // First click triggers the close.
     await act(async () => {
       fireEvent.click(terminateBtn);
     });
-    // Second click is a no-op (button is disabled, guard returns early).
     await act(async () => {
       fireEvent.click(terminateBtn);
-    });
+    }); // no-op — button disabled + guard
 
     expect(bridgeMock.sessionClose).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolveClose({ worktreeDeleteError: null });
+      pending.resolve({ worktreeDeleteError: null });
     });
   });
 
   it('blocks Esc (dialog cancel event) while busy', async () => {
-    let resolveClose!: (v: { worktreeDeleteError: null }) => void;
-    bridgeMock.sessionClose.mockImplementation(
-      () =>
-        new Promise((r) => {
-          resolveClose = r;
-        }),
-    );
+    const pending = hangClose();
     seed('s1');
     render(<CloseConfirmDialog />);
 
@@ -178,22 +152,17 @@ describe('CloseConfirmDialog busy state', () => {
       fireEvent.click(screen.getByRole('button', { name: /terminate/i }));
     });
 
-    // Simulate the native Esc → cancel event on the dialog.
-    const dialog = screen.getByRole('dialog');
-    fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
-
-    // Dialog should still be open (pendingClose not cleared).
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { bubbles: false, cancelable: true }));
     expect(useSessionStore.getState().pendingClose).toBe('s1');
 
     await act(async () => {
-      resolveClose({ worktreeDeleteError: null });
+      pending.resolve({ worktreeDeleteError: null });
     });
   });
 
   it('does not show spinner when not busy', () => {
     seed('s1');
     render(<CloseConfirmDialog />);
-
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 });
