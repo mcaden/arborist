@@ -78,6 +78,29 @@ describe('isInsideWorktreesDir', () => {
     expect(isInsideWorktreesDir('//srv/share/repo', '..', '//srv/share/foo')).toBe(true);
     expect(isInsideWorktreesDir('//srv/share/repo', '..', '//srv/share/')).toBe(false);
   });
+
+  // PR #70 review: Windows "rooted but no prefix" paths (`\foo`, `/foo`) are
+  // absolute on the workspace's drive in Rust's `PathBuf::join` semantics, so
+  // the frontend filter must agree — otherwise NewSessionDialog would show a
+  // worktree as "existing under .worktrees/" when git actually placed it at
+  // the drive root.
+  it('treats Windows rooted-no-prefix worktreesDir as drive-root absolute', () => {
+    expect(isInsideWorktreesDir('C:\\Repo', '\\foo', 'C:/foo/bar')).toBe(true);
+    expect(isInsideWorktreesDir('C:\\Repo', '\\foo', 'C:/Repo/.worktrees/bar')).toBe(false);
+    expect(isInsideWorktreesDir('C:/Repo', '/foo', 'C:/foo/bar')).toBe(true);
+  });
+
+  it('treats UNC rooted-no-prefix worktreesDir as share-root absolute', () => {
+    expect(isInsideWorktreesDir('\\\\srv\\share\\repo', '\\wt', '//srv/share/wt/foo')).toBe(true);
+    expect(isInsideWorktreesDir('\\\\srv\\share\\repo', '\\wt', '//srv/share/repo/.worktrees/foo')).toBe(false);
+  });
+
+  it('does NOT apply Windows-rooted treatment when repoRoot is POSIX', () => {
+    // On POSIX, a literal-backslash `\foo` is just an unusual relative path; we join it under
+    // the workspace root with the rest of the normalisation pipeline (which collapses `\` to `/`).
+    // The point of this test is that we do NOT try to extract a drive prefix from a POSIX root.
+    expect(resolveWorktreesRoot('/repo', '\\foo')).toBe('/repo/foo');
+  });
 });
 
 describe('resolveWorktreesRoot', () => {

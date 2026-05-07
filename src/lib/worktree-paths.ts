@@ -35,6 +35,41 @@ function isAbsolutePath(value: string): boolean {
 }
 
 /**
+ * `true` iff `value` is "rooted but has no prefix" *and* `repoRoot` is
+ * Windows-like — e.g. `\worktrees` or `/worktrees` against `C:\repo` or
+ * `\\srv\share\repo`. On Windows such paths are absolute on the same drive
+ * (or UNC share) as the cwd, and Rust's `PathBuf::join` preserves the
+ * workspace's prefix while replacing the rest. We mirror that behaviour
+ * here so the frontend filter agrees with backend `compose::resolve_worktrees_dir`.
+ *
+ * The check rejects (a) values that are already fully absolute (UNC `\\srv\…`
+ * or drive `C:\…`), and (b) any value when `repoRoot` is POSIX — on POSIX,
+ * `\foo` is just a strange relative path and should be joined like any other.
+ */
+function isWindowsRootedNoPrefix(value: string, repoRoot: string): boolean {
+  if (!isWindowsLikePath(repoRoot)) return false;
+  if (!/^[\\/]/.test(value)) return false;
+  if (/^[\\/]{2}/.test(value)) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return false;
+  return true;
+}
+
+/**
+ * Extract the Windows-style filesystem prefix from `repoRoot` — the drive
+ * letter (`C:`) or the UNC `//server/share` portion. Returns the empty string
+ * for POSIX inputs or anything we cannot recognise, which is fine because the
+ * caller only uses this when `isWindowsRootedNoPrefix` already returned true.
+ */
+function windowsPrefix(repoRoot: string): string {
+  const normRoot = repoRoot.replace(/\\/g, '/');
+  const uncMatch = /^(\/\/[^/]+\/[^/]+)/.exec(normRoot);
+  if (uncMatch) return uncMatch[1]!;
+  const driveMatch = /^([A-Za-z]:)/.exec(normRoot);
+  if (driveMatch) return driveMatch[1]!;
+  return '';
+}
+
+/**
  * Walk `.` and `..` segments without touching the filesystem. Mirrors the
  * Rust-side `compose::lexical_normalise` so the frontend warning, the live
  * `worktrees_dir_check` preview, and `worktree_create_impl` agree on whether
@@ -83,6 +118,14 @@ function lexicalResolve(parts: string[]): string {
 export function resolveWorktreesRoot(repoRoot: string, worktreesDir: string): string {
   const trimmed = worktreesDir.trim();
   const effective = trimmed === '' ? '.worktrees' : trimmed;
+  // Order matters: Windows "rooted but no prefix" (`\foo`, `/foo` against a Windows workspace) MUST be handled before the generic absolute-path
+  // branch — otherwise leading `/` would short-circuit to "POSIX absolute" and we'd resolve to `/foo` instead of mirroring Rust's `C:\repo`.join(`/foo`)
+  // = `C:\foo`. PR #70 review.
+  if (isWindowsRootedNoPrefix(effective, repoRoot)) {
+    const prefix = windowsPrefix(repoRoot);
+    const valueNorm = effective.replace(/\\/g, '/');
+    return joinAndResolve(`${prefix}${valueNorm}`, []);
+  }
   if (isAbsolutePath(effective)) {
     // Absolute → still walk `.`/`..` so a literal `/var/wt/.` collapses.
     return joinAndResolve(effective, []);

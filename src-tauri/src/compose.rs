@@ -1139,6 +1139,26 @@ mod tests {
         assert_eq!(r.absolute, PathBuf::from(r"D:\arborist-worktrees"));
     }
 
+    // PR #70 review: on Windows, `\foo` is a "rooted but no prefix" path that Rust classifies as
+    // *relative* (is_absolute=false), but `PathBuf::join` with a Windows workspace preserves the
+    // workspace's drive prefix and replaces with the rooted path, so the result lands at the drive
+    // root, NOT under the workspace. Pin this behaviour so the frontend resolver can mirror it.
+    #[cfg(windows)]
+    #[test]
+    fn resolve_worktrees_dir_windows_rooted_no_prefix_lands_at_drive_root() {
+        let ws = PathBuf::from(r"C:\repo");
+        for value in [r"\foo", r"/foo", r"\worktrees\extra"] {
+            let r = resolve_worktrees_dir(&ws, value);
+            assert!(r.was_relative, "input {value:?} should be classified relative by Rust");
+            assert!(!r.inside_workspace, "input {value:?} resolves to drive root, outside workspace");
+            assert!(
+                r.absolute.starts_with(r"C:\") || r.absolute.starts_with("C:/"),
+                "input {value:?} should land under C:\\, got {:?}",
+                r.absolute,
+            );
+        }
+    }
+
     #[test]
     fn resolve_worktrees_dir_nested_relative_inside() {
         let ws = PathBuf::from("/repo");

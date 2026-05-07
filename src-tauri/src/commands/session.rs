@@ -1731,6 +1731,32 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
             ))));
         }
     } else {
+        // PR #70 review: before `create_dir_all` follows the parent chain, make sure we wouldn't be materialising directories *outside* the
+        // workspace. If any existing ancestor of `parent_dir` is a symlink/junction that escapes the workspace, the post-create canonicalize
+        // check below would still reject the worktree, but we'd already have left empty directories at the symlink target as a side-effect.
+        // Walk up to the deepest existing ancestor, canonicalise it, and bail before mkdir if it is no longer inside the workspace.
+        if resolved.inside_workspace {
+            let mut probe = parent_dir.as_path();
+            let existing_ancestor = loop {
+                if probe.exists() {
+                    break Some(probe.to_path_buf());
+                }
+                match probe.parent() {
+                    Some(p) if p != probe => probe = p,
+                    _ => break None,
+                }
+            };
+            if let Some(ancestor) = existing_ancestor {
+                let canon = dunce::canonicalize(&ancestor)
+                    .map_err(|e| AppError::from(Error::Internal(format!("could not canonicalize {}: {e}", ancestor.display()))))?;
+                if !canon.starts_with(&workspace) {
+                    return Err(AppError::from(Error::InvalidPath(format!(
+                        "ancestor {} of worktrees folder resolves outside workspace; refusing to create",
+                        ancestor.display()
+                    ))));
+                }
+            }
+        }
         // Create the parent ourselves so `git worktree add` does not have to, and so the canonicalize/containment check below has something to
         // resolve. Use create_dir_all so multi-segment configured dirs (`.cache/worktrees`) work.
         std::fs::create_dir_all(&parent_dir)

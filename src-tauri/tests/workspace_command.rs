@@ -390,6 +390,39 @@ fn worktree_create_default_dir_unchanged_when_unset() {
     assert!(out.path.ends_with(PathBuf::from(".worktrees").join("feat-default")));
 }
 
+// PR #70 review: when an existing ancestor of `parent_dir` is a symlink/junction that escapes the workspace, `create_dir_all` would otherwise
+// follow the link and materialise directories outside the workspace before the post-create canonicalize check rejects the worktree. The fix
+// canonicalises the deepest existing ancestor *before* mkdir and bails when it no longer lives under the workspace. POSIX-only: Windows
+// junctions require admin or Developer Mode and aren't reliable to create in CI.
+#[cfg(unix)]
+#[test]
+fn worktree_create_rejects_when_existing_ancestor_escapes_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    // ws/escape -> outside/  (real symlink to a directory outside the workspace).
+    symlink(outside.path(), ws.path().join("escape")).expect("symlink");
+
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace_and_worktrees_dir(&ctx, ws.path(), "escape/wt");
+
+    let err = worktree_create_impl(&ctx, "feat-z").expect_err("must reject");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("outside workspace") || msg.contains("ancestor"),
+        "expected ancestor-escape rejection, got {msg}",
+    );
+    // Critical: no side-effect leak. The worktrees/wt sub-directory must NOT have been created at the symlink target.
+    assert!(
+        !outside.path().join("wt").exists(),
+        "ancestor-canonicalize check must reject BEFORE create_dir_all materialises the path outside the workspace",
+    );
+    assert!(runner.last_create.lock().unwrap().is_none(), "must not invoke runner");
+}
+
 // ---------- worktrees_dir_check_impl (Issue #53) ----------
 
 #[test]

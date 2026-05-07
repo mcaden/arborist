@@ -159,9 +159,17 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   // previous result is cleared so the warning banner doesn't flash with
   // stale info; we only restore it (or the new result) when the request
   // for the current input value resolves.
+  //
+  // PR #70 review: the early-return path (no workspace) and the cleanup
+  // function both bump the request id so any in-flight response is
+  // discarded by the `requestId !== current` guard, and unmount cannot
+  // race a late resolve into setState.
   const wtDirCheckRequestIdRef = useRef(0);
   useEffect(() => {
     if (workspaceRoot === null || workspaceRoot.length === 0) {
+      // Bump the id so any in-flight check started before the workspace cleared can't write its
+      // (now-stale) result into our state when it resolves.
+      wtDirCheckRequestIdRef.current += 1;
       setWtDirCheck(null);
       setWtDirChecking(false);
       return;
@@ -187,6 +195,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     }, 250);
     return () => {
       clearTimeout(timer);
+      // Bump the id on cleanup as well so a request whose timer already fired (and is now in
+      // flight) can't apply its result after the effect re-runs or the component unmounts.
+      wtDirCheckRequestIdRef.current += 1;
     };
   }, [wtDirInput, workspaceRoot]);
 

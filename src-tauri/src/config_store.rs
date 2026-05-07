@@ -541,18 +541,25 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
     }
     cfg.worktree_prelaunch_commands = filtered;
 
-    // worktrees_dir: hand-edited configs may contain an empty string or a value with embedded NULs. Treat both as "use the default" so the runtime
-    // never has to special-case `""`. Per Issue #53 this preserves the original intent of the field — the in-app Settings dialog has its own empty
-    // → default normalisation in `merge_partial`, but a corrupt/legacy config edited on disk goes through this path instead.
-    if cfg.worktrees_dir.is_empty() || cfg.worktrees_dir.contains('\0') {
-        if !cfg.worktrees_dir.is_empty() {
-            warn!(
-                code = "InvalidPath",
-                value = %cfg.worktrees_dir.escape_debug(),
-                "worktreesDir contains NUL byte; resetting to default",
-            );
-        }
+    // worktrees_dir: hand-edited configs may carry whitespace, an empty string, or embedded NULs. We trim and treat `trim().is_empty()` as
+    // "use the default" so the runtime never has to special-case `""` or `"   "` — the latter would otherwise silently flow through to
+    // `worktree_create_impl`, where `PathBuf::from("".trim()).join(name)` collapses to the bare name and the worktree would land at the
+    // workspace root instead of under `.worktrees/`. Storing the trimmed value back keeps the on-disk shape canonical for downstream readers,
+    // matching `merge_partial`'s normalisation. NUL bytes are rejected outright. (Issue #53; PR #70 review.)
+    if cfg.worktrees_dir.contains('\0') {
+        warn!(
+            code = "InvalidPath",
+            value = %cfg.worktrees_dir.escape_debug(),
+            "worktreesDir contains NUL byte; resetting to default",
+        );
         cfg.worktrees_dir = crate::types::default_worktrees_dir();
+    } else {
+        let trimmed = cfg.worktrees_dir.trim();
+        if trimmed.is_empty() {
+            cfg.worktrees_dir = crate::types::default_worktrees_dir();
+        } else if trimmed.len() != cfg.worktrees_dir.len() {
+            cfg.worktrees_dir = trimmed.to_owned();
+        }
     }
 }
 
@@ -1975,6 +1982,53 @@ mod tests {
             "tabOrder": [],
             "activeSessionId": null,
             "worktreesDir": ""
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.worktrees_dir, ".worktrees");
+    }
+
+    // PR #70 review: a hand-edited config carrying whitespace-only or padded values for `worktreesDir` would slip past the previous load-side
+    // validation (which only handled exact-empty + NUL). Whitespace-only must collapse to the default; padded values must be trimmed in place so
+    // downstream `worktree_create_impl` doesn't have to defensively re-trim a raw string.
+    #[test]
+    fn load_config_trims_whitespace_padded_worktrees_dir_on_disk() {
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let store = ConfigStore::open(&store_dir).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": CONFIG_VERSION_CURRENT,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "worktreesDir": "  custom-wt  "
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
+        let cfg = store.load_config();
+        assert_eq!(cfg.worktrees_dir, "custom-wt");
+    }
+
+    #[test]
+    fn load_config_normalises_whitespace_only_worktrees_dir_on_disk() {
+        let td = TempDir::new().expect("td");
+        let store_dir = td.path().join("store");
+        let store = ConfigStore::open(&store_dir).expect("open");
+        let raw = serde_json::json!({
+            "configVersion": CONFIG_VERSION_CURRENT,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "worktreesDir": "   \t  "
         });
         fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
         let cfg = store.load_config();
