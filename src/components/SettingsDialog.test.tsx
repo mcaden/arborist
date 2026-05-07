@@ -18,7 +18,7 @@ function seedConfig(
 ): void {
   useConfigStore.setState({
     config: {
-      configVersion: 3,
+      configVersion: 4,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: overrides.instructionSetsDir ?? '/cfg/instr',
       workspaceRoot: overrides.workspaceRoot ?? '/work',
@@ -29,6 +29,8 @@ function seedConfig(
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
     },
     status: 'ready',
     error: null,
@@ -50,7 +52,7 @@ afterEach(() => {
   // Reset config store between tests by re-seeding the empty default.
   useConfigStore.setState({
     config: {
-      configVersion: 3,
+      configVersion: 4,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
@@ -61,6 +63,8 @@ afterEach(() => {
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
     },
     status: 'idle',
     error: null,
@@ -170,6 +174,42 @@ describe('SettingsDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     expect(bridgeMock.configSet).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows General tab by default and switches panels when the tab is clicked', () => {
+    seedConfig();
+    render(<SettingsDialog onClose={() => {}} />);
+    expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
+    expect(screen.getByTestId('settings-tab-general')).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByTestId('settings-tab-custom-processes'));
+    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+    expect(screen.getByTestId('settings-tab-custom-processes')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('honours initialTab="customProcesses" so the empty-launch handoff lands on the right tab', () => {
+    seedConfig();
+    render(<SettingsDialog onClose={() => {}} initialTab="customProcesses" />);
+    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+  });
+
+  it('Arrow keys move between tabs (WAI-ARIA tab keyboard model)', () => {
+    seedConfig();
+    render(<SettingsDialog onClose={() => {}} />);
+    const generalTab = screen.getByTestId('settings-tab-general');
+    const customTab = screen.getByTestId('settings-tab-custom-processes');
+    generalTab.focus();
+    fireEvent.keyDown(generalTab, { key: 'ArrowRight' });
+    expect(customTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+    fireEvent.keyDown(customTab, { key: 'ArrowLeft' });
+    expect(generalTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
   });
 
   it('shows the configured AI agent launch commands and persists edits', async () => {

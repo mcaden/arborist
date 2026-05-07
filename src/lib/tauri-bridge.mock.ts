@@ -76,13 +76,17 @@ const defaultAppConfig = (): AppConfig => ({
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
+  customProcesses: [],
+  lastOpenSubSessions: [],
 });
 
 export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() =>
   Promise.resolve(defaultAppConfig()),
 );
 
-export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() => Promise.resolve());
+export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() =>
+  Promise.resolve(defaultAppConfig()),
+);
 
 export const instructionsList: Mock<typeof realBridge.instructionsList> = vi.fn(() =>
   Promise.resolve([]),
@@ -120,6 +124,49 @@ export const onSessionMetrics: Mock<typeof realBridge.onSessionMetrics> = vi.fn(
   Promise.resolve(noopUnlisten),
 );
 
+// Phase 2: sub-session command/event mocks.
+export const subSessionCreate: Mock<typeof realBridge.subSessionCreate> =
+  vi.fn(rejectNotImplemented);
+
+export const subSessionClose: Mock<typeof realBridge.subSessionClose> = vi.fn(() =>
+  Promise.resolve(),
+);
+
+export const subSessionFocus: Mock<typeof realBridge.subSessionFocus> = vi.fn(() =>
+  Promise.resolve(),
+);
+
+export const subSessionList: Mock<typeof realBridge.subSessionList> = vi.fn(() =>
+  Promise.resolve([]),
+);
+
+export const subSessionInput: Mock<typeof realBridge.subSessionInput> = vi.fn(() =>
+  Promise.resolve(),
+);
+
+export const subSessionResize: Mock<typeof realBridge.subSessionResize> = vi.fn(() =>
+  Promise.resolve(),
+);
+
+export const subSessionRelaunch: Mock<typeof realBridge.subSessionRelaunch> =
+  vi.fn(rejectNotImplemented);
+
+export const subSessionIcon: Mock<typeof realBridge.subSessionIcon> = vi.fn(() =>
+  Promise.resolve(null),
+);
+
+export const onSubSessionStatus: Mock<typeof realBridge.onSubSessionStatus> = vi.fn(() =>
+  Promise.resolve(noopUnlisten),
+);
+
+export const onSubSessionExited: Mock<typeof realBridge.onSubSessionExited> = vi.fn(() =>
+  Promise.resolve(noopUnlisten),
+);
+
+export const onSubSessionRestored: Mock<typeof realBridge.onSubSessionRestored> = vi.fn(() =>
+  Promise.resolve(noopUnlisten),
+);
+
 // Re-export the bridge's argument-shape interfaces so consumers importing
 // from the mock get identical types.
 export type {
@@ -146,7 +193,7 @@ export function resetBridgeMocks(): void {
   sessionRestart.mockReset().mockImplementation(() => Promise.resolve());
   frontendReady.mockReset().mockImplementation(() => Promise.resolve());
   configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
-  configSet.mockReset().mockImplementation(() => Promise.resolve());
+  configSet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
@@ -157,6 +204,17 @@ export function resetBridgeMocks(): void {
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionMetrics.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  subSessionCreate.mockReset().mockImplementation(rejectNotImplemented);
+  subSessionClose.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionFocus.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionList.mockReset().mockImplementation(() => Promise.resolve([]));
+  subSessionInput.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionResize.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionRelaunch.mockReset().mockImplementation(rejectNotImplemented);
+  subSessionIcon.mockReset().mockImplementation(() => Promise.resolve(null));
+  onSubSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  onSubSessionExited.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  onSubSessionRestored.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }
 
 // Compile-time guard: this module must export every member of the real
@@ -186,5 +244,16 @@ const _shapeCheck = {
   onSessionStatus,
   onSessionActivity,
   onSessionMetrics,
+  subSessionCreate,
+  subSessionClose,
+  subSessionFocus,
+  subSessionList,
+  subSessionInput,
+  subSessionResize,
+  subSessionRelaunch,
+  subSessionIcon,
+  onSubSessionStatus,
+  onSubSessionExited,
+  onSubSessionRestored,
 } satisfies typeof realBridge;
 void _shapeCheck;

@@ -19,7 +19,8 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
-import type { SessionStatus, SessionView } from '@/types/arborist';
+import { useSubSessionStore } from '@/store/sub-session-store';
+import type { SessionStatus, SessionView, SubSession } from '@/types/arborist';
 
 import { Sidebar } from './Sidebar';
 
@@ -104,6 +105,39 @@ describe('Sidebar', () => {
 
     expect(useSessionStore.getState().activeId).toBe('b');
     expect(bridgeMock.sessionFocus).toHaveBeenCalledWith({ sessionId: 'b' });
+  });
+
+  it('clicking the parent tab swaps the viewport back from a focused terminal sub-tab', () => {
+    // Regression: when a terminal sub-tab owns the viewport for its parent
+    // (`activeByParent[parentId] = subId`), clicking the parent tab must
+    // clear that entry so MainArea swaps back to the parent's own
+    // TerminalView. Without `subActions.activateParent(id)` in the click
+    // handler, the parent tab click was a visual no-op because MainArea's
+    // visible-id rule prefers the sub.
+    seed([makeView('a')], 'a');
+    const sub: SubSession = {
+      id: 'sub-1',
+      parentSessionId: 'a',
+      defId: 'shell',
+      kind: 'terminal',
+      label: 'shell',
+      status: 'running',
+      pid: 1234,
+      composedCommand: 'bash',
+      createdAt: 1_700_000_000_000,
+    };
+    useSubSessionStore.setState({
+      subSessions: [sub],
+      activeByParent: { a: 'sub-1' },
+      statusMessages: {},
+      isHydrated: true,
+    });
+    render(<Sidebar />);
+
+    fireEvent.click(tabByLabel('claude session a'));
+
+    expect(useSubSessionStore.getState().activeByParent).not.toHaveProperty('a');
+    expect(useSessionStore.getState().activeId).toBe('a');
   });
 
   it('clicking close opens the confirm dialog with the right label', () => {
@@ -366,6 +400,31 @@ describe('Sidebar', () => {
     // pressed inside an input should not bubble up into the tablist
     // handler.
     expect(screen.queryByText(/terminate session/i)).toBeNull();
+  });
+
+  it('opens Settings on the Custom Processes tab when invoked from the empty-launch handoff', async () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    const tab = tabByLabel('claude session a');
+    fireEvent.contextMenu(tab, { clientX: 10, clientY: 10 });
+    fireEvent.click(screen.getByRole('menuitem', { name: /launch/i }));
+    fireEvent.click(screen.getByTestId('tab-context-menu-empty'));
+    // The handoff is deferred via requestAnimationFrame so the menu can
+    // unmount before Settings opens.
+    await act(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        }),
+    );
+    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+  });
+
+  it('opens Settings on the General tab when launched from the footer button', () => {
+    seed([makeView('a')], 'a');
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId('settings-button'));
+    expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
   });
 
   it('does not swallow Enter/Space activation on non-tab buttons in the bottom bar', () => {

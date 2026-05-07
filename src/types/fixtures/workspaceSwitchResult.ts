@@ -25,6 +25,8 @@ export const workspaceSwitchResultFixture = {
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
+    customProcesses: [],
+    lastOpenSubSessions: [],
   },
   sessions: [],
 } as const satisfies WorkspaceSwitchResult;

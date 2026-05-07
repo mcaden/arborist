@@ -11,6 +11,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
+import { useConfigStore } from '@/store/config-store';
 import {
   useDisplayStatus,
   useHasUnread,
@@ -25,6 +26,7 @@ import {
   type OpenPermission,
   type OpenTool,
 } from '@/store/session-store';
+import { useSubSessionActions } from '@/store/sub-session-store';
 import type { SessionId, SessionMetrics, Tool } from '@/types/arborist';
 
 interface SidebarTabProps {
@@ -32,6 +34,12 @@ interface SidebarTabProps {
   isActive: boolean;
   isFocused: boolean;
   onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
+  /**
+   * Open the context menu anchored at viewport coordinates. The Sidebar
+   * owns the menu state so only one menu is open at a time across all
+   * tabs.
+   */
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
 }
 
 export function SidebarTab({
@@ -39,6 +47,7 @@ export function SidebarTab({
   isActive,
   isFocused,
   onFocusableMounted,
+  onOpenContextMenu,
 }: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
   const hasUnread = useHasUnread(id);
@@ -49,6 +58,18 @@ export function SidebarTab({
   const openPermissions = useOpenPermissions(id);
   const metrics = useMetrics(id);
   const actions = useSessionActions();
+  const subActions = useSubSessionActions();
+  // Pull the cached AI-tool icon URI from config. The selector is a
+  // narrow string-or-undefined so unrelated config changes don't
+  // re-render this row.
+  const tool = session?.tool;
+  const toolIconDataUri = useConfigStore((s) =>
+    tool === 'claude'
+      ? s.config.aiLaunchCommands.claudeIconDataUri
+      : tool === 'copilot'
+        ? s.config.aiLaunchCommands.copilotIconDataUri
+        : undefined,
+  );
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id,
@@ -83,13 +104,43 @@ export function SidebarTab({
         }`}
         tabIndex={isFocused ? 0 : -1}
         onClick={() => {
+          // Clicking the parent tab is an explicit "show me the parent's
+          // terminal" gesture: clear any terminal sub-tab that currently
+          // owns the viewport for this parent so the MainArea swaps back
+          // to the parent's TerminalView. Without this the user clicks the
+          // parent tab and nothing visibly happens because
+          // `activeByParent[id]` still points at a sub-session and the
+          // MainArea's visible-id rule (see MainArea.tsx) prefers the sub.
+          //
+          // Done on click only — keyboard arrow-nav between parent tabs
+          // intentionally preserves each parent's sub-tab focus so that
+          // arrowing away and back returns the user to where they were.
+          subActions.activateParent(id);
           void actions.focus(id);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onOpenContextMenu(id, { x: e.clientX, y: e.clientY });
+        }}
+        onKeyDown={(e) => {
+          // Shift+F10 and the Apps / ContextMenu key are the standard
+          // keyboard shortcuts for the context menu (matches OS menus
+          // and browsers). Anchor the menu to the tab's bounding rect
+          // so it appears near the focused element. Don't preventDefault
+          // for other keys — Sidebar's tablist handler still owns Arrow
+          // / Home / End / Delete / Enter / Space.
+          if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+            e.preventDefault();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            onOpenContextMenu(id, { x: rect.left + 8, y: rect.bottom });
+          }
         }}
         className={`${baseClasses} ${stateClasses}`}
       >
         <span className="flex w-full items-center gap-2">
           <ToolIcon
             tool={session.tool}
+            {...(toolIconDataUri !== undefined ? { iconDataUri: toolIconDataUri } : {})}
             className={
               isActive
                 ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300'

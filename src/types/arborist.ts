@@ -11,6 +11,17 @@
 // MIRROR: src-tauri/src/types.rs::SessionId
 export type SessionId = string;
 
+// MIRROR: src-tauri/src/types.rs::SubSessionId
+// Wire shape is identical to SessionId (a UUID string) but the Rust side
+// uses a distinct newtype so the compiler enforces the boundary.
+export type SubSessionId = string;
+
+// MIRROR: src-tauri/src/types.rs::CustomProcessDefId
+// User-facing slug for a `CustomProcessDef`. Matches `[a-zA-Z0-9_-]+` and
+// is unique within `AppConfig.customProcesses`. Built-in IDs: `shell`,
+// `open-folder`, `vscode`.
+export type CustomProcessDefId = string;
+
 // MIRROR: src-tauri/src/types.rs::InstructionSetId
 export type InstructionSetId = string;
 
@@ -19,6 +30,14 @@ export type Tool = 'claude' | 'copilot';
 
 // MIRROR: src-tauri/src/types.rs::SessionStatus
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'error';
+
+// MIRROR: src-tauri/src/types.rs::CustomProcessKind
+// Sub-session flavour. `terminal` runs inside an in-app PTY; `application`
+// spawns an external GUI program detached.
+export type CustomProcessKind = 'terminal' | 'application';
+
+// MIRROR: src-tauri/src/types.rs::SubSessionStatus
+export type SubSessionStatus = 'starting' | 'running' | 'exited' | 'error';
 
 // MIRROR: src-tauri/src/types.rs::TempFileSpec
 export interface TempFileSpec {
@@ -89,6 +108,16 @@ export interface DefaultInstructionSets {
 export interface AiLaunchCommands {
   claude: string;
   copilot: string;
+  /**
+   * Cached `data:image/png;base64,…` for Claude's launcher executable,
+   * resolved from `claude` (preferring the canonical CLI name even
+   * when `claude` above is a custom wrapper). Backend-managed —
+   * frontend patches don't carry it; the merge layer preserves it
+   * across `aiLaunchCommands` patches that don't change the command,
+   * and clears it when the command does change.
+   */
+  claudeIconDataUri?: string;
+  copilotIconDataUri?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::AppConfig
@@ -112,6 +141,18 @@ export interface AppConfig {
   tabOrder: SessionId[];
   /** Persisted active-session selection. `null` when no session is active. */
   activeSessionId: SessionId | null;
+  /**
+   * User-defined custom-process launchers exposed in the tab context menu.
+   * Built-ins (`shell`, `open-folder`, `vscode`) are seeded on
+   * `configVersion = 4` migration and may be edited or deleted by the user.
+   */
+  customProcesses: CustomProcessDef[];
+  /**
+   * Lightweight restore records for sub-tabs that were open at last
+   * shutdown. Restore re-creates terminal sub-sessions and brings
+   * application sub-sessions back greyed (re-launch on click).
+   */
+  lastOpenSubSessions: SubSessionRecord[];
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
@@ -147,6 +188,69 @@ export interface PartialAppConfig {
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
   activeSessionId?: SessionId | null;
+  /** Replaces the entire `customProcesses` list when present. */
+  customProcesses?: CustomProcessDef[];
+  /** Replaces the entire `lastOpenSubSessions` list when present. */
+  lastOpenSubSessions?: SubSessionRecord[];
+}
+
+// MIRROR: src-tauri/src/types.rs::CustomProcessDef
+// Persisted in `AppConfig.customProcesses`. `command` is passed verbatim to
+// `$SHELL -c` (or `%COMSPEC% /c` on Windows); the parent session's worktree
+// path is set as `cwd` and **never** interpolated into the command.
+export interface CustomProcessDef {
+  id: CustomProcessDefId;
+  name: string;
+  kind: CustomProcessKind;
+  command: string;
+  enabled: boolean;
+  /** Optional UI hint (icon name / emoji / preset key); reserved for future use. */
+  icon?: string;
+  /**
+   * Cached `data:image/png;base64,…` for the resolved app icon. The
+   * backend's `backfill_icons` pass populates this from `command` at
+   * config-save time. Frontend renders synchronously from this — no
+   * per-render IPC. Frontend patches that omit this field do **not**
+   * clobber the cache (see `merge_partial` in the Rust side).
+   */
+  iconDataUri?: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSession
+// In-memory + on-the-wire representation of a sub-tab. Lives in a
+// parallel `SubSessionStore` on the Rust side; the frontend mirrors them
+// in a Zustand slice (Phase 4).
+export interface SubSession {
+  id: SubSessionId;
+  parentSessionId: SessionId;
+  defId: CustomProcessDefId;
+  kind: CustomProcessKind;
+  label: string;
+  status: SubSessionStatus;
+  pid?: number;
+  composedCommand: string;
+  createdAt: number;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionRecord
+// Lightweight restore record persisted in
+// `AppConfig.lastOpenSubSessions`. Carries only what the restore pass
+// needs to attempt re-creation.
+export interface SubSessionRecord {
+  id: SubSessionId;
+  parentSessionId: SessionId;
+  defId: CustomProcessDefId;
+  kind: CustomProcessKind;
+  label: string;
+  /**
+   * Resolved command at the time the sub-session was created. Persisted
+   * so a later edit to the underlying `CustomProcessDef.command` doesn't
+   * change what restore would relaunch (mirror of `SubSession.composedCommand`).
+   *
+   * Optional in TypeScript because legacy v3 records (and tests) may
+   * omit it; sanitize-on-load fills it from the def's command if missing.
+   */
+  composedCommand?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::AppError
@@ -175,6 +279,79 @@ export interface SessionStatusEvent {
   sessionId: SessionId;
   status: SessionStatus;
   message?: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionCreateArgs
+export interface SubSessionCreateArgs {
+  parentSessionId: SessionId;
+  defId: CustomProcessDefId;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionIdArg
+export interface SubSessionIdArg {
+  id: SubSessionId;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionCloseIntent
+//
+// Discriminated tag describing what should happen to the underlying
+// process when the user closes a sub-tab. Terminal kind ignores the
+// variant; application kind branches on it.
+export type SubSessionCloseIntent = 'tabOnly' | 'requestAppClose' | 'forceKill';
+
+// MIRROR: src-tauri/src/types.rs::SubSessionCloseArgs
+export interface SubSessionCloseArgs {
+  id: SubSessionId;
+  intent?: SubSessionCloseIntent;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionListArgs
+export interface SubSessionListArgs {
+  parentSessionId?: SessionId;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionInputArgs
+export interface SubSessionInputArgs {
+  id: SubSessionId;
+  data: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionResizeArgs
+export interface SubSessionResizeArgs {
+  id: SubSessionId;
+  cols: number;
+  rows: number;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionStatusEvent
+// Payload of the `subsession://status` Tauri event (Phase 2).
+export interface SubSessionStatusEvent {
+  id: SubSessionId;
+  status: SubSessionStatus;
+  pid?: number;
+  message?: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionExitedEvent
+// Payload of the `subsession://exited` Tauri event (Phase 3 application
+// sub-tabs). Phase 2's terminal sub-tabs use `subsession://status` with
+// `SubSessionStatus = 'exited'` instead.
+export interface SubSessionExitedEvent {
+  id: SubSessionId;
+  exitCode?: number;
+}
+
+// MIRROR: src-tauri/src/types.rs::SubSessionRestoredEvent
+// Payload of the `subsession://restored` Tauri event (Phase 7).
+//
+// Emitted once per sub-session by the restore-on-launch second pass
+// (see `commands::subsession::restore_all_sub_sessions_impl`). Carries
+// the full `SubSession` snapshot so the frontend store can insert the
+// row in a single `applyRestored` call without an extra round-trip to
+// `subsession_list`. Status events for the same id (Running, Exited,
+// Error) follow the restore event in normal flow.
+export interface SubSessionRestoredEvent {
+  subSession: SubSession;
 }
 
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent

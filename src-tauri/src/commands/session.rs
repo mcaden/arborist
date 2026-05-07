@@ -20,7 +20,7 @@
 //! the on-disk session record converges automatically when the production
 //! sink is wired (see [`crate::lib::run`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -84,6 +84,14 @@ pub struct AppContext {
     /// `session://activity` channel as a `TurnEnd` variant; tests
     /// substitute a capturing closure.
     pub turn_emit: TurnCb,
+    /// Phase 7 closing-parent tombstone (see CONTEXT_MENU_PLAN.md). Holds
+    /// the `SessionId`s of parent sessions whose `session_close` is
+    /// currently mid-cascade. `subsession_create_impl` and the sub-session
+    /// restore second pass consult this set so a child cannot be created
+    /// or restored under a parent that's about to disappear. The lock is
+    /// only ever held for the trivial "is X in the set?" check, so it
+    /// never blocks for a meaningful duration.
+    pub closing_parents: Arc<Mutex<HashSet<SessionId>>>,
     /// Sessions that have been persisted but not yet PTY-spawned. Used by
     /// `restore_all_sessions` to defer the actual `pool.spawn` until the
     /// frontend reports the real terminal dimensions via `session_resize`.
@@ -296,9 +304,41 @@ impl AppContext {
             metrics_emit,
             ai_session_discover,
             turn_emit,
+            closing_parents: Arc::new(Mutex::new(HashSet::new())),
             pending_spawn: Arc::new(Mutex::new(HashMap::new())),
             switch_lock: Arc::new(tokio::sync::RwLock::new(())),
             switch_pending: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// True iff `session_close` is currently mid-cascade for `id`.
+    /// Used by `subsession_create_impl` and the sub-session restore
+    /// second pass to refuse new children under a closing parent.
+    ///
+    /// Fails *closed* on a poisoned mutex: a panic while holding
+    /// `closing_parents` could otherwise let a sub-session be spawned
+    /// under a parent mid-close (the cascade would then race to kill
+    /// it). Returning `true` on poisoning preserves the tombstone
+    /// invariant — the caller will refuse the operation, which is
+    /// the safe failure mode.
+    #[must_use]
+    pub fn is_parent_closing(&self, id: &SessionId) -> bool {
+        match self.closing_parents.lock() {
+            Ok(g) => g.contains(id),
+            Err(_) => true,
+        }
+    }
+
+    /// Mark a parent as mid-close. Returns a guard that removes the id
+    /// on drop — guaranteed cleanup even if the close path panics.
+    #[must_use]
+    pub fn mark_parent_closing(&self, id: SessionId) -> ClosingParentGuard {
+        if let Ok(mut g) = self.closing_parents.lock() {
+            g.insert(id);
+        }
+        ClosingParentGuard {
+            set: Arc::clone(&self.closing_parents),
+            id,
         }
     }
 
@@ -346,6 +386,22 @@ impl AppContext {
             .expect("workspace lock poisoned")
             .store
             .clone()
+    }
+}
+
+/// RAII guard returned by [`AppContext::mark_parent_closing`]. Removes
+/// the id from the closing-parents set when dropped so the tombstone
+/// never outlives the cascade — even on panic.
+pub struct ClosingParentGuard {
+    set: Arc<Mutex<HashSet<SessionId>>>,
+    id: SessionId,
+}
+
+impl Drop for ClosingParentGuard {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.set.lock() {
+            g.remove(&self.id);
+        }
     }
 }
 

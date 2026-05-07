@@ -6,14 +6,21 @@
 //! handlers.
 
 pub mod activity;
+pub mod app_launcher;
+pub mod cmd_resolver;
 pub mod commands;
 pub mod compose;
 pub mod config_store;
 pub mod copilot_events;
 pub mod git;
+pub mod icon_backfill;
+pub mod process_icon;
 pub mod pty_pool;
 pub mod session_metrics;
+pub mod sub_sessions;
 pub mod types;
+pub mod vscode_owner;
+pub mod window_focus;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId,
@@ -248,7 +255,73 @@ pub fn run() {
                 ai_session_discover,
                 turn_emit,
             ));
+            // Hold a local Arc so the startup backfill below can
+            // share the *same* `ConfigStore` (and its write lock)
+            // that subsequent `config_set` calls will use.
+            let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
+
+            // Phase 2: parallel sub-session pool + store + sink. Lives
+            // alongside the existing AppContext so existing tests don't
+            // need to know about it.
+            let sub_pool = std::sync::Arc::new(sub_sessions::SubPtyPool::new(std::sync::Arc::new(
+                pty_pool::PortablePtySpawner,
+            )));
+            let sub_store = std::sync::Arc::new(sub_sessions::SubSessionStore::new());
+            let sub_sink =
+                commands::build_production_sub_sink(app.handle().clone(), sub_store.clone());
+            // Phase 3: application sub-tabs. Their pool reuses the same
+            // sink (output is no-op for apps, status / exited flow into
+            // the same Tauri events as terminal sub-tabs).
+            let app_pool = std::sync::Arc::new(app_launcher::AppPool::new(std::sync::Arc::new(
+                app_launcher::RealAppSpawner,
+            )));
+            let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> =
+                std::sync::Arc::new(window_focus::RealFocuser);
+            let icon_cache = std::sync::Arc::new(process_icon::IconCache::new(
+                std::sync::Arc::new(process_icon::RealIconExtractor),
+            ));
+            let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
+                sub_pool, sub_store, sub_sink, app_pool, focuser, icon_cache,
+            ));
+            app.manage(sub_ctx.clone());
+
+            // Best-effort: warm the persisted icon cache for every
+            // sidebar entry now, so the first render after startup
+            // doesn't show emoji-then-icon flicker. Failures are
+            // non-fatal — the frontend already has a graceful
+            // fallback (the bundled SVG / emoji glyph).
+            //
+            // Routed through the same `AppContext.store` the rest of
+            // the runtime uses (cloning the `Arc`-backed `write_lock`
+            // so we share it with subsequent `config_set` calls), and
+            // through `save_config_with` so the load/mutate/write
+            // sequence is atomic against any future writers. (Tauri
+            // setup is single-threaded, so today there are no other
+            // writers; we still hold the lock for forward
+            // compatibility.)
+            {
+                let store = ctx_for_backfill.store();
+                let cache = sub_ctx.icon_cache.clone();
+                if let Err(err) =
+                    store.save_config_with(types::PartialAppConfig::default(), move |cfg| {
+                        let cwd = cfg
+                            .workspace_root
+                            .clone()
+                            .filter(|p| p.is_dir())
+                            .unwrap_or_else(std::env::temp_dir);
+                        icon_backfill::backfill_icons(cfg, &cache, &cwd)
+                    })
+                {
+                    tracing::warn!(
+                        %err,
+                        "startup icon backfill: failed to persist refreshed config"
+                    );
+                } else {
+                    tracing::debug!("startup icon backfill: cache populated");
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -268,6 +341,14 @@ pub fn run() {
             commands::workspace_validate,
             commands::workspace_switch,
             commands::worktree_create,
+            commands::subsession_create,
+            commands::subsession_close,
+            commands::subsession_focus,
+            commands::subsession_list,
+            commands::subsession_input,
+            commands::subsession_resize,
+            commands::subsession_relaunch,
+            commands::subsession_icon,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arborist");

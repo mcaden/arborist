@@ -31,6 +31,17 @@ import type {
   SessionActivityEvent,
   SessionMetricsEvent,
   SessionView,
+  SubSession,
+  SubSessionCloseArgs,
+  SubSessionCloseIntent,
+  SubSessionCreateArgs,
+  SubSessionExitedEvent,
+  SubSessionId,
+  SubSessionInputArgs,
+  SubSessionListArgs,
+  SubSessionResizeArgs,
+  SubSessionRestoredEvent,
+  SubSessionStatusEvent,
   Tool,
   WorktreeInfo,
   WorkspaceSwitchResult,
@@ -212,12 +223,19 @@ export function configGet(): Promise<AppConfig> {
 }
 
 /**
- * Deep-merges `partial` into the persisted [`AppConfig`]. Only the fields
- * present on `partial` (i.e. not `undefined`) are touched; the rest survive
- * unchanged. Backend may reject relative paths with an `InvalidPath` error.
+ * Deep-merges `partial` into the persisted [`AppConfig`] and returns the
+ * resulting full config. Only the fields present on `partial` (i.e. not
+ * `undefined`) are touched; the rest survive unchanged. Backend may
+ * reject relative paths with an `InvalidPath` error.
+ *
+ * The returned config is the source of truth — callers should mirror it
+ * into their local cache rather than recomputing the merge themselves.
+ * Backend-derived fields like `customProcesses[].iconDataUri` are
+ * populated under the same write lock as the patch and only reach the
+ * frontend through this return value.
  */
-export function configSet(partial: PartialAppConfig): Promise<void> {
-  return invoke<void>('config_set', { partial });
+export function configSet(partial: PartialAppConfig): Promise<AppConfig> {
+  return invoke<AppConfig>('config_set', { partial });
 }
 
 /**
@@ -339,4 +357,94 @@ export function onSessionActivity(
 
 export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Promise<UnlistenFn> {
   return listen<SessionMetricsEvent>('session://metrics', (event) => cb(event.payload));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: sub-session commands & events.
+//
+// Sub-sessions are children of a session and represent the "+ button"
+// items chosen from the tab context menu. Phase 2 ships *terminal* kind
+// (a second PTY in the same worktree); Phase 3 adds *application* kind
+// (detached external windows). Output for terminal sub-sessions reuses
+// the existing `session://output` channel because the UUID id space is
+// global; status changes get their own `subsession://status` channel.
+// ---------------------------------------------------------------------------
+
+export function subSessionCreate(args: SubSessionCreateArgs): Promise<SubSession> {
+  return invoke<SubSession>('subsession_create', { args });
+}
+
+export function subSessionClose(id: SubSessionId, intent?: SubSessionCloseIntent): Promise<void> {
+  const args: SubSessionCloseArgs = intent === undefined ? { id } : { id, intent };
+  return invoke<void>('subsession_close', { args });
+}
+
+export function subSessionFocus(id: SubSessionId): Promise<void> {
+  return invoke<void>('subsession_focus', { args: { id } });
+}
+
+export function subSessionList(parentSessionId?: SessionId): Promise<SubSession[]> {
+  const args: SubSessionListArgs = parentSessionId === undefined ? {} : { parentSessionId };
+  return invoke<SubSession[]>('subsession_list', { args });
+}
+
+export function subSessionInput(args: SubSessionInputArgs): Promise<void> {
+  return invoke<void>('subsession_input', { args });
+}
+
+export function subSessionResize(args: SubSessionResizeArgs): Promise<void> {
+  return invoke<void>('subsession_resize', { args });
+}
+
+/**
+ * Re-spawn a sub-session under its existing id (Phase 7). Used when the
+ * user clicks a greyed-out application sub-tab whose external process has
+ * already exited; also valid for terminal sub-tabs whose PTY has died.
+ *
+ * The persisted record (id, parent, defId, kind) is unchanged. The
+ * `composedCommand` is re-derived from the current
+ * `AppConfig.customProcesses` entry, so user edits to the def take effect
+ * on relaunch. Status flows back via the existing `subsession://status`
+ * channel.
+ */
+export function subSessionRelaunch(id: SubSessionId): Promise<SubSession> {
+  return invoke<SubSession>('subsession_relaunch', { args: { id } });
+}
+
+/**
+ * Best-effort fetch of the OS application icon for an
+ * `application`-kind sub-session, returned as a `data:image/png;base64,…`
+ * URI. Returns `null` when extraction is not possible (terminal
+ * sub-session, PID exited, platform unsupported, miss, …) — the
+ * caller falls back to the generic emoji.
+ *
+ * Backed by `IconCache` (see `src-tauri/src/process_icon.rs`); the
+ * same exe path is only extracted once per process lifetime.
+ */
+export function subSessionIcon(id: SubSessionId): Promise<string | null> {
+  return invoke<string | null>('subsession_icon', { args: { id } });
+}
+
+export function onSubSessionStatus(
+  cb: (payload: SubSessionStatusEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SubSessionStatusEvent>('subsession://status', (event) => cb(event.payload));
+}
+
+export function onSubSessionExited(
+  cb: (payload: SubSessionExitedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SubSessionExitedEvent>('subsession://exited', (event) => cb(event.payload));
+}
+
+/**
+ * Subscribe to `subsession://restored` events emitted once per sub-session
+ * by the restore-on-launch second pass (Phase 7). Carries the full
+ * `SubSession` payload so the frontend store can hydrate the row in a
+ * single update without an extra `subsession_list` round-trip.
+ */
+export function onSubSessionRestored(
+  cb: (payload: SubSessionRestoredEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SubSessionRestoredEvent>('subsession://restored', (event) => cb(event.payload));
 }

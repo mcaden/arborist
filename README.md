@@ -52,6 +52,23 @@ install time if it isn't already present (preinstalled on Windows 10/11).
 
 Updates are manual: re-download the latest release when a new version ships.
 
+### Optional system dependencies
+
+Arborist's "application" custom-process sub-tabs (right-click a session tab →
+Launch… → e.g. _Open Folder_, _VS Code_) attempt to focus the spawned
+program's OS window when you click the sub-tab.
+
+- **Linux (X11)**: requires [`wmctrl`](https://sites.google.com/site/tstyblo/wmctrl/)
+  on `PATH`. Without it, focusing an application sub-tab is a no-op
+  (logged warning, no error). Install via your distro's package manager
+  (`apt install wmctrl`, `dnf install wmctrl`, etc.).
+- **Linux (Wayland)**: window focus from another process is blocked by the
+  protocol; Arborist reports `Unsupported` rather than attempting an
+  X11-only call. Sub-tabs still spawn and track the application; only the
+  click-to-focus action is unavailable.
+- **macOS / Windows**: no extra dependencies. macOS uses `osascript` (always
+  present); Windows uses native `user32` FFI.
+
 ## Built with
 
 | Layer         | Technology                                                           |

@@ -88,6 +88,22 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 | L-02   | The command list SHOULD be configurable globally and overridable per-worktree. |
 | L-03   | All commands in the invocation MUST be joined with `&&` so that a failing command halts the sequence and the session enters an error state. |
 
+### 5.7 Custom Processes & Sub-Tabs
+
+| ID     | Requirement |
+|--------|-------------|
+| CP-01  | The user MUST be able to right-click a session tab (or invoke Shift+F10 / the Apps key with the tab focused) to open a context menu. |
+| CP-02  | The context menu's "Launch…" submenu MUST list every enabled `CustomProcessDef` from `AppConfig.customProcesses`. Disabled defs MUST NOT appear. |
+| CP-03  | Selecting a def MUST spawn a sub-tab (a `SubSession`) attached to the right-clicked session as its parent. The sub-tab MUST render indented under its parent in the sidebar. |
+| CP-04  | A `terminal` sub-tab MUST host its own PTY (cwd = parent's worktree path) and render in `xterm.js` exactly like a top-level session when active. |
+| CP-05  | An `application` sub-tab MUST spawn its program detached so closing Arborist does not kill it. Clicking the sub-tab MUST attempt to focus the program's OS window without changing the visible terminal viewport. Closing an `application` sub-tab MUST NOT terminate the external program — it only drops Arborist's tracking. |
+| CP-06  | Sub-tabs MUST persist across app restarts. Terminal sub-tabs MUST respawn fresh on next launch; application sub-tabs MUST come back greyed (status `exited`) and re-launch on user click. |
+| CP-07  | Closing a parent session MUST cascade: terminal sub-sessions are killed, application sub-sessions are merely detached. A sub-session whose PTY kill fails MUST be left visible in an error state rather than silently leaked. |
+| CP-08  | The Settings dialog MUST expose a "Custom Processes" tab that allows the user to add, edit, enable/disable, and delete `CustomProcessDef` entries. The same validation rules MUST apply on the frontend and at the `config_set` boundary. |
+| CP-09  | On fresh install (and additively at v3→v4 migration), the app MUST seed three built-in defs: `shell` (terminal, platform shell), `open-folder` (application, OS file browser), and `vscode` (application, `code .`; auto-disabled if `code` is not on `PATH`). Built-in defs MUST be user-editable and user-deletable. |
+| CP-10  | A `CustomProcessDef.command` MUST be passed to the platform shell with the parent's worktree path as `cwd`; it MUST NOT be interpolated into the command string (DESIGN §8.1). |
+| CP-11  | Window-focus on Linux MAY require the optional system dependency `wmctrl`. Its absence MUST degrade gracefully (logged warning, no error toast). Wayland sessions MUST report `Unsupported` rather than attempting an X11-only call. |
+
 ## 6. Non-Functional Requirements
 
 | ID     | Requirement |

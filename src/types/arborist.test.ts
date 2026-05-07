@@ -11,12 +11,18 @@ import { expectTypeOf } from 'vitest';
 import type {
   AppConfig,
   AppError,
+  CustomProcessDef,
   InstructionSet,
   PartialAppConfig,
   Session,
   SessionOutputEvent,
   SessionStatusEvent,
+  SubSessionStatusEvent,
+  SubSessionExitedEvent,
+  SubSessionRestoredEvent,
   SessionView,
+  SubSession,
+  SubSessionRecord,
   WorkspaceSwitchArgs,
   WorkspaceSwitchResult,
 } from './arborist';
@@ -24,11 +30,17 @@ import type {
 import { sessionFixture } from './fixtures/session';
 import { sessionViewFixture } from './fixtures/sessionView';
 import { instructionSetFixture } from './fixtures/instructionSet';
-import appConfigFixture from './fixtures/appConfig.json';
+import { appConfigFixture } from './fixtures/appConfig';
 import partialAppConfigFixture from './fixtures/partialAppConfig.json';
 import appErrorFixture from './fixtures/appError.json';
 import sessionOutputEventFixture from './fixtures/sessionOutputEvent.json';
 import { sessionStatusEventFixture } from './fixtures/sessionStatusEvent';
+import { customProcessDefFixture } from './fixtures/customProcessDef';
+import { subSessionFixture } from './fixtures/subSession';
+import { subSessionRecordFixture } from './fixtures/subSessionRecord';
+import { subSessionStatusEventFixture } from './fixtures/subSessionStatusEvent';
+import subSessionExitedEventFixture from './fixtures/subSessionExitedEvent.json';
+import { subSessionRestoredEventFixture } from './fixtures/subSessionRestoredEvent';
 import workspaceSwitchArgsFixture from './fixtures/workspaceSwitchArgs.json';
 import { workspaceSwitchResultFixture } from './fixtures/workspaceSwitchResult';
 
@@ -65,6 +77,12 @@ const _appConfig = appConfigFixture satisfies AppConfig;
 const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
 const _appError = appErrorFixture satisfies AppError;
 const _sessionOutputEvent = sessionOutputEventFixture satisfies SessionOutputEvent;
+const _customProcessDef = customProcessDefFixture satisfies CustomProcessDef;
+const _subSession = subSessionFixture satisfies SubSession;
+const _subSessionRecord = subSessionRecordFixture satisfies SubSessionRecord;
+const _subSessionStatusEvent = subSessionStatusEventFixture satisfies SubSessionStatusEvent;
+const _subSessionExitedEvent = subSessionExitedEventFixture satisfies SubSessionExitedEvent;
+const _subSessionRestoredEvent = subSessionRestoredEventFixture satisfies SubSessionRestoredEvent;
 const _workspaceSwitchArgs = workspaceSwitchArgsFixture satisfies WorkspaceSwitchArgs;
 const _workspaceSwitchResult = workspaceSwitchResultFixture satisfies WorkspaceSwitchResult;
 
@@ -78,6 +96,12 @@ void _appConfig;
 void _partialAppConfig;
 void _appError;
 void _sessionOutputEvent;
+void _customProcessDef;
+void _subSession;
+void _subSessionRecord;
+void _subSessionStatusEvent;
+void _subSessionExitedEvent;
+void _subSessionRestoredEvent;
 void _workspaceSwitchArgs;
 void _workspaceSwitchResult;
 
@@ -160,6 +184,8 @@ describe('arborist type mirrors', () => {
         'lastOpenSessions',
         'tabOrder',
         'activeSessionId',
+        'customProcesses',
+        'lastOpenSubSessions',
       ],
       [],
       'AppConfig',
@@ -180,6 +206,8 @@ describe('arborist type mirrors', () => {
       'lastOpenSessions',
       'tabOrder',
       'activeSessionId',
+      'customProcesses',
+      'lastOpenSubSessions',
     ]);
     const unexpected = Object.keys(partialAppConfigFixture).filter((k) => !allowed.has(k));
     expect(unexpected, 'PartialAppConfig: fixture has keys not declared in TS mirror').toEqual([]);
@@ -236,5 +264,69 @@ describe('arborist type mirrors', () => {
 
   it('SessionStatus wire values are lowercase string literals', () => {
     expectTypeOf<Session['status']>().toEqualTypeOf<'starting' | 'running' | 'exited' | 'error'>();
+  });
+
+  it('CustomProcessDef fixture matches TS interface key set', () => {
+    assertExactKeys(
+      customProcessDefFixture as unknown as Record<string, unknown>,
+      ['id', 'name', 'kind', 'command', 'enabled'],
+      ['icon'],
+      'CustomProcessDef',
+    );
+  });
+
+  it('SubSession fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionFixture as unknown as Record<string, unknown>,
+      ['id', 'parentSessionId', 'defId', 'kind', 'label', 'status', 'composedCommand', 'createdAt'],
+      ['pid'],
+      'SubSession',
+    );
+  });
+
+  it('SubSessionRecord fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionRecordFixture as unknown as Record<string, unknown>,
+      ['id', 'parentSessionId', 'defId', 'kind', 'label'],
+      ['composedCommand'],
+      'SubSessionRecord',
+    );
+  });
+
+  it('SubSessionStatusEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionStatusEventFixture as unknown as Record<string, unknown>,
+      ['id', 'status'],
+      ['pid', 'message'],
+      'SubSessionStatusEvent',
+    );
+  });
+
+  it('SubSessionExitedEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionExitedEventFixture as unknown as Record<string, unknown>,
+      ['id'],
+      ['exitCode'],
+      'SubSessionExitedEvent',
+    );
+  });
+
+  it('SubSessionRestoredEvent fixture matches TS interface key set', () => {
+    assertExactKeys(
+      subSessionRestoredEventFixture as unknown as Record<string, unknown>,
+      ['subSession'],
+      [],
+      'SubSessionRestoredEvent',
+    );
+  });
+
+  it('CustomProcessKind wire values are lowercase string literals', () => {
+    expectTypeOf<CustomProcessDef['kind']>().toEqualTypeOf<'terminal' | 'application'>();
+  });
+
+  it('SubSessionStatus wire values are lowercase string literals', () => {
+    expectTypeOf<SubSession['status']>().toEqualTypeOf<
+      'starting' | 'running' | 'exited' | 'error'
+    >();
   });
 });

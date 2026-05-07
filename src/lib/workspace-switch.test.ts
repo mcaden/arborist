@@ -36,6 +36,8 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
+    customProcesses: [],
+    lastOpenSubSessions: [],
     ...overrides,
   };
 }

@@ -27,6 +27,8 @@ function seedStores(workspaceRoot: string | null): void {
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
     },
     status: 'ready',
     error: null,
@@ -91,6 +93,8 @@ describe('WorkspaceIndicator', () => {
         lastOpenSessions: [],
         tabOrder: [],
         activeSessionId: null,
+        customProcesses: [],
+        lastOpenSubSessions: [],
       },
       sessions: [],
     });

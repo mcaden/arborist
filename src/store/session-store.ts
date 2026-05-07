@@ -26,6 +26,7 @@ import { useShallow } from 'zustand/react/shallow';
 
 import {
   configSet,
+  formatError,
   sessionClose,
   sessionCreate,
   sessionFocus,
@@ -33,6 +34,8 @@ import {
   type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
+import { useSubSessionStore } from '@/store/sub-session-store';
+import { useConfigStore } from '@/store/config-store';
 import type {
   SessionActivityEvent,
   SessionId,
@@ -415,6 +418,12 @@ export const useSessionStore = create<Store>((set, get) => {
           patch.inTurn = next;
         }
         set(patch);
+        // Frontend convergence on parent close: drop any sub-sessions
+        // that hung off this parent so the sidebar / xterm registry
+        // don't leak orphan rows. The backend cascade is Phase 7's
+        // responsibility (CONTEXT_MENU_PLAN.md), but converging
+        // locally avoids a confusing in-between UI state.
+        useSubSessionStore.getState().actions.dropForParent(id);
       };
 
       let succeeded = false;
@@ -453,7 +462,7 @@ export const useSessionStore = create<Store>((set, get) => {
       try {
         await sessionFocus({ sessionId: id });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         // No rollback — focus is UI-driven and a backend reject just means
         // the persisted active marker is stale. The user's intent stands.
         console.warn(`[session-store] session_focus(${id}) rejected: ${message}`);
@@ -474,8 +483,11 @@ export const useSessionStore = create<Store>((set, get) => {
         if (!ids.includes(view.id)) reordered.push(view);
       }
       set({ sessions: reordered });
-      // Diff-only: only the field that actually changed.
-      await configSet({ tabOrder: ids });
+      // Diff-only: only the field that actually changed. Mirror the
+      // backend-returned merged config into `useConfigStore` so its
+      // `tabOrder` selector stays in sync without an extra round trip.
+      const merged = await configSet({ tabOrder: ids });
+      useConfigStore.setState({ config: merged });
     },
 
     requestClose: (id) => {

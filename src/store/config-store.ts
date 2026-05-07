@@ -14,9 +14,15 @@
 //   the frontend should observe).
 
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 
-import { configGet, configSet } from '@/lib/tauri-bridge';
-import type { AppConfig, PartialAppConfig } from '@/types/arborist';
+import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
+import type {
+  AppConfig,
+  CustomProcessDef,
+  PartialAppConfig,
+  SubSessionRecord,
+} from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
   configVersion: 4,
@@ -30,6 +36,8 @@ const EMPTY_CONFIG: AppConfig = {
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
+  customProcesses: [],
+  lastOpenSubSessions: [],
 };
 
 export type HydrationStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -76,35 +84,7 @@ function stripUndefined(patch: PartialAppConfig): PartialAppConfig {
   return out;
 }
 
-function applyPatch(config: AppConfig, patch: PartialAppConfig): AppConfig {
-  const next: AppConfig = { ...config };
-  if (patch.configVersion !== undefined) next.configVersion = patch.configVersion;
-  if (patch.defaultInstructionSets !== undefined) {
-    next.defaultInstructionSets = {
-      ...next.defaultInstructionSets,
-      ...patch.defaultInstructionSets,
-    };
-  }
-  if (patch.instructionSetsDir !== undefined) next.instructionSetsDir = patch.instructionSetsDir;
-  if (patch.workspaceRoot !== undefined) next.workspaceRoot = patch.workspaceRoot;
-  if (patch.worktreeRoots !== undefined) next.worktreeRoots = patch.worktreeRoots;
-  if (patch.prelaunchCommands !== undefined) next.prelaunchCommands = patch.prelaunchCommands;
-  if (patch.worktreePrelaunchCommands !== undefined) {
-    next.worktreePrelaunchCommands = patch.worktreePrelaunchCommands;
-  }
-  if (patch.aiLaunchCommands !== undefined) {
-    next.aiLaunchCommands = {
-      ...next.aiLaunchCommands,
-      ...patch.aiLaunchCommands,
-    };
-  }
-  if (patch.lastOpenSessions !== undefined) next.lastOpenSessions = patch.lastOpenSessions;
-  if (patch.tabOrder !== undefined) next.tabOrder = patch.tabOrder;
-  if (patch.activeSessionId !== undefined) next.activeSessionId = patch.activeSessionId;
-  return next;
-}
-
-export const useConfigStore = create<ConfigStoreState>((set, get) => ({
+export const useConfigStore = create<ConfigStoreState>((set) => ({
   config: EMPTY_CONFIG,
   status: 'idle',
   error: null,
@@ -115,7 +95,7 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       const config = await configGet();
       set({ config, status: 'ready', error: null });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       set({ status: 'error', error: message });
       throw err;
     }
@@ -127,8 +107,12 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
 
   set: async (patch) => {
     const diff = stripUndefined(patch);
-    await configSet(diff);
-    set({ config: applyPatch(get().config, diff) });
+    // The backend returns the merged config — including backend-derived
+    // fields (e.g. `customProcesses[].iconDataUri` populated by the
+    // icon backfill pass) that the original `diff` doesn't carry.
+    // Trust the returned snapshot wholesale.
+    const config = await configSet(diff);
+    set({ config });
   },
 }));
 
@@ -153,5 +137,17 @@ export const selectDefaultInstructionSets = (
 export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.config.tabOrder;
 export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] =>
   s.config.lastOpenSessions;
+export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] =>
+  s.config.customProcesses;
+export const selectLastOpenSubSessions = (s: ConfigStoreState): readonly SubSessionRecord[] =>
+  s.config.lastOpenSubSessions;
 export const selectStatus = (s: ConfigStoreState): HydrationStatus => s.status;
 export const selectError = (s: ConfigStoreState): string | null => s.error;
+
+/**
+ * Convenience hook for the enabled subset of `customProcesses`, used by the
+ * tab context menu's "Launch…" submenu. Returns a stable reference per
+ * underlying-array identity (Zustand handles equality on the slice itself).
+ */
+export const useEnabledCustomProcesses = (): readonly CustomProcessDef[] =>
+  useConfigStore(useShallow((s) => s.config.customProcesses.filter((d) => d.enabled)));
