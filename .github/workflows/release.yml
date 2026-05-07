@@ -102,10 +102,11 @@ jobs:
         with:
           ref: refs/tags/${{ needs.verify.outputs.tag }}
 
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
+          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -129,7 +130,7 @@ jobs:
             libssl-dev \
             build-essential
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - uses: tauri-apps/tauri-action@v0
         id: tauri

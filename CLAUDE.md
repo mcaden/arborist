@@ -14,11 +14,11 @@ This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or 
 
 Hard rules:
 
-- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `npm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
+- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `pnpm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
 - **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host.
 - **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
 - If `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
-- Do not run `npm run tauri:dev` or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `npm run build`, or `npm test -- --run` for verification instead.
+- Do not run `pnpm run tauri:dev` or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `pnpm run build`, or `pnpm test --run` for verification instead.
 
 If a task genuinely requires restarting the host, ask the user to do it — never do it yourself.
 
@@ -33,16 +33,16 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 ### Run / build
 
 ```sh
-npm run tauri:dev       # Vite + Tauri with HMR (frontend) and hot-recompile (backend)
-npm run tauri:build     # production bundle → src-tauri/target/release/bundle/
+pnpm run tauri:dev       # Vite + Tauri with HMR (frontend) and hot-recompile (backend)
+pnpm run tauri:build     # production bundle → src-tauri/target/release/bundle/
 ```
 
 ### Lint / format / type-check
 
 ```sh
-npm run lint            # eslint + prettier --check
-npm run lint:fix        # auto-apply
-npm run dev:typecheck   # tsc --noEmit --watch (run continuously while coding)
+pnpm run lint            # eslint + prettier --check
+pnpm run lint:fix        # auto-apply
+pnpm run dev:typecheck   # tsc --noEmit --watch (run continuously while coding)
 cargo fmt --all -- --check
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
@@ -51,8 +51,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 ### Test
 
 ```sh
-npm test                         # vitest watch mode (inner loop)
-npm test -- --run                # vitest once (CI / pre-push)
+pnpm test                         # vitest watch mode (inner loop)
+pnpm test --run                # vitest once (CI / pre-push)
 cargo test --workspace           # unit + integration tests; also builds arborist-test-child
 cargo test --workspace <name>    # single Rust test by name prefix
 ```
@@ -60,14 +60,14 @@ cargo test --workspace <name>    # single Rust test by name prefix
 ### Acceptance gate (all must be green before merge)
 
 ```sh
-npm run lint && npm test -- --run && npm run build
+pnpm run lint && pnpm test --run && pnpm run build
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
 ### Debugging helpers
 
 ```sh
-RUST_LOG=arborist_lib=debug npm run tauri:dev   # verbose backend tracing
+RUST_LOG=arborist_lib=debug pnpm run tauri:dev   # verbose backend tracing
 cargo run -p arborist --example config_smoke    # config-store end-to-end without Tauri
 cargo run -p arborist --bin arborist-test-child # poke the PTY test child interactively
 ```

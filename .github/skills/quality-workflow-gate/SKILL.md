@@ -1,6 +1,6 @@
 ---
 name: quality-workflow-gate
-description: Procedural reference for quality. Use it as a lookup for one task at a time for command reference, watcher setup, Husky hooks, test architecture, or end-of-feature smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `npm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill provides the concrete commands and setup details.
+description: Procedural reference for quality. Use it as a lookup for one task at a time for command reference, watcher setup, Husky hooks, test architecture, or end-of-feature smoke tests. Invoke when scaffolding the repo, configuring git hooks, setting up editor watchers, looking up an exact `pnpm`/`cargo` command, writing or restructuring tests, or verifying a feature is done before merge. The load-bearing *principles* (test-first, determinism, "what done means", pitfalls) live in `.github/copilot-instructions.md` and are always in context — this skill provides the concrete commands and setup details.
 license: MIT
 ---
 
@@ -11,15 +11,15 @@ Companion to the **Shift-left quality** principles in `.github/copilot-instructi
 ## 1. Build, run, lint, test — command reference
 
 ```
-npm install                                     # install JS deps
-npm run tauri:dev                               # dev build + HMR
-npm run tauri:build                             # production bundle
-npm run lint                                    # eslint + prettier --check
-npm run lint:fix                                # eslint --fix + prettier --write
-npm run dev:typecheck                           # tsc --noEmit --watch
-npm test                                        # vitest (watch by default in dev)
-npm test -- --run                               # vitest single-shot (CI mode)
-npm test -- --run --coverage                    # with coverage report
+pnpm install                                     # install JS deps
+pnpm run tauri:dev                               # dev build + HMR
+pnpm run tauri:build                             # production bundle
+pnpm run lint                                    # eslint + prettier --check
+pnpm run lint:fix                                # eslint --fix + prettier --write
+pnpm run dev:typecheck                           # tsc --noEmit --watch
+pnpm test                                        # vitest (watch by default in dev)
+pnpm test --run                               # vitest single-shot (CI mode)
+pnpm test --run --coverage                    # with coverage report
 cargo fmt --all -- --check                      # format check (workspace root)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -36,8 +36,8 @@ Run continuously while coding so type/lint/test feedback hits in <5 s:
 
 ```
 # Frontend watchers (run in two terminals)
-npm run dev:typecheck    # tsc --noEmit --watch
-npm run test:watch       # vitest
+pnpm run dev:typecheck    # tsc --noEmit --watch
+pnpm run test:watch       # vitest
 
 # Rust watchers (run in two terminals)
 cargo watch -x check -x clippy            # type + lint feedback (workspace root)
@@ -54,7 +54,7 @@ Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for bra
   - `lint-staged` runs `eslint --fix` + Prettier on staged JS/TS
   - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on the Rust workspace if any `.rs` file is staged
 - **pre-push**:
-  - `npm test -- --run` (vitest in CI mode)
+  - `pnpm test --run` (vitest in CI mode)
   - `cargo test --workspace`
 
 ## 4. Test architecture rules
@@ -71,7 +71,7 @@ Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for bra
 - Shared test helpers in `src/test/`
 - Hand-written mock at `src/lib/tauri-bridge.mock.ts` exporting the same shape as `tauri-bridge.ts` with `vi.fn()` defaults; tests override per-case
 - Component tests for Sidebar, NewSessionDialog, TerminalView (with a mock terminal); hook tests for `use-terminal`
-- E2E (post-v1, optional): Tauri's WebDriver integration — gated behind a separate npm script, not part of `npm test`
+- E2E (post-v1, optional): Tauri's WebDriver integration — gated behind a separate pnpm script, not part of `pnpm test`
 
 ### General
 - **Coverage** is a smell detector, not a target. No percentage gate, but a file <60% line coverage is a yellow flag worth explaining.
