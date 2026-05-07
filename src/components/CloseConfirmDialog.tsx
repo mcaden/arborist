@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { formatError } from '@/lib/tauri-bridge';
 import { usePendingClose, useSessionActions, useSessionById } from '@/store/session-store';
 
 export function CloseConfirmDialog(): JSX.Element | null {
@@ -60,8 +61,7 @@ export function CloseConfirmDialog(): JSX.Element | null {
         alertMessage = `Session terminated, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`;
       }
     } catch (error: unknown) {
-      const detail = error instanceof Error && error.message.length > 0 ? error.message : String(error);
-      alertMessage = `Close request failed (the session may already be terminated):\n\n${detail}`;
+      alertMessage = `Close request failed (the session may already be terminated):\n\n${formatError(error)}`;
     } finally {
       actions.cancelClose();
     }
