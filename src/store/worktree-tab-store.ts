@@ -178,9 +178,17 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
     },
 
     async setActiveChild(id: WorktreeTabId, childId: ChildId | null) {
-      const args = childId !== null ? { id, childId } : { id };
-      await worktreeTabSetActiveChild(args);
+      // Patch local state SYNCHRONOUSLY so the UI reacts immediately and so a slow backend can't reapply a stale value if a newer click has
+      // already arrived. Race-protection: callers may fire-and-forget several `setActiveChild` calls in quick succession; whichever ran most
+      // recently determines the local state. We deliberately do NOT re-patch after the await — that would resurrect stale intent.
       get().actions.patchActiveChild(id, childId);
+      const args = childId !== null ? { id, childId } : { id };
+      try {
+        await worktreeTabSetActiveChild(args);
+      } catch (err) {
+        // Persistence failure is not user-visible — the local cache is already in sync with the user's intent. Log so issues surface in dev.
+        console.warn(`[worktree-tab-store] worktree_tab_set_active_child(${id}) rejected: ${formatError(err)}`);
+      }
     },
 
     patchActiveChild(id: WorktreeTabId, childId: ChildId | null) {
@@ -219,3 +227,80 @@ export const useActiveWorktreeTabId = (): WorktreeTabId | null => useWorktreeTab
 export const useWorktreeTabActions = (): WorktreeTabStoreActions => useWorktreeTabStore((s) => s.actions);
 
 export const useActiveWorktreeTab = (): WorktreeTab | undefined => useWorktreeTabStore((s) => s.tabs.find((t) => t.id === s.activeId));
+
+/**
+ * Priority order for the parent worktree tab's rolled-up status icon. The worst-priority status across the tab's child sessions is what the
+ * sidebar renders on the parent row. Mirrors the priority in `selectDisplayStatus` but only for the states a user cares about *at the parent
+ * level* — `error` > `awaitingPermission` > `attention` > `running/working` > `awaiting` > `idle/exited`. Unknown states fall through to 0.
+ *
+ * Exported separately from the rollup selector so consumers (e.g. tests, parent-tab tooltip) can compare priorities directly without
+ * recomputing the rollup.
+ */
+import type { DisplayStatus } from '@/store/session-store';
+
+const STATUS_PRIORITY: Record<DisplayStatus, number> = {
+  error: 9,
+  awaitingPermission: 8,
+  attention: 7,
+  runningTool: 6,
+  thinking: 5,
+  working: 4,
+  starting: 3,
+  awaiting: 2,
+  idle: 1,
+  exited: 0,
+};
+
+export function compareDisplayStatus(a: DisplayStatus, b: DisplayStatus): number {
+  return (STATUS_PRIORITY[b] ?? 0) - (STATUS_PRIORITY[a] ?? 0);
+}
+
+/**
+ * Compute the worst (highest-priority) `DisplayStatus` across the children of `tabPath`. Returns `'idle'` when the tab has no children — a
+ * brand-new worktree tab with no sessions is conceptually idle, not exited. The selector takes the canonical `tabPath` (not the tab id) so
+ * callers can pass a stable string from a Zustand selector closure without re-subscribing the whole tabs array.
+ *
+ * Caller is expected to pass `nowSec` from `useNowTickSeconds` if they want time-based `idle → awaiting` promotion to track per-second; in
+ * tests, omit it (defaults to wall-clock seconds).
+ */
+export function selectWorktreeTabRollupStatus(tabPath: string, nowSec?: number): (s: SessionStoreLike) => DisplayStatus {
+  return (s) => {
+    const children = s.sessions.filter((sess) => sess.worktreePath === tabPath);
+    if (children.length === 0) return 'idle';
+    let worst: DisplayStatus = 'idle';
+    for (const child of children) {
+      const status = computeChildStatus(child.id, s, nowSec);
+      if (compareDisplayStatus(status, worst) < 0) worst = status;
+    }
+    return worst;
+  };
+}
+
+// Local minimal shape so this selector doesn't import the full session-store state (which would create a circular import); the function only
+// needs the same fields `selectDisplayStatus` reads.
+interface SessionStoreLike {
+  sessions: ReadonlyArray<{ id: string; worktreePath: string; status: string; createdAt: number }>;
+  openPermissions: Record<string, Record<string, unknown> | undefined>;
+  openTools: Record<string, Record<string, unknown> | undefined>;
+  activity: Record<string, 'working' | 'idle' | 'attention' | undefined>;
+  inTurn: Record<string, true | undefined>;
+  lastTurnEndAt: Record<string, number | undefined>;
+}
+
+function computeChildStatus(id: string, s: SessionStoreLike, nowSec?: number): DisplayStatus {
+  const session = s.sessions.find((x) => x.id === id);
+  if (!session) return 'idle';
+  if (session.status === 'error') return 'error';
+  if (session.status === 'starting') return 'starting';
+  if (session.status === 'exited') return 'exited';
+  if (s.openPermissions[id] && Object.keys(s.openPermissions[id]!).length > 0) return 'awaitingPermission';
+  const activity = s.activity[id];
+  if (activity === 'attention') return 'attention';
+  if (s.openTools[id] && Object.keys(s.openTools[id]!).length > 0) return 'runningTool';
+  if (s.inTurn[id]) return 'thinking';
+  if (activity === 'working') return 'working';
+  if (s.lastTurnEndAt[id] !== undefined) return 'awaiting';
+  const now = nowSec ?? Math.floor(Date.now() / 1000);
+  if (now - session.createdAt >= 5) return 'awaiting';
+  return 'idle';
+}

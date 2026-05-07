@@ -505,8 +505,8 @@ export const useSessionStore = create<Store>((set, get) => {
         metrics: purgeMap(before.metrics) as Record<SessionId, SessionMetrics>,
         lastTurnEndAt: purgeMap(before.lastTurnEndAt) as Record<SessionId, number>,
         lastTurnDurationMs: purgeMap(before.lastTurnDurationMs) as Record<SessionId, number>,
-        openTools: purgeMap(before.openTools) as Record<SessionId, number>,
-        openPermissions: purgeMap(before.openPermissions) as Record<SessionId, number>,
+        openTools: purgeMap(before.openTools),
+        openPermissions: purgeMap(before.openPermissions),
         inTurn: purgeMap(before.inTurn) as Record<SessionId, true>,
       });
       const subActions = useSubSessionStore.getState().actions;

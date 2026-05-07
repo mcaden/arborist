@@ -113,6 +113,7 @@ describe('create', () => {
       id: 'wt-1' as never,
       path: '/repo/new',
       name: 'new',
+      label: 'new',
       tabIndex: 0,
     });
 
@@ -327,7 +328,7 @@ describe('focus', () => {
   it('autolinks focus to the parent worktree tab when one exists in the cache (issue #44)', async () => {
     const { useWorktreeTabStore } = await import('./worktree-tab-store');
     useWorktreeTabStore.setState({
-      tabs: [{ id: 'wt-a' as never, path: '/repo/a', name: 'a', tabIndex: 0 }],
+      tabs: [{ id: 'wt-a' as never, path: '/repo/a', name: 'a', label: 'a', tabIndex: 0 }],
       activeId: null,
       isHydrated: true,
     });

@@ -434,4 +434,60 @@ describe('useWorktreeTabStore', () => {
       expect(result.current).toBe(first);
     });
   });
+
+  describe('selectWorktreeTabRollupStatus', () => {
+    it('returns idle when no children match the path', async () => {
+      const { selectWorktreeTabRollupStatus } = await import('./worktree-tab-store');
+      const status = selectWorktreeTabRollupStatus('/repo/empty')({
+        sessions: [],
+        openPermissions: {},
+        openTools: {},
+        activity: {},
+        inTurn: {},
+        lastTurnEndAt: {},
+      });
+      expect(status).toBe('idle');
+    });
+
+    it('rolls up to the worst child status (error > awaitingPermission > attention > … > idle)', async () => {
+      const { selectWorktreeTabRollupStatus } = await import('./worktree-tab-store');
+      // Three children under /repo/a: one running idle, one awaiting permission, one error. Error wins.
+      const status = selectWorktreeTabRollupStatus(
+        '/repo/a',
+        1_700_000_000,
+      )({
+        sessions: [
+          { id: 's1', worktreePath: '/repo/a', status: 'running', createdAt: 1_700_000_000 },
+          { id: 's2', worktreePath: '/repo/a', status: 'running', createdAt: 1_700_000_000 },
+          { id: 's3', worktreePath: '/repo/a', status: 'error', createdAt: 1_700_000_000 },
+          { id: 's4', worktreePath: '/repo/b', status: 'starting', createdAt: 1_700_000_000 }, // different path, ignored
+        ],
+        openPermissions: { s2: { p1: undefined } as never },
+        openTools: {},
+        activity: {},
+        inTurn: {},
+        lastTurnEndAt: {},
+      });
+      expect(status).toBe('error');
+    });
+
+    it('rolls up to awaitingPermission when one child has an open permission and others are idle/working', async () => {
+      const { selectWorktreeTabRollupStatus } = await import('./worktree-tab-store');
+      const status = selectWorktreeTabRollupStatus(
+        '/repo/a',
+        1_700_000_000,
+      )({
+        sessions: [
+          { id: 's1', worktreePath: '/repo/a', status: 'running', createdAt: 1_700_000_000 },
+          { id: 's2', worktreePath: '/repo/a', status: 'running', createdAt: 1_700_000_000 },
+        ],
+        openPermissions: { s2: { p1: undefined } as never },
+        openTools: {},
+        activity: { s1: 'working' },
+        inTurn: {},
+        lastTurnEndAt: {},
+      });
+      expect(status).toBe('awaitingPermission');
+    });
+  });
 });
