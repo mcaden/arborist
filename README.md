@@ -84,6 +84,7 @@ program's OS window when you click the sub-tab.
 | Tool                             | Notes                                                                           |
 | -------------------------------- | ------------------------------------------------------------------------------- |
 | **Node.js 20+**                  | Repo pins Node 24 via `.nvmrc` — `nvm use` picks it up                          |
+| **pnpm**                         | Install via [pnpm.io](https://pnpm.io/installation) or `corepack enable`        |
 | **Rust (stable)**                | Install via [rustup.rs](https://rustup.rs/)                                     |
 | **Platform build tools**         | [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS |
 | **`claude` and/or `gh copilot`** | Only needed at runtime — not required to build or test                          |
@@ -100,8 +101,8 @@ Platform specifics:
 git clone https://github.com/mcaden/arborist.git
 cd arborist
 nvm use          # optional — picks up .nvmrc
-npm install
-npm run tauri:dev
+pnpm install
+pnpm run tauri:dev
 ```
 
 This starts the Vite dev server and opens Arborist in a desktop window with hot-reload.

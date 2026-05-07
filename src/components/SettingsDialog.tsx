@@ -207,8 +207,8 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
           if (e.target === e.currentTarget) onClose();
         }}
       >
-        <div className="w-full max-w-lg rounded border border-slate-300 bg-white p-5 text-sm shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-          <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded border border-slate-300 bg-white p-5 text-sm shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+          <div className="mb-4 flex shrink-0 items-start justify-between gap-3">
             <h2 id={headingId} className="text-base font-semibold">
               Settings
             </h2>
@@ -227,7 +227,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
             role="tablist"
             aria-label="Settings sections"
             onKeyDown={handleTablistKeyDown}
-            className="mb-4 flex gap-1 border-b border-slate-200 dark:border-slate-700"
+            className="mb-4 flex shrink-0 gap-1 border-b border-slate-200 dark:border-slate-700"
           >
             <button
               ref={generalTabRef}
@@ -268,7 +268,13 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
           </div>
 
           {activeTab === 'general' ? (
-            <div role="tabpanel" id={generalPanelId} aria-labelledby={generalTabId} data-testid="settings-panel-general">
+            <div
+              role="tabpanel"
+              id={generalPanelId}
+              aria-labelledby={generalTabId}
+              data-testid="settings-panel-general"
+              className="min-h-0 flex-1 overflow-y-auto pr-2"
+            >
               <section className="mb-4">
                 <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Workspace</h3>
                 <div className="flex items-center gap-2">
@@ -414,7 +420,13 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               </div>
             </div>
           ) : (
-            <div role="tabpanel" id={customProcessesPanelId} aria-labelledby={customProcessesTabId} data-testid="settings-panel-custom-processes">
+            <div
+              role="tabpanel"
+              id={customProcessesPanelId}
+              aria-labelledby={customProcessesTabId}
+              data-testid="settings-panel-custom-processes"
+              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
+            >
               <CustomProcessesTab onClose={onClose} />
             </div>
           )}

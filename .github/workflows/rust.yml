@@ -30,14 +30,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
       # Tauri's Linux build needs system libraries even for `cargo check`/test
       # because the `tauri` crate links against webkit2gtk + friends.
       - name: Install Linux build dependencies
@@ -55,11 +56,11 @@ jobs:
       # `tauri::generate_context!()` validates that `frontendDist` exists at
       # compile time, so the frontend bundle must be built before any cargo
       # command that compiles the `tauri` crate (clippy, test, build). We run
-      # `vite build` directly (rather than `npm run build`) to skip the
+      # `vite build` directly (rather than `pnpm run build`) to skip the
       # project-wide `tsc --noEmit` step — TS typechecking of tests is the
       # frontend job's responsibility, not the rust job's.
-      - run: npm ci
-      - run: npx vite build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vite build
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
       - run: cargo test --workspace --features test-helpers

@@ -13,7 +13,7 @@ times a day.
 | Tool                 | Version           | Notes                                                                                |
 | -------------------- | ----------------- | ------------------------------------------------------------------------------------ |
 | **Node.js**          | 20 LTS or later   | The repo pins **Node 24** via `.nvmrc`; `nvm use` will pick it up.                   |
-| **npm**              | bundled with Node | `npm` is used directly — no `pnpm` / `yarn` configuration.                           |
+| **pnpm**             | latest            | Install via [pnpm.io](https://pnpm.io/installation) or `corepack enable`.           |
 | **Rust**             | stable (rustup)   | Install from <https://rustup.rs/>. Toolchain is pinned by `rust-toolchain.toml`.     |
 | **Git**              | 2.30+             | Required at runtime for `git worktree list` discovery (DESIGN §6).                   |
 | **Tauri build deps** | platform-specific | See <https://v2.tauri.app/start/prerequisites/>.                                     |
@@ -40,10 +40,10 @@ instead (see [`TESTING.md`](./TESTING.md)).
 git clone <repo>
 cd arborist
 nvm use            # picks up .nvmrc → Node 24
-npm install        # installs JS deps and runs `husky` to wire git hooks
+pnpm install       # installs JS deps and runs `husky` to wire git hooks
 ```
 
-`npm install` triggers `husky` via the `prepare` script, which installs the
+`pnpm install` triggers `husky` via the `prepare` script, which installs the
 `.husky/pre-commit` and `.husky/pre-push` hooks. Confirm:
 
 ```sh
@@ -104,16 +104,16 @@ keep both pages in sync.
 ### Run the app
 
 ```sh
-npm run tauri:dev      # Vite + Tauri shell with HMR (frontend) and cargo recompile (backend)
-npm run tauri:build    # production bundle in src-tauri/target/release/bundle/
+pnpm run tauri:dev      # Vite + Tauri shell with HMR (frontend) and cargo recompile (backend)
+pnpm run tauri:build    # production bundle in src-tauri/target/release/bundle/
 ```
 
 ### Lint, format, type-check
 
 ```sh
-npm run lint           # eslint . && prettier --check .
-npm run lint:fix       # auto-apply fixes
-npm run dev:typecheck  # tsc --noEmit --watch (run continuously while coding)
+pnpm run lint           # eslint . && prettier --check .
+pnpm run lint:fix       # auto-apply fixes
+pnpm run dev:typecheck  # tsc --noEmit --watch (run continuously while coding)
 cargo fmt --all -- --check
 cargo fmt --all
 cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
@@ -122,9 +122,9 @@ cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 ### Test
 
 ```sh
-npm test               # vitest in watch mode (default for inner loop)
-npm test -- --run      # vitest once (CI mode); used by pre-push and CI
-npm run build          # tsc --noEmit + vite build
+pnpm test               # vitest in watch mode (default for inner loop)
+pnpm test --run      # vitest once (CI mode); used by pre-push and CI
+pnpm run build          # tsc --noEmit + vite build
 cargo test --workspace --features test-helpers  # unit + integration tests including the PTY pool
 ```
 
@@ -139,9 +139,9 @@ are excluded — this is how release builds avoid bundling them.
 The full set, from the repo root:
 
 ```sh
-npm run lint
-npm test -- --run
-npm run build
+pnpm run lint
+pnpm test --run
+pnpm run build
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
 cargo test --workspace --features test-helpers
@@ -157,8 +157,8 @@ seconds:
 
 ```sh
 # Two terminals for the frontend
-npm run dev:typecheck    # tsc --noEmit --watch
-npm run test:watch       # vitest in watch mode
+pnpm run dev:typecheck    # tsc --noEmit --watch
+pnpm run test:watch       # vitest in watch mode
 
 # Two terminals for Rust (cargo-watch is optional but recommended)
 cargo install cargo-watch
@@ -177,7 +177,7 @@ Editor recommendations:
 
 ## 6. Git hooks
 
-Husky v9 is wired up by `npm install` (via the `prepare` script).
+Husky v9 is wired up by `pnpm install` (via the `prepare` script).
 
 - **pre-commit** (`.husky/pre-commit`):
   - `lint-staged` runs `eslint --fix` + Prettier on staged JS / TS / JSON /
@@ -185,7 +185,7 @@ Husky v9 is wired up by `npm install` (via the `prepare` script).
   - When any `.rs` file is staged, `cargo fmt --all -- --check` and
     `cargo clippy --workspace --all-targets --features test-helpers -- -D warnings` also run.
 - **pre-push** (`.husky/pre-push`):
-  - `npm test -- --run` (Vitest CI mode).
+  - `pnpm test --run` (Vitest CI mode).
   - `cargo test --workspace --features test-helpers`.
 
 Bypassing with `--no-verify` is allowed for WIP branches that won't be
@@ -208,7 +208,7 @@ merged — never on `main` (per `.github/copilot-instructions.md`).
 ### Backend
 
 - Tracing output goes to stderr. Set `RUST_LOG=arborist_lib=debug` (or
-  `RUST_LOG=trace`) before launching `npm run tauri:dev` for verbose logs.
+  `RUST_LOG=trace`) before launching `pnpm run tauri:dev` for verbose logs.
 - The standalone `config_smoke` example exercises the full config-store
   lifecycle without spinning up Tauri:
   ```sh
@@ -233,7 +233,7 @@ debugging persistence issues:
 ## 8. Packaging a release build
 
 ```sh
-npm run tauri:build
+pnpm run tauri:build
 ```
 
 Output lands in `src-tauri/target/release/bundle/` under platform-specific
@@ -261,9 +261,9 @@ There is no automated release pipeline yet — bundles are produced manually.
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `error: linking with cl.exe failed` on Windows                   | Visual Studio C++ Build Tools not installed; install the workload above.                                            |
 | `failed to find tool. Is gtk+-3.0 installed?` on Linux           | Missing GTK / WebKit2GTK dev packages — see prerequisites.                                                          |
-| `npm run tauri:dev` opens a blank window                         | Frontend crashed during boot; open DevTools and check the console for an `ErrorOverlay` reason.                     |
+| `pnpm run tauri:dev` opens a blank window                         | Frontend crashed during boot; open DevTools and check the console for an `ErrorOverlay` reason.                     |
 | `cargo test --workspace --features test-helpers` fails with `claude: command not found` | A test path is calling the real CLI — file a bug, the integration tests must use `arborist-test-child`.             |
-| Pre-commit hook does nothing                                     | `npm install` wasn't re-run after pulling — Husky hooks are installed by the `prepare` script.                      |
+| Pre-commit hook does nothing                                     | `pnpm install` wasn't re-run after pulling — Husky hooks are installed by the `prepare` script.                      |
 | `config.json.bad-<timestamp>` keeps appearing                    | The loader is rejecting the file. Diff it against the minimum valid example in [`CONFIGURATION.md`](./CONFIGURATION.md). |
 | Sessions silently fail to restore on launch                      | Look for `code = "WorktreeMissing"` or `"InstructionFileMissing"` in the trace log; affected sessions stay in the sidebar with `status = error`. |
 | xterm renders garbled output after a high-throughput burst       | Expected — the PTY pool's drop-newest backpressure prepends `ESC c` to the next chunk; output continues correctly after the reset. |
