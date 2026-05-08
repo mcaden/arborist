@@ -104,11 +104,10 @@ pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &A
     }
 
     let prep_id = WorktreePrepId::new_v4();
-    let log_path = match log_path_for(app, prep_id) {
+    let log_path = match log_path_without_creating(app, prep_id) {
         Ok(p) => p,
         Err(err) => {
-            // No log dir: emit started+exited with a placeholder path. The UI will show the failure; "View log" will fail gracefully.
-            let placeholder = std::env::temp_dir().join(format!("arborist-prep-{prep_id}.log"));
+            let placeholder = temp_fallback_log_path(prep_id);
             emit_synthetic_failure(
                 app,
                 prep_id,
@@ -124,12 +123,23 @@ pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &A
             });
         }
     };
-
     let info = WorktreePrepInfo {
         prep_id,
         worktree_path: worktree_path.to_path_buf(),
         log_path: log_path.clone(),
     };
+
+    if let Err(err) = ensure_log_dir(&log_path) {
+        emit_synthetic_failure(
+            app,
+            prep_id,
+            worktree_path.to_path_buf(),
+            log_path.clone(),
+            &cleaned,
+            format!("log_dir: {err}"),
+        );
+        return Some(info);
+    }
 
     let script = cleaned.join(" && ");
     let started_at = unix_now();
@@ -334,14 +344,34 @@ fn emit_synthetic_failure(app: &AppHandle, prep_id: WorktreePrepId, worktree_pat
 
 /// Build the absolute log path under `<app_data_dir>/worktree-prep-logs/<prep-id>.log` and ensure the parent directory exists.
 pub fn log_path_for(app: &AppHandle, prep_id: WorktreePrepId) -> std::io::Result<PathBuf> {
+    let path = log_path_without_creating(app, prep_id)?;
+    ensure_log_dir(&path)?;
+    Ok(path)
+}
+
+fn log_path_without_creating(app: &AppHandle, prep_id: WorktreePrepId) -> std::io::Result<PathBuf> {
     let base = app
         .path()
         .app_data_dir()
         .map_err(|e| std::io::Error::other(format!("app_data_dir: {e}")))?;
-    let dir = base.join(LOG_SUBDIR);
-    std::fs::create_dir_all(&dir)?;
-    prune_logs_dir_best_effort(&dir, MAX_PREP_LOG_FILES);
-    Ok(dir.join(format!("{prep_id}.log")))
+    Ok(log_path_from_base(&base, prep_id))
+}
+
+fn log_path_from_base(base: &Path, prep_id: WorktreePrepId) -> PathBuf {
+    base.join(LOG_SUBDIR).join(format!("{prep_id}.log"))
+}
+
+fn temp_fallback_log_path(prep_id: WorktreePrepId) -> PathBuf {
+    std::env::temp_dir().join(LOG_SUBDIR).join(format!("{prep_id}.log"))
+}
+
+fn ensure_log_dir(log_path: &Path) -> std::io::Result<()> {
+    let dir = log_path
+        .parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "log path has no parent"))?;
+    std::fs::create_dir_all(dir)?;
+    prune_logs_dir_best_effort(dir, MAX_PREP_LOG_FILES);
+    Ok(())
 }
 
 fn prune_logs_dir_best_effort(dir: &Path, keep: usize) {
@@ -477,6 +507,21 @@ mod tests {
         let s = format_exit_footer(None, Some("cancelled"), 1700000000);
         assert!(s.contains("cancelled"));
         assert!(s.contains("1700000000"));
+    }
+
+    #[test]
+    fn log_path_from_base_stays_under_logs_root_when_root_cannot_be_created() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prep_id = WorktreePrepId::new_v4();
+        let logs_root = temp.path().join(LOG_SUBDIR);
+        std::fs::write(&logs_root, b"not a directory").expect("logs root file");
+
+        let log_path = log_path_from_base(temp.path(), prep_id);
+        let err = ensure_log_dir(&log_path).expect_err("logs root file should prevent directory creation");
+
+        assert_eq!(log_path, logs_root.join(format!("{prep_id}.log")));
+        assert!(log_path.starts_with(&logs_root));
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 
     #[test]
