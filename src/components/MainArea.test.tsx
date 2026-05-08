@@ -275,6 +275,38 @@ describe('MainArea', () => {
     expect(panels[0]!.parentElement!.style.visibility).toBe('hidden');
   });
 
+  it('shows the first worktree dashboard instead of a blank pane when no active worktree tab is set', () => {
+    const sessions = [makeSession('s1')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(sessions[0]!)],
+      activeId: null,
+      isHydrated: true,
+    });
+
+    render(<MainArea />);
+
+    expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[0]!.parentElement!.style.visibility).toBe('hidden');
+  });
+
+  it('shows the first worktree dashboard instead of a blank pane when the active worktree tab is stale', () => {
+    const sessions = [makeSession('s1')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(sessions[0]!)],
+      activeId: 'missing-tab' as WorktreeTabId,
+      isHydrated: true,
+    });
+
+    render(<MainArea />);
+
+    expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[0]!.parentElement!.style.visibility).toBe('hidden');
+  });
+
   it('inactive parent: its sub-sessions stay hidden even when active there', () => {
     const sessions = [makeSession('s1'), makeSession('s2')];
     useSessionStore.setState({ sessions, activeId: 's2', isHydrated: true });

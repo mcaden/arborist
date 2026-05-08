@@ -39,7 +39,7 @@ export function MainArea(): JSX.Element {
   const activeWorktreeTabId = useActiveWorktreeTabId();
   const allSubs = useAllSubSessions();
 
-  const activeWorktreeTab = worktreeTabs.find((t) => t.id === activeWorktreeTabId) ?? null;
+  const activeWorktreeTab = worktreeTabs.find((t) => t.id === activeWorktreeTabId) ?? worktreeTabs[0] ?? null;
 
   // Resolve the active session id and visible sub-session id from worktree-tab activeChildId. Stale or invalid children deliberately fall
   // back to the dashboard instead of leaving every terminal wrapper hidden.
