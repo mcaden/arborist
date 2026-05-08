@@ -25,6 +25,7 @@ function makeTab(id: WorktreeTabId, overrides: Partial<WorktreeTab> = {}): Workt
     name: id,
     label: id,
     tabIndex: 0,
+    iconId: 1,
     ...overrides,
   };
 }

@@ -115,6 +115,7 @@ describe('create', () => {
       name: 'new',
       label: 'new',
       tabIndex: 0,
+      iconId: 1,
     });
 
     await useSessionStore.getState().actions.create({
@@ -325,7 +326,7 @@ describe('focus', () => {
   it('autolinks focus to the parent worktree tab when one exists in the cache (issue #44)', async () => {
     const { useWorktreeTabStore } = await import('./worktree-tab-store');
     useWorktreeTabStore.setState({
-      tabs: [{ id: 'wt-a' as never, path: '/repo/a', name: 'a', label: 'a', tabIndex: 0 }],
+      tabs: [{ id: 'wt-a' as never, path: '/repo/a', name: 'a', label: 'a', tabIndex: 0, iconId: 1 }],
       activeId: null,
       isHydrated: true,
     });

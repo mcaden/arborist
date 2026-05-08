@@ -360,3 +360,81 @@ fn snapshot_file(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
     let mtime = std::fs::metadata(path).expect("stat config.json").modified().expect("mtime");
     (bytes, mtime)
 }
+
+// ---------------------------------------------------------------------------
+// open: icon assignment (Issue #45)
+// ---------------------------------------------------------------------------
+
+/// Each new tab in a fresh workspace must receive an `iconId` that's least-used among the existing tabs (lowest number wins on ties), so the first
+/// 16 distinct worktrees walk 1..=16 in order. Catches a regression where `worktree_tab_open_impl` would forget to assign an icon and persist 0.
+#[test]
+fn open_assigns_distinct_icons_to_first_n_distinct_worktrees() {
+    use arborist_lib::worktree_icon::WORKTREE_ICON_COUNT;
+
+    let h = build_harness();
+    let mut assigned: Vec<u32> = Vec::new();
+    for i in 0..WORKTREE_ICON_COUNT {
+        let path = fresh_worktree_dir(&h);
+        let id = open(&h, &path);
+        let cfg = h.ctx.store().load_config();
+        let tab = cfg.worktree_tabs.iter().find(|t| t.id == id).expect("tab persisted");
+        assert!(
+            (1..=WORKTREE_ICON_COUNT).contains(&tab.icon_id),
+            "tab #{i} must get a valid iconId, got {}",
+            tab.icon_id
+        );
+        assigned.push(tab.icon_id);
+    }
+    let expected: Vec<u32> = (1..=WORKTREE_ICON_COUNT).collect();
+    assert_eq!(
+        assigned, expected,
+        "first {WORKTREE_ICON_COUNT} distinct worktrees must walk icons 1..={WORKTREE_ICON_COUNT} in order",
+    );
+}
+
+/// Tab N+1 (after the icon set is exhausted) must wrap back to icon 1 — every existing icon has count 1, so the lowest-numbered ties wins.
+#[test]
+fn open_wraps_icon_assignment_after_set_is_exhausted() {
+    use arborist_lib::worktree_icon::WORKTREE_ICON_COUNT;
+
+    let h = build_harness();
+    for _ in 0..WORKTREE_ICON_COUNT {
+        let _ = open(&h, &fresh_worktree_dir(&h));
+    }
+    let extra_id = open(&h, &fresh_worktree_dir(&h));
+    let cfg = h.ctx.store().load_config();
+    let extra = cfg.worktree_tabs.iter().find(|t| t.id == extra_id).expect("extra tab persisted");
+    assert_eq!(
+        extra.icon_id,
+        1,
+        "tab #{} must reuse icon 1 (lowest at min count = 1)",
+        WORKTREE_ICON_COUNT + 1
+    );
+}
+
+/// Re-opening an existing path returns the existing tab unchanged — including its `iconId`. Catches a regression where the idempotent path would
+/// re-pick an icon and silently change the user's visual identifier across restarts.
+#[test]
+fn reopening_existing_path_preserves_icon_id() {
+    let h = build_harness();
+    let path = fresh_worktree_dir(&h);
+    let id = open(&h, &path);
+    let original_icon = h
+        .ctx
+        .store()
+        .load_config()
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == id)
+        .expect("tab persisted")
+        .icon_id;
+
+    // Open another path so the in-memory cfg moves on, then re-open the original.
+    let _other = open(&h, &fresh_worktree_dir(&h));
+    let id_again = open(&h, &path);
+    assert_eq!(id_again, id, "open must remain idempotent on canonical path");
+
+    let cfg = h.ctx.store().load_config();
+    let same_tab = cfg.worktree_tabs.iter().find(|t| t.id == id).expect("tab still present");
+    assert_eq!(same_tab.icon_id, original_icon, "iconId must survive an idempotent re-open");
+}

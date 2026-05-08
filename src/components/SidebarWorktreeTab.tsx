@@ -17,6 +17,7 @@
 import { useState } from 'react';
 
 import { formatError } from '@/lib/tauri-bridge';
+import { getTreeIconUrl } from '@/lib/tree-icons';
 import { useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { WorktreeTabId } from '@/types/arborist';
 
@@ -68,8 +69,8 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         }}
         className={`${baseClasses} ${stateClasses}`}
       >
-        <span aria-hidden="true" className="text-base">
-          📁
+        <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center">
+          <img src={getTreeIconUrl(tab.iconId)} alt="" draggable={false} className="h-5 w-5 object-contain" />
         </span>
         <span className="min-w-0 flex-1 truncate">{tab.name}</span>
       </button>

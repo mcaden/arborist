@@ -240,6 +240,7 @@ fn build_harness() -> Harness {
         label: "wt".into(),
         active_child_id: None,
         tab_index: 0,
+        icon_id: 1,
     };
     store
         .save_config_with(PartialAppConfig::default(), |cfg| {
@@ -723,6 +724,7 @@ fn seed_tab_with_active_child(h: &Harness, path: &Path, child: ChildId) -> Workt
                 label: "wt".into(),
                 tab_index: 0,
                 active_child_id: Some(child),
+                icon_id: 1,
             });
             cfg.worktree_tab_order.push(tab_id);
             true
@@ -845,6 +847,7 @@ async fn cascade_with_no_matching_active_child_skips_config_write() {
                 label: "wt".into(),
                 tab_index: 0,
                 active_child_id: None,
+                icon_id: 1,
             });
             cfg.worktree_tab_order.push(tab_id);
             true

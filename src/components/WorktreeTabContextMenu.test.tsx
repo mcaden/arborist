@@ -18,6 +18,7 @@ function tab(): WorktreeTab {
     name: 'feature-x',
     label: 'feature-x',
     tabIndex: 0,
+    iconId: 1,
   };
 }
 

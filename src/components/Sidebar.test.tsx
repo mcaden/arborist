@@ -47,6 +47,7 @@ function tabFor(session: SessionView, overrides: Partial<WorktreeTab> = {}): Wor
     name: session.worktreeName,
     label: session.worktreeName,
     tabIndex: 0,
+    iconId: 1,
     ...overrides,
   };
 }

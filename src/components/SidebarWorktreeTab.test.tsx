@@ -19,6 +19,7 @@ function tab(overrides: Partial<WorktreeTab> = {}): WorktreeTab {
     name: 'feature-x',
     label: 'feature-x',
     tabIndex: 0,
+    iconId: 1,
     ...overrides,
   };
 }
