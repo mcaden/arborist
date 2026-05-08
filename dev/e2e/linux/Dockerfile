@@ -50,12 +50,14 @@ COPY index.html tsconfig.json vite.config.ts vitest.config.ts postcss.config.js 
 # Instructions dir (needed at runtime for instruction-set tests)
 COPY instructions/ instructions/
 
+# arborist-test-child is gated behind `required-features = ["test-helpers"]`
+# but the Tauri bundler still expects it to exist. Build it before tauri:build.
+RUN cargo build --release --features test-helpers --bin arborist-test-child --bin arborist-test-locker
+
 # Build the release bundle (produces AppImage + deb)
 RUN pnpm tauri:build
 
-# arborist-test-child is a [[bin]] in the crate but tauri build only compiles the
-# main binary. Build it explicitly (most deps are already cached from tauri:build).
-RUN cargo build --release --bin arborist-test-child
+# Copy test-child to a stable path for the runtime-e2e stage
 RUN cp src-tauri/target/release/arborist-test-child /usr/local/bin/arborist-test-child
 
 # Extract the AppImage so it can run without FUSE in unprivileged containers
