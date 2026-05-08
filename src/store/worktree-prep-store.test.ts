@@ -182,19 +182,4 @@ describe('worktree-prep-store', () => {
     expect(recent[0]?.errorMessage).toBe('open log: denied');
     expect(recent[0]?.ok).toBe(false);
   });
-
-  it('waitForCompletion resolves when the target prep exits', async () => {
-    let dispatch: ((ev: WorktreePrepEvent) => void) | undefined;
-    bridgeMock.onWorktreePrep.mockImplementationOnce((cb) => {
-      dispatch = cb;
-      return Promise.resolve(() => {});
-    });
-
-    await useWorktreePrepStore.getState().subscribe();
-    const waited = useWorktreePrepStore.getState().waitForCompletion('p1');
-    dispatch!(exitedEvent('p2'));
-    dispatch!(exitedEvent('p1'));
-
-    await expect(waited).resolves.toMatchObject({ prepId: 'p1', state: 'completed' });
-  });
 });

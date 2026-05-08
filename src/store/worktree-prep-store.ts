@@ -70,8 +70,6 @@ export interface WorktreePrepStoreState {
   dismissCompleted: (prepId: WorktreePrepId) => void;
   /** Replace a failure's reason after a secondary action, such as View log, fails. */
   markOpenLogFailed: (prepId: WorktreePrepId, errorMessage: string) => void;
-  /** Resolve once the matching prep has emitted its terminal `exited` event. */
-  waitForCompletion: (prepId: WorktreePrepId) => Promise<PrepCompletedRecord>;
   /** Test helper: wipe state without touching subscriptions. */
   _resetForTest: () => void;
 }
@@ -112,7 +110,7 @@ function applyExited(state: WorktreePrepStoreState, ev: Extract<WorktreePrepEven
   return { inFlight: rest, recent: next };
 }
 
-export const useWorktreePrepStore = create<WorktreePrepStoreState>((set, get) => ({
+export const useWorktreePrepStore = create<WorktreePrepStoreState>((set) => ({
   inFlight: {},
   recent: [],
   subscribe: () =>
@@ -126,20 +124,6 @@ export const useWorktreePrepStore = create<WorktreePrepStoreState>((set, get) =>
     set((state) => ({
       recent: state.recent.map((r) => (r.prepId === prepId ? { ...r, errorMessage, ok: false } : r)),
     }));
-  },
-  waitForCompletion: (prepId) => {
-    const existing = get().recent.find((r) => r.prepId === prepId);
-    if (existing) return Promise.resolve(existing);
-
-    return new Promise<PrepCompletedRecord>((resolve) => {
-      const unsubscribe = useWorktreePrepStore.subscribe((state) => {
-        const completed = state.recent.find((r) => r.prepId === prepId);
-        if (completed) {
-          unsubscribe();
-          resolve(completed);
-        }
-      });
-    });
   },
   _resetForTest: () => {
     set({ inFlight: {}, recent: [] });
