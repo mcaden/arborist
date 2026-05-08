@@ -27,6 +27,7 @@
 // not `role="tab"`, so it stays out of the sidebar's roving-tabindex model.
 
 import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
 import type { SubSessionId, SubSessionStatus } from '@/types/arborist';
 
@@ -38,6 +39,11 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
   const sub = useSubSessionById(subSessionId);
   const subActions = useSubSessionActions();
   const iconDataUri = useSubSessionIcon(subSessionId);
+  const isActive = useWorktreeTabStore((s) => {
+    if (!sub) return false;
+    const tab = s.tabs.find((t) => t.id === sub.parentWorktreeTabId);
+    return s.activeId === sub.parentWorktreeTabId && tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === subSessionId;
+  });
 
   if (!sub) return null;
 
@@ -60,12 +66,15 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
     void subActions.close(subSessionId);
   };
 
-  const stateClasses = 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
+  const stateClasses = isActive
+    ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100'
+    : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
 
   return (
     <li className="group relative px-2">
       <button
         type="button"
+        aria-current={isActive ? 'page' : undefined}
         onClick={handleClick}
         className={`flex w-full items-center gap-2 rounded-md py-1 pl-5 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
       >

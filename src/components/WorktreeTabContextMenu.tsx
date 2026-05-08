@@ -159,6 +159,13 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     else if (item.startsWith('cp:')) handleCustomProcess(item.slice(3));
   };
 
+  const itemForElement = (el: EventTarget | null): Item | undefined => {
+    for (const item of itemOrder) {
+      if (itemRefs.current.get(item) === el) return item;
+    }
+    return undefined;
+  };
+
   if (!tab) return null;
 
   const itemBase =
@@ -199,7 +206,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
           case 'Enter':
           case ' ':
             e.preventDefault();
-            activateItem(focusedItem);
+            activateItem(itemForElement(e.target) ?? focusedItem);
             break;
           default:
         }

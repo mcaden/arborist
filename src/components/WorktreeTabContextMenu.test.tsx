@@ -111,6 +111,28 @@ describe('WorktreeTabContextMenu', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('Enter activates the focused menu item rather than the last hovered item', () => {
+    bridgeMock.sessionCreate.mockResolvedValueOnce({
+      id: 'new-id',
+      tool: 'claude',
+      worktreePath: '/repo/feature-x',
+      worktreeName: 'feature-x',
+      label: 'feature-x',
+      instructionSetId: 'default-claude',
+      status: 'starting',
+      createdAt: 0,
+      tabIndex: 0,
+    });
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    const launchClaude = screen.getByTestId('worktree-tab-context-menu-launch-claude');
+    launchClaude.focus();
+    fireEvent.mouseEnter(screen.getByTestId('worktree-tab-context-menu-close'));
+    fireEvent.keyDown(launchClaude, { key: 'Enter' });
+
+    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude' }));
+    expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
+  });
+
   it('estimates menu height from item count so long custom-process menus stay within the viewport', () => {
     const originalInnerHeight = window.innerHeight;
     const originalInnerWidth = window.innerWidth;

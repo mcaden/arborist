@@ -7,7 +7,8 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { SubSession, SubSessionId } from '@/types/arborist';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type { SubSession, SubSessionId, WorktreeTabId } from '@/types/arborist';
 
 import { SidebarSubTab } from './SidebarSubTab';
 
@@ -47,6 +48,7 @@ beforeEach(() => {
     pendingClose: undefined,
     isHydrated: true,
   });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
 });
 
 afterEach(() => {
@@ -142,6 +144,37 @@ describe('SidebarSubTab', () => {
 
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.getByRole('button', { name: sub.label })).toBeInTheDocument();
+  });
+
+  it('marks the active sub-session for assistive tech and applies active styling', () => {
+    const sub = makeSub({ id: id('05b'), label: 'Active Shell' });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    useWorktreeTabStore.setState({
+      tabs: [
+        {
+          id: TAB_PARENT as WorktreeTabId,
+          path: '/repo/feature',
+          name: 'feature',
+          label: 'feature',
+          tabIndex: 0,
+          activeChildId: { kind: 'subSession', id: sub.id },
+          iconId: 1,
+        },
+      ],
+      activeId: TAB_PARENT as WorktreeTabId,
+      isHydrated: true,
+    });
+
+    const { rerender } = render(<SidebarSubTab subSessionId={sub.id} />);
+
+    const button = screen.getByRole('button', { name: sub.label });
+    expect(button).toHaveAttribute('aria-current', 'page');
+    expect(button).toHaveClass('bg-sky-100');
+
+    useWorktreeTabStore.setState({ activeId: null });
+    rerender(<SidebarSubTab subSessionId={sub.id} />);
+
+    expect(screen.getByRole('button', { name: sub.label })).not.toHaveAttribute('aria-current');
   });
 
   it('clicking a greyed exited application sub-tab triggers relaunch (Phase 7)', () => {
