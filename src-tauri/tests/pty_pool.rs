@@ -3,8 +3,10 @@
 //! These tests exercise both the production [`PortablePtySpawner`] (against the purpose-built `arborist-test-child` binary) and a deterministic fake
 //! spawner for backpressure / lifecycle / UTF-8 correctness.
 //!
-//! The path to the test child binary is provided automatically by Cargo via `env!("CARGO_BIN_EXE_arborist-test-child")` because both the test child
-//! and these tests live in the same crate.
+//! The path to the test child binary is provided automatically by Cargo via `env!("CARGO_BIN_EXE_arborist-test-child")`. The binary requires the
+//! `test-helpers` feature: `cargo test --workspace --features test-helpers`.
+
+#![cfg(feature = "test-helpers")]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

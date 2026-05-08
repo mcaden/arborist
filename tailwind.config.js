@@ -9,6 +9,13 @@ export default {
       fontFamily: {
         sans: ["'CaskaydiaCove NF'", ...defaultTheme.fontFamily.sans],
         mono: ["'CaskaydiaCove NF Mono'", ...defaultTheme.fontFamily.mono],
+        // Dedicated stack for Nerd Font icon glyphs (e.g. `StatusIcon`).
+        // Pinned to CaskaydiaCove NF only — no generic fallback — so the
+        // icon column either renders the codicon or shows tofu rather
+        // than silently falling back to a system font that lacks the
+        // PUA codepoints. Decoupled from `sans` so reorganising the
+        // body-font stack can't accidentally break icon rendering.
+        icon: ["'CaskaydiaCove NF'"],
       },
     },
   },
