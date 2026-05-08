@@ -58,7 +58,7 @@ RUN pnpm run build
 RUN cargo build --release --features test-helpers --bin arborist-test-child --bin arborist-test-locker
 
 # Build the release bundle — AppImage only (skip deb to avoid bundler issues)
-RUN pnpm tauri build --bundle appimage
+RUN pnpm tauri build --bundles appimage
 
 # Copy test-child to a stable path for the runtime-e2e stage
 RUN cp src-tauri/target/release/arborist-test-child /usr/local/bin/arborist-test-child
