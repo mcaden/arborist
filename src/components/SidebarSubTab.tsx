@@ -1,7 +1,7 @@
-// SidebarSubTab — indented row beneath a parent SidebarTab representing a
-// single sub-session (terminal or application). Sub-tabs are deliberately
-// simpler than parent tabs: no drag-reorder, no metrics line, and a single
-// status dot. Click forwards to:
+// SidebarSubTab — child row under a worktree tab representing a single
+// sub-session (terminal or application). It is visually aligned with
+// AI-session child tabs, but stays simpler: no drag-reorder, no metrics line,
+// and a single status dot. Click forwards to:
 //   * `subSessionStore.relaunch` when an *application* sub-tab is greyed
 //     (status `exited` or `error`) — the user clicked a launcher chrome
 //     for a process that died and should re-spawn under the same id;
@@ -11,7 +11,7 @@
 //     of an automatic reset of their scrollback;
 //   * otherwise `subSessionStore.focus`, which:
 //     * for terminal sub-sessions, swaps the MainArea viewport to this
-//       sub and brings the parent into view;
+//       sub and brings the owning worktree tab into view;
 //     * for application sub-sessions, raises the OS window without
 //       touching the viewport (the parent terminal stays visible).
 //
@@ -24,30 +24,20 @@
 //     to address).
 //
 // Accessibility: the row is a plain `<button>` (implicit `role="button"`),
-// not `role="tab"`. Sub-tabs live inside the parent's `<ul role="group">`
-// rather than the sidebar's `<ul role="tablist">`, so giving them the
-// `tab` role would violate the WAI-ARIA tabs pattern (which requires
-// `role="tab"` to be a child of `role="tablist"`) and would also confuse
-// the sidebar's roving-tabindex model — sub-tabs are *not* part of the
-// parent-tab Up/Down navigation. `aria-current="true"` indicates the
-// terminal sub-tab that currently owns the viewport (analogous to "current
-// item in a set"); application sub-tabs never set it because they don't
-// own the viewport.
+// not `role="tab"`, so it stays out of the sidebar's roving-tabindex model.
 
 import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
-import type { SubSessionId, SubSessionStatus, WorktreeTabId } from '@/types/arborist';
+import type { SubSessionId, SubSessionStatus } from '@/types/arborist';
 
 interface SidebarSubTabProps {
-  worktreeTabId: WorktreeTabId;
   subSessionId: SubSessionId;
 }
 
-export function SidebarSubTab({ worktreeTabId, subSessionId }: SidebarSubTabProps): JSX.Element | null {
+export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element | null {
   const sub = useSubSessionById(subSessionId);
   const subActions = useSubSessionActions();
   const iconDataUri = useSubSessionIcon(subSessionId);
-  void worktreeTabId;
 
   if (!sub) return null;
 

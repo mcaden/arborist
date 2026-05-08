@@ -84,6 +84,10 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     return () => document.removeEventListener('mousedown', onPointerDown);
   }, [closeMenu]);
 
+  useEffect(() => {
+    if (!tab) closeMenu();
+  }, [tab, closeMenu]);
+
   const position = useMemo(() => {
     const margin = 4;
     const estW = 220;

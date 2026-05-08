@@ -7,9 +7,10 @@
 //     [worktree header]   (li role="presentation", NOT a tab)
 //       SidebarTab        (role="tab")
 //       SidebarTab
+//       SidebarSubTab     (role="button")
 //     [worktree header]
 //       SidebarTab
-//       └── SidebarSubTab
+//       SidebarSubTab
 //
 // Worktree-tab headers are presentation only — they don't claim `role="tab"`,
 // so the WAI-ARIA tabs pattern still walks just session tabs (matches how
@@ -374,7 +375,7 @@ function SidebarGroupSection({
         );
       })}
       {subSessions.map((sub) => (
-        <SidebarSubTab key={sub.id} worktreeTabId={tabId} subSessionId={sub.id} />
+        <SidebarSubTab key={sub.id} subSessionId={sub.id} />
       ))}
     </>
   );

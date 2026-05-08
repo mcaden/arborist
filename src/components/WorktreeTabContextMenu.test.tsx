@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -83,9 +83,18 @@ describe('WorktreeTabContextMenu', () => {
   });
 
   it('returns null when the tab has been removed from the store', () => {
+    const onClose = vi.fn();
     useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
-    const { container } = render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    const { container } = render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
     expect(container.firstChild).toBeNull();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('closes when the tab is removed while the menu is mounted', async () => {
+    const onClose = vi.fn();
+    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+    useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
   it('Escape closes the menu', () => {

@@ -8,7 +8,8 @@
 // The header is rendered as a plain button inside an `<li role="presentation">`
 // — it is **not** a `role="tab"` participant. The sidebar's tablist scope
 // continues to enumerate session tabs only, matching the pre-#44 keyboard
-// pattern. Right-click opens `WorktreeTabContextMenu` (Close + Launch ▸).
+// pattern. Right-click opens `WorktreeTabContextMenu` (launch entries,
+// custom processes, and Close pinned to the bottom).
 //
 // Click activates the worktree tab and clears its `activeChildId` so the
 // MainArea swaps to the dashboard placeholder. Users who want to land on

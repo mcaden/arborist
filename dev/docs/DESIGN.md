@@ -238,7 +238,7 @@ type SubSessionStatus = 'starting' | 'running' | 'exited' | 'error';
 
 interface SubSession {
   id: string;            // UUID v4; distinct type (SubSessionId) from SessionId at the Rust level
-  parentSessionId: string;
+  parentWorktreeTabId: string;
   defId: string;
   kind: CustomProcessKind;
   label: string;
@@ -250,7 +250,7 @@ interface SubSession {
 
 interface SubSessionRecord {  // Lightweight restore record persisted in lastOpenSubSessions
   id: string;
-  parentSessionId: string;
+  parentWorktreeTabId: string;
   defId: string;
   kind: CustomProcessKind;
   label: string;
@@ -291,11 +291,11 @@ with a warn log rather than poisoning the whole config.
 ```
 <App>
   <Sidebar>
-    <SidebarWorktreeTab />     // One per WorktreeTab (worktree name + branch + status rollup)
+    <SidebarWorktreeTab />     // One per WorktreeTab (worktree name + branch; no AI status rollup)
       <SidebarTab />           // Child session under that worktree (Claude/Copilot)
-        <SidebarSubTab />      // Indented under its session (one per SubSession)
-        <SidebarSubTab />
       <SidebarTab />
+      <SidebarSubTab />        // Child custom process under that worktree (one per SubSession)
+      <SidebarSubTab />
     <SidebarWorktreeTab />
     <NewSessionButton />
   </Sidebar>
@@ -306,8 +306,8 @@ with a warn log rather than poisoning the whole config.
                                //   (application sub-tabs leave the previous viewport visible)
   </MainArea>
   <TabContextMenu />           // Right-click / Shift+F10 / Apps key on a SidebarTab (child)
-  <WorktreeTabContextMenu />   // Right-click on a SidebarWorktreeTab (Close + Launch ▸ Claude/Copilot)
-  <NewSessionDialog />         // Modal: tool picker → worktree picker → confirm
+  <WorktreeTabContextMenu />   // Right-click on a SidebarWorktreeTab (flat launch/custom-process items + Close)
+  <NewSessionDialog />         // Modal: open/create a worktree tab (agent launch happens later)
   <SettingsDialog>             // Tabbed: General / Custom Processes
     <GeneralTab />
     <CustomProcessesTab />     // CRUD over AppConfig.customProcesses
@@ -818,26 +818,27 @@ launch don't replay old spans and double-count totals.
 
 ### 5.7 Custom Process Sub-Sessions
 
-Sub-tabs are launched from the tab context menu's "Launch…" submenu, which
-lists every enabled `CustomProcessDef` from `AppConfig.customProcesses`.
+Sub-tabs are launched from the worktree-tab context menu, which lists every
+enabled `CustomProcessDef` from `AppConfig.customProcesses` alongside the
+built-in AI launch entries.
 
 #### 5.7.1 Create
 
 ```
-User right-clicks a SidebarTab → TabContextMenu opens
-  → Selects an enabled def from the Launch submenu
-    → Frontend invokes Tauri command: subsession_create { parentSessionId, defId }
+User right-clicks a SidebarWorktreeTab → WorktreeTabContextMenu opens
+  → Selects an enabled custom-process def
+    → Frontend invokes Tauri command: subsession_create { parentWorktreeTabId, defId }
       → Backend (subsession_create_impl):
-          1. Refuses if the parent session is in the closing-parent tombstone (Phase 7).
+          1. Refuses if the parent worktree tab is in the closing-parent tombstone.
           2. Loads the def by id; refuses if missing or disabled.
-          3. Loads the parent Session; refuses with WorktreeMissing if the worktree path is gone.
+          3. Loads the parent WorktreeTab; refuses with WorktreeMissing if the worktree path is gone.
           4. Composes once: composedCommand = def.command (captured-and-stored, mirroring §5.4).
           5. Inserts the SubSession into the in-memory SubSessionStore FIRST,
              then appends a SubSessionRecord to AppConfig.lastOpenSubSessions.
              On persist failure, rolls back the in-memory insert so a record can never be orphaned.
           6. Branches on kind:
-             - terminal:   SubPtyPool.spawn_terminal(id, composedCommand, cwd=parent.worktreePath, sink)
-             - application: AppPool.spawn(id, composedCommand, cwd=parent.worktreePath, sink)
+             - terminal:   SubPtyPool.spawn_terminal(id, composedCommand, cwd=parent.path, sink)
+             - application: AppPool.spawn(id, composedCommand, cwd=parent.path, sink)
           7. On spawn failure: removes the in-memory entry and prunes the persisted record.
       → Sink callbacks emit subsession://status (with PID once Running) and the in-memory
         store is updated by the production sink before the event is dispatched.
@@ -999,10 +1000,10 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `workspace_validate` | `{ path: string }` | `{ valid: boolean, error?: string, alreadyOpenInAnotherInstance?: boolean }` | Validate a candidate workspace root for the first-boot picker (Roadmap §1.1) and the in-app workspace switcher (§5.5c). Returns `valid: true` only when `path` is an absolute, existing directory that is a **primary git repository root** — i.e. `git -C <path> rev-parse --show-toplevel` equals `path` itself **AND** `<path>/.git` is a *directory*. Linked git worktrees (where `.git` is a *file* containing `gitdir: <path-into-primary>`) and submodule working trees are explicitly rejected, because Arborist's session model spawns child worktrees from a primary repo root and a linked worktree cannot host its own worktrees (`git worktree add` from inside one fails). Subdirectories of a repo are also rejected (toplevel != path). On failure, `error` carries a short human-readable reason (`"path is not an absolute directory"`, `"not a git repository"`, `"path is a linked git worktree, not a primary repository root"`, `"path must be the repository root (...)"`, …). Never throws an `AppError` for the "invalid" case — the picker shows inline feedback. The same rules are enforced at boot by `crate::boot::validate_repo_root`; the two MUST stay in sync. **`alreadyOpenInAnotherInstance` is an advisory contention probe** (set only when the caller can supply an `app_data_dir` — i.e. the public Tauri command path; internal in-app callers pass `None` and leave the field as `undefined`). When set, it is the result of a non-destructive `WorkspaceLockGuard::probe` against the per-(branch, workspace) `.lock` file: `true` ⇒ another Arborist instance is currently bound here, `false` ⇒ free at probe time, `undefined` ⇒ no probe was performed. The signal is purely advisory — there is an inherent race window between probe and the authoritative acquire performed by `bind_workspace`/`workspace_switch`. The picker MUST render this as a warning and NOT a hard block; persistent contention surfaces later as a `WorkspaceLocked` error from the acquire. |
 | `workspace_switch` | `{ path: string }` | `{ workspaceRoot: string, noOp: boolean, config: AppConfig, sessions: SessionView[] }` | Atomically swap the running process from the current (branch, workspace) pair to the new one identified by `path` (§5.5c). The full transaction (validate → no-op fast path → acquire new lock → **persist `workspaceRoot` into new `config.json` (aborts switch on failure)** → drain AI-discovery callbacks (`metrics.stop_all_and_join`) → **park** old sessions (`pool.kill` drains PTY-status callbacks; persisted records are preserved) → swap `WorkspaceScope` → best-effort persist hint → **inline `restore_all_sessions` for the new workspace under the same write guard** → latch `restored = true` (the gate is **not** reset before restore — restoring inline means latching to true at the end is the only correct transition; see §5.5c step 8) → load `{ config, sessions }` from the new store) runs under a `tokio::sync::RwLock<()>` write guard (`switch_lock`) held for the entire function body, paired with an `AtomicUsize` counter (`switch_pending`) bumped before the lock is awaited. The pair quiesces in-flight workspace-mutating handlers before the swap and rejects new ones with `WorkspaceSwitchInProgress` for the duration; concurrent switches queue serially on the write side. Returns `noOp: true` (no work done; `config` + `sessions` reflect the unchanged state) when `path` canonicalises to the currently bound root. Returns `WorkspaceLocked` on lock-contention with the old workspace still bound; the frontend should surface this as a hard error. On success (`noOp: false`), the frontend adopts the returned `config` + `sessions` atomically into both stores in a single render (`lib/workspace-switch.ts::changeWorkspace` → `configStore.adoptWorkspace` + `sessionStore.actions.adoptWorkspace`); no second round-trip and no `workspace://changed` event are needed. **Park semantics**: the old workspace's `sessions.json`, `last_open_sessions`, `tab_order`, and `active_session_id` are left untouched, so a later switch-back resurrects every session at its previous position with Claude/Copilot `--resume` keeping AI conversation context alive (§5.5c step 7). |
 | `worktree_create` | `{ name: string }` | `{ path: string }` | Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2). Requires `workspaceRoot` to be set in `AppConfig`; errors with `NotFound` otherwise. The `name` is re-validated server-side via the same rules as `validateWorktreeName` (no spaces; no `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\\`; cannot start/end with `.` or `/`; cannot end with `.lock`; cannot be `@`; 1–255 chars); `InvalidPath` is returned for any rule violation. Runs `git -C <workspaceRoot> worktree add .worktrees/<name> -b <name>` via the injected `GitRunner`; bubbles up the captured stderr in the `Internal` error message on git failure. Returns the canonical absolute path to the new worktree directory. |
-| `subsession_create` | `{ parentSessionId, defId }` | `SubSession` | Compose and spawn a sub-session under the named parent. See §5.7.1. Errors: `NotFound` (def or parent missing), `InvalidArgument` (def disabled, or parent in closing tombstone), `WorktreeMissing`, `PtySpawnFailed`/`AppSpawnFailed`/`ToolMissing`. |
+| `subsession_create` | `{ parentWorktreeTabId, defId }` | `SubSession` | Compose and spawn a sub-session under the named worktree tab. See §5.7.1. Errors: `NotFound` (def or parent missing), `InvalidArgument` (def disabled, or parent in closing tombstone), `WorktreeMissing`, `PtySpawnFailed`/`AppSpawnFailed`/`ToolMissing`. |
 | `subsession_close` | `{ id }` | — | Tear down a sub-session. Terminal kind kills the PTY; application kind only detaches Arborist's tracking (the external program keeps running). See §5.7.3. |
 | `subsession_focus` | `{ id }` | — | For application kind, focus the OS window via `WindowFocuser` (§5.7.4). Errors: `NotApplicable` (PID is a launcher wrapper that exited), `PermissionDenied`, `ToolMissing`, `Unsupported` (Wayland). For terminal kind, no-op on the backend; the frontend swaps viewports. |
-| `subsession_list` | `{ parentSessionId? }` | `SubSession[]` | List sub-sessions for a parent (or all sub-sessions if omitted). |
+| `subsession_list` | `{ parentWorktreeTabId? }` | `SubSession[]` | List sub-sessions for a parent worktree tab (or all sub-sessions if omitted). |
 | `subsession_input` | `{ id, data }` | — | Send keystrokes to a terminal sub-session's PTY. Returns `NotApplicable` for application kind. |
 | `subsession_resize` | `{ id, cols, rows }` | — | Resize a terminal sub-session's PTY. Returns `NotApplicable` for application kind. |
 | `subsession_relaunch` | `{ id }` | `SubSession` | Re-spawn a sub-session under the same id, refreshing `composedCommand` from the current def. See §5.7.7. Errors: `NotFound` (def deleted), `InvalidArgument` (def disabled or parent closing), `WorktreeMissing`, `PtySpawnFailed`/`AppSpawnFailed`/`ToolMissing`. |

@@ -7,12 +7,12 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { SubSession, SubSessionId, WorktreeTabId } from '@/types/arborist';
+import type { SubSession, SubSessionId } from '@/types/arborist';
 
 import { SidebarSubTab } from './SidebarSubTab';
 
-const TAB_PARENT = 'tab-parent' as WorktreeTabId;
-const TAB_PARENT_OTHER = 'tab-parent-other' as WorktreeTabId;
+const TAB_PARENT = 'tab-parent';
+const TAB_PARENT_OTHER = 'tab-parent-other';
 
 type SubOverrides = Partial<Omit<SubSession, 'id' | 'pid'>> &
   Pick<SubSession, 'id'> & {
@@ -58,7 +58,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('01'), label: 'My Shell' });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
 
     expect(screen.getByText('My Shell')).toBeInTheDocument();
     expect(screen.getByTestId('sub-status-running')).toBeInTheDocument();
@@ -66,7 +66,7 @@ describe('SidebarSubTab', () => {
   });
 
   it('returns null for unknown sub-session id', () => {
-    const { container } = render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={id('99')} />);
+    const { container } = render(<SidebarSubTab subSessionId={id('99')} />);
     expect(container.firstChild).toBeNull();
   });
 
@@ -74,17 +74,17 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('02') });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
 
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
 
-  it('clicking a sub-tab under another worktree still focuses that sub-session', () => {
+  it('clicking a sub-tab focuses that sub-session using its stored worktree owner', () => {
     const sub = makeSub({ id: id('03'), parentWorktreeTabId: TAB_PARENT_OTHER });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT_OTHER} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
 
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
@@ -95,7 +95,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('04') });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByLabelText(/close sub-session/i));
 
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
@@ -111,7 +111,7 @@ describe('SidebarSubTab', () => {
     });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByLabelText(/close sub-session/i));
 
     expect(bridgeMock.subSessionClose).not.toHaveBeenCalled();
@@ -127,7 +127,7 @@ describe('SidebarSubTab', () => {
     });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByLabelText(/close sub-session/i));
 
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
@@ -138,7 +138,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('05a') });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
 
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.getByRole('button', { name: sub.label })).toBeInTheDocument();
@@ -149,7 +149,7 @@ describe('SidebarSubTab', () => {
     useSubSessionStore.setState({ subSessions: [sub] });
     bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
 
     expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
@@ -161,7 +161,7 @@ describe('SidebarSubTab', () => {
     useSubSessionStore.setState({ subSessions: [sub] });
     bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
 
     expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
@@ -171,7 +171,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('09'), kind: 'application', status: 'running', pid: 42 });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
 
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
@@ -182,7 +182,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('0a'), kind: 'terminal', status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
 
     expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
@@ -193,7 +193,7 @@ describe('SidebarSubTab', () => {
     const sub = makeSub({ id: id('0b'), kind: 'terminal', status: 'error', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
 
-    render(<SidebarSubTab worktreeTabId={TAB_PARENT} subSessionId={sub.id} />);
+    render(<SidebarSubTab subSessionId={sub.id} />);
     fireEvent.click(screen.getByRole('button', { name: sub.label }));
 
     expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();

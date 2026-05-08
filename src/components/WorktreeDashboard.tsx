@@ -5,6 +5,8 @@
 import { useMemo } from 'react';
 
 import { ToolIcon } from './ToolIcon';
+import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
+import { formatError } from '@/lib/tauri-bridge';
 import { useSessionActions, useSessions } from '@/store/session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { Tool, WorktreeTabId } from '@/types/arborist';
@@ -26,17 +28,18 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   }
 
   const launch = (tool: Tool): void => {
+    const dims = measureInitialPtyDimensions();
     void sessionActions
       .create({
         tool,
         worktreePath: tab.path,
-        cols: 80,
-        rows: 24,
+        cols: dims.cols,
+        rows: dims.rows,
       })
       .catch((err: unknown) => {
         // Surface as a console warning rather than an unhandled rejection — the user has the launch buttons in front of them and a
         // toast/error UI is out of scope for the v1 dashboard placeholder. The error path is exercised in tests via mocked rejections.
-        console.warn(`[WorktreeDashboard] sessionCreate(${tool}) failed: ${String(err)}`);
+        console.warn(`[WorktreeDashboard] sessionCreate(${tool}) failed: ${formatError(err)}`);
       });
   };
 

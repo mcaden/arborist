@@ -2,7 +2,7 @@
 // sidebar. After the worktree-as-parent-tab restructure (issue #44), the
 // "+" button no longer creates an AI session directly; it opens (or
 // creates) a worktree tab. The user then right-clicks the worktree tab
-// and uses Launch ▸ Claude / Copilot to start a session.
+// and uses Launch Claude / Launch Copilot to start a session.
 //
 // The user can choose an existing worktree from the workspace's
 // `.worktrees/` directory, or create a new one by name.
