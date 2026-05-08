@@ -41,15 +41,19 @@ export function WorktreePrepBanner(): JSX.Element | null {
   const inFlight = useWorktreePrepStore(useShallow(selectInFlightPreps));
   const recent = useWorktreePrepStore(selectRecentCompletedPreps);
   const dismissCompleted = useWorktreePrepStore((s) => s.dismissCompleted);
+  const markOpenLogFailed = useWorktreePrepStore((s) => s.markOpenLogFailed);
 
   // Auto-dismiss successful completions. Failures must be acknowledged
   // explicitly so the user notices them — we never silently hide a
   // failed prep.
   useEffect(() => {
     const timers: ReturnType<typeof setTimeout>[] = [];
+    const nowMs = Date.now();
     for (const r of recent) {
       if (r.ok) {
-        timers.push(setTimeout(() => dismissCompleted(r.prepId), AUTO_DISMISS_MS));
+        const elapsedMs = Math.max(0, nowMs - r.finishedAt * 1000);
+        const delayMs = Math.max(0, AUTO_DISMISS_MS - elapsedMs);
+        timers.push(setTimeout(() => dismissCompleted(r.prepId), delayMs));
       }
     }
     return () => {
@@ -73,7 +77,12 @@ export function WorktreePrepBanner(): JSX.Element | null {
     >
       {inFlight.length > 0 && <RunningBanner count={inFlight.length} firstWorktree={inFlight[0]!.worktreePath} />}
       {failures.map((rec) => (
-        <FailureBanner key={rec.prepId} record={rec} onDismiss={() => dismissCompleted(rec.prepId)} />
+        <FailureBanner
+          key={rec.prepId}
+          record={rec}
+          onDismiss={() => dismissCompleted(rec.prepId)}
+          onOpenLogFailed={(message) => markOpenLogFailed(rec.prepId, message)}
+        />
       ))}
       {successes.map((rec) => (
         <SuccessBanner key={rec.prepId} record={rec} onDismiss={() => dismissCompleted(rec.prepId)} />
@@ -117,7 +126,15 @@ function SuccessBanner({ record, onDismiss }: { record: PrepCompletedRecord; onD
   );
 }
 
-function FailureBanner({ record, onDismiss }: { record: PrepCompletedRecord; onDismiss: () => void }): JSX.Element {
+function FailureBanner({
+  record,
+  onDismiss,
+  onOpenLogFailed,
+}: {
+  record: PrepCompletedRecord;
+  onDismiss: () => void;
+  onOpenLogFailed: (message: string) => void;
+}): JSX.Element {
   const reason = record.errorMessage ?? (record.exitCode === null ? 'process was signalled' : `exit code ${record.exitCode}`);
   return (
     <div
@@ -136,11 +153,7 @@ function FailureBanner({ record, onDismiss }: { record: PrepCompletedRecord; onD
           type="button"
           onClick={() => {
             void worktreePrepOpenLog({ logPath: record.logPath }).catch((err: unknown) => {
-              // The most useful surface for an open-log failure is the
-              // existing banner — re-use the failure copy by mutating the
-              // record's errorMessage. We deliberately do not throw.
-              // eslint-disable-next-line no-console
-              console.warn('worktree_prep_open_log failed:', formatError(err));
+              onOpenLogFailed(`open log: ${formatError(err)}`);
             });
           }}
           className="rounded border border-rose-400 px-2 py-0.5 text-[11px] hover:bg-rose-100 dark:border-rose-600 dark:hover:bg-rose-900"

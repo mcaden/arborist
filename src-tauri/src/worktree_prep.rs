@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -45,9 +45,7 @@ pub const PREP_EVENT: &str = "worktree://prep";
 pub const LOG_SUBDIR: &str = "worktree-prep-logs";
 const MAX_PREP_LOG_FILES: usize = 500;
 
-/// In-flight prep registry. Kill handles (oneshot senders) only — the actual
-/// `Child` lives inside the watcher task. Drop the sender to gracefully kill
-/// the in-flight prep on app shutdown / workspace switch.
+/// In-flight prep registry. The watcher task owns each child; the registry only keeps kill handles for shutdown and workspace switches.
 #[derive(Default)]
 pub struct WorktreePrepRegistry {
     inner: Mutex<HashMap<WorktreePrepId, oneshot::Sender<()>>>,
@@ -59,24 +57,27 @@ impl WorktreePrepRegistry {
         Self::default()
     }
 
-    fn insert(&self, id: WorktreePrepId, tx: oneshot::Sender<()>) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.insert(id, tx);
+    fn lock_inner(&self) -> MutexGuard<'_, HashMap<WorktreePrepId, oneshot::Sender<()>>> {
+        match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!("worktree prep registry mutex was poisoned; recovering inner state");
+                poisoned.into_inner()
+            }
         }
     }
 
+    fn insert(&self, id: WorktreePrepId, tx: oneshot::Sender<()>) {
+        self.lock_inner().insert(id, tx);
+    }
+
     fn remove(&self, id: &WorktreePrepId) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.remove(id);
-        }
+        self.lock_inner().remove(id);
     }
 
     /// Best-effort kill of every in-flight prep. Used on app shutdown.
     pub fn kill_all(&self) {
-        let drained: Vec<_> = match self.inner.lock() {
-            Ok(mut g) => g.drain().collect(),
-            Err(_) => return,
-        };
+        let drained: Vec<_> = self.lock_inner().drain().collect();
         for (_, tx) in drained {
             // Send may fail if the watcher already finished; that's fine.
             let _ = tx.send(());
@@ -84,17 +85,18 @@ impl WorktreePrepRegistry {
     }
 }
 
-/// Strip blank/whitespace-only lines and trim each non-blank command. Matches the UI's `commandsToText` cleanup so the user sees `npm install` (not
-/// `  npm install\n\n`).
+/// Strip blank/whitespace-only lines and trim each non-blank command.
+///
+/// Matches the UI's `commandsToText` cleanup so the user sees `npm install`, not the raw textarea whitespace.
 pub(crate) fn clean_commands(cmds: &[String]) -> Vec<String> {
     cmds.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).map(str::to_owned).collect()
 }
 
-/// If the user has configured at least one non-blank prep command, kick one off in the background and return the [`WorktreePrepInfo`] handle. Returns
-/// `None` when no commands are configured (the wire payload of `WorktreeCreateResult.prep` is then `null`).
+/// Kick off configured prep commands in the background and return the [`WorktreePrepInfo`] handle.
 ///
-/// **Never returns an error**: a log-dir creation failure or child-spawn failure is reported via the event channel as a `Started` + immediate
-/// `Exited` pair so the UI can render a failure banner — `worktree_create` itself stays successful.
+/// Returns `None` when no commands are configured, so `WorktreeCreateResult.prep` serializes as `null`.
+///
+/// **Never returns an error**: log-dir or child-spawn failures are reported via `worktree://prep`, and `worktree_create` stays successful.
 pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &AppConfig, worktree_path: &Path) -> Option<WorktreePrepInfo> {
     let cleaned = clean_commands(&cfg.worktree_prep_commands);
     if cleaned.is_empty() {
@@ -105,8 +107,7 @@ pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &A
     let log_path = match log_path_for(app, prep_id) {
         Ok(p) => p,
         Err(err) => {
-            // No log dir — emit started+exited synchronously with a placeholder log path. The UI will show the failure banner; "View log" will fail
-            // gracefully (file not found) which is the correct UX.
+            // No log dir: emit started+exited with a placeholder path. The UI will show the failure; "View log" will fail gracefully.
             let placeholder = std::env::temp_dir().join(format!("arborist-prep-{prep_id}.log"));
             emit_synthetic_failure(
                 app,
@@ -133,8 +134,7 @@ pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &A
     let script = cleaned.join(" && ");
     let started_at = unix_now();
 
-    // Spawn the child synchronously (no `.await`) so we can detect spawn failure without blocking and so the registry insert happens before any
-    // potential exit emission can race with it.
+    // Spawn synchronously so we can report spawn failure immediately and insert the registry handle before any exit event can race it.
     let shell = compose::platform_shell();
 
     // Open the log file for stdout+stderr; we clone the file handle for stderr.
@@ -178,9 +178,7 @@ pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &A
         .stdout(std::process::Stdio::from(stdout_file))
         .stderr(std::process::Stdio::from(stderr_file));
 
-    // Inherit env. Killing the parent on drop is the right default — registry drop on shutdown causes oneshot sender drop, the watcher's
-    // tokio::select wakes, and child.start_kill() runs. We do NOT set `kill_on_drop(true)` because the watcher owns the Child and we want explicit
-    // cancellation flow.
+    // Inherit env. We do not set `kill_on_drop(true)` because the watcher owns the Child and drives the explicit cancellation flow.
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(err) => {
@@ -226,7 +224,7 @@ pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &A
         },
     );
 
-    // Spawn the watcher task. Owns the Child; on kill_rx fires `start_kill()` then awaits exit so we always emit `Exited` exactly once.
+    // The watcher owns the Child; on kill_rx it kills then awaits exit so we always emit `Exited` exactly once.
     let app_clone = app.clone();
     let registry_clone = registry.clone();
     let log_path_clone = log_path.clone();
@@ -447,6 +445,24 @@ mod tests {
         reg.remove(&id);
         // Sender dropped without sending → receiver sees Closed.
         assert!(matches!(rx.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+    }
+
+    #[test]
+    fn registry_recovers_after_poisoned_lock() {
+        let reg = Arc::new(WorktreePrepRegistry::new());
+        let poison_reg = Arc::clone(&reg);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_reg.inner.lock().unwrap();
+            panic!("poison registry lock");
+        })
+        .join();
+
+        let id = WorktreePrepId::new_v4();
+        let (tx, mut rx) = oneshot::channel::<()>();
+        reg.insert(id, tx);
+        reg.kill_all();
+
+        assert!(matches!(rx.try_recv(), Ok(()) | Err(oneshot::error::TryRecvError::Closed)));
     }
 
     #[test]

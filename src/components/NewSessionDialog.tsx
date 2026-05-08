@@ -30,6 +30,7 @@ import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionActions } from '@/store/session-store';
+import { useWorktreePrepStore } from '@/store/worktree-prep-store';
 import type { Tool, WorktreeInfo } from '@/types/arborist';
 
 type Step = 1 | 2;
@@ -54,6 +55,7 @@ export function NewSessionDialog(): JSX.Element | null {
   const close = useNewSessionDialog((s) => s.close);
   const actions = useSessionActions();
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
+  const waitForPrepCompletion = useWorktreePrepStore((s) => s.waitForCompletion);
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
@@ -88,6 +90,7 @@ export function NewSessionDialog(): JSX.Element | null {
   // "New worktree" sub-form state.
   const [newName, setNewName] = useState<string>('');
   const [creating, setCreating] = useState(false);
+  const [waitingForPrep, setWaitingForPrep] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
   // Reset all wizard state whenever the dialog transitions to open. We do
@@ -104,6 +107,7 @@ export function NewSessionDialog(): JSX.Element | null {
     setSubmitError(null);
     setNewName('');
     setCreating(false);
+    setWaitingForPrep(false);
     setCreateError(null);
   }, [isOpen]);
 
@@ -241,6 +245,11 @@ export function NewSessionDialog(): JSX.Element | null {
       // second concurrent session for the same worktree.
       setWorktree({ path: result.path, branch: trimmed, isMain: false });
       setNewName('');
+      if (result.prep !== null) {
+        setWaitingForPrep(true);
+        await waitForPrepCompletion(result.prep.prepId);
+        setWaitingForPrep(false);
+      }
       // The "New worktree" flow is one-shot: creating the worktree
       // immediately starts the session and closes the dialog. If session
       // creation fails, surface the error and switch to the Existing tab so
@@ -293,6 +302,7 @@ export function NewSessionDialog(): JSX.Element | null {
       setCreateError(formatError(err));
     } finally {
       setCreating(false);
+      setWaitingForPrep(false);
     }
   };
 
@@ -572,7 +582,7 @@ export function NewSessionDialog(): JSX.Element | null {
               disabled={creating || submitting || newName.trim().length === 0 || newNameError !== null}
               className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
-              {creating ? 'Creating…' : 'Create worktree & session'}
+              {waitingForPrep ? 'Preparing…' : creating ? 'Creating…' : 'Create worktree & session'}
             </button>
           )}
           {step === 2 && worktreeMode === 'existing' && (

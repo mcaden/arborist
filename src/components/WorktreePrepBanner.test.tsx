@@ -55,6 +55,7 @@ describe('WorktreePrepBanner', () => {
 
   it('shows a success banner after a successful exit and auto-dismisses it', async () => {
     await subscribe();
+    vi.setSystemTime(1700000005000);
     render(<WorktreePrepBanner />);
     act(() => {
       dispatch!({
@@ -73,6 +74,44 @@ describe('WorktreePrepBanner', () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(screen.queryByTestId('worktree-prep-banner-success')).toBeNull();
+  });
+
+  it('keeps each success auto-dismiss anchored to its own finish time', async () => {
+    await subscribe();
+    vi.setSystemTime(1700000005000);
+    render(<WorktreePrepBanner />);
+    act(() => {
+      dispatch!({
+        kind: 'exited',
+        prepId: 'p1',
+        worktreePath: '/repo/.worktrees/feature-x',
+        logPath: '/data/p1.log',
+        exitCode: 0,
+        errorMessage: null,
+        startedAt: 1700000000,
+        finishedAt: 1700000005,
+      });
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(3_000);
+      dispatch!({
+        kind: 'exited',
+        prepId: 'p2',
+        worktreePath: '/repo/.worktrees/feature-y',
+        logPath: '/data/p2.log',
+        exitCode: 0,
+        errorMessage: null,
+        startedAt: 1700000001,
+        finishedAt: 1700000008,
+      });
+    });
+    expect(screen.getAllByTestId('worktree-prep-banner-success')).toHaveLength(2);
+
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByTestId('worktree-prep-banner-success')).toHaveTextContent(/feature-y/);
   });
 
   it('shows a sticky failure banner with View log + Dismiss', async () => {
@@ -106,6 +145,31 @@ describe('WorktreePrepBanner', () => {
     // Dismiss button removes it.
     fireEvent.click(screen.getByRole('button', { name: /dismiss prep failure/i }));
     expect(screen.queryByTestId('worktree-prep-banner-failure')).toBeNull();
+  });
+
+  it('updates the failure reason when opening the log fails', async () => {
+    await subscribe();
+    bridgeMock.worktreePrepOpenLog.mockRejectedValueOnce(new Error('denied'));
+    render(<WorktreePrepBanner />);
+    act(() => {
+      dispatch!({
+        kind: 'exited',
+        prepId: 'p1',
+        worktreePath: '/repo/.worktrees/feature-x',
+        logPath: '/data/p1.log',
+        exitCode: 2,
+        errorMessage: null,
+        startedAt: 1700000000,
+        finishedAt: 1700000005,
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /view log/i }));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('worktree-prep-banner-failure')).toHaveTextContent(/open log: denied/i);
   });
 
   it('shows reason "process was signalled" when exitCode is null without an errorMessage', async () => {

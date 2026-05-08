@@ -165,4 +165,36 @@ describe('worktree-prep-store', () => {
     const recent = selectRecentCompletedPreps(useWorktreePrepStore.getState());
     expect(recent.map((r) => r.prepId)).toEqual(['p2']);
   });
+
+  it('markOpenLogFailed replaces the failure reason for an existing completion', async () => {
+    let dispatch: ((ev: WorktreePrepEvent) => void) | undefined;
+    bridgeMock.onWorktreePrep.mockImplementationOnce((cb) => {
+      dispatch = cb;
+      return Promise.resolve(() => {});
+    });
+
+    await useWorktreePrepStore.getState().subscribe();
+    dispatch!(exitedEvent('p1', { exitCode: 2, errorMessage: null }));
+
+    useWorktreePrepStore.getState().markOpenLogFailed('p1', 'open log: denied');
+
+    const recent = selectRecentCompletedPreps(useWorktreePrepStore.getState());
+    expect(recent[0]?.errorMessage).toBe('open log: denied');
+    expect(recent[0]?.ok).toBe(false);
+  });
+
+  it('waitForCompletion resolves when the target prep exits', async () => {
+    let dispatch: ((ev: WorktreePrepEvent) => void) | undefined;
+    bridgeMock.onWorktreePrep.mockImplementationOnce((cb) => {
+      dispatch = cb;
+      return Promise.resolve(() => {});
+    });
+
+    await useWorktreePrepStore.getState().subscribe();
+    const waited = useWorktreePrepStore.getState().waitForCompletion('p1');
+    dispatch!(exitedEvent('p2'));
+    dispatch!(exitedEvent('p1'));
+
+    await expect(waited).resolves.toMatchObject({ prepId: 'p1', state: 'completed' });
+  });
 });

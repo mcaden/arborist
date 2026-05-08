@@ -9,6 +9,7 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionStore } from '@/store/session-store';
+import { useWorktreePrepStore } from '@/store/worktree-prep-store';
 import type { AppConfig, InstructionSet, SessionView, WorktreeInfo } from '@/types/arborist';
 
 import { NewSessionDialog } from './NewSessionDialog';
@@ -57,6 +58,7 @@ beforeEach(() => {
     pendingClose: undefined,
     isHydrated: true,
   });
+  useWorktreePrepStore.getState()._resetForTest();
 
   // jsdom <dialog> shim — same pattern as Sidebar.test.tsx.
   const proto = HTMLDialogElement.prototype as unknown as {
@@ -77,6 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  useWorktreePrepStore.getState()._resetForTest();
 });
 
 describe('NewSessionDialog', () => {
@@ -209,6 +212,60 @@ describe('NewSessionDialog', () => {
       ),
     );
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
+  });
+
+  it('waits for worktree prep to finish before starting the chained session', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: {
+        prepId: 'prep-1',
+        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+        logPath: '/data/prep-1.log',
+      },
+    });
+    bridgeMock.sessionCreate.mockResolvedValue({
+      id: 'new-id',
+      tool: 'claude',
+      worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+      worktreeName: 'my-feature',
+      label: 'my-feature',
+      status: 'running',
+      createdAt: 1,
+      tabIndex: 0,
+    } satisfies SessionView);
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+
+    fireEvent.change(await screen.findByLabelText(/branch \/ worktree name/i), { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    expect(await screen.findByRole('button', { name: /preparing/i })).toBeDisabled();
+    expect(bridgeMock.sessionCreate).not.toHaveBeenCalled();
+
+    act(() => {
+      useWorktreePrepStore.setState({
+        recent: [
+          {
+            state: 'completed',
+            prepId: 'prep-1',
+            worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+            logPath: '/data/prep-1.log',
+            exitCode: 0,
+            errorMessage: null,
+            startedAt: 1,
+            finishedAt: 2,
+            ok: true,
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
   });
 
   it('ignores stale Step-2 worktreesList when workspaceRoot flips to null mid-flight', async () => {
