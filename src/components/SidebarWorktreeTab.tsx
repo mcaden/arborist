@@ -34,13 +34,13 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
   if (!tab) return null;
 
   const baseClasses =
-    'flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-7 text-left text-xs font-semibold uppercase tracking-wide transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
+    'flex w-full items-center gap-2 rounded-md py-2 pl-2 pr-7 text-left text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
   const stateClasses = isActive
-    ? 'bg-slate-200 text-slate-900 dark:bg-slate-800 dark:text-slate-100'
-    : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800';
+    ? 'bg-slate-200/80 text-slate-900 border-l-[3px] border-sky-500 dark:bg-slate-800/80 dark:text-slate-100'
+    : 'text-slate-700 hover:bg-slate-100 border-l-[3px] border-transparent dark:text-slate-300 dark:hover:bg-slate-800';
 
   return (
-    <li role="presentation" className="group relative px-2 pt-2">
+    <li role="presentation" className="group relative px-2 pt-3">
       <button
         ref={setButtonEl}
         type="button"
@@ -68,7 +68,10 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         }}
         className={`${baseClasses} ${stateClasses}`}
       >
-        <span className="min-w-0 flex-1 truncate normal-case font-semibold">{tab.name}</span>
+        <span aria-hidden="true" className="text-base">
+          📁
+        </span>
+        <span className="min-w-0 flex-1 truncate">{tab.name}</span>
       </button>
       <button
         type="button"
@@ -80,7 +83,7 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
             console.warn(`[SidebarWorktreeTab] close(${tab.id}) failed: ${formatError(err)}`);
           });
         }}
-        className="absolute right-3 top-3 rounded p-0.5 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+        className="absolute right-3 top-4 rounded p-0.5 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
         <span aria-hidden="true">×</span>
       </button>
