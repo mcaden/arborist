@@ -44,7 +44,7 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   };
 
   return (
-    <main
+    <section
       data-testid="worktree-dashboard"
       role="region"
       aria-labelledby="worktree-dashboard-title"
@@ -82,6 +82,6 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
           Launch Copilot
         </button>
       </div>
-    </main>
+    </section>
   );
 }

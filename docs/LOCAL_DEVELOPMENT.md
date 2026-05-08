@@ -49,7 +49,7 @@ ls .husky/pre-commit .husky/pre-push
 ```sh
 pnpm dev                # Vite + Tauri with HMR (frontend) and hot-recompile (backend); alias: pnpm tauri:dev
 pnpm vite               # Vite dev server only (no Tauri shell) — handy for quick browser-only iteration
-pnpm tauri:build        # production bundle → src-tauri/target/release/bundle/
+pnpm tauri:build        # production bundle → target/release/bundle/
 ```
 
 `pnpm dev` runs `scripts/tauri-dev.mjs`, which assigns a per-worktree devserver port and tells Tauri to load the matching URL. Tauri's `beforeDevCommand` is `pnpm run vite` so the frontend is started automatically — if you ever rename or repurpose the `dev` / `vite` scripts, update `src-tauri/tauri.conf.json` to match (otherwise Tauri will re-invoke `pnpm dev` and recurse instead of starting the frontend).

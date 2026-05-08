@@ -41,10 +41,6 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
 
   if (!sub) return null;
 
-  // A terminal sub-tab is "selected" when it owns the viewport via
-  // `activeChildId.kind === 'subSession'` on the parent worktree tab.
-  // We don't track that here — the worktree-tab store is the source
-  // of truth and the parent Sidebar component passes the visual state.
   const isExited = sub.status === 'exited' || sub.status === 'error';
 
   const handleClick = (): void => {

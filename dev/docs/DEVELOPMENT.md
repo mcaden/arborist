@@ -106,7 +106,7 @@ keep both pages in sync.
 ```sh
 pnpm dev                # Vite + Tauri shell with HMR (frontend) and cargo recompile (backend); alias: pnpm tauri:dev
 pnpm vite               # Vite dev server only (no Tauri shell)
-pnpm tauri:build        # production bundle in src-tauri/target/release/bundle/
+pnpm tauri:build        # production bundle in target/release/bundle/
 ```
 
 `pnpm dev` runs `scripts/tauri-dev.mjs`, which picks a per-worktree devserver port and tells Tauri to load the matching URL. Tauri's `beforeDevCommand` (in `src-tauri/tauri.conf.json`) is `pnpm run vite`, so the frontend is started automatically. If you rename or repurpose the `dev` or `vite` scripts in `package.json`, update `beforeDevCommand` to match — otherwise `tauri dev` will re-invoke `pnpm dev` and recurse instead of starting Vite.

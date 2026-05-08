@@ -35,7 +35,7 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 ```sh
 pnpm dev                 # Vite + Tauri with HMR (frontend) and hot-recompile (backend); alias: pnpm tauri:dev
 pnpm vite                # Vite dev server only (no Tauri shell) — useful for browser-only iteration on UI bits
-pnpm tauri:build         # production bundle → src-tauri/target/release/bundle/
+pnpm tauri:build         # production bundle → target/release/bundle/
 ```
 
 `pnpm dev` runs `scripts/tauri-dev.mjs`, which picks a per-worktree devserver port, hands it to Vite via env, and tells Tauri to load the matching URL. Tauri's `beforeDevCommand` is `pnpm run vite` so the frontend is started automatically — do not change `pnpm dev` to invoke `vite` directly without also updating `tauri.conf.json` (otherwise Tauri will recurse into itself and the frontend will never come up).
