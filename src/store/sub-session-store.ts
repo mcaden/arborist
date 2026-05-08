@@ -26,6 +26,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import { formatError, subSessionClose, subSessionCreate, subSessionFocus, subSessionList, subSessionRelaunch } from '@/lib/tauri-bridge';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type {
   SubSession,
   SubSessionCloseIntent,
@@ -206,9 +207,24 @@ export const useSubSessionStore = create<Store>((set, get) => {
     focus: async (id) => {
       const sub = get().subSessions.find((s) => s.id === id);
       if (!sub) return;
-      // Backend focus is only meaningful for application kind. Terminal
-      // sub-sessions are a pure tab swap; the backend impl is a no-op.
-      // Either way the call is cheap and centralises the dispatch.
+
+      // Terminal sub-sessions must also claim the parent worktree tab's
+      // active child so MainArea swaps to this PTY. Application
+      // sub-sessions only raise their external window and do not own the
+      // in-app viewport.
+      if (sub.kind === 'terminal') {
+        const wttState = useWorktreeTabStore.getState();
+        const tab = wttState.tabs.find((t) => t.id === sub.parentWorktreeTabId);
+        if (tab) {
+          const wttActions = wttState.actions;
+          wttActions.patchActiveChild(tab.id, { kind: 'subSession', id });
+          void wttActions.focus(tab.id);
+          void wttActions.setActiveChild(tab.id, { kind: 'subSession', id }).catch((err) => {
+            console.warn(`[sub-session-store] setActiveChild after focus(${id}) failed: ${formatError(err)}`);
+          });
+        }
+      }
+
       await subSessionFocus(id);
     },
 

@@ -59,7 +59,7 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
   if (!session) return null;
 
   const baseClasses =
-    'flex w-full flex-col items-stretch gap-0.5 rounded-md py-2 pl-2 pr-7 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
+    'flex w-full flex-col items-stretch gap-0.5 rounded-md py-2 pl-5 pr-7 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
   const stateClasses = isActive
     ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100'
     : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800';

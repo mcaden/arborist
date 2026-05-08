@@ -1,29 +1,29 @@
 // WorktreeTabContextMenu — right-click menu for a worktree tab (issue #44).
 //
 // Items:
-//   * Close    → cascades close of the worktree tab and all its child sessions.
-//   * Launch ▸ → submenu with built-in agents (Claude, Copilot). Selecting an
-//                agent calls `sessionActions.create({tool, worktreePath, ...})`;
-//                the autolink in `session-store.create` registers it under
-//                this tab.
+//   * Close         → cascades close of the worktree tab and all child sessions / sub-sessions.
+//   * Launch ▸      → submenu with built-in agents (Claude, Copilot). Selecting an
+//                     agent calls `sessionActions.create({tool, worktreePath, ...})`;
+//                     the autolink in `session-store.create` registers it under this tab.
+//   * <custom defs> → one entry per enabled custom-process definition. Calls
+//                     `subActions.create({parentWorktreeTabId, defId})` to spawn
+//                     a sub-session directly under this worktree tab.
+//   * Settings…     → opens the Settings dialog on the Custom Processes tab.
 //
 // Keyboard model mirrors TabContextMenu: ↑/↓ within a level, → opens submenu,
 // ← closes submenu, Enter activates, Esc closes the whole menu and restores
 // focus to the trigger.
-//
-// Custom processes are intentionally NOT exposed here in v1 — sub-sessions
-// still require a parent session, and choosing which session to bind to from
-// here is ambiguous when a worktree has multiple. Use the per-session
-// `TabContextMenu` for that path.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError } from '@/lib/tauri-bridge';
+import { useEnabledCustomProcesses } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
+import { useSubSessionActions } from '@/store/sub-session-store';
 import { useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
-import type { Tool, WorktreeTabId } from '@/types/arborist';
+import type { CustomProcessDefId, Tool, WorktreeTabId } from '@/types/arborist';
 
 export interface WorktreeTabContextMenuProps {
   tabId: WorktreeTabId;
@@ -31,10 +31,11 @@ export interface WorktreeTabContextMenuProps {
   onClose: () => void;
   /** Element that should receive focus after the menu closes. Usually the worktree-tab header button. */
   restoreFocusTo?: HTMLElement | null;
+  /** Open the Settings dialog (on the Custom Processes tab). */
+  onOpenSettings?: () => void;
 }
 
-type Item = 'close' | 'launch';
-const ITEM_ORDER: Item[] = ['close', 'launch'];
+type Item = 'close' | 'launch' | 'settings' | `cp:${string}`;
 
 interface AgentEntry {
   tool: Tool;
@@ -45,14 +46,29 @@ const AGENTS: AgentEntry[] = [
   { tool: 'copilot', label: 'Copilot' },
 ];
 
-export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo }: WorktreeTabContextMenuProps): JSX.Element | null {
+export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo, onOpenSettings }: WorktreeTabContextMenuProps): JSX.Element | null {
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
   const wttActions = useWorktreeTabActions();
   const sessionActions = useSessionActions();
+  const subActions = useSubSessionActions();
+  const customProcesses = useEnabledCustomProcesses();
+
+  // Build the full item order: Close, Launch ▸, then one entry per enabled
+  // custom process, then Settings…
+  const itemOrder = useMemo<Item[]>(() => {
+    const items: Item[] = ['close', 'launch'];
+    if (customProcesses.length > 0) {
+      for (const def of customProcesses) {
+        items.push(`cp:${def.id}` as Item);
+      }
+    }
+    items.push('settings');
+    return items;
+  }, [customProcesses]);
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const submenuRef = useRef<HTMLDivElement | null>(null);
-  const itemRefs = useRef<Record<Item, HTMLButtonElement | null>>({ close: null, launch: null });
+  const itemRefs = useRef<Map<Item, HTMLButtonElement | null>>(new Map());
   const submenuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const [focusedItem, setFocusedItem] = useState<Item>('close');
@@ -68,7 +84,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo 
 
   // Focus the first item when the menu mounts.
   useEffect(() => {
-    itemRefs.current.close?.focus();
+    itemRefs.current.get('close')?.focus();
   }, []);
 
   // Outside pointer-down dismisses. Listen on `mousedown` so dismissal precedes any click on a sidebar tab.
@@ -98,13 +114,13 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo 
 
   const focusItem = (next: Item): void => {
     setFocusedItem(next);
-    itemRefs.current[next]?.focus();
+    itemRefs.current.get(next)?.focus();
   };
 
   const moveFocus = (delta: 1 | -1): void => {
-    const idx = ITEM_ORDER.indexOf(focusedItem);
-    const nextIdx = (idx + delta + ITEM_ORDER.length) % ITEM_ORDER.length;
-    const next = ITEM_ORDER[nextIdx];
+    const idx = itemOrder.indexOf(focusedItem);
+    const nextIdx = (idx + delta + itemOrder.length) % itemOrder.length;
+    const next = itemOrder[nextIdx];
     if (next) focusItem(next);
   };
 
@@ -147,10 +163,33 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo 
     closeMenu();
   };
 
+  const handleCustomProcess = (defId: string): void => {
+    void subActions.create({ parentWorktreeTabId: tabId, defId: defId as CustomProcessDefId }).catch((err: unknown) => {
+      console.warn(`[WorktreeTabContextMenu] sub_session_create(${defId}) failed: ${formatError(err)}`);
+    });
+    closeMenu();
+  };
+
+  const handleSettings = (): void => {
+    closeMenu();
+    onOpenSettings?.();
+  };
+
+  const activateItem = (item: Item): void => {
+    if (item === 'close') handleClose();
+    else if (item === 'launch') openSubmenu();
+    else if (item === 'settings') handleSettings();
+    else if (item.startsWith('cp:')) handleCustomProcess(item.slice(3));
+  };
+
   if (!tab) return null;
 
   const itemBase =
     'flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:text-slate-200 dark:hover:bg-slate-700 dark:focus:bg-slate-700';
+
+  const setItemRef = (key: Item) => (el: HTMLButtonElement | null) => {
+    itemRefs.current.set(key, el);
+  };
 
   const menu = (
     <div
@@ -175,7 +214,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo 
           closeMenu();
           return;
         }
-        if (submenuOpen) return; // submenu has its own handler
+        if (submenuOpen) return;
         switch (e.key) {
           case 'ArrowDown':
             e.preventDefault();
@@ -194,17 +233,14 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo 
           case 'Enter':
           case ' ':
             e.preventDefault();
-            if (focusedItem === 'close') handleClose();
-            else if (focusedItem === 'launch') openSubmenu();
+            activateItem(focusedItem);
             break;
           default:
         }
       }}
     >
       <button
-        ref={(el) => {
-          itemRefs.current.close = el;
-        }}
+        ref={setItemRef('close')}
         type="button"
         role="menuitem"
         data-testid="worktree-tab-context-menu-close"
@@ -215,9 +251,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo 
         <span>Close worktree tab</span>
       </button>
       <button
-        ref={(el) => {
-          itemRefs.current.launch = el;
-        }}
+        ref={setItemRef('launch')}
         type="button"
         role="menuitem"
         data-testid="worktree-tab-context-menu-launch"
@@ -288,6 +322,40 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo 
           ))}
         </div>
       )}
+      {customProcesses.length > 0 && (
+        <>
+          <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+          {customProcesses.map((def) => {
+            const key: Item = `cp:${def.id}` as Item;
+            return (
+              <button
+                key={def.id}
+                ref={setItemRef(key)}
+                type="button"
+                role="menuitem"
+                data-testid={`worktree-tab-context-menu-cp-${def.id}`}
+                onClick={() => handleCustomProcess(def.id)}
+                onMouseEnter={() => setFocusedItem(key)}
+                className={itemBase}
+              >
+                <span>{def.name}</span>
+              </button>
+            );
+          })}
+        </>
+      )}
+      <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+      <button
+        ref={setItemRef('settings')}
+        type="button"
+        role="menuitem"
+        data-testid="worktree-tab-context-menu-settings"
+        onClick={handleSettings}
+        onMouseEnter={() => setFocusedItem('settings')}
+        className={itemBase}
+      >
+        <span>Custom Processes…</span>
+      </button>
     </div>
   );
 

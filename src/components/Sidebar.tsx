@@ -322,6 +322,10 @@ export function Sidebar(): JSX.Element {
           anchor={worktreeContextMenu.anchor}
           onClose={closeWorktreeContextMenu}
           restoreFocusTo={worktreeContextMenu.trigger}
+          onOpenSettings={() => {
+            setSettingsInitialTab('customProcesses');
+            setSettingsOpen(true);
+          }}
         />
       )}
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} initialTab={settingsInitialTab} /> : null}
