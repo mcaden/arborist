@@ -24,7 +24,7 @@ import { onWorktreePrep } from '@/lib/tauri-bridge';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { WorktreePrepEvent, WorktreePrepId } from '@/types/arborist';
 
-/** How many recent completions to retain for surface-after-the-fact UI. */
+/** How many successful completions to retain for surface-after-the-fact UI. */
 const RECENT_LIMIT = 10;
 
 export interface PrepRunningRecord {
@@ -56,7 +56,7 @@ export type PrepRecord = PrepRunningRecord | PrepCompletedRecord;
 export interface WorktreePrepStoreState {
   /** Currently-executing preps keyed by `prepId`. */
   inFlight: Record<WorktreePrepId, PrepRunningRecord>;
-  /** Most-recent completions, newest first; capped at [`RECENT_LIMIT`]. */
+  /** Most-recent completions, newest first; successful records are capped. */
   recent: PrepCompletedRecord[];
   /**
    * Attach the backend event listener. Returns the same `UnlistenFn` for
@@ -106,7 +106,12 @@ function applyExited(state: WorktreePrepStoreState, ev: Extract<WorktreePrepEven
   };
   // Replace any prior record for this prepId, then prepend so newest is first.
   const filtered = state.recent.filter((r) => r.prepId !== ev.prepId);
-  const next = [completed, ...filtered].slice(0, RECENT_LIMIT);
+  let successCount = 0;
+  const next = [completed, ...filtered].filter((r) => {
+    if (!r.ok) return true;
+    successCount += 1;
+    return successCount <= RECENT_LIMIT;
+  });
   return { inFlight: rest, recent: next };
 }
 

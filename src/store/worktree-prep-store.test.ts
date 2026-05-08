@@ -131,7 +131,7 @@ describe('worktree-prep-store', () => {
     expect(recent[0]?.errorMessage).toBe('spawn failed: ENOENT');
   });
 
-  it('caps recent completions at 10', async () => {
+  it('caps successful recent completions at 10', async () => {
     let dispatch: ((ev: WorktreePrepEvent) => void) | undefined;
     bridgeMock.onWorktreePrep.mockImplementationOnce((cb) => {
       dispatch = cb;
@@ -148,6 +148,24 @@ describe('worktree-prep-store', () => {
     // Newest first.
     expect(recent[0]?.prepId).toBe('p14');
     expect(recent[9]?.prepId).toBe('p5');
+  });
+
+  it('keeps undismissed failures when later successes exceed the recent cap', async () => {
+    let dispatch: ((ev: WorktreePrepEvent) => void) | undefined;
+    bridgeMock.onWorktreePrep.mockImplementationOnce((cb) => {
+      dispatch = cb;
+      return Promise.resolve(() => {});
+    });
+
+    await useWorktreePrepStore.getState().subscribe();
+    dispatch!(exitedEvent('failed', { exitCode: 1 }));
+    for (let i = 0; i < 15; i++) {
+      dispatch!(exitedEvent('p' + i));
+    }
+
+    const recent = selectRecentCompletedPreps(useWorktreePrepStore.getState());
+    expect(recent.filter((r) => r.ok)).toHaveLength(10);
+    expect(recent.some((r) => r.prepId === 'failed' && !r.ok)).toBe(true);
   });
 
   it('dismissCompleted removes a recent record', async () => {
