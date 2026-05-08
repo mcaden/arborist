@@ -930,7 +930,7 @@ pub enum WorktreePrepEvent {
 
 /// Arguments for `worktree_prep_open_log`.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreePrepOpenLogArgs`.
+/// MIRROR: `src/types/arborist.ts::WorktreePrepOpenLogArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreePrepOpenLogArgs {
