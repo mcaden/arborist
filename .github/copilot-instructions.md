@@ -11,6 +11,8 @@ Read both before proposing implementation work. When the codebase is scaffolded,
 
 This repo has a remote at `origin` -> `https://github.com/mcaden/arborist.git`. Agents may commit, push feature branches, and open pull requests. Do not push directly to `main` and do not force-push shared branches; land changes through PRs.
 
+**PR title convention.** Always prefix PR titles with the worktree name in square brackets, falling back to the branch name when no worktree name is available: `[<worktree-or-branch>] <summary>`. The worktree name is the basename of the current worktree directory (e.g., a worktree at `.worktrees/pr-prefix` yields `[pr-prefix]`). Apply this to every `gh pr create` invocation.
+
 ## Dogfooding safety — don't kill the host
 
 This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or `arborist` on macOS/Linux) and you, the agent, are executing inside one of its PTY sessions. Killing the host crashes the user's editor and every sibling session, including yours. **A previous agent killed the host this way — do not repeat it.**
