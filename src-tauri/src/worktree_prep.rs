@@ -369,9 +369,49 @@ fn ensure_log_dir(log_path: &Path) -> std::io::Result<()> {
     let dir = log_path
         .parent()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "log path has no parent"))?;
+    reject_existing_redirected_log_dir(dir)?;
     std::fs::create_dir_all(dir)?;
+    reject_existing_redirected_log_dir(dir)?;
+    reject_canonical_log_dir_redirect(dir)?;
     prune_logs_dir_best_effort(dir, MAX_PREP_LOG_FILES);
     Ok(())
+}
+
+fn reject_existing_redirected_log_dir(dir: &Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("worktree-prep logs root is a symlink: {}", dir.display()),
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("worktree-prep logs root is not a directory: {}", dir.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_canonical_log_dir_redirect(dir: &Path) -> std::io::Result<()> {
+    let app_data_dir = dir
+        .parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "logs root has no parent"))?;
+    let canon_app_data = dunce::canonicalize(app_data_dir)?;
+    let canon_dir = dunce::canonicalize(dir)?;
+    let expected = canon_app_data.join(LOG_SUBDIR);
+    if canon_dir == expected {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        format!("worktree-prep logs root resolves outside app data: {}", canon_dir.display()),
+    ))
 }
 
 fn prune_logs_dir_best_effort(dir: &Path, keep: usize) {
@@ -522,6 +562,17 @@ mod tests {
         assert_eq!(log_path, logs_root.join(format!("{prep_id}.log")));
         assert!(log_path.starts_with(&logs_root));
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn reject_canonical_log_dir_redirect_requires_expected_logs_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+
+        let err = reject_canonical_log_dir_redirect(&outside).expect_err("redirected logs root must fail");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]

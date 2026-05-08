@@ -263,12 +263,29 @@ pub async fn worktree_prep_open_log(app: tauri::AppHandle, args: crate::types::W
     use tauri::Manager as _;
     let app_data_dir = app.path().app_data_dir().map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
     let logs_root = app_data_dir.join(crate::worktree_prep::LOG_SUBDIR);
-    let canon_path = validate_prep_log_path(&logs_root, &args.log_path)?;
+    let canon_path = validate_prep_log_path(&app_data_dir, &logs_root, &args.log_path)?;
     open_path_with_os(&canon_path).map_err(|e| AppError::new("Io", format!("open log: {e}")))
 }
 
-fn validate_prep_log_path(logs_root: &Path, log_path: &Path) -> Result<PathBuf, AppError> {
+fn validate_prep_log_path(app_data_dir: &Path, logs_root: &Path, log_path: &Path) -> Result<PathBuf, AppError> {
+    let root_meta = std::fs::symlink_metadata(logs_root).map_err(|e| AppError::new("InvalidPath", format!("stat logs root: {e}")))?;
+    if !root_meta.is_dir() {
+        return Err(AppError::new(
+            "InvalidPath",
+            format!("logs root is not a directory: {}", logs_root.display()),
+        ));
+    }
+    if root_meta.file_type().is_symlink() {
+        return Err(AppError::new(
+            "PermissionDenied",
+            format!("logs root is a symlink: {}", logs_root.display()),
+        ));
+    }
+
+    let canon_app_data = dunce::canonicalize(app_data_dir).map_err(|e| AppError::new("InvalidPath", format!("canonicalize app data: {e}")))?;
     let canon_root = dunce::canonicalize(logs_root).map_err(|e| AppError::new("InvalidPath", format!("canonicalize logs root: {e}")))?;
+    reject_redirected_logs_root(&canon_app_data, &canon_root).map_err(|message| AppError::new("PermissionDenied", message))?;
+
     let canon_path = dunce::canonicalize(log_path).map_err(|e| AppError::new("InvalidPath", format!("canonicalize log path: {e}")))?;
     if !canon_path.starts_with(&canon_root) {
         return Err(AppError::new(
@@ -277,6 +294,17 @@ fn validate_prep_log_path(logs_root: &Path, log_path: &Path) -> Result<PathBuf, 
         ));
     }
     Ok(canon_path)
+}
+
+fn reject_redirected_logs_root(canon_app_data: &Path, canon_root: &Path) -> Result<(), String> {
+    let expected = canon_app_data.join(crate::worktree_prep::LOG_SUBDIR);
+    if canon_root == expected {
+        return Ok(());
+    }
+    Err(format!(
+        "worktree-prep logs root resolves outside the expected app-data location: {}",
+        canon_root.display()
+    ))
 }
 
 fn spawn_opener(mut command: std::process::Command) -> std::io::Result<()> {
@@ -624,7 +652,7 @@ mod tests {
         let log_path = logs_root.join("prep.log");
         std::fs::write(&log_path, b"log").expect("log file");
 
-        let validated = validate_prep_log_path(&logs_root, &log_path).expect("valid path");
+        let validated = validate_prep_log_path(temp.path(), &logs_root, &log_path).expect("valid path");
 
         assert_eq!(validated, dunce::canonicalize(log_path).expect("canonical log"));
         #[cfg(windows)]
@@ -639,7 +667,7 @@ mod tests {
         let outside = temp.path().join("outside.log");
         std::fs::write(&outside, b"log").expect("outside file");
 
-        let err = validate_prep_log_path(&logs_root, &outside).expect_err("outside path must fail");
+        let err = validate_prep_log_path(temp.path(), &logs_root, &outside).expect_err("outside path must fail");
 
         assert_eq!(err.code, "PermissionDenied");
     }
@@ -650,7 +678,7 @@ mod tests {
         let logs_root = temp.path().join(crate::worktree_prep::LOG_SUBDIR);
         std::fs::create_dir_all(&logs_root).expect("logs root");
 
-        let err = validate_prep_log_path(&logs_root, &logs_root.join("missing.log")).expect_err("missing path must fail");
+        let err = validate_prep_log_path(temp.path(), &logs_root, &logs_root.join("missing.log")).expect_err("missing path must fail");
 
         assert_eq!(err.code, "InvalidPath");
     }
@@ -662,8 +690,20 @@ mod tests {
         let log_path = temp.path().join("prep.log");
         std::fs::write(&log_path, b"log").expect("log file");
 
-        let err = validate_prep_log_path(&logs_root, &log_path).expect_err("missing root must fail");
+        let err = validate_prep_log_path(temp.path(), &logs_root, &log_path).expect_err("missing root must fail");
 
         assert_eq!(err.code, "InvalidPath");
+    }
+
+    #[test]
+    fn validate_prep_log_path_rejects_redirected_logs_root() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let redirected_root = tempfile::tempdir().expect("redirected root");
+        let log_path = redirected_root.path().join("prep.log");
+        std::fs::write(&log_path, b"log").expect("log file");
+
+        let err = validate_prep_log_path(app_data.path(), redirected_root.path(), &log_path).expect_err("redirected root must fail");
+
+        assert_eq!(err.code, "PermissionDenied");
     }
 }
