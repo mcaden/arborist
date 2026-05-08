@@ -16,13 +16,18 @@
     "dev:typecheck": "tsc --noEmit --watch",
     "test": "vitest",
     "test:watch": "vitest",
-    "prepare": "husky"
+    "prepare": "husky",
+    "e2e:linux:build": "docker compose -f dev/e2e/linux/docker-compose.yml build",
+    "e2e:linux": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm e2e",
+    "e2e:linux:rust": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm rust",
+    "e2e:linux:vitest": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm vitest",
+    "e2e:linux:shell": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm shell"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",

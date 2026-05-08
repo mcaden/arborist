@@ -48,7 +48,7 @@ ls .husky/pre-commit .husky/pre-push
 
 ```sh
 pnpm run tauri:dev      # Vite + Tauri with HMR (frontend) and hot-recompile (backend)
-pnpm run tauri:build    # production bundle → src-tauri/target/release/bundle/
+pnpm run tauri:build    # production bundle → target/release/bundle/
 ```
 
 ### Lint, format, type-check
