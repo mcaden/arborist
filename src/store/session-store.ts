@@ -522,14 +522,20 @@ export const useSessionStore = create<Store>((set, get) => {
         patch.activity = nextActivity;
       }
       set(patch);
-      // Also focus the parent worktree tab so the sidebar's top-level highlight follows the user's intent (issue #44). Path lookup against
-      // the worktree-tab cache rather than a foreign key — the cache is hydrated at boot and kept in sync via `worktreeTabActions.open`
-      // during session create. Optimistic; backend rejections (NotFound, etc.) just mean the persisted active marker is stale.
+      // Also focus the parent worktree tab so the sidebar's top-level highlight follows the user's intent (issue #44). If the session was
+      // loaded without a matching tab, self-heal through the idempotent open command so MainArea has a parent tab to derive visibility from.
       const session = sessions.find((s) => s.id === id);
       if (session) {
-        const tab = useWorktreeTabStore.getState().tabs.find((t) => t.path === session.worktreePath);
+        const wttActions = useWorktreeTabStore.getState().actions;
+        let tab = useWorktreeTabStore.getState().tabs.find((t) => t.path === session.worktreePath);
+        if (!tab) {
+          try {
+            tab = await wttActions.open(session.worktreePath);
+          } catch (err) {
+            console.warn(`[session-store] worktreeTabOpen during focus(${id}) failed: ${formatError(err)}`);
+          }
+        }
         if (tab) {
-          const wttActions = useWorktreeTabStore.getState().actions;
           // Fire backend writes without awaiting — the store actions update local state synchronously, and focus must feel instant.
           void wttActions.focus(tab.id);
           void wttActions.setActiveChild(tab.id, { kind: 'session', id }).catch((err) => {

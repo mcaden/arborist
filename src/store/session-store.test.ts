@@ -296,6 +296,12 @@ describe('close', () => {
 
 describe('focus', () => {
   it('sets activeId synchronously and calls session_focus', async () => {
+    const { useWorktreeTabStore } = await import('./worktree-tab-store');
+    useWorktreeTabStore.setState({
+      tabs: [{ id: 'wt-b' as never, path: '/repo/b', name: 'b', label: 'b', tabIndex: 0, iconId: 1 }],
+      activeId: null,
+      isHydrated: true,
+    });
     useSessionStore.setState({
       sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
       activeId: 'a',
@@ -310,6 +316,12 @@ describe('focus', () => {
 
   it('keeps activeId set and warns when session_focus rejects', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { useWorktreeTabStore } = await import('./worktree-tab-store');
+    useWorktreeTabStore.setState({
+      tabs: [{ id: 'wt-b' as never, path: '/repo/b', name: 'b', label: 'b', tabIndex: 0, iconId: 1 }],
+      activeId: null,
+      isHydrated: true,
+    });
     useSessionStore.setState({
       sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
       activeId: 'a',
@@ -344,9 +356,17 @@ describe('focus', () => {
     expect(tab.activeChildId).toEqual({ kind: 'session', id: 'sa' });
   });
 
-  it('skips worktree-tab autolink when no parent tab exists for the session (no-op, no error)', async () => {
+  it('self-heals a missing parent worktree tab before linking focus (issue #44)', async () => {
     const { useWorktreeTabStore } = await import('./worktree-tab-store');
     useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+    bridgeMock.worktreeTabOpen.mockResolvedValueOnce({
+      id: 'wt-a' as never,
+      path: '/repo/a',
+      name: 'a',
+      label: 'a',
+      tabIndex: 0,
+      iconId: 1,
+    });
     useSessionStore.setState({
       sessions: [makeView({ id: 'sa', worktreePath: '/repo/a' })],
       activeId: undefined,
@@ -354,8 +374,29 @@ describe('focus', () => {
 
     await useSessionStore.getState().actions.focus('sa');
 
-    expect(bridgeMock.worktreeTabFocus).not.toHaveBeenCalled();
+    expect(bridgeMock.worktreeTabOpen).toHaveBeenCalledWith({ path: '/repo/a' });
+    expect(bridgeMock.worktreeTabFocus).toHaveBeenCalledWith({ id: 'wt-a' });
+    expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({ id: 'wt-a', childId: { kind: 'session', id: 'sa' } });
+    expect(useWorktreeTabStore.getState().tabs[0]!.activeChildId).toEqual({ kind: 'session', id: 'sa' });
+  });
+
+  it('still focuses the session when parent worktree tab self-heal fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { useWorktreeTabStore } = await import('./worktree-tab-store');
+    useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+    bridgeMock.worktreeTabOpen.mockRejectedValueOnce(new Error('open failed'));
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'sa', worktreePath: '/repo/a' })],
+      activeId: undefined,
+    });
+
+    await useSessionStore.getState().actions.focus('sa');
+
+    expect(useSessionStore.getState().activeId).toBe('sa');
+    expect(bridgeMock.sessionFocus).toHaveBeenCalledWith({ sessionId: 'sa' });
     expect(bridgeMock.worktreeTabSetActiveChild).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('worktreeTabOpen during focus(sa) failed'));
+    warn.mockRestore();
   });
 });
 
