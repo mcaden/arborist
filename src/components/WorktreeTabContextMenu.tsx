@@ -141,7 +141,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   const handleCustomProcess = (defId: string): void => {
     void subActions.create({ parentWorktreeTabId: tabId, defId: defId as CustomProcessDefId }).catch((err: unknown) => {
-      console.warn(`[WorktreeTabContextMenu] sub_session_create(${defId}) failed: ${formatError(err)}`);
+      console.warn(`[WorktreeTabContextMenu] subsession_create(${defId}) failed: ${formatError(err)}`);
     });
     closeMenu();
   };

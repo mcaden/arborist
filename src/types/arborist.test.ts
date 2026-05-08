@@ -11,6 +11,7 @@ import { expectTypeOf } from 'vitest';
 import type {
   AppConfig,
   AppError,
+  ChildId,
   CustomProcessDef,
   InstructionSet,
   PartialAppConfig,
@@ -23,6 +24,7 @@ import type {
   SessionView,
   SubSession,
   SubSessionRecord,
+  WorktreeTab,
   WorkspaceSwitchArgs,
   WorkspaceSwitchResult,
 } from './arborist';
@@ -43,6 +45,7 @@ import subSessionExitedEventFixture from './fixtures/subSessionExitedEvent.json'
 import { subSessionRestoredEventFixture } from './fixtures/subSessionRestoredEvent';
 import workspaceSwitchArgsFixture from './fixtures/workspaceSwitchArgs.json';
 import { workspaceSwitchResultFixture } from './fixtures/workspaceSwitchResult';
+import { sessionChildIdFixture, subSessionChildIdFixture, worktreeTabFixture } from './fixtures/worktreeTab';
 
 // --- Compile-time assertions ------------------------------------------------
 //
@@ -85,6 +88,9 @@ const _subSessionExitedEvent = subSessionExitedEventFixture satisfies SubSession
 const _subSessionRestoredEvent = subSessionRestoredEventFixture satisfies SubSessionRestoredEvent;
 const _workspaceSwitchArgs = workspaceSwitchArgsFixture satisfies WorkspaceSwitchArgs;
 const _workspaceSwitchResult = workspaceSwitchResultFixture satisfies WorkspaceSwitchResult;
+const _sessionChildId = sessionChildIdFixture satisfies ChildId;
+const _subSessionChildId = subSessionChildIdFixture satisfies ChildId;
+const _worktreeTab = worktreeTabFixture satisfies WorktreeTab;
 
 // Silence "unused" lint on the locally-bound aliases. The `satisfies`
 // check above is what enforces drift — these voids carry no contract.
@@ -104,6 +110,9 @@ void _subSessionExitedEvent;
 void _subSessionRestoredEvent;
 void _workspaceSwitchArgs;
 void _workspaceSwitchResult;
+void _sessionChildId;
+void _subSessionChildId;
+void _worktreeTab;
 
 // --- Runtime key-set assertions --------------------------------------------
 
@@ -280,11 +289,29 @@ describe('arborist type mirrors', () => {
     assertExactKeys(subSessionRestoredEventFixture as unknown as Record<string, unknown>, ['subSession'], [], 'SubSessionRestoredEvent');
   });
 
+  it('ChildId fixtures match TS discriminated-union key set', () => {
+    assertExactKeys(sessionChildIdFixture as unknown as Record<string, unknown>, ['kind', 'id'], [], 'ChildId(session)');
+    assertExactKeys(subSessionChildIdFixture as unknown as Record<string, unknown>, ['kind', 'id'], [], 'ChildId(subSession)');
+  });
+
+  it('WorktreeTab fixture matches TS interface key set', () => {
+    assertExactKeys(
+      worktreeTabFixture as unknown as Record<string, unknown>,
+      ['id', 'path', 'name', 'label', 'tabIndex'],
+      ['branch', 'activeChildId'],
+      'WorktreeTab',
+    );
+  });
+
   it('CustomProcessKind wire values are lowercase string literals', () => {
     expectTypeOf<CustomProcessDef['kind']>().toEqualTypeOf<'terminal' | 'application'>();
   });
 
   it('SubSessionStatus wire values are lowercase string literals', () => {
     expectTypeOf<SubSession['status']>().toEqualTypeOf<'starting' | 'running' | 'exited' | 'error'>();
+  });
+
+  it('ChildId wire values are discriminated by kind', () => {
+    expectTypeOf<ChildId['kind']>().toEqualTypeOf<'session' | 'subSession'>();
   });
 });
