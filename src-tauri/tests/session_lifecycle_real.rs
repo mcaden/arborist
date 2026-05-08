@@ -1,7 +1,7 @@
 //! Phase 7 happy-path integration test against the **real** PortablePtySpawner.
 //!
-//! We override the `claude` program token with the test-only env-var seam (`ARBORIST_CLI_OVERRIDE_CLAUDE`) and point it at `arborist-test-child`, the
-//! deterministic child shipped alongside the PTY-pool tests. This proves the end-to-end flow — compose → temp file → portable-pty spawn → output
+//! We override the `claude` program token by populating `AppConfig.ai_launch_commands.claude` with the path to `arborist-test-child` (the
+//! deterministic child shipped alongside the PTY-pool tests). This proves the end-to-end flow — compose → temp file → portable-pty spawn → output
 //! drain → status persistence — works with no fakes anywhere except the CLI itself.
 //!
 //! **Unix-only.** On Windows, `shell_quote_cmd` always wraps its input in `"…"`. Combined with the temp-file path argument's own quoting, the
@@ -17,11 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arborist_lib::commands::session::{session_close_impl, session_create_impl, session_input_impl, AppContext};
-use arborist_lib::compose::CLAUDE_OVERRIDE_ENV;
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
 use arborist_lib::types::{
-    InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs, SessionStatus, Tool,
+    InstructionSetId, PartialAiLaunchCommands, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs,
+    SessionStatus, Tool,
 };
 use tempfile::TempDir;
 
@@ -59,13 +59,6 @@ fn wait_until<F: FnMut() -> bool>(mut f: F, dur: Duration) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_spawner_drives_create_input_close_round_trip() {
-    // Tests can race via process-global env vars, but `cargo test` runs tests in this binary on the same process. We only have one test in this file,
-    // and the env var stays set for its duration — fine. SAFETY: setting an env var at the start of a single-test binary is race-free because nothing
-    // else reads it concurrently.
-    unsafe {
-        std::env::set_var(CLAUDE_OVERRIDE_ENV, TEST_CHILD);
-    }
-
     let config_dir = TempDir::new().unwrap();
     let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
@@ -79,6 +72,12 @@ async fn real_spawner_drives_create_input_close_round_trip() {
             instruction_sets_dir: Some(instructions_dir.path().to_path_buf()),
             default_instruction_sets: Some(PartialDefaultInstructionSets {
                 claude: Some(instruction_id.clone()),
+                copilot: None,
+            }),
+            // Replace the bare `claude` program token with the deterministic test child via the user-config override path
+            // (`AppConfig.ai_launch_commands.claude`). This is the same plumbing real users get via the Settings dialog.
+            ai_launch_commands: Some(PartialAiLaunchCommands {
+                claude: Some(TEST_CHILD.to_owned()),
                 copilot: None,
             }),
             ..Default::default()
@@ -129,9 +128,4 @@ async fn real_spawner_drives_create_input_close_round_trip() {
     // Close. The pool kills the child and removes the persisted record; tearDown should be clean within a couple of seconds even on Windows.
     session_close_impl(&ctx, view.id, false).await.unwrap();
     assert!(!ctx.pool.contains(&view.id));
-
-    // Restore parity for any later tests sharing this process. The test binary will exit immediately, so this is just hygiene.
-    unsafe {
-        std::env::remove_var(CLAUDE_OVERRIDE_ENV);
-    }
 }

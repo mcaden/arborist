@@ -107,21 +107,21 @@ To poke at it manually:
 cargo run -p arborist --features test-helpers --bin arborist-test-child
 ```
 
-## 4. Test-only env-var seam: CLI program override
+## 4. Test-only seam: CLI program override
 
-`compose::cli_program_for_tool` consults two env vars when composing a
-session's command:
+`compose::cli_program_for_tool` honours the user-facing
+`AppConfig.ai_launch_commands` field as a verbatim shell-snippet override of
+the bare `claude` / `copilot` program token. Tests use the same plumbing real
+users get via the Settings dialog — there is no environment-variable seam.
 
-| Variable                          | Effect                                                          |
-| --------------------------------- | --------------------------------------------------------------- |
-| `ARBORIST_CLI_OVERRIDE_CLAUDE`       | Replaces the bare `claude` token in the composed command.       |
-| `ARBORIST_CLI_OVERRIDE_COPILOT`      | Replaces the bare `copilot` token in the composed command.      |
+| Surface                                             | Mechanism                                                                                |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `session_lifecycle_real.rs` (Rust integration test) | `store.save_config({ ai_launch_commands: { claude: <test-child path> } })` before create |
+| Linux e2e (`AppImage` under tauri-driver)           | `--ai-launch-claude=<path>` / `--ai-launch-copilot=<path>` CLI flags (see `boot.rs`)     |
 
-Production never sets these. They exist so `session_lifecycle_real.rs`
-can drive the full lifecycle against `arborist-test-child`. The override
-path is encoded verbatim into the persisted `composedCommand`; restarting
-without the env var still spawns the literal path (it does **not** fall
-back to `claude` / `copilot`). This is documented in `DESIGN.md` §6 too.
+The override path is encoded verbatim into the persisted `composedCommand`;
+restarting still spawns the literal path (it does **not** fall back to
+`claude` / `copilot`). This is documented in `DESIGN.md` §6 too.
 
 ## 5. Test-writing rules
 

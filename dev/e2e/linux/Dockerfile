@@ -166,8 +166,6 @@ COPY dev/e2e/linux/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Environment for hermetic testing
-ENV ARBORIST_CLI_OVERRIDE_CLAUDE=/usr/local/bin/arborist-test-child
-ENV ARBORIST_CLI_OVERRIDE_COPILOT=/usr/local/bin/arborist-test-child
 ENV DISPLAY=:99
 ENV RUST_LOG=arborist_lib=info
 ENV WEBKIT_DISABLE_COMPOSITING_MODE=1

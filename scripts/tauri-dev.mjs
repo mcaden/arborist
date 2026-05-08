@@ -2,15 +2,14 @@
 // Run `tauri dev` on a per-worktree dev-server port so multiple branches /
 // worktrees can be developed in parallel without colliding on port 1420.
 //
-// Port resolution:
-//   1. `ARBORIST_DEV_PORT` env var (explicit override).
-//   2. Otherwise a deterministic hash of the current working directory in
-//      the range [PORT_MIN, PORT_MIN + PORT_RANGE).
+// Port resolution: a deterministic hash of the current working directory in
+// the range [PORT_MIN, PORT_MIN + PORT_RANGE).
 //
-// The chosen port is exported to the child process so:
-//   - `vite.config.ts` picks it up for the dev server.
-//   - This script overrides Tauri's `build.devUrl` via `--config` so the
-//     desktop shell loads the matching URL.
+// The chosen port is propagated to the child process via an override
+// `tauri.conf.json` written to a temp dir:
+//   - `build.beforeDevCommand` runs vite with `--port=<port>` so the frontend
+//     binds to the right port (no env var required).
+//   - `build.devUrl` is set to the matching URL so the desktop shell loads it.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -20,37 +19,27 @@ import { fileURLToPath } from 'node:url';
 
 const PORT_MIN = 1420;
 const PORT_RANGE = 100;
-const PORT_MAX = 65535;
-
-function failInvalidPortOverride(override) {
-  console.error(`[arborist] ARBORIST_DEV_PORT must be an integer between 1 and ${PORT_MAX}; received "${override}"`);
-  process.exit(1);
-}
 
 function pickPort() {
-  const override = process.env.ARBORIST_DEV_PORT;
-  if (override !== undefined && override !== '') {
-    if (!/^\d+$/.test(override)) {
-      failInvalidPortOverride(override);
-    }
-    const port = Number(override);
-    if (!Number.isInteger(port) || port < 1 || port > PORT_MAX) {
-      failInvalidPortOverride(override);
-    }
-    return port;
-  }
   const hash = createHash('sha1').update(process.cwd()).digest();
   return PORT_MIN + (hash.readUInt16BE(0) % PORT_RANGE);
 }
 
 const port = pickPort();
-process.env.ARBORIST_DEV_PORT = String(port);
 
 // Write the override to a temp JSON file rather than passing it inline; on
 // Windows the shell strips quotes from inline JSON args, breaking parsing.
 const dir = mkdtempSync(join(tmpdir(), 'arborist-dev-'));
 const overridePath = join(dir, 'tauri.conf.override.json');
-writeFileSync(overridePath, JSON.stringify({ build: { devUrl: `http://localhost:${port}` } }));
+writeFileSync(
+  overridePath,
+  JSON.stringify({
+    build: {
+      beforeDevCommand: `pnpm exec vite --port=${port} --strictPort`,
+      devUrl: `http://localhost:${port}`,
+    },
+  }),
+);
 
 let cleanedUp = false;
 function cleanup() {

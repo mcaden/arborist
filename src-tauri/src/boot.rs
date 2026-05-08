@@ -118,19 +118,27 @@ pub enum BootSource {
     Picker,
 }
 
-/// Parsed CLI arguments. Today only `--workspace <path>` / `--workspace=<path>`. Unknown args are ignored (forward-compat).
+/// Parsed CLI arguments. Today: `--workspace <path>` / `--workspace=<path>`, and the test-seam launch overrides
+/// `--ai-launch-claude=<cmd>` / `--ai-launch-copilot=<cmd>` (both also accept the space-separated form). Unknown args are ignored (forward-compat).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CliArgs {
     pub workspace: Option<PathBuf>,
+    /// Override for the `claude` program token. Seeds `AppConfig.ai_launch_commands.claude` at boot. Used by Linux e2e to point at
+    /// `arborist-test-child` without environment variables.
+    pub ai_launch_claude: Option<String>,
+    /// Sibling of [`Self::ai_launch_claude`] for the `copilot` program token.
+    pub ai_launch_copilot: Option<String>,
 }
 
-/// Parse `--workspace <path>` / `--workspace=<path>` from an arbitrary argv (the binary name at index 0 is skipped).
+/// Parse `--workspace <path>` / `--workspace=<path>` and `--ai-launch-claude=<cmd>` / `--ai-launch-copilot=<cmd>` from an arbitrary argv (the binary
+/// name at index 0 is skipped).
 ///
 /// Errors:
 /// * Missing value after `--workspace` (last arg, or next arg starts with
 ///   `--`).
 /// * Duplicate `--workspace` (specified more than once).
 /// * Empty value (e.g. `--workspace=`).
+/// * Same conditions for the `--ai-launch-*` variants.
 pub fn parse_cli_args<I, S>(argv: I) -> Result<CliArgs, BootError>
 where
     I: IntoIterator<Item = S>,
@@ -144,13 +152,14 @@ where
         let s = match arg.to_str() {
             Some(s) => s.to_string(),
             None => {
-                // Symmetry with the space-separated form below: if the arg *looks* like `--workspace=<bytes>` (or bare `--workspace`) but the value
-                // isn't valid UTF-8, surface a clean error rather than silently dropping the flag and falling back to the picker. We use
-                // `to_string_lossy` for the prefix probe — `\u{FFFD}` can't appear inside a literal `--workspace` token, so the lossy form is safe to
-                // inspect.
+                // Symmetry with the space-separated form below: if the arg *looks* like one of the recognised flags but the value isn't valid UTF-8,
+                // surface a clean error rather than silently dropping the flag and falling back to the picker. We use `to_string_lossy` for the
+                // prefix probe — `\u{FFFD}` can't appear inside a literal flag name, so the lossy form is safe to inspect.
                 let lossy = arg.to_string_lossy();
-                if lossy == "--workspace" || lossy.starts_with("--workspace=") {
-                    return Err(BootError::Cli("--workspace value is not valid UTF-8".into()));
+                for flag in ["--workspace", "--ai-launch-claude", "--ai-launch-copilot"] {
+                    if lossy == flag || lossy.starts_with(&format!("{flag}=")) {
+                        return Err(BootError::Cli(format!("{flag} value is not valid UTF-8")));
+                    }
                 }
                 continue;
             }
@@ -175,10 +184,37 @@ where
                 return Err(BootError::Cli("--workspace specified more than once".into()));
             }
             out.workspace = Some(PathBuf::from(next_str));
+        } else if let Some(value) = s.strip_prefix("--ai-launch-claude=") {
+            assign_ai_launch(&mut out.ai_launch_claude, "--ai-launch-claude", value)?;
+        } else if s == "--ai-launch-claude" {
+            let next = args.next().ok_or_else(|| BootError::Cli("--ai-launch-claude requires a value".into()))?;
+            let next_str = next
+                .to_str()
+                .ok_or_else(|| BootError::Cli("--ai-launch-claude value is not valid UTF-8".into()))?;
+            assign_ai_launch(&mut out.ai_launch_claude, "--ai-launch-claude", next_str)?;
+        } else if let Some(value) = s.strip_prefix("--ai-launch-copilot=") {
+            assign_ai_launch(&mut out.ai_launch_copilot, "--ai-launch-copilot", value)?;
+        } else if s == "--ai-launch-copilot" {
+            let next = args.next().ok_or_else(|| BootError::Cli("--ai-launch-copilot requires a value".into()))?;
+            let next_str = next
+                .to_str()
+                .ok_or_else(|| BootError::Cli("--ai-launch-copilot value is not valid UTF-8".into()))?;
+            assign_ai_launch(&mut out.ai_launch_copilot, "--ai-launch-copilot", next_str)?;
         }
         // unknown args ignored
     }
     Ok(out)
+}
+
+fn assign_ai_launch(slot: &mut Option<String>, flag: &str, value: &str) -> Result<(), BootError> {
+    if value.is_empty() {
+        return Err(BootError::Cli(format!("{flag}= requires a value")));
+    }
+    if slot.is_some() {
+        return Err(BootError::Cli(format!("{flag} specified more than once")));
+    }
+    *slot = Some(value.to_owned());
+    Ok(())
 }
 
 /// Where the per-branch hint file lives. Mirrors the storage layout: canonical builds keep it at `<app_data_dir>/last-workspace.json`, branch builds
@@ -820,6 +856,7 @@ mod tests {
         .unwrap();
         let args = CliArgs {
             workspace: Some(ws_cli.clone()),
+            ..Default::default()
         };
         let resolved = resolve_boot_workspace(&args, td.path(), "main", &YesRunner).unwrap();
         assert_eq!(resolved, Some((dunce::canonicalize(&ws_cli).unwrap(), BootSource::Cli)));
@@ -871,6 +908,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let args = CliArgs {
             workspace: Some(td.path().join("does-not-exist")),
+            ..Default::default()
         };
         let err = resolve_boot_workspace(&args, td.path(), "main", &YesRunner).unwrap_err();
         match err {
@@ -886,7 +924,10 @@ mod tests {
         let td = TempDir::new().unwrap();
         let ws = td.path().join("not-a-repo");
         std::fs::create_dir_all(&ws).unwrap();
-        let args = CliArgs { workspace: Some(ws.clone()) };
+        let args = CliArgs {
+            workspace: Some(ws.clone()),
+            ..Default::default()
+        };
         let err = resolve_boot_workspace(&args, td.path(), "main", &NoRunner).unwrap_err();
         match err {
             BootError::NotARepository { workspace, origin, .. } => {
@@ -1071,7 +1112,10 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::create_dir_all(ws.join(".git")).unwrap();
 
-        let args = CliArgs { workspace: Some(ws.clone()) };
+        let args = CliArgs {
+            workspace: Some(ws.clone()),
+            ..Default::default()
+        };
         let binding = boot_select_workspace(&args, &app_data, "main", &YesRunner)
             .unwrap()
             .expect("should bind, not cancel");
@@ -1108,7 +1152,10 @@ mod tests {
         std::fs::create_dir_all(layout.workspace_dir()).unwrap();
         std::fs::create_dir_all(layout.settings_path()).unwrap();
 
-        let args = CliArgs { workspace: Some(ws.clone()) };
+        let args = CliArgs {
+            workspace: Some(ws.clone()),
+            ..Default::default()
+        };
         let err = boot_select_workspace(&args, &app_data, "main", &YesRunner).expect_err("boot must abort on persist failure");
 
         match err {
