@@ -5,7 +5,7 @@
 # Usage:  entrypoint.sh <mode> [extra-args...]
 #   e2e     — start Xvfb + tauri-driver, run WebdriverIO specs
 #   rust    — cargo test --workspace
-#   vitest  — npm ci && npm test -- --run
+#   vitest  — pnpm install && pnpm test --run
 #   shell   — start Xvfb + tauri-driver, drop into bash
 # =============================================================================
 set -euo pipefail
@@ -78,10 +78,11 @@ run_rust() {
 }
 
 run_vitest() {
-  echo "[entrypoint] Running npm ci + vitest..."
+  echo "[entrypoint] Running pnpm install + vitest..."
   cd /src
-  npm ci --prefer-offline --no-audit
-  npm test -- --run "$@"
+  corepack enable && corepack prepare pnpm@10.33.0 --activate
+  pnpm install --frozen-lockfile
+  pnpm test -- --run "$@"
 }
 
 run_shell() {

@@ -30,11 +30,12 @@ COPY src-tauri/Cargo.toml src-tauri/
 # build.rs is needed for tauri-build to resolve
 COPY src-tauri/build.rs src-tauri/
 
-# npm manifests (for dependency caching)
-COPY package.json package-lock.json ./
+# pnpm + workspace manifests (for dependency caching)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
-# Install npm deps (cached unless package*.json changes)
-RUN npm ci --prefer-offline --no-audit
+# Install deps (cached unless pnpm-lock.yaml changes)
+RUN pnpm install --frozen-lockfile
 
 # Tauri config (needed before cargo can resolve the crate)
 COPY src-tauri/tauri.conf.json src-tauri/tauri.conf.json
@@ -50,7 +51,7 @@ COPY index.html tsconfig.json vite.config.ts vitest.config.ts postcss.config.js 
 COPY instructions/ instructions/
 
 # Build the release bundle (produces AppImage + deb)
-RUN npm run tauri:build
+RUN pnpm tauri:build
 
 # arborist-test-child is a [[bin]] in the crate but tauri build only compiles the
 # main binary. Build it explicitly (most deps are already cached from tauri:build).
