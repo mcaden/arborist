@@ -268,8 +268,8 @@ pub async fn worktree_prep_open_log(app: tauri::AppHandle, args: crate::types::W
 }
 
 fn validate_prep_log_path(logs_root: &Path, log_path: &Path) -> Result<PathBuf, AppError> {
-    let canon_root = std::fs::canonicalize(logs_root).map_err(|e| AppError::new("InvalidPath", format!("canonicalize logs root: {e}")))?;
-    let canon_path = std::fs::canonicalize(log_path).map_err(|e| AppError::new("InvalidPath", format!("canonicalize log path: {e}")))?;
+    let canon_root = dunce::canonicalize(logs_root).map_err(|e| AppError::new("InvalidPath", format!("canonicalize logs root: {e}")))?;
+    let canon_path = dunce::canonicalize(log_path).map_err(|e| AppError::new("InvalidPath", format!("canonicalize log path: {e}")))?;
     if !canon_path.starts_with(&canon_root) {
         return Err(AppError::new(
             "PermissionDenied",
@@ -626,7 +626,9 @@ mod tests {
 
         let validated = validate_prep_log_path(&logs_root, &log_path).expect("valid path");
 
-        assert_eq!(validated, std::fs::canonicalize(log_path).expect("canonical log"));
+        assert_eq!(validated, dunce::canonicalize(log_path).expect("canonical log"));
+        #[cfg(windows)]
+        assert!(!validated.as_os_str().to_string_lossy().starts_with(r"\\?\"));
     }
 
     #[test]
