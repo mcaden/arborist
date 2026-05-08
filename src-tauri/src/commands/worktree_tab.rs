@@ -14,6 +14,7 @@ use crate::types::{
     AppConfig, AppError, ChildId, PartialAppConfig, SessionId, WorktreeTab, WorktreeTabCloseResult, WorktreeTabId, WorktreeTabOpenArgs,
     WorktreeTabSetActiveChildArgs,
 };
+use crate::worktree_icon::pick_least_used_icon;
 
 use super::session::{self, AppContext};
 
@@ -107,6 +108,11 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
             let existing_labels: Vec<&str> = cfg.worktree_tabs.iter().map(|t| t.label.as_str()).collect();
             let label = compose::dedupe_label(&existing_labels, &name);
             let tab_index = cfg.worktree_tab_order.len();
+            // Pick the least-used icon among the existing tabs in this workspace; ties broken by lowest icon number. The result is persisted on the
+            // tab record so subsequent restores get exactly the same icon — there is no per-render recomputation. See `worktree_icon.rs` for the
+            // determinism contract.
+            let existing_icon_ids: Vec<u32> = cfg.worktree_tabs.iter().map(|t| t.icon_id).collect();
+            let icon_id = pick_least_used_icon(&existing_icon_ids);
 
             let tab = WorktreeTab {
                 id: WorktreeTabId::new(),
@@ -116,6 +122,7 @@ pub fn worktree_tab_open_impl(ctx: &AppContext, args: WorktreeTabOpenArgs) -> Re
                 label,
                 tab_index,
                 active_child_id: None,
+                icon_id,
             };
 
             cfg.worktree_tabs.push(tab.clone());
@@ -463,6 +470,7 @@ mod tests {
             label: id.to_string(),
             tab_index: idx,
             active_child_id: None,
+            icon_id: 1,
         }
     }
 

@@ -49,6 +49,7 @@ function makeTab(path: string): WorktreeTab {
     name,
     label: name,
     tabIndex: 0,
+    iconId: 1,
   } satisfies WorktreeTab;
 }
 

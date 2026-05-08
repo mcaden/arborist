@@ -106,6 +106,13 @@ export interface WorktreeTab {
   label: string;
   tabIndex: number;
   activeChildId?: ChildId;
+  /**
+   * Tree-icon assignment in `1..=WORKTREE_ICON_COUNT` (Issue #45). Resolved
+   * to a bundled PNG asset by `@/lib/tree-icons`. Backend always populates
+   * this; `0` only appears transiently in pre-v7 JSON before the v6→v7
+   * migration runs at load time.
+   */
+  iconId: number;
 }
 
 // MIRROR: src-tauri/src/types.rs::InstructionSet

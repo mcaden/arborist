@@ -331,6 +331,11 @@ pub struct WorktreeTab {
     /// Set by `worktree_tab_set_active_child`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_child_id: Option<ChildId>,
+    /// Tree-icon assignment in `1..=`[`crate::worktree_icon::WORKTREE_ICON_COUNT`] (Issue #45). Resolved to a bundled PNG asset by the frontend.
+    /// `0` is the serde default for legacy v6 records without this field; the v6→v7 migration backfills any zero value with
+    /// [`crate::worktree_icon::pick_least_used_icon`] so production code never sees `0` after `load_config`.
+    #[serde(default)]
+    pub icon_id: u32,
 }
 
 // --------------------------------------------------------------------------- Worktree discovery
@@ -389,7 +394,9 @@ pub struct DefaultInstructionSets {
 /// * `6` — reparented sub-sessions from agent sessions to worktree tabs. `SubSession.parent_session_id` → `parent_worktree_tab_id`. Migration
 ///   resolves the old parent session's worktree path to a [`WorktreeTab`]; orphan records whose parent session or matching tab is missing are
 ///   dropped with a warning.
-pub const CONFIG_VERSION_CURRENT: u32 = 6;
+/// * `7` — added [`WorktreeTab::icon_id`] (Issue #45: per-worktree icon). Migration backfills any tab with `icon_id == 0` (the serde default for
+///   pre-v7 records) by walking [`AppConfig::worktree_tab_order`] and applying [`crate::worktree_icon::pick_least_used_icon`] incrementally.
+pub const CONFIG_VERSION_CURRENT: u32 = 7;
 
 /// Per-agent CLI launch command override. Each field is a verbatim shell snippet (e.g. `"npx claude --model sonnet"`) interpolated into the composed
 /// command in place of the bare program token. Empty string means "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.

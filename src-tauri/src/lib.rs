@@ -20,6 +20,7 @@ pub mod sub_sessions;
 pub mod types;
 pub mod vscode_owner;
 pub mod window_focus;
+pub mod worktree_icon;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,

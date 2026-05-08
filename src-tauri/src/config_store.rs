@@ -228,6 +228,15 @@ impl ConfigStore {
             let sessions = self.load_sessions();
             migrate_v5_to_v6(&mut cfg, &sessions);
         }
+        // v6→v7: backfill `WorktreeTab.icon_id` for any tab still carrying the serde default (0). Tabs created via `worktree_tab_open_impl` always
+        // populate this field; the backfill exists for two cases — (a) configs persisted under v6 (where the field did not exist), and (b) any
+        // already-v7 record that somehow ended up with `icon_id == 0` (manual edit, partial write, a frontend that round-tripped without the field).
+        // The second case is why this guard *also* runs whenever any tab has `icon_id == 0`, regardless of `config_version`: it preserves the
+        // post-load invariant rather than letting a corrupted record persist forever. Walks `worktree_tab_order` so the assignment is deterministic
+        // and matches the order tabs appear in the sidebar.
+        if cfg.config_version < 7 || cfg.worktree_tabs.iter().any(|t| t.icon_id == 0) {
+            migrate_v6_to_v7(&mut cfg);
+        }
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
         }
@@ -1108,6 +1117,11 @@ fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>
         let existing_labels: Vec<&str> = ordered_tabs.iter().map(|t| t.label.as_str()).collect();
         let label = compose::dedupe_label(&existing_labels, &name);
         let tab_index = ordered_tabs.len();
+        // Assign a tree icon as we go, so the v4→v5 migration produces exactly the same distribution as if these tabs had been opened one at a time
+        // through `worktree_tab_open_impl`. Without this, every migrated tab would land on the serde default (0) and rely on the v6→v7 backfill — but
+        // we know the icon assignment we want here, so do it inline.
+        let existing_icon_ids: Vec<u32> = ordered_tabs.iter().map(|t| t.icon_id).collect();
+        let icon_id = crate::worktree_icon::pick_least_used_icon(&existing_icon_ids);
         ordered_tabs.push(WorktreeTab {
             id: tab_id,
             path: canonical.clone(),
@@ -1116,6 +1130,7 @@ fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>
             label,
             tab_index,
             active_child_id: None,
+            icon_id,
         });
         seen_paths.insert(canonical, tab_id);
     };
@@ -1241,6 +1256,54 @@ fn migrate_v5_to_v6(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>
         dropped,
         "v5→v6 migration: reparented sub-session records from parent_session_id to parent_worktree_tab_id",
     );
+}
+
+/// v6→v7 migration (Issue #45): backfill [`WorktreeTab::icon_id`] for every tab that still carries the serde default `0` (i.e. was loaded from v6
+/// JSON written before the field existed). The assignment walks `worktree_tab_order` so it is deterministic and matches the order tabs appear in the
+/// sidebar; tabs already carrying a non-zero `icon_id` are left untouched so the v7→current load path is idempotent and a partially-migrated
+/// (e.g. crash mid-write) config converges to the same end state on retry.
+///
+/// Stragglers — tabs present in `worktree_tabs` but missing from `worktree_tab_order` (this shouldn't happen on a well-formed config, but the loader
+/// is intentionally lenient about reordering drift) — are picked up in a second pass after the order-list walk so the migration can't leave any tab
+/// at `icon_id == 0`.
+fn migrate_v6_to_v7(cfg: &mut AppConfig) {
+    use crate::worktree_icon::pick_least_used_icon;
+
+    let mut backfilled = 0_usize;
+    let mut backfill_one = |tab: &mut WorktreeTab, existing: &[u32]| {
+        if tab.icon_id == 0 {
+            tab.icon_id = pick_least_used_icon(existing);
+            backfilled += 1;
+        }
+    };
+
+    // First pass: tabs in their authoritative sidebar order. Take a snapshot of the already-assigned icon ids before we start mutating, then update
+    // it as we assign — that way the deterministic "lowest icon at min count" tiebreak observes each fresh assignment when picking the next one.
+    let mut existing_icon_ids: Vec<u32> = cfg.worktree_tabs.iter().filter(|t| t.icon_id != 0).map(|t| t.icon_id).collect();
+    for id in cfg.worktree_tab_order.clone() {
+        if let Some(tab) = cfg.worktree_tabs.iter_mut().find(|t| t.id == id) {
+            let before = tab.icon_id;
+            backfill_one(tab, &existing_icon_ids);
+            if before == 0 && tab.icon_id != 0 {
+                existing_icon_ids.push(tab.icon_id);
+            }
+        }
+    }
+    // Second pass: any tab not in `worktree_tab_order` (drift defense). Same incremental update pattern.
+    let order_ids: std::collections::BTreeSet<WorktreeTabId> = cfg.worktree_tab_order.iter().copied().collect();
+    for tab in cfg.worktree_tabs.iter_mut() {
+        if !order_ids.contains(&tab.id) {
+            let before = tab.icon_id;
+            backfill_one(tab, &existing_icon_ids);
+            if before == 0 && tab.icon_id != 0 {
+                existing_icon_ids.push(tab.icon_id);
+            }
+        }
+    }
+
+    if backfilled > 0 {
+        tracing::info!(backfilled, "v6→v7 migration: assigned tree icons to worktree tabs that lacked icon_id");
+    }
 }
 
 /// The full ordered list of built-in defs, regardless of whether they are already present in any particular config. Test-only callers may use this
@@ -2412,6 +2475,200 @@ mod tests {
         assert_eq!(tab.active_child_id, Some(crate::types::ChildId::Session(valid_sid)));
     }
 
+    // ----- v4 → v5 migration: icon assignment (Issue #45) --------------
+
+    /// The v4→v5 synthesise loop must populate every freshly-created tab's `icon_id` with the deterministic least-used pick — it can't lean on the
+    /// v6→v7 backfill because that pass only runs on configs originally written under v6, and a v4-quarantined-then-loaded config completes its
+    /// migration in one shot. Mirrors the contract for `worktree_tab_open_impl`.
+    #[test]
+    fn migrate_v4_to_v5_assigns_icons_to_synthesised_tabs() {
+        use crate::worktree_icon::WORKTREE_ICON_COUNT;
+
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        // Three valid worktrees → three synthesised tabs, expecting icons 1, 2, 3.
+        let wt_a = TempDir::new().expect("wt a");
+        let wt_b = TempDir::new().expect("wt b");
+        let wt_c = TempDir::new().expect("wt c");
+        let sid_a = SessionId(Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("uuid"));
+        let sid_b = SessionId(Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("uuid"));
+        let sid_c = SessionId(Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").expect("uuid"));
+
+        let sessions_raw = serde_json::json!({
+            sid_a.to_string(): v4_session_json(sid_a, wt_a.path()),
+            sid_b.to_string(): v4_session_json(sid_b, wt_b.path()),
+            sid_c.to_string(): v4_session_json(sid_c, wt_c.path()),
+        });
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&sessions_raw).expect("ser")).expect("write");
+
+        let cfg_raw = serde_json::json!({
+            "configVersion": 4,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [sid_a.to_string(), sid_b.to_string(), sid_c.to_string()],
+            "tabOrder": [sid_a.to_string(), sid_b.to_string(), sid_c.to_string()],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": []
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        assert_eq!(cfg.worktree_tabs.len(), 3);
+        for tab in &cfg.worktree_tabs {
+            assert!(
+                (1..=WORKTREE_ICON_COUNT).contains(&tab.icon_id),
+                "every synthesised tab must get a valid iconId, got {} on tab {}",
+                tab.icon_id,
+                tab.id
+            );
+        }
+        // Order in `worktree_tab_order` matches the synthesise order — those are the first three icons.
+        let icons_in_order: Vec<u32> = cfg
+            .worktree_tab_order
+            .iter()
+            .filter_map(|tid| cfg.worktree_tabs.iter().find(|t| t.id == *tid).map(|t| t.icon_id))
+            .collect();
+        assert_eq!(icons_in_order, vec![1, 2, 3], "synthesised tabs should walk icons 1..=3 in tab_order");
+    }
+
+    // ----- v6 → v7 migration: icon backfill (Issue #45) ----------------
+
+    /// Pre-v7 JSON has no `iconId` on worktree tabs; the loader's `serde(default)` fills it with 0 and the v6→v7 migration must replace each 0 with
+    /// a deterministic least-used pick walked in `worktree_tab_order`. Tabs that already carry a non-zero `iconId` (e.g. from a forward-compatible
+    /// frontend) must be left untouched so the migration is idempotent.
+    #[test]
+    fn migrate_v6_to_v7_backfills_zero_icon_ids_in_tab_order() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let tab_a = WorktreeTabId::new();
+        let tab_b = WorktreeTabId::new();
+        let tab_c = WorktreeTabId::new();
+        // v6 JSON: explicitly omit `iconId` on A and B (defaults to 0 via serde) and pin C to 5 so we can assert it's preserved.
+        let cfg_raw = serde_json::json!({
+            "configVersion": 6,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": [],
+            "worktreeTabs": [
+                { "id": tab_a, "path": "/repo/a", "name": "a", "label": "a", "tabIndex": 0 },
+                { "id": tab_b, "path": "/repo/b", "name": "b", "label": "b", "tabIndex": 1 },
+                { "id": tab_c, "path": "/repo/c", "name": "c", "label": "c", "tabIndex": 2, "iconId": 5 }
+            ],
+            "worktreeTabOrder": [tab_a, tab_b, tab_c],
+            "activeWorktreeTabId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        // Sort tabs to a deterministic order matching the order list — `load_config` doesn't reorder `worktree_tabs` itself.
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.icon_id)).collect();
+        // C had iconId = 5 already → must be preserved.
+        assert_eq!(by_id[&tab_c], 5, "pre-set iconId must be preserved across the backfill");
+        // A is first in tab_order with no icon yet; existing assignments are [5] (from C), so the lowest-count icons are 1..=4 and 6..=16. Pick 1.
+        assert_eq!(by_id[&tab_a], 1, "first unassigned tab in order must get icon 1");
+        // After A → 1, existing assignments are [5, 1]; B picks 2 (lowest at min count = 0).
+        assert_eq!(by_id[&tab_b], 2, "second unassigned tab in order must get icon 2");
+    }
+
+    /// Drift defense: a tab present in `worktree_tabs` but missing from `worktree_tab_order` (well-formed configs shouldn't produce this, but the
+    /// loader is intentionally lenient) must still get an iconId backfilled in the second pass — otherwise we'd persist 0 on disk forever.
+    #[test]
+    fn migrate_v6_to_v7_backfills_tabs_missing_from_order_list() {
+        use crate::worktree_icon::WORKTREE_ICON_COUNT;
+
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let tab_orphan = WorktreeTabId::new();
+        let cfg_raw = serde_json::json!({
+            "configVersion": 6,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": [],
+            "worktreeTabs": [
+                { "id": tab_orphan, "path": "/repo/orphan", "name": "orphan", "label": "orphan", "tabIndex": 0 }
+            ],
+            "worktreeTabOrder": [],
+            "activeWorktreeTabId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        let orphan = cfg.worktree_tabs.iter().find(|t| t.id == tab_orphan).expect("orphan tab present");
+        assert!(
+            (1..=WORKTREE_ICON_COUNT).contains(&orphan.icon_id),
+            "tab missing from tab_order must still get an iconId backfilled (got {})",
+            orphan.icon_id
+        );
+    }
+
+    /// Invariant defense: even when the persisted config is *already* stamped as v7, a tab carrying `icon_id == 0` (manual edit, partial write, a
+    /// frontend that round-tripped without the field) must be backfilled on load — otherwise the documented post-load invariant
+    /// ("every WorktreeTab has icon_id in 1..=N") silently breaks. The migration guard runs whenever *any* tab has a zero, regardless of
+    /// `config_version`. A correctly-stamped tab on the same record must be left untouched.
+    #[test]
+    fn loading_v7_config_with_zero_icon_id_self_heals_via_migration() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let healthy = WorktreeTabId::new();
+        let corrupted = WorktreeTabId::new();
+        let cfg_raw = serde_json::json!({
+            "configVersion": 7,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": [],
+            "worktreeTabs": [
+                { "id": healthy,   "path": "/repo/healthy",   "name": "h", "label": "h", "tabIndex": 0, "iconId": 9 },
+                { "id": corrupted, "path": "/repo/corrupted", "name": "c", "label": "c", "tabIndex": 1, "iconId": 0 }
+            ],
+            "worktreeTabOrder": [healthy, corrupted],
+            "activeWorktreeTabId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        // Stamped version stays at current — backfill alone shouldn't bump it (it was already current).
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.icon_id)).collect();
+        // Healthy tab keeps its existing assignment.
+        assert_eq!(by_id[&healthy], 9, "tab with a valid iconId must not be rewritten by the self-heal pass");
+        // Corrupted tab gets a deterministic least-used pick. Existing assignments at the time it's picked are [9] (healthy) — so the lowest
+        // count icon is 1 (and 2..=8, 10..=16); the lowest-numbered wins → 1.
+        assert_eq!(
+            by_id[&corrupted], 1,
+            "corrupted iconId == 0 must be self-healed to the deterministic least-used pick (1)"
+        );
+    }
+
     // ----- save_config: customProcesses validation --------------------
 
     #[test]
@@ -2531,6 +2788,7 @@ mod tests {
             label: "test".to_owned(),
             tab_index: 0,
             active_child_id: None,
+            icon_id: 1,
         };
         let after = store
             .save_config(PartialAppConfig {

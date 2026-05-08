@@ -67,6 +67,7 @@ function tabFor(session: SessionView, activeChildId?: ChildId): WorktreeTab {
     name: session.worktreeName,
     label: session.worktreeName,
     tabIndex: 0,
+    iconId: 1,
   };
   if (activeChildId) t.activeChildId = activeChildId;
   return t;
