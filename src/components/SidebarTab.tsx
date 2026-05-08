@@ -286,8 +286,11 @@ function SessionStatusIndicator({
 }
 
 function statusIconClasses(status: DisplayStatus): string {
-  // Uniform geometry; only color and animation vary by state.
-  const base = 'h-3.5 w-3.5 shrink-0';
+  // Uniform geometry; only color and animation vary by state. The icon
+  // is now a Nerd Font codicon glyph (see `StatusIcon.tsx`), so size is
+  // controlled by `text-*` (font-size) rather than `h-* w-*` — the
+  // glyph's box is pinned to 1em × 1em inside the component.
+  const base = 'text-base shrink-0';
   switch (status) {
     case 'starting':
       return `${base} animate-spin text-sky-500`;

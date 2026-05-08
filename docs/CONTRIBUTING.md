@@ -21,18 +21,18 @@ Read the spec and architecture docs — they are the source of truth:
 Every change is mergeable only when **all six** are green:
 
 ```sh
-npm run lint
-npm test -- --run
-npm run build
+pnpm run lint
+pnpm test --run
+pnpm run build
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo test --workspace --features test-helpers
 ```
 
 Additionally:
 
 - New or changed behaviour has direct test coverage that fails without the change.
-- The app launches via `npm run tauri:dev` and the touched flow works end-to-end at least once.
+- The app launches via `pnpm run tauri:dev` and the touched flow works end-to-end at least once.
 - No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()` (outside tests/infallible invariants), `console.log`, or `dbg!()` added without a justifying code comment.
 - If a Rust struct in `types.rs` changed, its TypeScript mirror in `src/types/arborist.ts` changed in the same commit.
 

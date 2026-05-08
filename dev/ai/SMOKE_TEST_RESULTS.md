@@ -21,8 +21,8 @@ plateau, not grow unboundedly.
 
 ### Procedure (Windows)
 
-1. Build a release build (`npm run tauri:build`) and launch the produced
-   binary, **or** `npm run tauri:dev` and accept that the dev-server overhead
+1. Build a release build (`pnpm run tauri:build`) and launch the produced
+   binary, **or** `pnpm run tauri:dev` and accept that the dev-server overhead
    inflates the baseline.
 2. Open Task Manager → Details tab → enable the **Working set (memory)**
    column. Locate `arborist.exe` (or `arborist-dev.exe` for the dev build). Record

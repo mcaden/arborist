@@ -1,0 +1,29 @@
+# .dockerignore — used by dev/e2e/linux/Dockerfile (build context = repo root)
+# Excludes host-platform build artifacts so the Docker build starts clean.
+
+# Host build artifacts (we build fresh inside the container)
+target/
+node_modules/
+dist/
+
+# Editor / OS junk
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Git history (large, not needed for the build)
+.git/
+
+# E2E infrastructure itself (specs are bind-mounted at runtime)
+dev/e2e/linux/specs/
+dev/e2e/linux/node_modules/
+
+# Dev docs (not needed in the image)
+dev/docs/
+
+# Worktree / husky (not needed in the image)
+.husky/
+.worktrees/

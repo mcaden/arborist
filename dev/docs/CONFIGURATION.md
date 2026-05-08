@@ -54,7 +54,7 @@ graph TD
 
 The **branch axis** is keyed off the build-time `BUILD_BRANCH` (see
 `build.rs`); for a `main` (or untagged) build the `branches/<…>/` segment
-collapses, mirroring the title-bar's `window_title_for_branch` rule. The
+collapses, mirroring the title-bar's `window_title` rule. The
 **workspace axis** is keyed off a deterministic hash of the canonicalised
 workspace root path. Two parallel Arborist instances bound to different
 pairs therefore touch disjoint files, and the `.lock` file inside each

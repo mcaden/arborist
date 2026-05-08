@@ -17,11 +17,11 @@ This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or 
 
 Hard rules:
 
-- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `npm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session.
+- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `pnpm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session.
 - **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host. Do not use or work around these commands.
 - **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
 - If your `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
-- Do not run `npm run tauri:dev` or `cargo run -p arborist` unless the user explicitly asks during the current session. Use `cargo build`, `cargo test`, `npm run build`, or `npm test -- --run` for verification instead.
+- Do not run `pnpm run tauri:dev` or `cargo run -p arborist` unless the user explicitly asks during the current session. Use `cargo build`, `cargo test`, `pnpm run build`, or `pnpm test --run` for verification instead.
 
 If a task genuinely requires restarting the host, ask the user to do it — never do it yourself.
 
@@ -209,7 +209,7 @@ Two non-negotiable rules from that skill, restated here so they're always in con
 ### What "tested" means before merge
 A change is mergeable when **all** of these hold:
 1. New/changed behavior has direct test coverage that fails without the change.
-2. `npm run lint`, `npm test`, `cargo clippy -D warnings`, `cargo test` all pass locally.
+2. `pnpm run lint`, `pnpm test`, `cargo clippy -D warnings`, `cargo test` all pass locally.
 3. No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()`, `console.log`, or `dbg!()` added without justification in a code comment.
 4. If a Rust struct in `types.rs` changed, its TS mirror changed in the same commit.
 
@@ -224,3 +224,4 @@ A change is mergeable when **all** of these hold:
 - Storing credentials anywhere — auth is the CLI tool's job. (SPEC NF-05)
 - Accepting a linked git worktree as a workspace root. **Don't** — a workspace root must be a primary clone (`<root>/.git` is a *directory*). Linked worktrees have `.git` as a *file* containing `gitdir: …` and cannot host their own worktrees, so binding one breaks every session-creation flow downstream. Both `crate::boot::validate_repo_root` and `crate::commands::workspace_validate_impl` enforce this — keep the two in sync. (See `WORKTREES.md` and DESIGN §6 `workspace_validate`.)
 - Killing the host `arborist` process or its dev-server parents to "clean up" or break a target lock — see "Dogfooding safety". A previous agent crashed the user's editor doing this.
+- Putting test-only `[[bin]]` source files in `src-tauri/src/bin/`. **Don't** — Tauri's CLI does an unconditional `read_dir` of `src/bin/` and adds every file there to the bundle binary list using the file basename as the name, ignoring the matching `[[bin]]`'s `required-features = ["test-helpers"]` filter. The result is a `tauri build` that tries to copy a binary that wasn't built (the underscore-named file basename, not the hyphen-named `[[bin]] name`) and fails. Keep test-helper sources under `src-tauri/src/test_bin/` and point the `[[bin]] path` there. See the comment block on the test-helper `[[bin]]` entries in `src-tauri/Cargo.toml`.

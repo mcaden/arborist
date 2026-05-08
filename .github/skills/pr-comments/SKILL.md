@@ -151,11 +151,11 @@ The `outdated` triage class is therefore narrow on purpose: it only applies to t
 - Run the local quality gate **before pushing** (the recipe in §8 has it as step 3, after the commit, so the staged-file lint that runs in the pre-commit hook can do its job first). The exact set lives in the `quality-workflow-gate` skill, but for self-containment the required commands are:
 
   ```sh
-  npm run lint
-  npm test -- --run
+  pnpm run lint
+  pnpm test --run
   cargo fmt --all -- --check
-  cargo clippy --workspace --all-targets -- -D warnings
-  cargo test --workspace
+  cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+  cargo test --workspace --features test-helpers
   ```
 
   If any of these fail, fix in a follow-up commit on the same branch (or amend if the broken commit hasn't been pushed yet) before pushing — **never** bypass hooks with `--no-verify` (see `.github/copilot-instructions.md` "Shift-left quality (principles)").

@@ -17,7 +17,7 @@ what the smoke procedure looks like.
 | ------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `src-tauri/src/<module>.rs::tests`          | Unit tests for pure logic — composition, label dedup, validation, type round-trips.    |
 | `src-tauri/tests/*.rs`                      | Cargo integration tests against the public crate surface.                              |
-| `src-tauri/src/bin/arborist_test_child.rs`     | Deterministic child binary used by `pty_pool` integration tests.                       |
+| `src-tauri/src/test_bin/arborist_test_child.rs`     | Deterministic child binary used by `pty_pool` integration tests. Lives outside `src/bin/` so Tauri's CLI doesn't pick it up as a bundle binary — see the comment on the matching `[[bin]]` in `src-tauri/Cargo.toml`. |
 | `src-tauri/examples/config_smoke.rs`        | End-to-end harness for the config store — useful for manual debugging, runnable via `cargo run --example config_smoke`. |
 
 The integration tests in `src-tauri/tests/` are:
@@ -82,7 +82,7 @@ default mock rejects with `not implemented` so a forgotten
 
 ## 3. The `arborist-test-child` binary
 
-`src-tauri/src/bin/arborist_test_child.rs` is a tiny purpose-built child
+`src-tauri/src/test_bin/arborist_test_child.rs` is a tiny purpose-built child
 process used by the PTY-pool integration tests so cross-platform tests
 don't depend on `claude` / `copilot` being installed.
 
@@ -93,13 +93,18 @@ Behaviour:
 - exits 0 on `quit\n`,
 - exits with code N on `exit N\n`.
 
-Cargo automatically builds the binary as part of `cargo test --workspace`
-and exposes its full path to integration tests via the
-`CARGO_BIN_EXE_arborist-test-child` environment variable. To poke at it
-manually:
+Cargo builds the binary when the `test-helpers` feature is enabled and exposes
+its full path to integration tests via the `CARGO_BIN_EXE_arborist-test-child`
+environment variable:
 
 ```sh
-cargo run -p arborist --bin arborist-test-child
+cargo test --workspace --features test-helpers
+```
+
+To poke at it manually:
+
+```sh
+cargo run -p arborist --features test-helpers --bin arborist-test-child
 ```
 
 ## 4. Test-only env-var seam: CLI program override
