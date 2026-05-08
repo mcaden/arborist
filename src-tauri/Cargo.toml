@@ -48,7 +48,9 @@ tempfile = "3"
 dunce = "1"
 sha2 = "0.10"
 fs2 = "0.4"
-rfd = "0.16"
+# default-features disabled to avoid xdg-portal + gtk3 conflict on Linux
+# (tauri-plugin-dialog already enables rfd/gtk3; rfd panics if both are active)
+rfd = { version = "0.16", default-features = false }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }

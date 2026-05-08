@@ -1,0 +1,101 @@
+# =============================================================================
+# Arborist — Linux e2e Docker Compose
+#
+# Services:
+#   e2e     — Run WebdriverIO specs against the release-built AppImage
+#   rust    — Run cargo test --workspace in a clean Linux env
+#   vitest  — Run npm test -- --run in a clean Linux env
+#   shell   — Interactive bash with Xvfb running and AppImage in place
+#
+# Usage:
+#   docker compose -f dev/e2e/linux/docker-compose.yml build
+#   docker compose -f dev/e2e/linux/docker-compose.yml run --rm e2e
+#   docker compose -f dev/e2e/linux/docker-compose.yml run --rm rust
+#   docker compose -f dev/e2e/linux/docker-compose.yml run --rm vitest
+#   docker compose -f dev/e2e/linux/docker-compose.yml run --rm shell
+# =============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # e2e: WebdriverIO specs against the extracted AppImage under Xvfb
+  # --------------------------------------------------------------------------
+  e2e:
+    build:
+      context: ../../..
+      dockerfile: dev/e2e/linux/Dockerfile
+      target: runtime-e2e
+    command: ["e2e"]
+    volumes:
+      # Bind-mount specs for fast iteration (no image rebuild needed)
+      - ./specs:/specs:ro
+      - ./wdio.conf.ts:/specs/wdio.conf.ts:ro
+      - ./tsconfig.e2e.json:/specs/tsconfig.e2e.json:ro
+    environment:
+      - ARBORIST_CLI_OVERRIDE_CLAUDE=/usr/local/bin/arborist-test-child
+      - ARBORIST_CLI_OVERRIDE_COPILOT=/usr/local/bin/arborist-test-child
+      - RUST_LOG=arborist_lib=info
+      - WEBKIT_DISABLE_COMPOSITING_MODE=1
+    tmpfs:
+      - /tmp:exec
+
+  # --------------------------------------------------------------------------
+  # rust: cargo test --workspace in a clean Linux environment
+  # --------------------------------------------------------------------------
+  rust:
+    build:
+      context: ../../..
+      dockerfile: dev/e2e/linux/Dockerfile
+      target: runtime-tools
+    command: ["rust"]
+    volumes:
+      # Bind-mount the full source tree
+      - ../../..:/src:rw
+      # Named volumes isolate Linux build artifacts from Windows host
+      - cargo-target-linux:/src/src-tauri/target
+      - cargo-cache:/root/.cargo/registry
+    tmpfs:
+      - /tmp:exec
+
+  # --------------------------------------------------------------------------
+  # vitest: npm test -- --run in a clean Linux environment
+  # --------------------------------------------------------------------------
+  vitest:
+    build:
+      context: ../../..
+      dockerfile: dev/e2e/linux/Dockerfile
+      target: runtime-tools
+    command: ["vitest"]
+    volumes:
+      - ../../..:/src:rw
+      - node-modules-linux:/src/node_modules
+    tmpfs:
+      - /tmp:exec
+
+  # --------------------------------------------------------------------------
+  # shell: interactive bash with Xvfb + AppImage for ad-hoc debugging
+  # --------------------------------------------------------------------------
+  shell:
+    build:
+      context: ../../..
+      dockerfile: dev/e2e/linux/Dockerfile
+      target: runtime-e2e
+    command: ["shell"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./specs:/specs:rw
+      - ./wdio.conf.ts:/specs/wdio.conf.ts:ro
+      - ./tsconfig.e2e.json:/specs/tsconfig.e2e.json:ro
+      - ../../..:/src:ro
+    environment:
+      - ARBORIST_CLI_OVERRIDE_CLAUDE=/usr/local/bin/arborist-test-child
+      - ARBORIST_CLI_OVERRIDE_COPILOT=/usr/local/bin/arborist-test-child
+      - RUST_LOG=arborist_lib=debug
+      - WEBKIT_DISABLE_COMPOSITING_MODE=1
+    tmpfs:
+      - /tmp:exec
+
+volumes:
+  cargo-target-linux:
+  cargo-cache:
+  node-modules-linux:
