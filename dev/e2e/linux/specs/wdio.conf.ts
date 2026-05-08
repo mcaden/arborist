@@ -81,7 +81,9 @@ export const config: WebdriverIO.Config = {
   beforeSession: () => {
     const driverPath = "/usr/local/bin/tauri-driver";
 
-    tauriDriver = spawn(driverPath, [], {
+    // Pass --port explicitly so the spawn doesn't depend on tauri-driver's
+    // default matching DRIVER_PORT (kept in sync with `port` above).
+    tauriDriver = spawn(driverPath, ["--port", String(DRIVER_PORT)], {
       stdio: [null, process.stdout, process.stderr],
     });
 
