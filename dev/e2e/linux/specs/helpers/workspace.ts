@@ -4,7 +4,7 @@
 // Creates temporary git repos for use as workspace roots in tests.
 // =============================================================================
 
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -41,7 +41,9 @@ export function createLinkedWorktree(primaryRepo: string, branchName = "linked-w
   // Remove the dir so git worktree add can create it
   fs.rmSync(dir, { recursive: true });
 
-  execSync(`git worktree add -b ${branchName} "${dir}"`, {
+  // Use execFileSync (no shell) so branchName/dir cannot be misinterpreted as
+  // shell metacharacters even if a future caller passes an unusual value.
+  execFileSync("git", ["worktree", "add", "-b", branchName, dir], {
     cwd: primaryRepo,
     stdio: "ignore",
   });

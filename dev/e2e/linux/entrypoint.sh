@@ -3,10 +3,13 @@
 # Arborist Linux e2e - unified entrypoint
 #
 # Usage:  entrypoint.sh <mode> [extra-args...]
-#   e2e     - start Xvfb + tauri-driver, run WebdriverIO specs
+#   e2e     - start Xvfb + D-Bus, run WebdriverIO specs (which spawn tauri-driver)
 #   rust    - cargo test --workspace --features test-helpers
 #   vitest  - pnpm install && pnpm test --run
-#   shell   - start Xvfb + tauri-driver, drop into bash
+#   shell   - start Xvfb + D-Bus, drop into bash (start tauri-driver manually)
+#
+# Note: tauri-driver itself is launched by wdio.conf.ts (`beforeSession`),
+# not by this script — keeping its lifecycle tied to the WebdriverIO session.
 # =============================================================================
 set -euo pipefail
 
@@ -84,9 +87,12 @@ run_e2e() {
     echo "[entrypoint] Using bind-mounted wdio.conf.ts from /specs/"
   fi
 
-  # Run the specs
+  # Run the specs. Temporarily disable `-e` so a non-zero wdio exit doesn't
+  # short-circuit the script before we log + propagate the code.
+  set +e
   pnpm exec wdio run /specs/wdio.conf.ts "$@"
   local rc=$?
+  set -e
 
   echo "[entrypoint] WebdriverIO exited with code $rc"
   exit $rc

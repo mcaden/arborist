@@ -16,7 +16,12 @@ export async function waitForTerminalOutput(
   opts: { timeoutMs?: number } = {}
 ): Promise<string> {
   const { timeoutMs = 10000 } = opts;
-  const regex = typeof pattern === "string" ? new RegExp(pattern) : pattern;
+  // Strip `g`/`y` flags — `RegExp.test` with sticky/global is stateful
+  // (advances `lastIndex`), which would make repeated polling flaky.
+  const regex =
+    typeof pattern === "string"
+      ? new RegExp(pattern)
+      : new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ""));
 
   let lastText = "";
   await browser.waitUntil(
