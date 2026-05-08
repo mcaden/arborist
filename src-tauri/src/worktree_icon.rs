@@ -34,11 +34,15 @@ pub fn pick_least_used_icon(existing_icon_ids: &[u32]) -> u32 {
             counts[(id - 1) as usize] += 1;
         }
     }
-    // `position` returns the index of the first element matching the predicate, which is the lowest-numbered icon at the minimum count — exactly the
-    // tiebreak we want. The slice is non-empty (WORKTREE_ICON_COUNT > 0), so `min` always returns Some.
-    let min_count = *counts.iter().min().expect("counts is non-empty");
-    let idx = counts.iter().position(|&c| c == min_count).expect("min_count came from counts");
-    (idx as u32) + 1
+    let mut best_idx = 0_usize;
+    let mut best_count = usize::MAX;
+    for (idx, &count) in counts.iter().enumerate() {
+        if count < best_count {
+            best_idx = idx;
+            best_count = count;
+        }
+    }
+    (best_idx as u32) + 1
 }
 
 #[cfg(test)]

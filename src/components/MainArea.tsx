@@ -21,7 +21,7 @@
 //       - sessions exist → show `session-store.activeId` (or first session).
 //   * Otherwise we read `(activeWorktreeTabId, tab.activeChildId)` as the
 //     single source of truth:
-//       - `activeChildId` undefined / null     → `<WorktreeDashboard>`.
+//       - `activeChildId` undefined            → `<WorktreeDashboard>`.
 //       - `activeChildId.kind === 'session'`   → that session's terminal.
 //       - `activeChildId.kind === 'subSession'` → that sub-session's
 //         terminal directly (sub-sessions are now owned by worktree tabs,
@@ -69,7 +69,6 @@ export function MainArea(): JSX.Element {
     worktreeTabs.length > 0 &&
     activeWorktreeTab !== null &&
     (activeWorktreeTab.activeChildId === undefined ||
-      activeWorktreeTab.activeChildId === null ||
       (activeWorktreeTab.activeChildId.kind === 'session' && activeSessionId === undefined) ||
       (activeWorktreeTab.activeChildId.kind === 'subSession' && visibleSubId === undefined));
 

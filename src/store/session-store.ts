@@ -195,9 +195,9 @@ export interface SessionStoreActions {
   close: (id: SessionId, deleteWorktree?: boolean, opts?: { pruneOnError?: boolean }) => Promise<SessionCloseResult>;
   focus: (id: SessionId) => Promise<void>;
   /**
-   * Purge every cached session whose `worktreePath` matches `path` and any sub-sessions that hung off them. Returns the dropped session ids
-   * so the caller (typically `worktree-tab-store.close` after a backend cascade) can do additional cleanup. Used to converge frontend state
-   * with a backend cascade-close that removes children without emitting per-session UI events the store would otherwise act on.
+   * Purge every cached session whose `worktreePath` matches `path`. Returns the dropped session ids so the caller (typically
+   * `worktree-tab-store.close` after a backend cascade) can do additional cleanup. Sub-sessions are worktree-tab-owned and are dropped separately by
+   * `worktree-tab-store.close` via `dropForWorktreeTab`.
    */
   removeLocalForPath: (path: string) => SessionId[];
   reorder: (ids: SessionId[]) => Promise<void>;
