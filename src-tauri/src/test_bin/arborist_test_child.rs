@@ -13,6 +13,10 @@
 //!
 //! Cross-platform: pure stdlib, no extra dependencies. The binary is wired into `Cargo.toml` so integration tests in this crate receive its path via
 //! `env!("CARGO_BIN_EXE_arborist-test-child")`.
+//!
+//! Lives in `src/test_bin/` (not `src/bin/`) on purpose: Tauri's CLI does an unconditional `read_dir` of `src/bin/` and appends every file there as a
+//! bundle binary, ignoring the matching `[[bin]]`'s `required-features = ["test-helpers"]` filter. Keeping the source outside `src/bin/` is what
+//! prevents `tauri build` from trying to copy this helper into the AppImage / .deb / .app bundle. Do not move this file back into `src/bin/`.
 
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;

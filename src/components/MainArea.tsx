@@ -66,7 +66,10 @@ export function MainArea(): JSX.Element {
 
   if (sessions.length === 0 && worktreeTabs.length === 0) {
     return (
-      <main className="flex h-full min-w-0 flex-1 items-center justify-center bg-white text-slate-700 dark:bg-slate-950 dark:text-slate-200">
+      <main
+        data-testid="main-area"
+        className="flex h-full min-w-0 flex-1 items-center justify-center bg-white text-slate-700 dark:bg-slate-950 dark:text-slate-200"
+      >
         <p className="text-sm text-slate-400">No session selected — create one to begin.</p>
       </main>
     );
@@ -75,7 +78,7 @@ export function MainArea(): JSX.Element {
   const terminalSubs = allSubs.filter((s) => s.kind === 'terminal');
 
   return (
-    <main className="relative flex h-full min-w-0 flex-1 bg-black">
+    <main data-testid="main-area" className="relative flex h-full min-w-0 flex-1 bg-black">
       {sessions.map((session) => {
         const active = !showDashboard && visibleSubId === undefined && session.id === activeSessionId;
         return (

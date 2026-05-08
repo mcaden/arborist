@@ -84,7 +84,9 @@ arborist/
 │   │   ├── git.rs               # GitRunner trait + git worktree list parser
 │   │   ├── pty_pool.rs          # PTY pool, PtySpawner trait, backpressure
 │   │   ├── types.rs             # serde types (Session, AppConfig, errors, events)
-│   │   └── bin/arborist_test_child.rs   # deterministic test child binary
+│   │   └── test_bin/            # deterministic test-only binaries (out of src/bin/ to keep Tauri's bundler from picking them up)
+│   │       ├── arborist_test_child.rs   # deterministic test child binary
+│   │       └── arborist_test_locker.rs  # cross-process workspace-lock test helper
 │   ├── examples/                # `config_smoke` — end-to-end config-store harness
 │   └── tests/                   # cargo integration tests (capability_gating, pty_pool, …)
 ├── dev/
@@ -239,7 +241,7 @@ debugging persistence issues:
 pnpm run tauri:build
 ```
 
-Output lands in `src-tauri/target/release/bundle/` under platform-specific
+Output lands in `target/release/bundle/` under platform-specific
 subdirectories (`msi`, `nsis`, `dmg`, `appimage`, `deb`, …). The bundler
 honours the metadata in `src-tauri/tauri.conf.json` (identifier
 `com.arborist.app`, product name `Arborist`).
