@@ -102,7 +102,7 @@ git clone https://github.com/mcaden/arborist.git
 cd arborist
 nvm use          # optional — picks up .nvmrc
 pnpm install
-pnpm run tauri:dev
+pnpm dev
 ```
 
 This starts the Vite dev server and opens Arborist in a desktop window with hot-reload.

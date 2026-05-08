@@ -47,9 +47,12 @@ ls .husky/pre-commit .husky/pre-push
 ### Run the app
 
 ```sh
-pnpm run tauri:dev      # Vite + Tauri with HMR (frontend) and hot-recompile (backend)
-pnpm run tauri:build    # production bundle → src-tauri/target/release/bundle/
+pnpm dev                # Vite + Tauri with HMR (frontend) and hot-recompile (backend); alias: pnpm tauri:dev
+pnpm vite               # Vite dev server only (no Tauri shell) — handy for quick browser-only iteration
+pnpm tauri:build        # production bundle → src-tauri/target/release/bundle/
 ```
+
+`pnpm dev` runs `scripts/tauri-dev.mjs`, which assigns a per-worktree devserver port and tells Tauri to load the matching URL. Tauri's `beforeDevCommand` is `pnpm run vite` so the frontend is started automatically — if you ever rename or repurpose the `dev` / `vite` scripts, update `src-tauri/tauri.conf.json` to match (otherwise Tauri will re-invoke `pnpm dev` and recurse instead of starting the frontend).
 
 ### Lint, format, type-check
 
@@ -125,8 +128,8 @@ Husky v9 installs two hooks via `pnpm install`:
 ### Backend
 
 ```sh
-RUST_LOG=arborist_lib=debug pnpm run tauri:dev   # verbose tracing to stderr
-RUST_LOG=trace pnpm run tauri:dev                # everything
+RUST_LOG=arborist_lib=debug pnpm dev             # verbose tracing to stderr
+RUST_LOG=trace pnpm dev                          # everything
 ```
 
 Run the config-store end-to-end harness without Tauri:
@@ -159,7 +162,7 @@ To debug persistence issues: stop Arborist, inspect/edit `config.json` or `sessi
 | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `error: linking with cl.exe failed` (Windows)                                           | Install the Visual Studio 2022 "Desktop development with C++" workload                                                                   |
 | `failed to find tool. Is gtk+-3.0 installed?` (Linux)                                   | Install GTK / WebKit2GTK dev packages (see Prerequisites)                                                                                |
-| `pnpm run tauri:dev` opens a blank window                                               | Frontend crashed at boot — open DevTools and check the console                                                                           |
+| `pnpm dev` opens a blank window                                                         | Frontend crashed at boot — open DevTools and check the console                                                                           |
 | `cargo test --workspace --features test-helpers` fails with `claude: command not found` | A test is calling the real CLI; integration tests must use `arborist-test-child` — file a bug                                            |
 | Pre-commit hook does nothing                                                            | Re-run `pnpm install` — Husky hooks are set up by the `prepare` script                                                                   |
 | `config.json.bad-<timestamp>` keeps appearing                                           | The loader is rejecting the file; diff it against the minimum valid example in [dev/docs/CONFIGURATION.md](../dev/docs/CONFIGURATION.md) |

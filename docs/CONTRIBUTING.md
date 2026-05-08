@@ -32,7 +32,7 @@ cargo test --workspace --features test-helpers
 Additionally:
 
 - New or changed behaviour has direct test coverage that fails without the change.
-- The app launches via `pnpm run tauri:dev` and the touched flow works end-to-end at least once.
+- The app launches via `pnpm dev` (or its alias `pnpm tauri:dev`) and the touched flow works end-to-end at least once.
 - No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()` (outside tests/infallible invariants), `console.log`, or `dbg!()` added without a justifying code comment.
 - If a Rust struct in `types.rs` changed, its TypeScript mirror in `src/types/arborist.ts` changed in the same commit.
 

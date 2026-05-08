@@ -104,9 +104,12 @@ keep both pages in sync.
 ### Run the app
 
 ```sh
-pnpm run tauri:dev      # Vite + Tauri shell with HMR (frontend) and cargo recompile (backend)
-pnpm run tauri:build    # production bundle in src-tauri/target/release/bundle/
+pnpm dev                # Vite + Tauri shell with HMR (frontend) and cargo recompile (backend); alias: pnpm tauri:dev
+pnpm vite               # Vite dev server only (no Tauri shell)
+pnpm tauri:build        # production bundle in src-tauri/target/release/bundle/
 ```
+
+`pnpm dev` runs `scripts/tauri-dev.mjs`, which picks a per-worktree devserver port and tells Tauri to load the matching URL. Tauri's `beforeDevCommand` (in `src-tauri/tauri.conf.json`) is `pnpm run vite`, so the frontend is started automatically. If you rename or repurpose the `dev` or `vite` scripts in `package.json`, update `beforeDevCommand` to match — otherwise `tauri dev` will re-invoke `pnpm dev` and recurse instead of starting Vite.
 
 ### Lint, format, type-check
 
@@ -208,7 +211,7 @@ merged — never on `main` (per `.github/copilot-instructions.md`).
 ### Backend
 
 - Tracing output goes to stderr. Set `RUST_LOG=arborist_lib=debug` (or
-  `RUST_LOG=trace`) before launching `pnpm run tauri:dev` for verbose logs.
+  `RUST_LOG=trace`) before launching `pnpm dev` for verbose logs.
 - The standalone `config_smoke` example exercises the full config-store
   lifecycle without spinning up Tauri:
   ```sh
@@ -261,7 +264,7 @@ There is no automated release pipeline yet — bundles are produced manually.
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `error: linking with cl.exe failed` on Windows                   | Visual Studio C++ Build Tools not installed; install the workload above.                                            |
 | `failed to find tool. Is gtk+-3.0 installed?` on Linux           | Missing GTK / WebKit2GTK dev packages — see prerequisites.                                                          |
-| `pnpm run tauri:dev` opens a blank window                         | Frontend crashed during boot; open DevTools and check the console for an `ErrorOverlay` reason.                     |
+| `pnpm dev` opens a blank window                                  | Frontend crashed during boot; open DevTools and check the console for an `ErrorOverlay` reason.                     |
 | `cargo test --workspace --features test-helpers` fails with `claude: command not found` | A test path is calling the real CLI — file a bug, the integration tests must use `arborist-test-child`.             |
 | Pre-commit hook does nothing                                     | `pnpm install` wasn't re-run after pulling — Husky hooks are installed by the `prepare` script.                      |
 | `config.json.bad-<timestamp>` keeps appearing                    | The loader is rejecting the file. Diff it against the minimum valid example in [`CONFIGURATION.md`](./CONFIGURATION.md). |

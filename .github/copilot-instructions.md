@@ -17,11 +17,11 @@ This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or 
 
 Hard rules:
 
-- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `pnpm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session.
+- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `pnpm dev` / `pnpm tauri:dev`, `tauri dev`, `pnpm vite`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session.
 - **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host. Do not use or work around these commands.
 - **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
 - If your `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
-- Do not run `pnpm run tauri:dev` or `cargo run -p arborist` unless the user explicitly asks during the current session. Use `cargo build`, `cargo test`, `pnpm run build`, or `pnpm test --run` for verification instead.
+- Do not run `pnpm dev`, `pnpm tauri:dev`, `pnpm vite`, or `cargo run -p arborist` unless the user explicitly asks during the current session. Use `cargo build`, `cargo test`, `pnpm run build`, or `pnpm test --run` for verification instead.
 
 If a task genuinely requires restarting the host, ask the user to do it — never do it yourself.
 

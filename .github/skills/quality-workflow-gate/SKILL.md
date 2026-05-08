@@ -12,7 +12,8 @@ Companion to the **Shift-left quality** principles in `.github/copilot-instructi
 
 ```
 pnpm install                                     # install JS deps
-pnpm run tauri:dev                               # dev build + HMR
+pnpm dev                                         # dev build + HMR (Vite + Tauri); alias: pnpm tauri:dev
+pnpm vite                                        # frontend-only Vite dev server (no Tauri shell)
 pnpm run tauri:build                             # production bundle
 pnpm run lint                                    # eslint + prettier --check
 pnpm run lint:fix                                # eslint --fix + prettier --write
