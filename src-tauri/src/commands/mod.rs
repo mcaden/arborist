@@ -268,7 +268,7 @@ pub async fn worktree_prep_open_log(app: tauri::AppHandle, args: crate::types::W
 }
 
 fn validate_prep_log_path(logs_root: &Path, log_path: &Path) -> Result<PathBuf, AppError> {
-    let canon_root = std::fs::canonicalize(logs_root).map_err(|e| AppError::new("Io", format!("canonicalize logs root: {e}")))?;
+    let canon_root = std::fs::canonicalize(logs_root).map_err(|e| AppError::new("InvalidPath", format!("canonicalize logs root: {e}")))?;
     let canon_path = std::fs::canonicalize(log_path).map_err(|e| AppError::new("InvalidPath", format!("canonicalize log path: {e}")))?;
     if !canon_path.starts_with(&canon_root) {
         return Err(AppError::new(
@@ -279,19 +279,33 @@ fn validate_prep_log_path(logs_root: &Path, log_path: &Path) -> Result<PathBuf, 
     Ok(canon_path)
 }
 
+fn spawn_opener(mut command: std::process::Command) -> std::io::Result<()> {
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("explorer.exe").arg(path).spawn().map(|_| ())
+    let mut command = std::process::Command::new("explorer.exe");
+    command.arg(path);
+    spawn_opener(command)
 }
 
 #[cfg(target_os = "macos")]
 fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("open").arg(path).spawn().map(|_| ())
+    let mut command = std::process::Command::new("open");
+    command.arg(path);
+    spawn_opener(command)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open").arg(path).spawn().map(|_| ())
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(path);
+    spawn_opener(command)
 }
 
 /// Switch the active workspace in-place (Phase 7). Closes every open session in the current workspace, releases its OS lock, acquires the new
@@ -635,6 +649,18 @@ mod tests {
         std::fs::create_dir_all(&logs_root).expect("logs root");
 
         let err = validate_prep_log_path(&logs_root, &logs_root.join("missing.log")).expect_err("missing path must fail");
+
+        assert_eq!(err.code, "InvalidPath");
+    }
+
+    #[test]
+    fn validate_prep_log_path_maps_missing_logs_root_to_invalid_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let logs_root = temp.path().join(crate::worktree_prep::LOG_SUBDIR);
+        let log_path = temp.path().join("prep.log");
+        std::fs::write(&log_path, b"log").expect("log file");
+
+        let err = validate_prep_log_path(&logs_root, &log_path).expect_err("missing root must fail");
 
         assert_eq!(err.code, "InvalidPath");
     }

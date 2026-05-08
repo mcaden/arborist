@@ -12,8 +12,8 @@
 //   (e.g. a sub-second prep that exited before the listener attached during
 //   app boot). The Rust event payload carries every field the UI needs.
 // * Successful completions auto-dismiss from `recent` after a short delay
-//   (handled by the banner component, not here — the store just records
-//   the most-recent N completions).
+//   (handled by the banner component, not here). The store caps successes
+//   but keeps undismissed failures so sticky failure banners stay visible.
 // * The store deliberately keeps NO long-term history: prep records vanish
 //   on app restart. Auto-resuming previously-running prep across restarts
 //   is intentionally out of scope for v1 (SPEC §7 limits the shipped scope).
