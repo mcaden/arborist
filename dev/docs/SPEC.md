@@ -81,13 +81,13 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 | W-02   | Detected worktrees from configured root repos SHOULD be presented as a quick-pick list during session creation. |
 | W-03   | The user MUST always be able to pick any directory manually via an OS file picker, regardless of W-01. |
 
-### 5.6 Shell Commands at Launch
+### 5.6 Session Launch Composition
 
 | ID     | Requirement |
 |--------|-------------|
-| L-01   | Before launching the CLI, the app MUST compose a single shell invocation consisting of a configurable list of commands (e.g., `nvm use`, `git status`, environment setup) followed by the CLI launch command, all run within the worktree directory. |
-| L-02   | The command list SHOULD be configurable globally and overridable per-worktree. |
-| L-03   | All commands in the invocation MUST be joined with `&&` so that a failing command halts the sequence and the session enters an error state. |
+| L-01   | Session launch MUST execute the configured CLI command in the selected worktree directory using process `cwd` (not by interpolating `cd <path>` into the shell string). |
+| L-02   | Session restart and restore MUST reuse each session's persisted composed command verbatim. |
+| L-03   | One-shot setup commands are out-of-band from session launch and are governed by C-06 (`AppConfig.worktreePrepCommands` via `worktree_create`). |
 
 ### 5.7 Custom Processes & Sub-Tabs
 

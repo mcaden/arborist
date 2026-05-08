@@ -1621,6 +1621,7 @@ pub async fn workspace_switch_impl_inner(
         g.clear();
     }
     ctx.metrics.stop_all_and_join();
+    ctx.prep_registry.kill_all();
 
     // Step 7 — **park** old workspace sessions. We kill the PTYs but **preserve** every session record (sessions.json, lastOpenSessions, tabOrder,
     // activeSessionId untouched). When the user switches back to this workspace, restore_all_sessions will re-spawn the PTYs from the persisted

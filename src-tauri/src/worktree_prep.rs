@@ -43,6 +43,7 @@ pub const PREP_EVENT: &str = "worktree://prep";
 
 /// Subdirectory under `<app_data_dir>` where per-prep log files are written.
 pub const LOG_SUBDIR: &str = "worktree-prep-logs";
+const MAX_PREP_LOG_FILES: usize = 500;
 
 /// In-flight prep registry. Kill handles (oneshot senders) only — the actual
 /// `Child` lives inside the watcher task. Drop the sender to gracefully kill
@@ -341,7 +342,34 @@ pub fn log_path_for(app: &AppHandle, prep_id: WorktreePrepId) -> std::io::Result
         .map_err(|e| std::io::Error::other(format!("app_data_dir: {e}")))?;
     let dir = base.join(LOG_SUBDIR);
     std::fs::create_dir_all(&dir)?;
+    prune_logs_dir_best_effort(&dir, MAX_PREP_LOG_FILES);
     Ok(dir.join(format!("{prep_id}.log")))
+}
+
+fn prune_logs_dir_best_effort(dir: &Path, keep: usize) {
+    let mut files: Vec<(PathBuf, SystemTime)> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let modified = entry.metadata().ok()?.modified().unwrap_or(UNIX_EPOCH);
+                Some((path, modified))
+            })
+            .collect(),
+        Err(_) => return,
+    };
+    if files.len() <= keep {
+        return;
+    }
+
+    files.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let to_remove = files.len().saturating_sub(keep);
+    for (path, _) in files.into_iter().take(to_remove) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn write_log_header(log_path: &Path, worktree_path: &Path, script: &str, started_at: i64) {
@@ -433,5 +461,22 @@ mod tests {
         let s = format_exit_footer(None, Some("cancelled"), 1700000000);
         assert!(s.contains("cancelled"));
         assert!(s.contains("1700000000"));
+    }
+
+    #[test]
+    fn prune_logs_dir_caps_file_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("{i}.log")), b"x").expect("write");
+        }
+
+        prune_logs_dir_best_effort(dir.path(), 2);
+        let remaining = std::fs::read_dir(dir.path())
+            .expect("read")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .count();
+
+        assert!(remaining <= 2);
     }
 }
