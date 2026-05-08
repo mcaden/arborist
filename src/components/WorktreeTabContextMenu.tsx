@@ -3,9 +3,9 @@
 // Items (flat, no submenu):
 //   * Launch Claude  → creates a Claude session under this worktree tab.
 //   * Launch Copilot → creates a Copilot session under this worktree tab.
-//   * Close          → cascades close of the worktree tab and all children.
 //   * <custom defs>  → one entry per enabled custom-process definition.
 //   * Settings…      → opens the Settings dialog on the Custom Processes tab.
+//   * Close          → cascades close of the worktree tab and all children (pinned to bottom).
 //
 // Keyboard model: ↑/↓ cycles items, Enter activates, Esc closes and
 // restores focus to the trigger.
@@ -15,7 +15,7 @@ import { createPortal } from 'react-dom';
 
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError } from '@/lib/tauri-bridge';
-import { useEnabledCustomProcesses } from '@/store/config-store';
+import { useEnabledCustomProcesses, useConfigStore } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
 import { useSubSessionActions } from '@/store/sub-session-store';
 import { useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -39,17 +39,19 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   const sessionActions = useSessionActions();
   const subActions = useSubSessionActions();
   const customProcesses = useEnabledCustomProcesses();
+  const claudeIconDataUri = useConfigStore((s) => s.config.aiLaunchCommands.claudeIconDataUri);
+  const copilotIconDataUri = useConfigStore((s) => s.config.aiLaunchCommands.copilotIconDataUri);
 
-  // Build the full item order: Launch Claude, Launch Copilot, Close,
-  // then one entry per enabled custom process, then Settings…
+  // Build the full item order: Launch Claude, Launch Copilot, custom
+  // processes, Settings…, then Close pinned at the bottom.
   const itemOrder = useMemo<Item[]>(() => {
-    const items: Item[] = ['launch-claude', 'launch-copilot', 'close'];
+    const items: Item[] = ['launch-claude', 'launch-copilot'];
     if (customProcesses.length > 0) {
       for (const def of customProcesses) {
         items.push(`cp:${def.id}` as Item);
       }
     }
-    items.push('settings');
+    items.push('settings', 'close');
     return items;
   }, [customProcesses]);
 
@@ -155,7 +157,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   if (!tab) return null;
 
   const itemBase =
-    'flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:text-slate-200 dark:hover:bg-slate-700 dark:focus:bg-slate-700';
+    'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:text-slate-200 dark:hover:bg-slate-700 dark:focus:bg-slate-700';
 
   const setItemRef = (key: Item) => (el: HTMLButtonElement | null) => {
     itemRefs.current.set(key, el);
@@ -207,6 +209,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
         onMouseEnter={() => setFocusedItem('launch-claude')}
         className={itemBase}
       >
+        <MenuIcon src={claudeIconDataUri} fallback="🤖" />
         <span>Launch Claude</span>
       </button>
       <button
@@ -218,7 +221,39 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
         onMouseEnter={() => setFocusedItem('launch-copilot')}
         className={itemBase}
       >
+        <MenuIcon src={copilotIconDataUri} fallback="🤖" />
         <span>Launch Copilot</span>
+      </button>
+      {customProcesses.length > 0 &&
+        customProcesses.map((def) => {
+          const key: Item = `cp:${def.id}` as Item;
+          return (
+            <button
+              key={def.id}
+              ref={setItemRef(key)}
+              type="button"
+              role="menuitem"
+              data-testid={`worktree-tab-context-menu-cp-${def.id}`}
+              onClick={() => handleCustomProcess(def.id)}
+              onMouseEnter={() => setFocusedItem(key)}
+              className={itemBase}
+            >
+              <MenuIcon src={def.iconDataUri} fallback="⌗" />
+              <span>{def.name}</span>
+            </button>
+          );
+        })}
+      <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+      <button
+        ref={setItemRef('settings')}
+        type="button"
+        role="menuitem"
+        data-testid="worktree-tab-context-menu-settings"
+        onClick={handleSettings}
+        onMouseEnter={() => setFocusedItem('settings')}
+        className={itemBase}
+      >
+        <span>Custom Processes…</span>
       </button>
       <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
       <button
@@ -232,42 +267,20 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       >
         <span>Close worktree tab</span>
       </button>
-      {customProcesses.length > 0 && (
-        <>
-          <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
-          {customProcesses.map((def) => {
-            const key: Item = `cp:${def.id}` as Item;
-            return (
-              <button
-                key={def.id}
-                ref={setItemRef(key)}
-                type="button"
-                role="menuitem"
-                data-testid={`worktree-tab-context-menu-cp-${def.id}`}
-                onClick={() => handleCustomProcess(def.id)}
-                onMouseEnter={() => setFocusedItem(key)}
-                className={itemBase}
-              >
-                <span>{def.name}</span>
-              </button>
-            );
-          })}
-        </>
-      )}
-      <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
-      <button
-        ref={setItemRef('settings')}
-        type="button"
-        role="menuitem"
-        data-testid="worktree-tab-context-menu-settings"
-        onClick={handleSettings}
-        onMouseEnter={() => setFocusedItem('settings')}
-        className={itemBase}
-      >
-        <span>Custom Processes…</span>
-      </button>
     </div>
   );
 
   return createPortal(menu, document.body);
+}
+
+/** Tiny icon for menu items — renders the cached data URI when available, else a text fallback. */
+function MenuIcon({ src, fallback }: { src: string | undefined; fallback: string }): JSX.Element {
+  if (src) {
+    return <img src={src} alt="" aria-hidden="true" className="h-4 w-4 shrink-0 rounded-sm object-contain" />;
+  }
+  return (
+    <span aria-hidden="true" className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-xs text-slate-400">
+      {fallback}
+    </span>
+  );
 }
