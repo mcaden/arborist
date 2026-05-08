@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Linux e2e tests for Arborist — driven by WebdriverIO against the release-built AppImage",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "test": "wdio run wdio.conf.ts"
   },

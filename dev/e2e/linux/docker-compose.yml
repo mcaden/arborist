@@ -4,7 +4,7 @@
 # Services:
 #   e2e     — Run WebdriverIO specs against the release-built AppImage
 #   rust    — Run cargo test --workspace in a clean Linux env
-#   vitest  — Run npm test -- --run in a clean Linux env
+#   vitest  — Run pnpm test -- --run in a clean Linux env
 #   shell   — Interactive bash with Xvfb running and AppImage in place
 #
 # Usage:
@@ -26,10 +26,10 @@ services:
       target: runtime-e2e
     command: ["e2e"]
     volumes:
-      # Bind-mount specs for fast iteration (no image rebuild needed)
+      # Bind-mount the entire specs/ directory (which now contains wdio.conf.ts
+      # and tsconfig.json alongside the *.spec.ts files). One mount avoids the
+      # nested-mount problem that fails on Docker Desktop's 9P filesystem.
       - ./specs:/specs:ro
-      - ./wdio.conf.ts:/specs/wdio.conf.ts:ro
-      - ./tsconfig.e2e.json:/specs/tsconfig.e2e.json:ro
     environment:
       - ARBORIST_CLI_OVERRIDE_CLAUDE=/usr/local/bin/arborist-test-child
       - ARBORIST_CLI_OVERRIDE_COPILOT=/usr/local/bin/arborist-test-child
@@ -50,14 +50,16 @@ services:
     volumes:
       # Bind-mount the full source tree
       - ../../..:/src:rw
-      # Named volumes isolate Linux build artifacts from Windows host
-      - cargo-target-linux:/src/src-tauri/target
+      # Named volumes isolate Linux build artifacts from Windows host.
+      # Cargo target dir is at the workspace root (/src/target), NOT under
+      # src-tauri/ — workspace Cargo.toml lives at the repo root.
+      - cargo-target-linux:/src/target
       - cargo-cache:/root/.cargo/registry
     tmpfs:
       - /tmp:exec
 
   # --------------------------------------------------------------------------
-  # vitest: npm test -- --run in a clean Linux environment
+  # vitest: pnpm test -- --run in a clean Linux environment
   # --------------------------------------------------------------------------
   vitest:
     build:
@@ -84,8 +86,6 @@ services:
     tty: true
     volumes:
       - ./specs:/specs:rw
-      - ./wdio.conf.ts:/specs/wdio.conf.ts:ro
-      - ./tsconfig.e2e.json:/specs/tsconfig.e2e.json:ro
       - ../../..:/src:ro
     environment:
       - ARBORIST_CLI_OVERRIDE_CLAUDE=/usr/local/bin/arborist-test-child

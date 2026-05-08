@@ -15,6 +15,9 @@
 //! 4. On any other error: print `ERROR: <message>\n` to stderr and exit 3.
 //!
 //! The `LOCKED` sentinel is the test's signal that the lock is held, so the parent test can attempt a contending acquire.
+//!
+//! Lives in `src/test_bin/` (not `src/bin/`) on purpose — see the equivalent note on `arborist_test_child.rs` for the Tauri-bundler reason. Do not
+//! move this file back into `src/bin/`.
 
 use arborist_lib::workspace_lock::{LockError, WorkspaceLockGuard};
 use std::io::{self, BufRead, Write};

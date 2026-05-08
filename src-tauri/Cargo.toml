@@ -18,19 +18,28 @@ path = "src/main.rs"
 
 # Purpose-built deterministic child process used by the PTY-pool integration
 # tests (`tests/pty_pool.rs`). Gated behind the `test-helpers` feature so
-# `tauri build` (which doesn't enable it) excludes them from the bundle.
-# Cargo exposes the built path via `CARGO_BIN_EXE_arborist-test-child`.
+# `cargo build`/`cargo test` without the feature skip it. Cargo exposes the
+# built path via `CARGO_BIN_EXE_arborist-test-child`.
+#
+# The `path` deliberately points outside `src/bin/`: Tauri's CLI does an
+# unconditional `read_dir` of `src/bin/` and adds every file there as a
+# bundle binary regardless of `required-features`, which then causes
+# `tauri build` to fail trying to copy a binary that wasn't built (or to
+# ship test helpers in the production AppImage / .deb / .app). Keeping the
+# source in `src/test_bin/` is what keeps `tauri build` clean. Do not move
+# these files back into `src/bin/`.
 [[bin]]
 name = "arborist-test-child"
-path = "src/bin/arborist_test_child.rs"
+path = "src/test_bin/arborist_test_child.rs"
 required-features = ["test-helpers"]
 
 # Helper used by `tests/workspace_lock_multiprocess.rs` to verify that
 # cross-process contention on `WorkspaceLockGuard` produces
-# `LockError::Contention`. Same convention as the test child above.
+# `LockError::Contention`. Same convention as the test child above —
+# including the `src/test_bin/` location for the same Tauri-bundler reason.
 [[bin]]
 name = "arborist-test-locker"
-path = "src/bin/arborist_test_locker.rs"
+path = "src/test_bin/arborist_test_locker.rs"
 required-features = ["test-helpers"]
 
 [build-dependencies]

@@ -13,6 +13,11 @@ let shuttingDown = false;
 
 // Path to the extracted AppImage entry point (set by the Dockerfile)
 const APP_BINARY = "/opt/arborist/AppRun";
+// Path to the test workspace pre-created by entrypoint.sh::setup_test_workspace.
+// Without --workspace, arborist's boot resolution falls through to the native
+// folder picker and blocks forever in headless mode (the WebView is never
+// created → tauri-driver/WebKitWebDriver session POST hangs until timeout).
+const TEST_WORKSPACE = process.env.ARBORIST_TEST_WORKSPACE ?? "/tmp/arborist-test-workspace";
 const DRIVER_PORT = 4444;
 const DRIVER_STARTUP_TIMEOUT_MS = 10_000;
 const DRIVER_POLL_INTERVAL_MS = 100;
@@ -44,8 +49,8 @@ export const config: WebdriverIO.Config = {
   hostname: "127.0.0.1",
   port: DRIVER_PORT,
 
-  specs: ["/specs/specs/**/*.spec.ts"],
-  exclude: ["/specs/specs/helpers/**"],
+  specs: ["/specs/**/*.spec.ts"],
+  exclude: ["/specs/helpers/**"],
 
   maxInstances: 1,
 
@@ -54,6 +59,7 @@ export const config: WebdriverIO.Config = {
       maxInstances: 1,
       "tauri:options": {
         application: APP_BINARY,
+        args: ["--workspace", TEST_WORKSPACE],
       },
     },
   ],

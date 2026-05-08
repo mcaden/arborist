@@ -54,17 +54,23 @@ COPY instructions/ instructions/
 # requires ../dist to exist)
 RUN pnpm run build
 
-# Build test-child + test-locker (Tauri bundler expects all [[bin]] targets to exist)
+# Pre-build the test-child binary. The runtime-e2e stage copies it to
+# /usr/local/bin/arborist-test-child (line below) so the extracted AppImage
+# can be exercised against this hermetic CLI override instead of real
+# claude / copilot. test-locker is included so any future cargo-test stage
+# can use it without a second build.
 RUN cargo build --release --features test-helpers --bin arborist-test-child --bin arborist-test-locker
 
 # Build the release bundle — AppImage only (skip deb to avoid bundler issues)
 RUN pnpm tauri build --bundles appimage
 
-# Copy test-child to a stable path for the runtime-e2e stage
-RUN cp src-tauri/target/release/arborist-test-child /usr/local/bin/arborist-test-child
+# Copy test-child to a stable path for the runtime-e2e stage. Cargo
+# workspace target dir is at the repo root (`/build/target/`), not under
+# `src-tauri/`, because the workspace root is `/build/Cargo.toml`.
+RUN cp target/release/arborist-test-child /usr/local/bin/arborist-test-child
 
 # Extract the AppImage so it can run without FUSE in unprivileged containers
-RUN cd src-tauri/target/release/bundle/appimage \
+RUN cd target/release/bundle/appimage \
     && chmod +x Arborist_*.AppImage \
     && ./Arborist_*.AppImage --appimage-extract \
     && mv squashfs-root /opt/arborist
@@ -84,18 +90,32 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime-e2e (thin — no Rust toolchain, only runtime libs)
+#
+# Base must match the builder's distro family. The builder uses
+# `ivangabriele/tauri:debian-bookworm-22` (= rust:bookworm), so its bundled
+# AppImage links against bookworm's libpango / libharfbuzz versions. Running
+# that AppImage on Ubuntu 22.04 (older harfbuzz) fails with:
+#   "symbol lookup error: libpango-1.0.so.0: undefined symbol:
+#    hb_ot_layout_get_horizontal_baseline_tag_for_script"
+# Using debian:bookworm-slim keeps the C-library universe consistent end to end.
 # ---------------------------------------------------------------------------
-FROM ubuntu:22.04 AS runtime-e2e
+FROM debian:bookworm-slim AS runtime-e2e
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Runtime libs only (no -dev headers) + Xvfb + dbus + WebKitWebDriver
+#
+# Audio note: libasound2 is a hard runtime dep of WebKit2GTK 4.1 (audio
+# backend). Without it the AppImage exits immediately at startup with
+# "error while loading shared libraries: libasound.so.2". apt-get's
+# --no-install-recommends omits it, so it must be listed explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libwebkit2gtk-4.1-0 \
     webkit2gtk-driver \
     libgtk-3-0 \
     libayatana-appindicator3-1 \
     librsvg2-2 \
+    libasound2 \
     xvfb \
     dbus-x11 \
     xauth \
@@ -111,16 +131,36 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pre-built binaries from builder (no Rust toolchain needed here)
-COPY --from=builder /root/.cargo/bin/tauri-driver /usr/local/bin/tauri-driver
+# Copy pre-built binaries from builder (no Rust toolchain needed here).
+# tauri-driver is `cargo install`-ed in the upstream image. The official
+# rust:bookworm base sets CARGO_HOME=/usr/local/cargo, so cargo-installed
+# binaries live under /usr/local/cargo/bin/ — *not* /root/.cargo/bin/.
+COPY --from=builder /usr/local/cargo/bin/tauri-driver /usr/local/bin/tauri-driver
 COPY --from=builder /opt/arborist /opt/arborist
 COPY --from=builder /usr/local/bin/arborist-test-child /usr/local/bin/arborist-test-child
 COPY --from=builder /build/instructions /opt/arborist-instructions
 
-# Install WebdriverIO deps into a fixed location
+# Install WebdriverIO deps via pnpm (matches the rest of the repo — root
+# package.json pins `packageManager: pnpm@10.33.0` and the canonical lockfile
+# format here is pnpm-lock.yaml). pnpm ships with Node 22 via Corepack; we
+# activate the pinned version so installs are reproducible.
+#
+# `--ignore-workspace` is defensive — there is no pnpm-workspace.yaml inside
+# this image, but the flag makes the install bulletproof against any future
+# workspace file that might land at / or /e2e.
+#
+# COREPACK_HOME pins Corepack's pnpm cache to an image-baked path. Without it,
+# Corepack defaults to `$HOME/.cache/node/corepack`, and entrypoint.sh sets
+# HOME=/tmp/arborist-home for hermetic test runs — so at runtime Corepack would
+# look at the (empty) ephemeral HOME, miss the cache, and re-download pnpm on
+# every `docker compose run --rm e2e`. Pinning to /opt/corepack keeps the
+# activated pnpm available regardless of HOME.
+ENV COREPACK_HOME=/opt/corepack
 WORKDIR /e2e
-COPY dev/e2e/linux/package.json dev/e2e/linux/package-lock.json* /e2e/
-RUN npm ci --prefer-offline --no-audit || npm install
+COPY dev/e2e/linux/package.json dev/e2e/linux/pnpm-lock.yaml /e2e/
+RUN corepack enable \
+    && corepack prepare pnpm@10.33.0 --activate \
+    && pnpm install --frozen-lockfile --ignore-workspace
 
 COPY dev/e2e/linux/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

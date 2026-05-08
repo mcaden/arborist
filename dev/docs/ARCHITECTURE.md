@@ -42,7 +42,8 @@ DESIGN §6. Both sides go through a single bridge module
 | `pty_pool.rs`                 | `PtySpawner` / `ChildPty` traits, `PortablePtySpawner`, `PtyPool` (per-session runtime entry: child handle, drain task, cancel token), bounded mpsc with drop-newest backpressure (`OUTPUT_CHANNEL_CAPACITY = 512`), `ESC c` reset after a drop, streaming UTF-8 decoder, wait thread that persists final status, `cleanup_orphans` (`ORPHAN_AGE_THRESHOLD = 1h`, ignores UUIDs still in `sessions.json`). | DESIGN §2.1, §5.4, §8.3 |
 | `commands/mod.rs`             | Thin `#[tauri::command]` wrappers. Each one resolves the `AppContext` from Tauri managed state and delegates to `commands::session`. Also contains `build_production_sink` which wires the PTY status / output callbacks to `app.emit` and `ConfigStore::update_session_status`. | DESIGN §6 |
 | `commands/session.rs`         | All real handler logic: `session_create_impl`, `session_close_impl`, `session_focus_impl`, `session_resize_impl`, `session_input_impl`, `session_restart_impl`, `session_list_impl`, `frontend_ready_impl`, `restore_all_sessions`, `worktrees_list_impl`. Holds the `AppContext` struct (Pool + Store + Sink + GitRunner). | DESIGN §5.1, §5.3, §5.4, §5.5 |
-| `bin/arborist_test_child.rs`     | Deterministic child binary used by integration tests. Not used in production.                          | [`TESTING.md`](./TESTING.md) §3   |
+| `test_bin/arborist_test_child.rs`  | Deterministic child binary used by integration tests. Lives under `src/test_bin/` (not `src/bin/`) so Tauri's CLI doesn't pick it up as a bundle binary. Not used in production.                          | [`TESTING.md`](./TESTING.md) §3   |
+| `test_bin/arborist_test_locker.rs` | Deterministic locker binary used by `workspace_lock_multiprocess` integration tests. Same `src/test_bin/` location and rationale as the test child. Not used in production. | [`TESTING.md`](./TESTING.md) §3   |
 
 ### Key invariants enforced by the backend
 

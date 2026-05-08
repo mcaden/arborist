@@ -12,19 +12,19 @@ Runs from a Windows host via Docker Desktop / WSL2.
 
 ```bash
 # 1. Build the image (compiles the release AppImage inside the container)
-npm run e2e:linux:build
+pnpm e2e:linux:build
 
 # 2. Run the WebdriverIO e2e specs against the AppImage
-npm run e2e:linux
+pnpm e2e:linux
 
 # 3. Run Rust tests in a clean Linux environment
-npm run e2e:linux:rust
+pnpm e2e:linux:rust
 
 # 4. Run Vitest (frontend) tests in a clean Linux environment
-npm run e2e:linux:vitest
+pnpm e2e:linux:vitest
 
 # 5. Drop into a bash shell for ad-hoc debugging
-npm run e2e:linux:shell
+pnpm e2e:linux:shell
 ```
 
 ## Architecture
@@ -33,7 +33,7 @@ npm run e2e:linux:shell
 
 | Stage | Purpose |
 |---|---|
-| `builder` | Full Rust + Node toolchain. Runs `npm run tauri:build` → AppImage. Also builds `arborist-test-child` and `tauri-driver`. |
+| `builder` | Full Rust + Node toolchain. Runs `pnpm tauri:build` → AppImage. Also builds `arborist-test-child` and `tauri-driver`. |
 | `runtime-tools` | Rust + Node toolchains for `cargo test` / `vitest` modes. Source is bind-mounted. |
 | `runtime-e2e` | Minimal runtime: webkit2gtk-4.1, Xvfb, WebKitWebDriver, tauri-driver, Node + WebdriverIO, extracted AppImage at `/opt/arborist/`. |
 
@@ -43,7 +43,7 @@ npm run e2e:linux:shell
 |---|---|---|
 | `e2e` | runtime-e2e | Starts Xvfb + dbus, launches tauri-driver, runs WebdriverIO specs against the AppImage |
 | `rust` | runtime-tools | `cargo test --workspace` with Linux build artifacts isolated in a named volume |
-| `vitest` | runtime-tools | `npm ci && npm test -- --run` with node_modules isolated in a named volume |
+| `vitest` | runtime-tools | `pnpm install && pnpm test -- --run` with node_modules isolated in a named volume |
 | `shell` | runtime-e2e | Interactive bash with Xvfb running and the AppImage in place |
 
 ### Hermetic CLI testing
@@ -56,11 +56,11 @@ deterministic line-based protocol (`ARBORIST-TEST-CHILD READY`, `quit`, `exit N`
 ### Test specs (bind-mounted)
 
 Specs live in `dev/e2e/linux/specs/` and are bind-mounted into the container at `/specs/`.
-You can edit specs and re-run `npm run e2e:linux` without rebuilding the image.
+You can edit specs and re-run `pnpm e2e:linux` without rebuilding the image.
 
 To rebuild only when source code changes (frontend or Rust):
 ```bash
-npm run e2e:linux:build
+pnpm e2e:linux:build
 ```
 
 ## Debugging a Failing Spec
@@ -68,7 +68,7 @@ npm run e2e:linux:build
 ### Interactive shell
 
 ```bash
-npm run e2e:linux:shell
+pnpm e2e:linux:shell
 ```
 
 From the shell inside the container:
@@ -81,7 +81,7 @@ From the shell inside the container:
 tauri-driver --port 4444 &
 
 # Then run individual specs
-cd /e2e && npx wdio run /specs/wdio.conf.ts --spec /specs/specs/01-launch.spec.ts
+cd /e2e && pnpm exec wdio run /specs/wdio.conf.ts --spec /specs/01-launch.spec.ts
 ```
 
 ### Inspecting the X display
@@ -111,7 +111,7 @@ x11vnc -display :99 -nopw -forever &
 
 ### First build is very slow
 
-The first `npm run e2e:linux:build` compiles the entire Rust crate from scratch inside the
+The first `pnpm e2e:linux:build` compiles the entire Rust crate from scratch inside the
 container (~20–40 min depending on hardware). Subsequent builds leverage Docker layer caching
 and are much faster if only source files changed.
 

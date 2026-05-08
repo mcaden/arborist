@@ -34,7 +34,7 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 
 ```sh
 pnpm run tauri:dev       # Vite + Tauri with HMR (frontend) and hot-recompile (backend)
-pnpm run tauri:build     # production bundle → src-tauri/target/release/bundle/
+pnpm run tauri:build     # production bundle → target/release/bundle/
 ```
 
 ### Lint / format / type-check

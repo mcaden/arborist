@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Arborist Linux e2e — unified entrypoint
+# Arborist Linux e2e - unified entrypoint
 #
 # Usage:  entrypoint.sh <mode> [extra-args...]
-#   e2e     — start Xvfb + tauri-driver, run WebdriverIO specs
-#   rust    — cargo test --workspace
-#   vitest  — pnpm install && pnpm test --run
-#   shell   — start Xvfb + tauri-driver, drop into bash
+#   e2e     - start Xvfb + tauri-driver, run WebdriverIO specs
+#   rust    - cargo test --workspace --features test-helpers
+#   vitest  - pnpm install && pnpm test --run
+#   shell   - start Xvfb + tauri-driver, drop into bash
 # =============================================================================
 set -euo pipefail
 
@@ -48,10 +48,31 @@ setup_home() {
   echo "[entrypoint] HOME=$HOME"
 }
 
+# Pre-create a temp git repo so the e2e arborist boot has a workspace to bind
+# without invoking the native folder picker (which would block forever in a
+# headless container — boot resolution is `--workspace CLI arg → hint file →
+# legacy config → native picker`, and only the first arm is non-interactive).
+# wdio.conf.ts passes this path via tauri:options.args = ["--workspace", …].
+setup_test_workspace() {
+  export ARBORIST_TEST_WORKSPACE="${ARBORIST_TEST_WORKSPACE:-/tmp/arborist-test-workspace}"
+  if [ ! -d "$ARBORIST_TEST_WORKSPACE/.git" ]; then
+    rm -rf "$ARBORIST_TEST_WORKSPACE"
+    mkdir -p "$ARBORIST_TEST_WORKSPACE"
+    git -C "$ARBORIST_TEST_WORKSPACE" init -q -b main
+    git -C "$ARBORIST_TEST_WORKSPACE" config user.email "e2e@arborist.local"
+    git -C "$ARBORIST_TEST_WORKSPACE" config user.name "Arborist E2E"
+    echo "# Arborist e2e test workspace" > "$ARBORIST_TEST_WORKSPACE/README.md"
+    git -C "$ARBORIST_TEST_WORKSPACE" add README.md
+    git -C "$ARBORIST_TEST_WORKSPACE" commit -q -m "initial commit"
+  fi
+  echo "[entrypoint] ARBORIST_TEST_WORKSPACE=$ARBORIST_TEST_WORKSPACE"
+}
+
 # ---- modes ------------------------------------------------------------------
 
 run_e2e() {
   setup_home
+  setup_test_workspace
   start_xvfb
   start_dbus
 
@@ -64,7 +85,7 @@ run_e2e() {
   fi
 
   # Run the specs
-  npx wdio run /specs/wdio.conf.ts "$@"
+  pnpm exec wdio run /specs/wdio.conf.ts "$@"
   local rc=$?
 
   echo "[entrypoint] WebdriverIO exited with code $rc"
@@ -72,9 +93,13 @@ run_e2e() {
 }
 
 run_rust() {
-  echo "[entrypoint] Running cargo test --workspace..."
+  # `--features test-helpers` matches the local quality gate and is required to
+  # build / run the PTY and workspace-lock integration tests, which depend on
+  # the `arborist-test-child` and `arborist-test-locker` binaries (both gated
+  # behind `required-features = ["test-helpers"]` in src-tauri/Cargo.toml).
+  echo "[entrypoint] Running cargo test --workspace --features test-helpers..."
   cd /src
-  cargo test --workspace --no-fail-fast "$@"
+  cargo test --workspace --features test-helpers --no-fail-fast "$@"
 }
 
 run_vitest() {
@@ -87,6 +112,7 @@ run_vitest() {
 
 run_shell() {
   setup_home
+  setup_test_workspace
   start_xvfb
   start_dbus
 
@@ -94,6 +120,7 @@ run_shell() {
   echo "[entrypoint] AppImage extracted at /opt/arborist/"
   echo "[entrypoint] tauri-driver is at /usr/local/bin/tauri-driver"
   echo "[entrypoint] arborist-test-child is at /usr/local/bin/arborist-test-child"
+  echo "[entrypoint] Test workspace: $ARBORIST_TEST_WORKSPACE"
   echo ""
   exec bash "$@"
 }
