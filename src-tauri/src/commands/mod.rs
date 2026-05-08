@@ -240,10 +240,53 @@ pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateAr
 }
 
 /// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2).
+///
+/// After the worktree is created, kicks off `worktree_prep_commands` (issue #63) in the background; the returned `prep` field carries the prep id +
+/// log path so the frontend can correlate `worktree://prep` events. Holds the workspace-switch barrier across both the create and the prep spawn so
+/// the prep is bound to the same active workspace as the creation.
 #[tauri::command]
 pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) -> Result<WorktreeCreateResult, AppError> {
     let ctx = ctx_of(&app)?;
-    session::worktree_create_impl(&ctx, &args.name)
+    let _switch = session::acquire_switch_read(&ctx)?;
+    let mut result = session::worktree_create_impl(&ctx, &args.name)?;
+    let cfg = ctx.store().load_config();
+    result.prep = crate::worktree_prep::maybe_spawn(&app, ctx.prep_registry.clone(), &cfg, &result.path);
+    Ok(result)
+}
+
+/// Open a worktree-prep log file in the user's default OS handler. The path is canonicalised server-side and required to live under
+/// `<app_data_dir>/worktree-prep-logs/` — anything else is rejected so this command cannot be abused as a generic file-opener (issue #63).
+#[tauri::command]
+pub async fn worktree_prep_open_log(app: tauri::AppHandle, args: crate::types::WorktreePrepOpenLogArgs) -> Result<(), AppError> {
+    use tauri::Manager as _;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
+    let logs_root = app_data_dir.join(crate::worktree_prep::LOG_SUBDIR);
+    let canon_root = std::fs::canonicalize(&logs_root).map_err(|e| AppError::new("Io", format!("canonicalize logs root: {e}")))?;
+    let canon_path = std::fs::canonicalize(&args.log_path).map_err(|e| AppError::new("InvalidPath", format!("canonicalize log path: {e}")))?;
+    if !canon_path.starts_with(&canon_root) {
+        return Err(AppError::new(
+            "InvalidPath",
+            format!("log path is outside the worktree-prep-logs root: {}", canon_path.display()),
+        ));
+    }
+    open_path_with_os(&canon_path).map_err(|e| AppError::new("Io", format!("open log: {e}")))
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
+    // `cmd /c start "" <path>` is the canonical way to invoke the user's default handler. The empty `""` is a window-title placeholder required when
+    // the actual target is a quoted path, otherwise `start` would treat the first quoted argument as the title.
+    std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).spawn().map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("open").arg(path).spawn().map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open").arg(path).spawn().map(|_| ())
 }
 
 /// Switch the active workspace in-place (Phase 7). Closes every open session in the current workspace, releases its OS lock, acquires the new

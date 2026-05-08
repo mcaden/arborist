@@ -110,14 +110,16 @@ at least a minimal in-app settings surface is needed.
 
 ### 3.1 Workspace settings
 - **Gap**: No in-app way to change `workspaceRoot`, `instructionSetsDir`, or
-  `prelaunchCommands`.
+  `worktreePrepCommands`.
 - **Needed** (minimal v1 scope): A settings panel (accessible from the sidebar
   footer) that exposes:
   - Workspace root (path picker).
   - Instruction sets directory (path picker).
-  - Global pre-launch commands (editable ordered list).
-- Per-worktree pre-launch command overrides (`worktreePrelaunchCommands`) can
-  remain config-file–only in v1.
+  - Worktree prep commands (editable ordered list — runs once when a new
+    worktree is created; see issue #63).
+- Per-worktree prep command overrides are intentionally out of scope for v1
+  (the global list applies to every new worktree); a per-worktree config UI
+  could reintroduce them later.
 
 ### 3.2 Instruction-set management
 - **Gap**: No UI to add, rename, or delete instruction sets; users must manage
@@ -302,7 +304,7 @@ PTY processes.
 | 1.2 | Workspace | Active workspace indicator in sidebar | P1 |
 | 5.1 | Data model | `workspaceRoot` field in `AppConfig` | P1 (blocks 1.x) |
 | 5.2 | Data model | `worktree_create` in DESIGN §6 | P1 (blocks 2.2) |
-| 3.1 | Settings | Minimal settings panel (workspace, instructions dir, prelaunch) | P1 |
+| 3.1 | Settings | Minimal settings panel (workspace, instructions dir, worktree prep) | P1 |
 | 4.1 | Session UX | "Starting" spinner on tabs | P2 |
 | 4.2 | Session UX | "Exited" indicator on tabs | P2 |
 | 4.3 | Session UX | Stale worktree path error UX at restore | P2 |

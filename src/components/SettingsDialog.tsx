@@ -23,7 +23,13 @@ import { CustomProcessesTab } from './CustomProcessesTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError, pickDirectory } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import { selectAiLaunchCommands, selectInstructionSetsDir, selectPrelaunchCommands, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
+import {
+  selectAiLaunchCommands,
+  selectInstructionSetsDir,
+  selectWorkspaceRoot,
+  selectWorktreePrepCommands,
+  useConfigStore,
+} from '@/store/config-store';
 
 export type SettingsTab = 'general' | 'customProcesses';
 
@@ -34,7 +40,7 @@ export interface SettingsDialogProps {
 }
 
 /**
- * Convert the prelaunch-commands list to/from the textarea's plain-text
+ * Convert the worktree-prep-commands list to/from the textarea's plain-text
  * value. We intentionally use a textarea (one command per line) instead
  * of a row-per-command editor: the v1 spec only needs ordered editing
  * and a textarea is naturally good at that — copy/paste, drag, undo all
@@ -60,13 +66,13 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
 export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDialogProps): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
-  const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
+  const worktreePrepCommands = useConfigStore(selectWorktreePrepCommands);
   const aiLaunchCommands = useConfigStore(selectAiLaunchCommands);
   const setConfig = useConfigStore((s) => s.set);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
-  const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(prelaunchCommands));
+  const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(worktreePrepCommands));
   const [claudeCmdInput, setClaudeCmdInput] = useState<string>(aiLaunchCommands.claude);
   const [copilotCmdInput, setCopilotCmdInput] = useState<string>(aiLaunchCommands.copilot);
   const [saving, setSaving] = useState(false);
@@ -128,8 +134,8 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     setInstrInput(instructionSetsDir);
   }, [instructionSetsDir]);
   useEffect(() => {
-    setCmdsInput(commandsToText(prelaunchCommands));
-  }, [prelaunchCommands]);
+    setCmdsInput(commandsToText(worktreePrepCommands));
+  }, [worktreePrepCommands]);
   useEffect(() => {
     setClaudeCmdInput(aiLaunchCommands.claude);
   }, [aiLaunchCommands.claude]);
@@ -142,7 +148,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const copilotCmdTrimmed = copilotCmdInput.trim();
   const dirty =
     instrInput !== instructionSetsDir ||
-    !arraysEqual(parsedCmds, prelaunchCommands) ||
+    !arraysEqual(parsedCmds, worktreePrepCommands) ||
     claudeCmdTrimmed !== aiLaunchCommands.claude ||
     copilotCmdTrimmed !== aiLaunchCommands.copilot;
 
@@ -160,11 +166,11 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     try {
       const patch: {
         instructionSetsDir?: string;
-        prelaunchCommands?: string[];
+        worktreePrepCommands?: string[];
         aiLaunchCommands?: { claude?: string; copilot?: string };
       } = {};
       if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
-      if (!arraysEqual(parsedCmds, prelaunchCommands)) patch.prelaunchCommands = parsedCmds;
+      if (!arraysEqual(parsedCmds, worktreePrepCommands)) patch.worktreePrepCommands = parsedCmds;
       const launchPatch: { claude?: string; copilot?: string } = {};
       if (claudeCmdTrimmed !== aiLaunchCommands.claude) launchPatch.claude = claudeCmdTrimmed;
       if (copilotCmdTrimmed !== aiLaunchCommands.copilot) launchPatch.copilot = copilotCmdTrimmed;
@@ -181,7 +187,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     instrInput,
     instructionSetsDir,
     parsedCmds,
-    prelaunchCommands,
+    worktreePrepCommands,
     claudeCmdTrimmed,
     copilotCmdTrimmed,
     aiLaunchCommands.claude,
@@ -327,23 +333,26 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
 
               <section className="mb-4">
                 <label
-                  htmlFor="settings-prelaunch"
+                  htmlFor="settings-worktree-prep"
                   className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
                 >
-                  Pre-launch commands
+                  Worktree Prep Commands
                 </label>
                 <textarea
-                  id="settings-prelaunch"
+                  id="settings-worktree-prep"
                   value={cmdsInput}
                   onChange={(e) => {
                     setSubmitError(null);
                     setCmdsInput(e.target.value);
                   }}
                   rows={5}
-                  placeholder="One shell command per line, e.g.&#10;source ~/.zshenv&#10;nvm use 20"
+                  placeholder="One shell command per line, e.g.&#10;npm install&#10;cargo build"
                   className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
                 />
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Run before every CLI session, in order. Blank lines are ignored.</p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Run once when a new worktree is created, in the worktree&apos;s directory. Combined output is captured to a log file. Blank lines
+                  are ignored.
+                </p>
               </section>
 
               <section className="mb-4">

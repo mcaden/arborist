@@ -20,13 +20,12 @@ import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
 import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 4,
+  configVersion: 5,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   workspaceRoot: null,
   worktreeRoots: [],
-  prelaunchCommands: [],
-  worktreePrelaunchCommands: {},
+  worktreePrepCommands: [],
   aiLaunchCommands: { claude: '', copilot: '' },
   lastOpenSessions: [],
   tabOrder: [],
@@ -117,7 +116,7 @@ export const selectConfig = (s: ConfigStoreState): AppConfig => s.config;
 export const selectInstructionSetsDir = (s: ConfigStoreState): string => s.config.instructionSetsDir;
 export const selectWorkspaceRoot = (s: ConfigStoreState): string | null => s.config.workspaceRoot;
 export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] => s.config.worktreeRoots;
-export const selectPrelaunchCommands = (s: ConfigStoreState): readonly string[] => s.config.prelaunchCommands;
+export const selectWorktreePrepCommands = (s: ConfigStoreState): readonly string[] => s.config.worktreePrepCommands;
 export const selectAiLaunchCommands = (s: ConfigStoreState): AppConfig['aiLaunchCommands'] => s.config.aiLaunchCommands;
 export const selectDefaultInstructionSets = (s: ConfigStoreState): AppConfig['defaultInstructionSets'] => s.config.defaultInstructionSets;
 export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.config.tabOrder;

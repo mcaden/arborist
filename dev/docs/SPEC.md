@@ -48,9 +48,10 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 |--------|-------------|
 | C-01   | Pressing the "+" button MUST present a choice of tool: Claude or Copilot. |
 | C-02   | After tool selection, the app MUST prompt the user to select a worktree directory. The picker SHOULD offer a list of worktrees detected from configured root repositories (see §5.5) in addition to a manual OS file picker. |
-| C-03   | After worktree selection, the app MUST compose a single shell invocation that runs configured pre-launch commands followed by the CLI launch command, all within the worktree directory, and open a new terminal in the main area executing that invocation. |
+| C-03   | After worktree selection, the app MUST open a new terminal in the main area that runs the CLI launch command in the worktree's directory. (Issue #63 separated one-shot setup from per-session launch — see C-06; pre-launch joining was removed in `configVersion = 5`.) |
 | C-04   | The instruction set used MAY be configurable per-tool (see §5.4); when none is configured, the CLI relies on its built-in `cwd`-based discovery (see I-04). |
 | C-05   | Multiple sessions for the same tool and worktree MUST be allowed. The new session's tab label MUST append a numeric suffix to disambiguate (e.g., "my-feature 2", "my-feature 3"). |
+| C-06   | When a new worktree is created via `worktree_create` and `AppConfig.worktreePrepCommands` is non-empty, the app MUST asynchronously run those commands once in the worktree's directory, capture combined stdout/stderr to a per-prep log under `<app_data_dir>/worktree-prep-logs/`, and surface lifecycle (running / success / failure) via an in-app banner with a "View log" affordance. Prep failures MUST NOT prevent the worktree from being created. |
 
 ### 5.3 Main Terminal Area
 

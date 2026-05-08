@@ -135,7 +135,7 @@ interface InstructionSet {
 
 ```typescript
 interface AppConfig {
-  configVersion: number; // On-disk schema version (currently 4; bumped on breaking changes)
+  configVersion: number; // On-disk schema version (currently 5; bumped on breaking changes)
   defaultInstructionSets: {
     claude: string; // InstructionSet ID
     copilot: string; // InstructionSet ID
@@ -143,13 +143,11 @@ interface AppConfig {
   instructionSetsDir: string; // Path to directory containing instruction files
   workspaceRoot: string | null; // Single anchor repo (Roadmap §1); takes precedence over worktreeRoots
   worktreeRoots: string[]; // Legacy: additional repo roots to scan (kept for forward compatibility)
-  prelaunchCommands: string[]; // Global commands run before CLI launch
-  worktreePrelaunchCommands: Record<string, string[]>; // Per-worktree overrides (key = worktree path)
+  worktreePrepCommands: string[]; // One-shot prep commands run once when a worktree is created (issue #63)
   aiLaunchCommands: { claude: string; copilot: string }; // Per-tool CLI override; empty string = default
   lastOpenSessions: string[]; // Session IDs to restore on next launch
   tabOrder: string[]; // Session IDs in sidebar display order
   activeSessionId: string | null; // Focused session at last shutdown (restored on launch)
-  aiLaunchCommands: { claude: string; copilot: string }; // Per-agent CLI launch overrides ('' = built-in default)
   customProcesses: CustomProcessDef[]; // User-defined launchers exposed in the tab context menu (§3.4)
   lastOpenSubSessions: SubSessionRecord[]; // Sub-tabs to restore on next launch (§3.4)
 }
@@ -164,8 +162,16 @@ Schema version history (`configVersion`):
   sub-tab feature, §3.4). Migration seeds the built-in `shell`,
   `open-folder`, and `vscode` defs **additively** — only IDs not already
   present are inserted, so user edits to a built-in def are never
-  overwritten. Future versions (`> CONFIG_VERSION_CURRENT`) are quarantined
-  on load and replaced with defaults to protect downgrade scenarios.
+  overwritten.
+- `5` — renamed `prelaunchCommands` → `worktreePrepCommands` and dropped
+  `worktreePrelaunchCommands` (issue #63). The semantic is now "run once
+  when a new worktree is created", not "join in front of every CLI shell".
+  Migration is destructive: both legacy keys are silently dropped — no
+  value is preserved, since the old prelaunch model and the new
+  worktree-prep model run in different contexts and at different times.
+
+Future versions (`> CONFIG_VERSION_CURRENT`) are quarantined
+on load and replaced with defaults to protect downgrade scenarios.
 
 `AppConfig` and the companion `sessions.json` no longer live directly under the
 OS `app_data_dir`. Both files are scoped per **(branch, workspace)** so that
@@ -334,21 +340,23 @@ User clicks [+]
       2. Resolves user's default shell and platform shell flag:
            macOS / Linux: $SHELL,   flag "-c"
            Windows:       %COMSPEC%, flag "/c"
-      3. Merges global prelaunchCommands with any worktree-specific overrides
-      4. Builds CLI launch command (see §5.6 — CLI Launch Commands)
-      5. Composes command string: [...prelaunchCmds, cliCmd].join(' && ')
-      6. Stores composedCommand on Session record (used for restart)
-      7. Spawns PTY via portable-pty:
+      3. Builds CLI launch command (see §5.6 — CLI Launch Commands)
+      4. Stores composedCommand = cliCmd on the Session record (used for restart).
+         (Pre-launch shell joining was removed in `configVersion = 5` /
+         issue #63 — one-shot setup commands now live in
+         `worktreePrepCommands` and run only at worktree-create time. See
+         §3.3 and the `worktree_create` row in §6.)
+      5. Spawns PTY via portable-pty:
            PtySize { cols, rows }
            Command { program: shell, args: [shellFlag, composedCommand], cwd: worktreePath }
-      8. Records pid on Session; sets status → 'starting'
-      9. Spawns read thread: forwards PTY output to frontend via
+      6. Records pid on Session; sets status → 'starting'
+      7. Spawns read thread: forwards PTY output to frontend via
            Tauri event: session://output { sessionId, data }
            The read thread applies backpressure: if the pending event queue
            exceeds a threshold (default: 512 events), output is buffered and
            flushed at a capped rate to prevent memory exhaustion from runaway
            CLI processes.
-     10. Returns SessionView to frontend (composedCommand excluded)
+      8. Returns SessionView to frontend (composedCommand excluded)
   → Frontend:
       1. Creates xterm.js Terminal, subscribes to session://output events for this sessionId
       2. Adds SidebarTab for new session
@@ -986,7 +994,8 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `worktrees_list` | `{ repoRoot: string }` | `WorktreeInfo[]` | Enumerate git worktrees rooted at `repoRoot`. Implemented via the injectable `GitRunner` seam (production: `git worktree list --porcelain`, parsed in `src-tauri/src/git.rs`). **Always returns `Ok(vec![])` on failure** — git missing, repo_root not a directory, repo_root is not a git repository, or any IO/parse error degrades to an empty list (logged with `code="GitUnavailable"`) so the UI's "Browse…" fallback is never blocked by an error toast. `WorktreeInfo = { path, branch?, isMain, isLocked }`. |
 | `workspace_validate` | `{ path: string }` | `{ valid: boolean, error?: string, alreadyOpenInAnotherInstance?: boolean }` | Validate a candidate workspace root for the first-boot picker (Roadmap §1.1) and the in-app workspace switcher (§5.5c). Returns `valid: true` only when `path` is an absolute, existing directory that is a **primary git repository root** — i.e. `git -C <path> rev-parse --show-toplevel` equals `path` itself **AND** `<path>/.git` is a *directory*. Linked git worktrees (where `.git` is a *file* containing `gitdir: <path-into-primary>`) and submodule working trees are explicitly rejected, because Arborist's session model spawns child worktrees from a primary repo root and a linked worktree cannot host its own worktrees (`git worktree add` from inside one fails). Subdirectories of a repo are also rejected (toplevel != path). On failure, `error` carries a short human-readable reason (`"path is not an absolute directory"`, `"not a git repository"`, `"path is a linked git worktree, not a primary repository root"`, `"path must be the repository root (...)"`, …). Never throws an `AppError` for the "invalid" case — the picker shows inline feedback. The same rules are enforced at boot by `crate::boot::validate_repo_root`; the two MUST stay in sync. **`alreadyOpenInAnotherInstance` is an advisory contention probe** (set only when the caller can supply an `app_data_dir` — i.e. the public Tauri command path; internal in-app callers pass `None` and leave the field as `undefined`). When set, it is the result of a non-destructive `WorkspaceLockGuard::probe` against the per-(branch, workspace) `.lock` file: `true` ⇒ another Arborist instance is currently bound here, `false` ⇒ free at probe time, `undefined` ⇒ no probe was performed. The signal is purely advisory — there is an inherent race window between probe and the authoritative acquire performed by `bind_workspace`/`workspace_switch`. The picker MUST render this as a warning and NOT a hard block; persistent contention surfaces later as a `WorkspaceLocked` error from the acquire. |
 | `workspace_switch` | `{ path: string }` | `{ workspaceRoot: string, noOp: boolean, config: AppConfig, sessions: SessionView[] }` | Atomically swap the running process from the current (branch, workspace) pair to the new one identified by `path` (§5.5c). The full transaction (validate → no-op fast path → acquire new lock → **persist `workspaceRoot` into new `config.json` (aborts switch on failure)** → drain AI-discovery callbacks (`metrics.stop_all_and_join`) → **park** old sessions (`pool.kill` drains PTY-status callbacks; persisted records are preserved) → swap `WorkspaceScope` → best-effort persist hint → **inline `restore_all_sessions` for the new workspace under the same write guard** → latch `restored = true` (the gate is **not** reset before restore — restoring inline means latching to true at the end is the only correct transition; see §5.5c step 8) → load `{ config, sessions }` from the new store) runs under a `tokio::sync::RwLock<()>` write guard (`switch_lock`) held for the entire function body, paired with an `AtomicUsize` counter (`switch_pending`) bumped before the lock is awaited. The pair quiesces in-flight workspace-mutating handlers before the swap and rejects new ones with `WorkspaceSwitchInProgress` for the duration; concurrent switches queue serially on the write side. Returns `noOp: true` (no work done; `config` + `sessions` reflect the unchanged state) when `path` canonicalises to the currently bound root. Returns `WorkspaceLocked` on lock-contention with the old workspace still bound; the frontend should surface this as a hard error. On success (`noOp: false`), the frontend adopts the returned `config` + `sessions` atomically into both stores in a single render (`lib/workspace-switch.ts::changeWorkspace` → `configStore.adoptWorkspace` + `sessionStore.actions.adoptWorkspace`); no second round-trip and no `workspace://changed` event are needed. **Park semantics**: the old workspace's `sessions.json`, `last_open_sessions`, `tab_order`, and `active_session_id` are left untouched, so a later switch-back resurrects every session at its previous position with Claude/Copilot `--resume` keeping AI conversation context alive (§5.5c step 7). |
-| `worktree_create` | `{ name: string }` | `{ path: string }` | Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2). Requires `workspaceRoot` to be set in `AppConfig`; errors with `NotFound` otherwise. The `name` is re-validated server-side via the same rules as `validateWorktreeName` (no spaces; no `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\\`; cannot start/end with `.` or `/`; cannot end with `.lock`; cannot be `@`; 1–255 chars); `InvalidPath` is returned for any rule violation. Runs `git -C <workspaceRoot> worktree add .worktrees/<name> -b <name>` via the injected `GitRunner`; bubbles up the captured stderr in the `Internal` error message on git failure. Returns the canonical absolute path to the new worktree directory. |
+| `worktree_create` | `{ name: string }` | `WorktreeCreateResult = { path: string, prep: WorktreePrepInfo \| null }` | Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2). Requires `workspaceRoot` to be set in `AppConfig`; errors with `NotFound` otherwise. The `name` is re-validated server-side via the same rules as `validateWorktreeName` (no spaces; no `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\\`; cannot start/end with `.` or `/`; cannot end with `.lock`; cannot be `@`; 1–255 chars); `InvalidPath` is returned for any rule violation. Runs `git -C <workspaceRoot> worktree add .worktrees/<name> -b <name>` via the injected `GitRunner`; bubbles up the captured stderr in the `Internal` error message on git failure. Returns the canonical absolute path to the new worktree directory. **Worktree prep (issue #63):** when `AppConfig.worktreePrepCommands` has at least one non-blank entry, the wrapper additionally spawns a one-shot prep job in the new worktree's cwd. The `prep` field is `null` when no commands are configured; otherwise it carries `{ prepId, worktreePath, logPath }`. Lifecycle (`started` / `exited`) flows through the `worktree://prep` event. Spawn-failure of the prep itself is **not** a `worktree_create` failure — the create still resolves with `prep: Some(...)` and the failure surfaces as an `exited` event with `exitCode: null` plus a populated `errorMessage`. |
+| `worktree_prep_open_log` | `{ logPath: string }` | — | Open the captured prep log under the OS-default handler (issue #63). The backend canonicalises `logPath`, asserts it lives under `<app_data_dir>/worktree-prep-logs/`, and rejects with `PermissionDenied` otherwise. Implemented in Rust (`cmd /c start ""` on Windows, `xdg-open` on Linux, `open` on macOS) so we don't need to expose a broad shell-open capability to the WebView. |
 | `subsession_create` | `{ parentSessionId, defId }` | `SubSession` | Compose and spawn a sub-session under the named parent. See §5.7.1. Errors: `NotFound` (def or parent missing), `InvalidArgument` (def disabled, or parent in closing tombstone), `WorktreeMissing`, `PtySpawnFailed`/`AppSpawnFailed`/`ToolMissing`. |
 | `subsession_close` | `{ id }` | — | Tear down a sub-session. Terminal kind kills the PTY; application kind only detaches Arborist's tracking (the external program keeps running). See §5.7.3. |
 | `subsession_focus` | `{ id }` | — | For application kind, focus the OS window via `WindowFocuser` (§5.7.4). Errors: `NotApplicable` (PID is a launcher wrapper that exited), `PermissionDenied`, `ToolMissing`, `Unsupported` (Wayland). For terminal kind, no-op on the backend; the frontend swaps viewports. |
@@ -1018,6 +1027,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `subsession://exited` | `{ id, exitCode? }` | Application sub-session's external process closed itself (or its launcher wrapper exited). The frontend reducer maps `exitCode != 0` to status `error`; otherwise `exited`. |
 | `subsession://restored` | `{ subSession }` | Emitted by the restore second pass (§5.7.6) for each `lastOpenSubSessions` record successfully re-materialised in the in-memory store. The frontend's `applyRestored` reducer is idempotent and never steals `activeByParent` from a tab the parent already owns. |
 | `session://output` (sub) | `{ sessionId, data }` | Terminal sub-session output reuses the existing channel — the UUID id space is global across `Session` and `SubSession`, and the frontend filters by id when subscribing. |
+| `worktree://prep` | `{ kind: 'started', prepId, worktreePath, logPath, command, startedAt }` \| `{ kind: 'exited', prepId, worktreePath, logPath, exitCode: number \| null, errorMessage: string \| null, startedAt, finishedAt }` | Lifecycle of a worktree-prep run kicked off by `worktree_create` when `AppConfig.worktreePrepCommands` is non-empty (issue #63). Both variants carry every correlation field the frontend needs so a banner can be rendered even if `started` was missed (e.g. a sub-second prep exited before `App.tsx` boot attached the listener). `exitCode` is `null` for signal exits and spawn failures; `errorMessage` is populated alongside in the spawn-failure case. The frontend store (`src/store/worktree-prep-store.ts`) is idempotent: `exited` upserts a `completed` record even when no matching `started` was seen. |
 
 > **Removed in PR5 (settings-flush):** `workspace://changed` no longer
 > exists. State transfer for an in-app workspace switch happens inline
@@ -1120,12 +1130,15 @@ shell command that runs something unintended on the user's machine.
   (instruction file paths, the Copilot `-i` context string) must be properly
   shell-quoted — not simply wrapped in double quotes — to handle paths with spaces,
   single quotes, or backslashes correctly on all platforms.
-- **Config-only sources**: Pre-launch commands and CLI launch arguments are built
+- **Config-only sources**: Worktree-prep commands and CLI launch arguments are built
   exclusively from validated config values. No free-form user input from the UI is
   interpolated into a shell command.
-- **`prelaunchCommands` execute as the user**: Users who configure `prelaunchCommands`
-  are intentionally running shell commands. The session creation dialog displays the
-  active pre-launch commands so users can review them before confirming.
+- **`worktreePrepCommands` execute as the user**: Users who configure
+  `worktreePrepCommands` (issue #63) are intentionally running shell commands.
+  Each command runs **once** when a worktree is created via `worktree_create`
+  in the worktree's own directory; combined stdout+stderr is captured to a
+  per-prep log under `<app_data_dir>/worktree-prep-logs/`. Failures surface via
+  the `worktree://prep` event and the in-app banner — they are not silent.
 - **Custom-process commands**: A `CustomProcessDef.command` is composed at
   sub-session creation time and stored verbatim in `SubSession.composedCommand`,
   then passed to the platform shell (`$SHELL -c <cmd>` on Unix, `%COMSPEC% /c
