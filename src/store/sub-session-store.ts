@@ -198,9 +198,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
           const wttState = useWorktreeTabStore.getState();
           const tab = wttState.tabs.find((t) => t.id === closingSub.parentWorktreeTabId);
           if (tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === id) {
-            const wttActions = wttState.actions;
-            wttActions.patchActiveChild(tab.id, null);
-            void wttActions.setActiveChild(tab.id, null).catch((err) => {
+            void wttState.actions.setActiveChild(tab.id, null).catch((err) => {
               console.warn(`[sub-session-store] setActiveChild after close(${id}) failed: ${formatError(err)}`);
             });
           }
@@ -229,7 +227,6 @@ export const useSubSessionStore = create<Store>((set, get) => {
         const tab = wttState.tabs.find((t) => t.id === sub.parentWorktreeTabId);
         if (tab) {
           const wttActions = wttState.actions;
-          wttActions.patchActiveChild(tab.id, { kind: 'subSession', id });
           void wttActions.focus(tab.id);
           void wttActions.setActiveChild(tab.id, { kind: 'subSession', id }).catch((err) => {
             console.warn(`[sub-session-store] setActiveChild after focus(${id}) failed: ${formatError(err)}`);

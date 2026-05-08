@@ -368,12 +368,12 @@ export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Pr
 // ---------------------------------------------------------------------------
 // Phase 2: sub-session commands & events.
 //
-// Sub-sessions are children of a session and represent the "+ button"
-// items chosen from the tab context menu. Phase 2 ships *terminal* kind
-// (a second PTY in the same worktree); Phase 3 adds *application* kind
-// (detached external windows). Output for terminal sub-sessions reuses
-// the existing `session://output` channel because the UUID id space is
-// global; status changes get their own `subsession://status` channel.
+// Sub-sessions are children of a worktree tab (`parentWorktreeTabId`) and
+// represent custom processes chosen from the worktree-tab context menu.
+// Terminal sub-sessions are in-app PTYs; application sub-sessions launch
+// detached external windows. Output for terminal sub-sessions reuses the
+// existing `session://output` channel because the UUID id space is global;
+// status changes get their own `subsession://status` channel.
 // ---------------------------------------------------------------------------
 
 export function subSessionCreate(args: SubSessionCreateArgs): Promise<SubSession> {

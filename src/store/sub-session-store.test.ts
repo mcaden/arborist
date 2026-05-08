@@ -50,6 +50,7 @@ function makeTab(id: WorktreeTabId, activeChildId?: ChildId): WorktreeTab {
     name: String(id),
     label: String(id),
     tabIndex: 0,
+    iconId: 1,
   };
   if (activeChildId !== undefined) tab.activeChildId = activeChildId;
   return tab;

@@ -440,7 +440,6 @@ export const useSessionStore = create<Store>((set, get) => {
           if (parentTab && parentTab.activeChildId?.kind === 'session' && parentTab.activeChildId.id === id) {
             const sibling = nextSessions.find((s) => s.worktreePath === closingSession.worktreePath);
             const replacement: ChildId | null = sibling ? { kind: 'session', id: sibling.id } : null;
-            wttState.actions.patchActiveChild(parentTab.id, replacement);
             void wttState.actions.setActiveChild(parentTab.id, replacement).catch((err) => {
               console.warn(`[session-store] setActiveChild(null) after close(${id}) failed: ${formatError(err)}`);
             });
@@ -531,9 +530,7 @@ export const useSessionStore = create<Store>((set, get) => {
         const tab = useWorktreeTabStore.getState().tabs.find((t) => t.path === session.worktreePath);
         if (tab) {
           const wttActions = useWorktreeTabStore.getState().actions;
-          // Update the parent tab's activeChildId locally first so the sidebar tabs flip immediately, then fire backend writes that we don't
-          // need to await — focus must feel instant.
-          wttActions.patchActiveChild(tab.id, { kind: 'session', id });
+          // Fire backend writes without awaiting — the store actions update local state synchronously, and focus must feel instant.
           void wttActions.focus(tab.id);
           void wttActions.setActiveChild(tab.id, { kind: 'session', id }).catch((err) => {
             console.warn(`[session-store] setActiveChild after focus(${id}) failed: ${formatError(err)}`);

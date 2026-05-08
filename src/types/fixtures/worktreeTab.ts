@@ -20,4 +20,5 @@ export const worktreeTabFixture = {
   label: 'feature-x',
   tabIndex: 0,
   activeChildId: subSessionChildIdFixture,
+  iconId: 1,
 } as const satisfies WorktreeTab;

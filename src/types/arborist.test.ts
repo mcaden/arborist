@@ -297,7 +297,7 @@ describe('arborist type mirrors', () => {
   it('WorktreeTab fixture matches TS interface key set', () => {
     assertExactKeys(
       worktreeTabFixture as unknown as Record<string, unknown>,
-      ['id', 'path', 'name', 'label', 'tabIndex'],
+      ['id', 'path', 'name', 'label', 'tabIndex', 'iconId'],
       ['branch', 'activeChildId'],
       'WorktreeTab',
     );

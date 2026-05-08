@@ -97,7 +97,7 @@ export type ChildId = { kind: 'session'; id: SessionId } | { kind: 'subSession';
 
 // MIRROR: src-tauri/src/types.rs::WorktreeTab
 // First-class worktree tab record. Parent in the sidebar hierarchy.
-// Child sessions/sub-sessions are grouped by matching `worktreePath`.
+// AI sessions are grouped by matching `worktreePath`; sub-sessions are owned by `parentWorktreeTabId`.
 export interface WorktreeTab {
   id: WorktreeTabId;
   path: string;
