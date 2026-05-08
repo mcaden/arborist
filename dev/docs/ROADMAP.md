@@ -133,7 +133,7 @@ at least a minimal in-app settings surface is needed.
 
 ### 4.1 "Starting" status indicator on tabs
 - **Gap**: Tabs have an error dot (`session.status === 'error'`) but no visual
-  feedback when a session is in the `'starting'` state. Slow pre-launch commands
+  feedback when a session is in the `'starting'` state. Slow CLI startup can
   leave the user with no indication the session is initialising.
 - **Needed**: A subtle spinner or pulsing dot on the tab icon while `status === 'starting'`.
 

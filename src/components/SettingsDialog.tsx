@@ -8,13 +8,11 @@
 //                       WorkspacePicker so the park-old-sessions
 //                       invariant lives in one place — see
 //                       `lib/workspace-switch.ts`), instruction sets
-//                       directory (path picker), pre-launch commands
+//                       directory (path picker), worktree prep commands
 //                       (one shell command per line), and per-agent CLI
 //                       launch overrides (claude / copilot).
 //   Custom Processes  — CRUD over `AppConfig.customProcesses` (lives in
 //                       a dedicated `CustomProcessesTab` component).
-//
-// Per-worktree pre-launch overrides remain config-file–only in v1.
 
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';

@@ -35,9 +35,9 @@ function leaf(p: string): string {
 
 export function WorktreePrepBanner(): JSX.Element | null {
   // `selectInFlightPreps` derives an array via `Object.values`, so a
-  // referential-equality compare would treat every render as a change and
-  // trigger an infinite loop in React; `useShallow` does an element-wise
-  // equality check on the array so we only re-render on actual state changes.
+  // referential-equality compare would treat unchanged contents as a new
+  // value and cause unnecessary re-renders; `useShallow` does an element-wise
+  // equality check so we only re-render on actual state changes.
   const inFlight = useWorktreePrepStore(useShallow(selectInFlightPreps));
   const recent = useWorktreePrepStore(selectRecentCompletedPreps);
   const dismissCompleted = useWorktreePrepStore((s) => s.dismissCompleted);

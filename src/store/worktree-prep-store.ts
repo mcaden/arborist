@@ -16,7 +16,7 @@
 //   the most-recent N completions).
 // * The store deliberately keeps NO long-term history: prep records vanish
 //   on app restart. Auto-resuming previously-running prep across restarts
-//   is intentionally out of scope (see plan.md "Notes / open questions").
+//   is intentionally out of scope for v1 (SPEC §7 limits the shipped scope).
 
 import { create } from 'zustand';
 

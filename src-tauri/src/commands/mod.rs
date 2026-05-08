@@ -276,8 +276,7 @@ pub async fn worktree_prep_open_log(app: tauri::AppHandle, args: crate::types::W
 
 #[cfg(target_os = "windows")]
 fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
-    // `start` treats the first quoted argument as the window title, so pass an empty title before the target path.
-    std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).spawn().map(|_| ())
+    std::process::Command::new("explorer.exe").arg(path).spawn().map(|_| ())
 }
 
 #[cfg(target_os = "macos")]
