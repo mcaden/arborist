@@ -33,10 +33,11 @@ afterEach(() => {
 describe('WorktreeTabContextMenu', () => {
   const noop = () => {};
 
-  it('renders Close and Launch items', () => {
+  it('renders Launch Claude, Launch Copilot, and Close items', () => {
     render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+    expect(screen.getByTestId('worktree-tab-context-menu-launch-claude')).toBeInTheDocument();
+    expect(screen.getByTestId('worktree-tab-context-menu-launch-copilot')).toBeInTheDocument();
     expect(screen.getByTestId('worktree-tab-context-menu-close')).toBeInTheDocument();
-    expect(screen.getByTestId('worktree-tab-context-menu-launch')).toBeInTheDocument();
   });
 
   it('Close calls worktreeTabClose for this tab and dismisses the menu', () => {
@@ -47,14 +48,7 @@ describe('WorktreeTabContextMenu', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('Launch opens the agent submenu (Claude + Copilot)', () => {
-    render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
-    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch'));
-    expect(screen.getByTestId('worktree-tab-context-menu-launch-claude')).toBeInTheDocument();
-    expect(screen.getByTestId('worktree-tab-context-menu-launch-copilot')).toBeInTheDocument();
-  });
-
-  it('clicking Launch ▸ Claude calls sessionCreate with this worktree path', () => {
+  it('clicking Launch Claude calls sessionCreate with this worktree path', () => {
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',
       tool: 'claude',
@@ -67,12 +61,11 @@ describe('WorktreeTabContextMenu', () => {
       tabIndex: 0,
     });
     render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
-    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch'));
     fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-claude'));
     expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude', worktreePath: '/repo/feature-x' }));
   });
 
-  it('clicking Launch ▸ Copilot calls sessionCreate with copilot tool', () => {
+  it('clicking Launch Copilot calls sessionCreate with copilot tool', () => {
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',
       tool: 'copilot',
@@ -85,7 +78,6 @@ describe('WorktreeTabContextMenu', () => {
       tabIndex: 0,
     });
     render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
-    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch'));
     fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-copilot'));
     expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'copilot', worktreePath: '/repo/feature-x' }));
   });

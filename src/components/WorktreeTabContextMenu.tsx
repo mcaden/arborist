@@ -1,18 +1,14 @@
 // WorktreeTabContextMenu — right-click menu for a worktree tab (issue #44).
 //
-// Items:
-//   * Close         → cascades close of the worktree tab and all child sessions / sub-sessions.
-//   * Launch ▸      → submenu with built-in agents (Claude, Copilot). Selecting an
-//                     agent calls `sessionActions.create({tool, worktreePath, ...})`;
-//                     the autolink in `session-store.create` registers it under this tab.
-//   * <custom defs> → one entry per enabled custom-process definition. Calls
-//                     `subActions.create({parentWorktreeTabId, defId})` to spawn
-//                     a sub-session directly under this worktree tab.
-//   * Settings…     → opens the Settings dialog on the Custom Processes tab.
+// Items (flat, no submenu):
+//   * Launch Claude  → creates a Claude session under this worktree tab.
+//   * Launch Copilot → creates a Copilot session under this worktree tab.
+//   * Close          → cascades close of the worktree tab and all children.
+//   * <custom defs>  → one entry per enabled custom-process definition.
+//   * Settings…      → opens the Settings dialog on the Custom Processes tab.
 //
-// Keyboard model mirrors TabContextMenu: ↑/↓ within a level, → opens submenu,
-// ← closes submenu, Enter activates, Esc closes the whole menu and restores
-// focus to the trigger.
+// Keyboard model: ↑/↓ cycles items, Enter activates, Esc closes and
+// restores focus to the trigger.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -35,16 +31,7 @@ export interface WorktreeTabContextMenuProps {
   onOpenSettings?: () => void;
 }
 
-type Item = 'close' | 'launch' | 'settings' | `cp:${string}`;
-
-interface AgentEntry {
-  tool: Tool;
-  label: string;
-}
-const AGENTS: AgentEntry[] = [
-  { tool: 'claude', label: 'Claude' },
-  { tool: 'copilot', label: 'Copilot' },
-];
+type Item = 'close' | 'launch-claude' | 'launch-copilot' | 'settings' | `cp:${string}`;
 
 export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo, onOpenSettings }: WorktreeTabContextMenuProps): JSX.Element | null {
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
@@ -53,10 +40,10 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   const subActions = useSubSessionActions();
   const customProcesses = useEnabledCustomProcesses();
 
-  // Build the full item order: Close, Launch ▸, then one entry per enabled
-  // custom process, then Settings…
+  // Build the full item order: Launch Claude, Launch Copilot, Close,
+  // then one entry per enabled custom process, then Settings…
   const itemOrder = useMemo<Item[]>(() => {
-    const items: Item[] = ['close', 'launch'];
+    const items: Item[] = ['launch-claude', 'launch-copilot', 'close'];
     if (customProcesses.length > 0) {
       for (const def of customProcesses) {
         items.push(`cp:${def.id}` as Item);
@@ -67,13 +54,9 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   }, [customProcesses]);
 
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const submenuRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Map<Item, HTMLButtonElement | null>>(new Map());
-  const submenuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  const [focusedItem, setFocusedItem] = useState<Item>('close');
-  const [submenuOpen, setSubmenuOpen] = useState<boolean>(false);
-  const [submenuFocusedIdx, setSubmenuFocusedIdx] = useState<number>(0);
+  const [focusedItem, setFocusedItem] = useState<Item>('launch-claude');
 
   const closeMenu = useCallback((): void => {
     onClose();
@@ -84,16 +67,15 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   // Focus the first item when the menu mounts.
   useEffect(() => {
-    itemRefs.current.get('close')?.focus();
+    itemRefs.current.get('launch-claude')?.focus();
   }, []);
 
-  // Outside pointer-down dismisses. Listen on `mousedown` so dismissal precedes any click on a sidebar tab.
+  // Outside pointer-down dismisses.
   useEffect(() => {
     function onPointerDown(e: MouseEvent): void {
       const target = e.target as Node | null;
       if (!target) return;
       if (menuRef.current?.contains(target)) return;
-      if (submenuRef.current?.contains(target)) return;
       closeMenu();
     }
     document.addEventListener('mousedown', onPointerDown);
@@ -122,19 +104,6 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     const nextIdx = (idx + delta + itemOrder.length) % itemOrder.length;
     const next = itemOrder[nextIdx];
     if (next) focusItem(next);
-  };
-
-  const openSubmenu = (): void => {
-    setSubmenuOpen(true);
-    setSubmenuFocusedIdx(0);
-    requestAnimationFrame(() => {
-      submenuItemRefs.current[0]?.focus();
-    });
-  };
-
-  const closeSubmenu = (): void => {
-    setSubmenuOpen(false);
-    focusItem('launch');
   };
 
   const handleClose = (): void => {
@@ -177,7 +146,8 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   const activateItem = (item: Item): void => {
     if (item === 'close') handleClose();
-    else if (item === 'launch') openSubmenu();
+    else if (item === 'launch-claude') handleLaunch('claude');
+    else if (item === 'launch-copilot') handleLaunch('copilot');
     else if (item === 'settings') handleSettings();
     else if (item.startsWith('cp:')) handleCustomProcess(item.slice(3));
   };
@@ -202,11 +172,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           e.preventDefault();
-          if (submenuOpen) {
-            closeSubmenu();
-          } else {
-            closeMenu();
-          }
+          closeMenu();
           return;
         }
         if (e.key === 'Tab') {
@@ -214,7 +180,6 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
           closeMenu();
           return;
         }
-        if (submenuOpen) return;
         switch (e.key) {
           case 'ArrowDown':
             e.preventDefault();
@@ -223,12 +188,6 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
           case 'ArrowUp':
             e.preventDefault();
             moveFocus(-1);
-            break;
-          case 'ArrowRight':
-            if (focusedItem === 'launch') {
-              e.preventDefault();
-              openSubmenu();
-            }
             break;
           case 'Enter':
           case ' ':
@@ -240,6 +199,29 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       }}
     >
       <button
+        ref={setItemRef('launch-claude')}
+        type="button"
+        role="menuitem"
+        data-testid="worktree-tab-context-menu-launch-claude"
+        onClick={() => handleLaunch('claude')}
+        onMouseEnter={() => setFocusedItem('launch-claude')}
+        className={itemBase}
+      >
+        <span>Launch Claude</span>
+      </button>
+      <button
+        ref={setItemRef('launch-copilot')}
+        type="button"
+        role="menuitem"
+        data-testid="worktree-tab-context-menu-launch-copilot"
+        onClick={() => handleLaunch('copilot')}
+        onMouseEnter={() => setFocusedItem('launch-copilot')}
+        className={itemBase}
+      >
+        <span>Launch Copilot</span>
+      </button>
+      <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+      <button
         ref={setItemRef('close')}
         type="button"
         role="menuitem"
@@ -250,78 +232,6 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       >
         <span>Close worktree tab</span>
       </button>
-      <button
-        ref={setItemRef('launch')}
-        type="button"
-        role="menuitem"
-        data-testid="worktree-tab-context-menu-launch"
-        aria-haspopup="menu"
-        aria-expanded={submenuOpen}
-        onClick={openSubmenu}
-        onMouseEnter={() => setFocusedItem('launch')}
-        className={itemBase}
-      >
-        <span>Launch</span>
-        <span aria-hidden="true">▸</span>
-      </button>
-      {submenuOpen && (
-        <div
-          ref={submenuRef}
-          role="menu"
-          aria-label="Launch agent"
-          data-testid="worktree-tab-context-menu-launch-submenu"
-          style={{
-            position: 'fixed',
-            left: position.left + 200,
-            top: position.top + 24,
-            minWidth: 160,
-            zIndex: 61,
-          }}
-          className="rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.preventDefault();
-              closeSubmenu();
-              return;
-            }
-            if (e.key === 'ArrowLeft') {
-              e.preventDefault();
-              closeSubmenu();
-              return;
-            }
-            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-              e.preventDefault();
-              const delta = e.key === 'ArrowDown' ? 1 : -1;
-              const next = (submenuFocusedIdx + delta + AGENTS.length) % AGENTS.length;
-              setSubmenuFocusedIdx(next);
-              submenuItemRefs.current[next]?.focus();
-              return;
-            }
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              const agent = AGENTS[submenuFocusedIdx];
-              if (agent) handleLaunch(agent.tool);
-            }
-          }}
-        >
-          {AGENTS.map((agent, idx) => (
-            <button
-              key={agent.tool}
-              ref={(el) => {
-                submenuItemRefs.current[idx] = el;
-              }}
-              type="button"
-              role="menuitem"
-              data-testid={`worktree-tab-context-menu-launch-${agent.tool}`}
-              onClick={() => handleLaunch(agent.tool)}
-              onMouseEnter={() => setSubmenuFocusedIdx(idx)}
-              className={itemBase}
-            >
-              <span>{agent.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
       {customProcesses.length > 0 && (
         <>
           <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />

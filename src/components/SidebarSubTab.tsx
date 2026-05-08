@@ -81,7 +81,7 @@ export function SidebarSubTab({ worktreeTabId, subSessionId }: SidebarSubTabProp
       <button
         type="button"
         onClick={handleClick}
-        className={`flex w-full items-center gap-2 rounded-md py-1 pl-7 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
+        className={`flex w-full items-center gap-2 rounded-md py-1 pl-5 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
       >
         <SubTabIcon kind={sub.kind} iconDataUri={iconDataUri} label={sub.label} />
         <span className="min-w-0 flex-1 truncate">{sub.label}</span>
