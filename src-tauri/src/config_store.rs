@@ -229,10 +229,12 @@ impl ConfigStore {
             migrate_v5_to_v6(&mut cfg, &sessions);
         }
         // v6→v7: backfill `WorktreeTab.icon_id` for any tab still carrying the serde default (0). Tabs created via `worktree_tab_open_impl` always
-        // populate this field; the backfill exists solely for configs persisted under v6 (where the field did not exist) and for any v7 record
-        // whose `iconId` somehow round-tripped through a frontend that omitted it. Walks `worktree_tab_order` so the assignment is deterministic and
-        // matches the order tabs appear in the sidebar.
-        if cfg.config_version < 7 {
+        // populate this field; the backfill exists for two cases — (a) configs persisted under v6 (where the field did not exist), and (b) any
+        // already-v7 record that somehow ended up with `icon_id == 0` (manual edit, partial write, a frontend that round-tripped without the field).
+        // The second case is why this guard *also* runs whenever any tab has `icon_id == 0`, regardless of `config_version`: it preserves the
+        // post-load invariant rather than letting a corrupted record persist forever. Walks `worktree_tab_order` so the assignment is deterministic
+        // and matches the order tabs appear in the sidebar.
+        if cfg.config_version < 7 || cfg.worktree_tabs.iter().any(|t| t.icon_id == 0) {
             migrate_v6_to_v7(&mut cfg);
         }
         if cfg.config_version < CONFIG_VERSION_CURRENT {
@@ -2618,6 +2620,52 @@ mod tests {
             (1..=WORKTREE_ICON_COUNT).contains(&orphan.icon_id),
             "tab missing from tab_order must still get an iconId backfilled (got {})",
             orphan.icon_id
+        );
+    }
+
+    /// Invariant defense: even when the persisted config is *already* stamped as v7, a tab carrying `icon_id == 0` (manual edit, partial write, a
+    /// frontend that round-tripped without the field) must be backfilled on load — otherwise the documented post-load invariant
+    /// ("every WorktreeTab has icon_id in 1..=N") silently breaks. The migration guard runs whenever *any* tab has a zero, regardless of
+    /// `config_version`. A correctly-stamped tab on the same record must be left untouched.
+    #[test]
+    fn loading_v7_config_with_zero_icon_id_self_heals_via_migration() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let healthy = WorktreeTabId::new();
+        let corrupted = WorktreeTabId::new();
+        let cfg_raw = serde_json::json!({
+            "configVersion": 7,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": [],
+            "worktreeTabs": [
+                { "id": healthy,   "path": "/repo/healthy",   "name": "h", "label": "h", "tabIndex": 0, "iconId": 9 },
+                { "id": corrupted, "path": "/repo/corrupted", "name": "c", "label": "c", "tabIndex": 1, "iconId": 0 }
+            ],
+            "worktreeTabOrder": [healthy, corrupted],
+            "activeWorktreeTabId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        // Stamped version stays at current — backfill alone shouldn't bump it (it was already current).
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.icon_id)).collect();
+        // Healthy tab keeps its existing assignment.
+        assert_eq!(by_id[&healthy], 9, "tab with a valid iconId must not be rewritten by the self-heal pass");
+        // Corrupted tab gets a deterministic least-used pick. Existing assignments at the time it's picked are [9] (healthy) — so the lowest
+        // count icon is 1 (and 2..=8, 10..=16); the lowest-numbered wins → 1.
+        assert_eq!(
+            by_id[&corrupted], 1,
+            "corrupted iconId == 0 must be self-healed to the deterministic least-used pick (1)"
         );
     }
 
