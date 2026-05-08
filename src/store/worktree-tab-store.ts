@@ -22,7 +22,7 @@ import {
   configGet,
   formatError,
 } from '@/lib/tauri-bridge';
-import type { ChildId, WorktreeTab, WorktreeTabId } from '@/types/arborist';
+import type { ChildId, WorktreeTab, WorktreeTabCloseResult, WorktreeTabId } from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
 // State shape
@@ -32,6 +32,14 @@ export interface WorktreeTabStoreState {
   tabs: WorktreeTab[];
   activeId: WorktreeTabId | null;
   isHydrated: boolean;
+  /**
+   * Worktree tab whose close-confirm dialog is currently open, if any. Set by
+   * [`requestClose`] and cleared by [`cancelClose`] or by [`close`] resolving
+   * for the same id. Mirrors the (now-removed) session-store `pendingClose`
+   * pattern so `WorktreeCloseConfirmDialog` can mount declaratively from the
+   * sidebar without per-tab state.
+   */
+  pendingClose: WorktreeTabId | undefined;
 }
 
 export interface WorktreeTabStoreActions {
@@ -43,12 +51,21 @@ export interface WorktreeTabStoreActions {
    */
   hydrate: (knownPaths?: ReadonlyArray<string>) => Promise<void>;
   open: (path: string) => Promise<WorktreeTab>;
-  close: (id: WorktreeTabId) => Promise<void>;
+  /**
+   * Cascade-close a worktree tab and all its child sessions/sub-sessions. When `deleteWorktree` is true, the backend additionally runs
+   * `git worktree remove --force` on the tab's worktree path; the failure of that step is surfaced as `worktreeDeleteError` on the result instead
+   * of as a thrown error so the UI can always converge on a "tab gone" state.
+   */
+  close: (id: WorktreeTabId, deleteWorktree?: boolean) => Promise<WorktreeTabCloseResult>;
   focus: (id: WorktreeTabId) => Promise<void>;
   reorder: (ids: WorktreeTabId[]) => Promise<void>;
   setActiveChild: (id: WorktreeTabId, childId: ChildId | null) => Promise<void>;
   /** Sync a single tab's activeChildId locally (e.g. after session focus). */
   patchActiveChild: (id: WorktreeTabId, childId: ChildId | null) => void;
+  /** Open the close-confirm dialog for `id`. UI-only; no bridge call. */
+  requestClose: (id: WorktreeTabId) => void;
+  /** Dismiss the close-confirm dialog without closing anything. */
+  cancelClose: () => void;
 }
 
 type Store = WorktreeTabStoreState & { actions: WorktreeTabStoreActions };
@@ -110,19 +127,24 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
       return tab;
     },
 
-    async close(id: WorktreeTabId) {
+    async close(id: WorktreeTabId, deleteWorktree?: boolean) {
       // Capture the path BEFORE the backend call so we can converge frontend caches even if the result payload were missing it. Backend
       // cascade closes child sessions/sub-sessions but we don't get per-child UI events for that — the session-store would otherwise leave
       // zombie rows. Lazy-import session-store to avoid a circular import (session-store already imports this module).
       const closingTab = get().tabs.find((t) => t.id === id);
-      const result = await worktreeTabClose({ id });
+      const result = await worktreeTabClose({ id, deleteWorktree: deleteWorktree ?? false });
       if (result.childErrors && result.childErrors.length > 0) {
         console.warn('[worktree-tab-store] close had child errors:', result.childErrors);
       }
       set((s) => {
         const newTabs = s.tabs.filter((t) => t.id !== id);
         const newActiveId = s.activeId === id ? (newTabs[0]?.id ?? null) : s.activeId;
-        return { tabs: newTabs, activeId: newActiveId };
+        return {
+          tabs: newTabs,
+          activeId: newActiveId,
+          // Auto-clear pendingClose if the dialog was open for the row we just closed.
+          pendingClose: s.pendingClose === id ? undefined : s.pendingClose,
+        };
       });
       if (closingTab) {
         try {
@@ -140,6 +162,7 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
           console.warn(`[worktree-tab-store] dropForWorktreeTab(${id}) failed: ${formatError(err)}`);
         }
       }
+      return result;
     },
 
     async focus(id: WorktreeTabId) {
@@ -210,12 +233,21 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
         }),
       }));
     },
+
+    requestClose: (id) => {
+      set({ pendingClose: id });
+    },
+
+    cancelClose: () => {
+      set({ pendingClose: undefined });
+    },
   };
 
   return {
     tabs: [],
     activeId: null,
     isHydrated: false,
+    pendingClose: undefined,
     actions,
   };
 });
@@ -226,6 +258,7 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
 
 export const useWorktreeTabs = (): WorktreeTab[] => useWorktreeTabStore((s) => s.tabs);
 export const useActiveWorktreeTabId = (): WorktreeTabId | null => useWorktreeTabStore((s) => s.activeId);
+export const usePendingWorktreeTabClose = (): WorktreeTabId | undefined => useWorktreeTabStore((s) => s.pendingClose);
 
 /**
  * Stable bag of every action. Backed by a single `actions` object set once at store creation, so the selector returns a referentially-stable

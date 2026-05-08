@@ -65,7 +65,6 @@ function seed(sessions: SessionView[], activeId: string | undefined): void {
   useSessionStore.setState({
     sessions,
     activeId,
-    pendingClose: undefined,
     isHydrated: true,
   });
   useWorktreeTabStore.setState({
@@ -80,7 +79,6 @@ beforeEach(() => {
   useSessionStore.setState({
     sessions: [],
     activeId: undefined,
-    pendingClose: undefined,
     isHydrated: false,
     statusMessages: {},
     hasUnread: {},
@@ -90,7 +88,8 @@ beforeEach(() => {
   useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
   useSubSessionStore.setState({ subSessions: [], statusMessages: {}, pendingClose: undefined, isHydrated: true });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
-  // versions; provide minimal shims so CloseConfirmDialog can mount.
+  // versions; provide minimal shims so the worktree close-confirm dialog
+  // (and other native <dialog> consumers) can mount.
   const proto = HTMLDialogElement.prototype as unknown as {
     showModal?: () => void;
     close?: () => void;
@@ -167,120 +166,20 @@ describe('Sidebar', () => {
     expect(useSessionStore.getState().activeId).toBe('a');
   });
 
-  it('clicking close opens the confirm dialog with the right label', () => {
-    seed([makeView('a', { label: 'feature-x' })], 'a');
+  it('clicking close immediately invokes session close (no confirmation dialog)', async () => {
+    seed([makeView('a', { label: 'feature-x' }), makeView('b')], 'a');
     render(<Sidebar />);
 
-    fireEvent.click(screen.getByRole('button', { name: /close session feature-x/i }));
-
-    const dialog = screen.getByRole('dialog');
-    expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByText(/terminate session/i)).toHaveTextContent('feature-x');
-  });
-
-  it('cancel keeps the tab; confirm removes it via actions.close', async () => {
-    seed([makeView('a'), makeView('b')], 'a');
-    render(<Sidebar />);
-
-    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /cancel/i }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(useSessionStore.getState().sessions).toHaveLength(2);
-
-    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
     await act(async () => {
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
+      fireEvent.click(screen.getByRole('button', { name: /close session feature-x/i }));
     });
 
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'a', deleteWorktree: false });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b']);
   });
 
-  it('passes deleteWorktree=true when the checkbox is ticked before confirming', async () => {
-    seed([makeView('a', { worktreePath: '/repo/.worktrees/feature-x' })], 'a');
-    render(<Sidebar />);
-
-    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
-    const dialog = screen.getByRole('dialog');
-    const checkbox = within(dialog).getByRole('checkbox', { name: /delete the worktree/i });
-    expect(checkbox).not.toBeChecked();
-    expect(within(dialog).getByText('/repo/.worktrees/feature-x')).toBeInTheDocument();
-
-    fireEvent.click(checkbox);
-    expect(checkbox).toBeChecked();
-
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: /terminate.*delete worktree/i }));
-    });
-
-    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({
-      sessionId: 'a',
-      deleteWorktree: true,
-    });
-  });
-
-  it('resets the delete-worktree checkbox each time the dialog reopens', async () => {
-    seed([makeView('a'), makeView('b')], 'a');
-    render(<Sidebar />);
-
-    // Open for "a", tick, cancel.
-    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
-    const checkbox1 = within(screen.getByRole('dialog')).getByRole('checkbox', {
-      name: /delete the worktree/i,
-    });
-    fireEvent.click(checkbox1);
-    expect(checkbox1).toBeChecked();
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /cancel/i }));
-
-    // Reopen for "b" — checkbox should NOT carry over its prior tick.
-    fireEvent.click(screen.getByRole('button', { name: /close session b/i }));
-    const checkbox2 = within(screen.getByRole('dialog')).getByRole('checkbox', {
-      name: /delete the worktree/i,
-    });
-    expect(checkbox2).not.toBeChecked();
-  });
-
-  it('alerts the user and still removes the tab when the worktree-delete step fails', async () => {
-    seed([makeView('a', { worktreePath: '/repo/.worktrees/feature-x' })], 'a');
-    bridgeMock.sessionClose.mockResolvedValueOnce({
-      worktreeDeleteError: 'git worktree remove failed: locked',
-    });
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-    render(<Sidebar />);
-
-    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
-    const dialog = screen.getByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: /delete the worktree/i }));
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: /terminate.*delete worktree/i }));
-    });
-
-    // Tab is gone (UI converged on "session closed") even though deletion failed.
-    expect(useSessionStore.getState().sessions).toHaveLength(0);
-    expect(alertSpy).toHaveBeenCalledTimes(1);
-    expect(alertSpy.mock.calls[0]?.[0]).toMatch(/worktree remove failed: locked/);
-    alertSpy.mockRestore();
-  });
-
-  it('alerts the user and still removes the tab when sessionClose throws', async () => {
-    seed([makeView('a')], 'a');
-    bridgeMock.sessionClose.mockRejectedValueOnce(new Error('pty kill timed out'));
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-    render(<Sidebar />);
-
-    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
-    await act(async () => {
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
-    });
-
-    // UI converges to "tab gone" so the user is never stuck with a stale row.
-    expect(useSessionStore.getState().sessions).toHaveLength(0);
-    expect(alertSpy).toHaveBeenCalledTimes(1);
-    expect(alertSpy.mock.calls[0]?.[0]).toMatch(/pty kill timed out/);
-    alertSpy.mockRestore();
-  });
-
-  it('keyboard nav: ArrowDown / Home / End / Enter / Delete', () => {
+  it('keyboard nav: ArrowDown / Home / End / Enter / Delete', async () => {
     seed([makeView('a'), makeView('b'), makeView('c')], 'a');
     render(<Sidebar />);
 
@@ -301,9 +200,11 @@ describe('Sidebar', () => {
     fireEvent.keyDown(tablist, { key: 'Enter' });
     expect(useSessionStore.getState().activeId).toBe('b');
 
-    fireEvent.keyDown(tablist, { key: 'Delete' });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(within(screen.getByRole('dialog')).getByText(/terminate session/i)).toHaveTextContent('b');
+    await act(async () => {
+      fireEvent.keyDown(tablist, { key: 'Delete' });
+    });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: 'b', deleteWorktree: false });
   });
 
   it('Alt+ArrowDown is a no-op (session reorder deferred for v1 worktree-tab UI)', async () => {
@@ -372,9 +273,8 @@ describe('Sidebar', () => {
     render(<Sidebar />);
 
     tabByLabel('claude session b').focus();
-    fireEvent.click(screen.getByRole('button', { name: /close session b/i }));
     await act(async () => {
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
+      fireEvent.click(screen.getByRole('button', { name: /close session b/i }));
     });
 
     expect(tabByLabel('claude session c')).toHaveFocus();
@@ -385,9 +285,8 @@ describe('Sidebar', () => {
     render(<Sidebar />);
 
     tabByLabel('claude session a').focus();
-    fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
     await act(async () => {
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /terminate/i }));
+      fireEvent.click(screen.getByRole('button', { name: /close session a/i }));
     });
 
     expect(screen.getByRole('button', { name: /new session/i })).toHaveFocus();

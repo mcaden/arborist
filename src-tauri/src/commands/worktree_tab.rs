@@ -149,6 +149,7 @@ pub async fn worktree_tab_close_impl(
     ctx: &AppContext,
     sub_ctx: std::sync::Arc<crate::sub_sessions::SubAppContext>,
     id: WorktreeTabId,
+    delete_worktree: bool,
 ) -> Result<WorktreeTabCloseResult, AppError> {
     let _switch = session::acquire_switch_read(ctx)?;
 
@@ -191,7 +192,8 @@ pub async fn worktree_tab_close_impl(
     }
 
     // Atomically remove the worktree tab from config.
-    ctx.store()
+    let cfg_after = ctx
+        .store()
         .save_config_with(PartialAppConfig::default(), |cfg| {
             cfg.worktree_tabs.retain(|t| t.id != id);
             cfg.worktree_tab_order.retain(|tid| *tid != id);
@@ -207,8 +209,27 @@ pub async fn worktree_tab_close_impl(
         })
         .map_err(AppError::from)?;
 
+    // Optional: remove the git worktree from disk after every child has been torn down. The tab is already removed from config, so deletion
+    // failure must NOT fail the overall close — surface it as `worktree_delete_error` instead so the UI can converge on a "tab gone" state.
+    let mut worktree_delete_error: Option<String> = None;
+    if delete_worktree {
+        let label = format!("worktree-tab {id}");
+        if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root) {
+            warn!(
+                worktree_tab_id = %id,
+                worktree_path = %tab_path.display(),
+                error = %error.message,
+                "worktree deletion failed after worktree tab close",
+            );
+            worktree_delete_error = Some(error.message);
+        }
+    }
+
     info!(worktree_tab_id = %id, child_sessions = child_session_ids.len(), "worktree tab closed");
-    Ok(WorktreeTabCloseResult { child_errors })
+    Ok(WorktreeTabCloseResult {
+        child_errors,
+        worktree_delete_error,
+    })
 }
 
 /// Set the active worktree tab. Persists the selection to config.

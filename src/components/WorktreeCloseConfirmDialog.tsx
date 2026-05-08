@@ -1,16 +1,27 @@
-// Confirmation modal shown when the user clicks a tab's close button or
-// presses `Delete` on a focused tab. Uses the native <dialog> element so
-// we get a focus trap and Esc-to-close for free, no extra deps.
+// Confirmation modal shown when the user closes a worktree parent tab
+// (clicking ✕ on the SidebarWorktreeTab header or "Close worktree tab" in
+// `WorktreeTabContextMenu`). Uses the native <dialog> element so we get a
+// focus trap and Esc-to-close for free, no extra deps.
+//
+// This dialog replaces the per-AI-agent `CloseConfirmDialog` for the
+// "delete worktree directory" affordance: worktrees are owned by the
+// worktree parent tab, not by individual AI agent sessions, so the
+// destructive deletion choice belongs here.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { formatError } from '@/lib/tauri-bridge';
-import { usePendingClose, useSessionActions, useSessionById } from '@/store/session-store';
+import { useSessionStore } from '@/store/session-store';
+import { useSubSessionStore } from '@/store/sub-session-store';
+import { usePendingWorktreeTabClose, useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
 
-export function CloseConfirmDialog(): JSX.Element | null {
-  const pendingId = usePendingClose();
-  const session = useSessionById(pendingId);
-  const actions = useSessionActions();
+export function WorktreeCloseConfirmDialog(): JSX.Element | null {
+  const pendingId = usePendingWorktreeTabClose();
+  const tab = useWorktreeTabStore((s) => (pendingId ? s.tabs.find((t) => t.id === pendingId) : undefined));
+  const actions = useWorktreeTabActions();
+
+  const sessionCount = useSessionStore((s) => (tab ? s.sessions.filter((sess) => sess.worktreePath === tab.path).length : 0));
+  const subSessionCount = useSubSessionStore((s) => (tab ? s.subSessions.filter((sub) => sub.parentWorktreeTabId === tab.id).length : 0));
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
@@ -26,7 +37,6 @@ export function CloseConfirmDialog(): JSX.Element | null {
       setDeleteWorktree(false);
       setBusy(false);
       if (!dialog.open) {
-        // Some test environments (jsdom) don't ship a working showModal.
         if (typeof dialog.showModal === 'function') {
           try {
             dialog.showModal();
@@ -37,14 +47,20 @@ export function CloseConfirmDialog(): JSX.Element | null {
           dialog.setAttribute('open', '');
         }
       }
-      // Initial focus on the less destructive option.
       cancelRef.current?.focus();
     } else if (dialog.open) {
       dialog.close();
     }
   }, [pendingId]);
 
-  if (pendingId === undefined || !session) return null;
+  const childSummary = useMemo<string>(() => {
+    const parts: string[] = [];
+    if (sessionCount > 0) parts.push(`${sessionCount} AI ${sessionCount === 1 ? 'agent' : 'agents'}`);
+    if (subSessionCount > 0) parts.push(`${subSessionCount} sub-${subSessionCount === 1 ? 'process' : 'processes'}`);
+    return parts.join(' and ');
+  }, [sessionCount, subSessionCount]);
+
+  if (pendingId === undefined || !tab) return null;
 
   const onCancel = (): void => {
     if (busy) return;
@@ -57,11 +73,11 @@ export function CloseConfirmDialog(): JSX.Element | null {
     let alertMessage: string | null = null;
     try {
       const result = await actions.close(pendingId, deleteWorktree);
-      if (result.worktreeDeleteError !== null) {
-        alertMessage = `Session terminated, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`;
+      if (result.worktreeDeleteError) {
+        alertMessage = `Worktree tab closed, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`;
       }
     } catch (error: unknown) {
-      alertMessage = `Close request failed (the session may already be terminated):\n\n${formatError(error)}`;
+      alertMessage = `Close request failed (the tab may already be gone):\n\n${formatError(error)}`;
     } finally {
       actions.cancelClose();
     }
@@ -73,8 +89,9 @@ export function CloseConfirmDialog(): JSX.Element | null {
   return (
     <dialog
       ref={dialogRef}
-      aria-labelledby="close-confirm-title"
+      aria-labelledby="worktree-close-confirm-title"
       aria-busy={busy}
+      data-testid="worktree-close-confirm-dialog"
       onCancel={(e) => {
         // <dialog>'s native Esc dispatches `cancel`. Block it while busy;
         // otherwise route through our store action so state stays consistent.
@@ -83,9 +100,14 @@ export function CloseConfirmDialog(): JSX.Element | null {
       }}
       className="rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
     >
-      <h2 id="close-confirm-title" className="mb-3 text-base font-semibold">
-        Terminate session &ldquo;{session.label}&rdquo;?
+      <h2 id="worktree-close-confirm-title" className="mb-3 text-base font-semibold">
+        Close worktree tab &ldquo;{tab.name}&rdquo;?
       </h2>
+      {childSummary.length > 0 ? (
+        <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">
+          This will terminate <span className="font-medium">{childSummary}</span> running under this worktree.
+        </p>
+      ) : null}
       <label className="mb-4 flex items-start gap-2 text-sm">
         <input
           type="checkbox"
@@ -99,8 +121,8 @@ export function CloseConfirmDialog(): JSX.Element | null {
             Also delete the worktree directory
             {deleteWorktree ? <span className="ml-1 font-medium text-red-700 dark:text-red-400">(cannot be undone)</span> : null}
           </span>
-          <span className="mt-0.5 break-all font-mono text-xs text-slate-500 dark:text-slate-400" title={session.worktreePath}>
-            {session.worktreePath}
+          <span className="mt-0.5 break-all font-mono text-xs text-slate-500 dark:text-slate-400" title={tab.path}>
+            {tab.path}
           </span>
         </span>
       </label>
@@ -128,7 +150,7 @@ export function CloseConfirmDialog(): JSX.Element | null {
           }}
           className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {deleteWorktree ? 'Terminate & delete worktree' : 'Terminate'}
+          {deleteWorktree ? 'Close & delete worktree' : 'Close tab'}
         </button>
       </div>
     </dialog>

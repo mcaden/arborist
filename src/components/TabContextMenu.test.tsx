@@ -32,7 +32,6 @@ function seed(): void {
   useSessionStore.setState({
     sessions: [makeView()],
     activeId: PARENT,
-    pendingClose: undefined,
     isHydrated: true,
     statusMessages: {},
     hasUnread: {},
@@ -110,14 +109,14 @@ describe('TabContextMenu', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('Close requests session close via the existing dialog flow', () => {
+  it('Close immediately invokes session close (no confirmation dialog)', () => {
     seed();
     const onClose = vi.fn();
 
     render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
     fireEvent.click(screen.getByRole('menuitem', { name: /close/i }));
 
-    expect(useSessionStore.getState().pendingClose).toBe(PARENT);
+    expect(bridgeMock.sessionClose).toHaveBeenCalledWith({ sessionId: PARENT, deleteWorktree: false });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

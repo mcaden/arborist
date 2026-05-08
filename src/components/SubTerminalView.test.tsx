@@ -77,7 +77,6 @@ beforeEach(() => {
   useSubSessionStore.setState({
     subSessions: [],
     statusMessages: {},
-    pendingClose: undefined,
     isHydrated: true,
   });
 });

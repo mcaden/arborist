@@ -32,7 +32,6 @@ beforeEach(() => {
   useSessionStore.setState({
     sessions: [],
     activeId: undefined,
-    pendingClose: undefined,
     isHydrated: false,
   });
 });

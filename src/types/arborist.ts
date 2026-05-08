@@ -410,6 +410,15 @@ export interface WorktreeTabOpenArgs {
 // MIRROR: src-tauri/src/types.rs::WorktreeTabCloseArgs
 export interface WorktreeTabCloseArgs {
   id: WorktreeTabId;
+  /**
+   * When `true`, the backend runs `git worktree remove --force` on the
+   * tab's worktree directory after every child has been torn down. The
+   * backend refuses to delete the configured workspace root or any path
+   * outside it. Failures of this step surface as
+   * [`WorktreeTabCloseResult.worktreeDeleteError`] rather than as a
+   * thrown error.
+   */
+  deleteWorktree?: boolean;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorktreeTabFocusArgs
@@ -431,6 +440,12 @@ export interface WorktreeTabSetActiveChildArgs {
 // MIRROR: src-tauri/src/types.rs::WorktreeTabCloseResult
 export interface WorktreeTabCloseResult {
   childErrors?: string[];
+  /**
+   * Error message from the post-cascade `git worktree remove --force` step,
+   * only populated when `WorktreeTabCloseArgs.deleteWorktree` was `true` and
+   * the deletion failed. The tab itself is always removed regardless.
+   */
+  worktreeDeleteError?: string | null;
 }
 
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent

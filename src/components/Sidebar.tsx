@@ -27,7 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
-import { CloseConfirmDialog } from './CloseConfirmDialog';
+import { WorktreeCloseConfirmDialog } from './WorktreeCloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
 import { SidebarSubTab } from './SidebarSubTab';
@@ -238,7 +238,9 @@ export function Sidebar(): JSX.Element {
         break;
       case 'Delete':
         e.preventDefault();
-        actions.requestClose(currentId);
+        void actions.close(currentId, false).catch((err) => {
+          console.warn('[sidebar] keyboard close failed', err);
+        });
         break;
       default:
     }
@@ -308,7 +310,7 @@ export function Sidebar(): JSX.Element {
           <span>Settings</span>
         </button>
       </div>
-      <CloseConfirmDialog />
+      <WorktreeCloseConfirmDialog />
       <SubCloseConfirmDialog />
       {contextMenu && (
         <TabContextMenu

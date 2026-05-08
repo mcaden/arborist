@@ -97,7 +97,6 @@ function resetStores(): void {
   useSessionStore.setState({
     sessions: [],
     activeId: undefined,
-    pendingClose: undefined,
     isHydrated: false,
   });
   useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
@@ -214,7 +213,6 @@ describe('App boot sequence', () => {
         { id: 's3', tool: 'claude', worktreePath: '/repo/a', worktreeName: 'a', label: 'a 2', tabIndex: 2, status: 'running', composedCommand: '' },
       ] as never,
       activeId: undefined,
-      pendingClose: undefined,
       isHydrated: true,
     });
     const sessSpy = vi.spyOn(useSessionStore.getState().actions, 'hydrate').mockImplementation(async () => undefined);
