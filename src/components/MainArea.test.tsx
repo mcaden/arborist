@@ -307,6 +307,21 @@ describe('MainArea', () => {
     expect(panels[0]!.parentElement!.style.visibility).toBe('hidden');
   });
 
+  it('shows the active session terminal when sessions exist but no worktree tabs are available', () => {
+    const sessions = [makeSession('s1'), makeSession('s2')];
+    useSessionStore.setState({ sessions, activeId: 's2', isHydrated: true });
+    useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+
+    render(<MainArea />);
+
+    expect(screen.queryByTestId('worktree-dashboard')).not.toBeInTheDocument();
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels).toHaveLength(2);
+    const wrappers = panels.map((p) => p.parentElement!);
+    expect(wrappers[0]!.style.visibility).toBe('hidden');
+    expect(wrappers[1]!.style.visibility).not.toBe('hidden');
+  });
+
   it('inactive parent: its sub-sessions stay hidden even when active there', () => {
     const sessions = [makeSession('s1'), makeSession('s2')];
     useSessionStore.setState({ sessions, activeId: 's2', isHydrated: true });

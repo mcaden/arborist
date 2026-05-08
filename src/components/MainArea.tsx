@@ -16,7 +16,9 @@
 //      xterm scrollback intact.
 //
 // Visible-id derivation (issue #44):
-//   * If no worktree tabs exist → empty placeholder.
+//   * If no worktree tabs exist:
+//       - no sessions   → empty placeholder
+//       - sessions exist → show `session-store.activeId` (or first session).
 //   * Otherwise we read `(activeWorktreeTabId, tab.activeChildId)` as the
 //     single source of truth:
 //       - `activeChildId` undefined / null     → `<WorktreeDashboard>`.
@@ -29,13 +31,14 @@ import { SubTerminalView } from './SubTerminalView';
 import { TerminalView } from './TerminalView';
 import { WorktreePrepBanner } from './WorktreePrepBanner';
 import { WorktreeDashboard } from './WorktreeDashboard';
-import { useSessions } from '@/store/session-store';
+import { useActiveSessionId, useSessions } from '@/store/session-store';
 import { useAllSubSessions } from '@/store/sub-session-store';
 import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
 import type { SessionId, SubSessionId } from '@/types/arborist';
 
 export function MainArea(): JSX.Element {
   const sessions = useSessions();
+  const storeActiveSessionId = useActiveSessionId();
   const worktreeTabs = useWorktreeTabs();
   const activeWorktreeTabId = useActiveWorktreeTabId();
   const allSubs = useAllSubSessions();
@@ -46,7 +49,12 @@ export function MainArea(): JSX.Element {
   // back to the dashboard instead of leaving every terminal wrapper hidden.
   let activeSessionId: SessionId | undefined;
   let visibleSubId: SubSessionId | undefined;
-  if (activeWorktreeTab) {
+  if (worktreeTabs.length === 0) {
+    if (sessions.length > 0) {
+      const fallbackSession = sessions.find((s) => s.id === storeActiveSessionId) ?? sessions[0]!;
+      activeSessionId = fallbackSession.id;
+    }
+  } else if (activeWorktreeTab) {
     const child = activeWorktreeTab.activeChildId;
     if (child?.kind === 'session') {
       const session = sessions.find((s) => s.id === child.id && s.worktreePath === activeWorktreeTab.path);
