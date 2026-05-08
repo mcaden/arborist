@@ -47,6 +47,7 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         type="button"
         data-testid={`worktree-tab-${tab.id}`}
         aria-label={`Worktree ${tab.name}${tab.branch ? ` on branch ${tab.branch}` : ''}`}
+        aria-current={isActive ? 'page' : undefined}
         onClick={() => {
           // Activating a worktree header is a deliberate "show me the dashboard" gesture — clear the activeChildId so MainArea swaps
           // to <WorktreeDashboard> instead of staying on whichever session was previously visible.

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
+import { useConfigStore } from '@/store/config-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
@@ -23,6 +24,11 @@ function tab(): WorktreeTab {
 
 beforeEach(() => {
   bridgeMock.resetBridgeMocks();
+  useConfigStore.setState((s) => ({
+    config: { ...s.config, customProcesses: [] },
+    status: 'ready',
+    error: null,
+  }));
   useWorktreeTabStore.setState({ tabs: [tab()], activeId: TAB_ID, isHydrated: true });
 });
 
@@ -102,5 +108,36 @@ describe('WorktreeTabContextMenu', () => {
     render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
     fireEvent.keyDown(screen.getByTestId('worktree-tab-context-menu'), { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('estimates menu height from item count so long custom-process menus stay within the viewport', () => {
+    const originalInnerHeight = window.innerHeight;
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 240 });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 });
+    useConfigStore.setState((s) => ({
+      config: {
+        ...s.config,
+        customProcesses: Array.from({ length: 6 }, (_, idx) => ({
+          id: `proc-${idx}`,
+          name: `Process ${idx}`,
+          kind: 'terminal',
+          command: `echo ${idx}`,
+          enabled: true,
+        })),
+      },
+      status: 'ready',
+      error: null,
+    }));
+
+    try {
+      render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 390, y: 230 }} onClose={noop} />);
+
+      const menu = screen.getByTestId('worktree-tab-context-menu');
+      expect(menu).toHaveStyle({ left: '176px', top: '4px' });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+    }
   });
 });

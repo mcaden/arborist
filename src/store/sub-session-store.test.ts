@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
-import type { SubSession, SubSessionId, WorktreeTabId } from '@/types/arborist';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type { ChildId, SubSession, SubSessionId, WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
 import { useSubSessionStore } from './sub-session-store';
 
@@ -42,6 +43,18 @@ function id(suffix: string): SubSessionId {
   return ('11111111-1111-1111-1111-1111111111' + suffix) as SubSessionId;
 }
 
+function makeTab(id: WorktreeTabId, activeChildId?: ChildId): WorktreeTab {
+  const tab: WorktreeTab = {
+    id,
+    path: `/repo/${id}`,
+    name: String(id),
+    label: String(id),
+    tabIndex: 0,
+  };
+  if (activeChildId !== undefined) tab.activeChildId = activeChildId;
+  return tab;
+}
+
 function resetStore(): void {
   useSubSessionStore.setState({
     subSessions: [],
@@ -49,6 +62,7 @@ function resetStore(): void {
     pendingClose: undefined,
     isHydrated: false,
   });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
 }
 
 beforeEach(() => {
@@ -129,6 +143,37 @@ describe('useSubSessionStore', () => {
       await expect(useSubSessionStore.getState().actions.close(sub.id)).rejects.toThrow('disk full');
 
       expect(useSubSessionStore.getState().subSessions).toEqual([]);
+    });
+
+    it('clears the parent worktree active child when closing the active terminal sub-session', async () => {
+      const sub = makeSub({ id: id('09') });
+      useSubSessionStore.setState({ subSessions: [sub] });
+      useWorktreeTabStore.setState({
+        tabs: [makeTab(TAB_A, { kind: 'subSession', id: sub.id })],
+        activeId: TAB_A,
+        isHydrated: true,
+      });
+
+      await useSubSessionStore.getState().actions.close(sub.id);
+
+      expect(useWorktreeTabStore.getState().tabs[0]!.activeChildId).toBeUndefined();
+      expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({ id: TAB_A });
+    });
+
+    it('does not clear the parent worktree active child when closing an inactive sub-session', async () => {
+      const activeSub = makeSub({ id: id('10') });
+      const closedSub = makeSub({ id: id('11') });
+      useSubSessionStore.setState({ subSessions: [activeSub, closedSub] });
+      useWorktreeTabStore.setState({
+        tabs: [makeTab(TAB_A, { kind: 'subSession', id: activeSub.id })],
+        activeId: TAB_A,
+        isHydrated: true,
+      });
+
+      await useSubSessionStore.getState().actions.close(closedSub.id);
+
+      expect(useWorktreeTabStore.getState().tabs[0]!.activeChildId).toEqual({ kind: 'subSession', id: activeSub.id });
+      expect(bridgeMock.worktreeTabSetActiveChild).not.toHaveBeenCalled();
     });
   });
 

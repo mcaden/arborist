@@ -91,14 +91,15 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   const position = useMemo(() => {
     const margin = 4;
     const estW = 220;
-    const estH = 100;
+    const separatorCount = 2;
+    const estH = itemOrder.length * 32 + separatorCount * 9 + 8;
     const vw = typeof window !== 'undefined' ? window.innerWidth : estW * 2;
     const vh = typeof window !== 'undefined' ? window.innerHeight : estH * 2;
     return {
       left: Math.min(Math.max(margin, anchor.x), Math.max(margin, vw - estW - margin)),
       top: Math.min(Math.max(margin, anchor.y), Math.max(margin, vh - estH - margin)),
     };
-  }, [anchor.x, anchor.y]);
+  }, [anchor.x, anchor.y, itemOrder.length]);
 
   const focusItem = (next: Item): void => {
     setFocusedItem(next);

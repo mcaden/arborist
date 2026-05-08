@@ -57,6 +57,18 @@ describe('SidebarWorktreeTab', () => {
     expect(screen.getByText('feat/x')).toBeInTheDocument();
   });
 
+  it('marks the active worktree header for assistive tech', () => {
+    render(<SidebarWorktreeTab tabId={TAB_ID} isActive={true} onOpenContextMenu={noop} />);
+
+    expect(screen.getByTestId(`worktree-tab-${TAB_ID}`)).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('does not mark inactive worktree headers as current', () => {
+    render(<SidebarWorktreeTab tabId={TAB_ID} isActive={false} onOpenContextMenu={noop} />);
+
+    expect(screen.getByTestId(`worktree-tab-${TAB_ID}`)).not.toHaveAttribute('aria-current');
+  });
+
   it('clicking the header focuses the worktree tab and clears activeChildId', () => {
     render(<SidebarWorktreeTab tabId={TAB_ID} isActive={false} onOpenContextMenu={noop} />);
 

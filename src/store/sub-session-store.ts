@@ -176,6 +176,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
     },
 
     close: async (id, intent) => {
+      const closingSub = get().subSessions.find((s) => s.id === id);
       try {
         await subSessionClose(id, intent);
       } finally {
@@ -193,6 +194,17 @@ export const useSubSessionStore = create<Store>((set, get) => {
           // we just closed (e.g. SubCloseConfirmDialog confirmed).
           pendingClose: pendingClose === id ? undefined : pendingClose,
         });
+        if (closingSub) {
+          const wttState = useWorktreeTabStore.getState();
+          const tab = wttState.tabs.find((t) => t.id === closingSub.parentWorktreeTabId);
+          if (tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === id) {
+            const wttActions = wttState.actions;
+            wttActions.patchActiveChild(tab.id, null);
+            void wttActions.setActiveChild(tab.id, null).catch((err) => {
+              console.warn(`[sub-session-store] setActiveChild after close(${id}) failed: ${formatError(err)}`);
+            });
+          }
+        }
       }
     },
 
