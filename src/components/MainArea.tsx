@@ -37,7 +37,7 @@ import type { SessionId, SubSessionId } from '@/types/arborist';
 
 export function MainArea(): JSX.Element {
   const sessions = useSessions();
-  const activeSessionStoreId = useActiveSessionId();
+  const storeActiveSessionId = useActiveSessionId();
   const worktreeTabs = useWorktreeTabs();
   const activeWorktreeTabId = useActiveWorktreeTabId();
   const allSubs = useAllSubSessions();
@@ -49,8 +49,10 @@ export function MainArea(): JSX.Element {
   let activeSessionId: SessionId | undefined;
   let visibleSubId: SubSessionId | undefined;
   if (worktreeTabs.length === 0) {
-    const fallbackSession = sessions.find((s) => s.id === activeSessionStoreId) ?? sessions[0];
-    activeSessionId = fallbackSession?.id;
+    if (sessions.length > 0) {
+      const fallbackSession = sessions.find((s) => s.id === storeActiveSessionId) ?? sessions[0]!;
+      activeSessionId = fallbackSession.id;
+    }
   } else if (activeWorktreeTab) {
     const child = activeWorktreeTab.activeChildId;
     if (child?.kind === 'session') {
