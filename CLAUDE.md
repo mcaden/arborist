@@ -142,6 +142,11 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 - Event names use `://` namespace (e.g., `session://output`); payloads are always named-field structs.
 - Path alias `@/*` → `src/*`; no deep relative imports.
 
+## Pull requests
+
+- **PR title prefix.** Always prefix PR titles with the worktree name in square brackets, falling back to the branch name when no worktree is in use: `[<worktree-or-branch>] <summary>`. The worktree name is the basename of the current worktree directory (e.g., `.worktrees/pr-prefix` → `[pr-prefix]`). Apply this to every `gh pr create` invocation.
+- Do not push directly to `main` and do not force-push shared branches; land changes through PRs.
+
 ## Skills (read on demand)
 
 Claude does not auto-discover skill files. When a task matches one of these, **read the linked file before acting**:
