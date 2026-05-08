@@ -72,11 +72,10 @@ export function getTreeIconUrl(iconId: number): string {
     console.error('[tree-icons] no tree icons bundled — check src/assets/tree-icons/');
     return '';
   }
-  // Normalise NaN to a stable sentinel so repeated calls with NaN dedupe
-  // (NaN !== NaN, so a raw Set<number> would warn forever for NaN inputs).
-  const warnKey = Number.isNaN(iconId) ? Number.NEGATIVE_INFINITY : iconId;
-  if (!WARNED_IDS.has(warnKey)) {
-    WARNED_IDS.add(warnKey);
+  // `Set<number>` uses SameValueZero equality, so `NaN` is correctly deduped (`new Set([NaN, NaN]).size === 1`) — no special handling needed for
+  // out-of-range floats.
+  if (!WARNED_IDS.has(iconId)) {
+    WARNED_IDS.add(iconId);
     console.warn(`[tree-icons] iconId ${iconId} out of range (1..=${WORKTREE_ICON_COUNT}); falling back to tree_1.png`);
   }
   return fallback;

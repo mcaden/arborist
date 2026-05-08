@@ -69,9 +69,10 @@ describe('getTreeIconUrl', () => {
     expect(idTouchingCalls).toHaveLength(2);
   });
 
-  it('dedupes NaN inputs across repeated calls (NaN !== NaN guard)', () => {
-    // A naive `Set<number>` would never contain NaN because `Set.has(NaN)` is true but every NaN is distinct under `===` — without the normalisation
-    // in `getTreeIconUrl`, repeated NaN calls would warn forever. This test pins the normalised behavior.
+  it('dedupes NaN inputs across repeated calls', () => {
+    // `Set<number>` uses SameValueZero equality, so `NaN` is treated as equal to itself when used as a Set key — `new Set([NaN, NaN]).size === 1`.
+    // This test pins that behavior so a future "fix" that switches storage to a `===`-keyed structure (e.g. an object keyed by `String(iconId)`,
+    // which still works, vs. some clever-but-wrong scheme) won't regress NaN dedup unnoticed.
     const before = warnSpy.mock.calls.length;
     getTreeIconUrl(Number.NaN);
     getTreeIconUrl(Number.NaN);
