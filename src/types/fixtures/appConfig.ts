@@ -35,11 +35,14 @@ export const appConfigFixture = {
   lastOpenSubSessions: [
     {
       id: '11111111-1111-1111-1111-111111111111',
-      parentSessionId: '550e8400-e29b-41d4-a716-446655440000',
+      parentWorktreeTabId: '550e8400-e29b-41d4-a716-446655440000',
       defId: 'shell',
       kind: 'terminal',
       label: 'Shell',
       composedCommand: 'sh -i',
     },
   ],
+  worktreeTabs: [],
+  worktreeTabOrder: [],
+  activeWorktreeTabId: null,
 } as const satisfies AppConfig;

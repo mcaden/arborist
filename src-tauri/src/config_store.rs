@@ -45,8 +45,8 @@ use tracing::{debug, warn};
 
 use crate::store_layout::StoreLayout;
 use crate::types::{
-    AppConfig, AppError, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, InstructionSet, InstructionSetId, PartialAppConfig,
-    PartialDefaultInstructionSets, Session, SessionId, SessionStatus, SubSessionRecord, Tool, CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, InstructionSet, InstructionSetId, PartialAppConfig,
+    PartialDefaultInstructionSets, Session, SessionId, SessionStatus, SubSessionRecord, Tool, WorktreeTab, WorktreeTabId, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -220,11 +220,34 @@ impl ConfigStore {
         // value preservation is performed: the prior per-session-prelaunch use cases (`nvm use`, `source .env`, venv activation) are incompatible
         // with the new one-shot worktree-creation semantics, so silently re-running them once and never again would be more confusing than a clean
         // reset. (Single-user pre-1.0 cycle; explicitly approved by the owner — see issue #63.)
+        //
+        // v5→v6: synthesise WorktreeTab records from persisted sessions (Issue #44). Each unique canonical worktree_path gets one tab; tab order
+        // mirrors the old session tab order (first occurrence of each worktree path wins). The active worktree tab is derived from the old
+        // active_session_id's worktree path.
+        if cfg.config_version < 6 && cfg.worktree_tabs.is_empty() {
+            let sessions = self.load_sessions();
+            migrate_v4_to_v5(&mut cfg, &sessions);
+        }
+        // v6→v7: reparent sub-session records from parent_session_id to parent_worktree_tab_id. Must run after v5→v6 because it reads the
+        // synthesised worktree_tabs to resolve the mapping. Records whose parent session or matching worktree tab is missing are dropped.
+        if cfg.config_version < 7 {
+            let sessions = self.load_sessions();
+            migrate_v5_to_v6(&mut cfg, &sessions);
+        }
+        // v7→v8: backfill `WorktreeTab.icon_id` for any tab still carrying the serde default (0). Tabs created via `worktree_tab_open_impl` always
+        // populate this field; the backfill exists for two cases — (a) configs persisted under v6 (where the field did not exist), and (b) any
+        // already-v7 record that somehow ended up with `icon_id == 0` (manual edit, partial write, a frontend that round-tripped without the field).
+        // The second case is why this guard *also* runs whenever any tab has `icon_id == 0`, regardless of `config_version`: it preserves the
+        // post-load invariant rather than letting a corrupted record persist forever. Walks `worktree_tab_order` so the assignment is deterministic
+        // and matches the order tabs appear in the sidebar.
+        if cfg.config_version < 8 || cfg.worktree_tabs.iter().any(|t| t.icon_id == 0) {
+            migrate_v6_to_v7(&mut cfg);
+        }
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
         }
         sanitize_loaded_custom_processes(&mut cfg.custom_processes);
-        sanitize_loaded_sub_session_records(&mut cfg.last_open_sub_sessions, &cfg.custom_processes);
+        sanitize_loaded_sub_session_records(&mut cfg.last_open_sub_sessions, &cfg.custom_processes, &cfg.worktree_tabs);
         validate_loaded_config(&mut cfg);
 
         // Validate default instruction set IDs against the *discovered* set. Skip validation entirely if we don't have an instructionSetsDir
@@ -641,6 +664,15 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(records) = patch.last_open_sub_sessions {
         cfg.last_open_sub_sessions = records;
     }
+    if let Some(tabs) = patch.worktree_tabs {
+        cfg.worktree_tabs = tabs;
+    }
+    if let Some(order) = patch.worktree_tab_order {
+        cfg.worktree_tab_order = order;
+    }
+    if let Some(active) = patch.active_worktree_tab_id {
+        cfg.active_worktree_tab_id = active;
+    }
     Ok(())
 }
 
@@ -941,10 +973,30 @@ fn sanitize_loaded_custom_processes(defs: &mut Vec<CustomProcessDef>) {
 /// Sanitize persisted [`SubSessionRecord`]s on load: drop any whose `def_id` no longer exists in the user's `custom_processes` (the def was deleted
 /// between sessions), and backfill `composed_command` from the def for legacy v3→v4 records that didn't persist it. Both are silent —
 /// restore-on-launch is best-effort.
-fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs: &[CustomProcessDef]) {
+fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs: &[CustomProcessDef], worktree_tabs: &[WorktreeTab]) {
     let by_id: std::collections::BTreeMap<&CustomProcessDefId, &CustomProcessDef> = defs.iter().map(|d| (&d.id, d)).collect();
+    let tab_ids: std::collections::BTreeSet<WorktreeTabId> = worktree_tabs.iter().map(|t| t.id).collect();
     let original_len = records.len();
     records.retain_mut(|rec| {
+        // Drop records that still lack the canonical parent_worktree_tab_id (pre-migration orphans).
+        let Some(tab_id) = rec.parent_worktree_tab_id else {
+            warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                "dropping sub-session record without parent_worktree_tab_id (migration orphan)",
+            );
+            return false;
+        };
+        // Drop records whose worktree tab no longer exists.
+        if !tab_ids.contains(&tab_id) {
+            warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                tab_id = %tab_id,
+                "dropping sub-session record whose worktree tab is no longer present",
+            );
+            return false;
+        }
         let Some(def) = by_id.get(&rec.def_id) else {
             warn!(
                 code = "SubSessionRecordDropped",
@@ -957,6 +1009,8 @@ fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs
         if rec.composed_command.trim().is_empty() {
             rec.composed_command = def.command.clone();
         }
+        // Clear the legacy field — it's not needed at runtime.
+        rec.parent_session_id = None;
         true
     });
     if records.len() != original_len {
@@ -979,6 +1033,246 @@ pub fn seed_default_custom_processes(defs: &mut Vec<CustomProcessDef>) {
         if !existing.contains(&built_in.id) {
             defs.push(built_in);
         }
+    }
+}
+
+/// v4→v5 migration (Issue #44): synthesise [`WorktreeTab`] records from existing sessions. Each unique canonical `worktree_path` gets one tab.
+/// Tab order mirrors the old session `tab_order` (first occurrence of each path wins its position). The `active_worktree_tab_id` is derived from the
+/// old `active_session_id`'s worktree path, and the matching tab's `active_child_id` is set to that session so the user lands on the same terminal
+/// they had focused before migration.
+///
+/// Sessions whose `worktree_path` no longer exists on disk (or is no longer a directory) are **skipped** by this pass — no `WorktreeTab` is
+/// synthesised for them. This avoids persisting "zombie" tabs whose `path` resolves to nothing, which would otherwise survive the migration intact
+/// (the tab record itself never gets a fresh `validate_worktree` check until first use). The skipped sessions remain in `cfg.tab_order` /
+/// `cfg.last_open_sessions` until `restore_all_sessions` prunes them via the standard worktree-missing branch on next launch — so the user sees
+/// neither a phantom tab nor a permanent leak. (PR #65 review-9.)
+fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>) {
+    use crate::compose;
+
+    // Pre-compute canonicalised worktree path for each session whose worktree currently exists. `compose::validate_worktree` does
+    // `exists() + canonicalize() + is_dir()`, returning the canonical PathBuf on success. Sessions whose worktrees have been deleted (or replaced
+    // with a regular file) are filtered out here so they never produce a tab below.
+    let session_canonical: BTreeMap<SessionId, PathBuf> = sessions
+        .iter()
+        .filter_map(|(sid, s)| match compose::validate_worktree(&s.worktree_path) {
+            Ok(canonical) => Some((*sid, canonical)),
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %sid,
+                    worktree_path = %s.worktree_path.display(),
+                    error = ?e,
+                    "v4→v5 migration: skipping session whose worktree path is missing or invalid",
+                );
+                None
+            }
+        })
+        .collect();
+
+    let mut seen_paths: BTreeMap<PathBuf, WorktreeTabId> = BTreeMap::new();
+    let mut ordered_tabs: Vec<WorktreeTab> = Vec::new();
+
+    let mut ensure_tab = |sid: &SessionId| {
+        let canonical = match session_canonical.get(sid) {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        if seen_paths.contains_key(&canonical) {
+            return;
+        }
+        let tab_id = WorktreeTabId::new();
+        let name = canonical
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "worktree".into());
+        let existing_labels: Vec<&str> = ordered_tabs.iter().map(|t| t.label.as_str()).collect();
+        let label = compose::dedupe_label(&existing_labels, &name);
+        let tab_index = ordered_tabs.len();
+        // Assign a tree icon as we go, so the v4→v5 migration produces exactly the same distribution as if these tabs had been opened one at a time
+        // through `worktree_tab_open_impl`. Without this, every migrated tab would land on the serde default (0) and rely on the v6→v7 backfill — but
+        // we know the icon assignment we want here, so do it inline.
+        let existing_icon_ids: Vec<u32> = ordered_tabs.iter().map(|t| t.icon_id).collect();
+        let icon_id = crate::worktree_icon::pick_least_used_icon(&existing_icon_ids);
+        ordered_tabs.push(WorktreeTab {
+            id: tab_id,
+            path: canonical.clone(),
+            name,
+            branch: None, // best-effort — skip during migration (no git commands)
+            label,
+            tab_index,
+            active_child_id: None,
+            icon_id,
+        });
+        seen_paths.insert(canonical, tab_id);
+    };
+
+    // Walk tab_order first (preserves user's ordering), then pick up any stragglers.
+    for sid in &cfg.tab_order {
+        ensure_tab(sid);
+    }
+    for sid in sessions.keys() {
+        ensure_tab(sid);
+    }
+
+    // Derive active_worktree_tab_id from old active_session_id, and set that tab's active_child_id. Uses the *same* canonicalised path the tab was
+    // created with, so this lookup cannot miss when the tab was created in the first pass.
+    if let Some(active_sid) = cfg.active_session_id {
+        if let Some(canonical) = session_canonical.get(&active_sid) {
+            if let Some(&tab_id) = seen_paths.get(canonical) {
+                cfg.active_worktree_tab_id = Some(tab_id);
+                if let Some(tab) = ordered_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.active_child_id = Some(ChildId::Session(active_sid));
+                }
+            }
+        }
+    }
+
+    cfg.worktree_tab_order = ordered_tabs.iter().map(|t| t.id).collect();
+    cfg.worktree_tabs = ordered_tabs;
+
+    tracing::info!(
+        tab_count = cfg.worktree_tabs.len(),
+        session_count = sessions.len(),
+        "v4→v5 migration: synthesised worktree tabs from existing sessions",
+    );
+}
+
+/// v5→v6 migration: reparent `SubSessionRecord` entries from `parent_session_id` (an agent session) to `parent_worktree_tab_id` (a worktree tab).
+///
+/// For each record that still carries the legacy `parent_session_id`:
+///   1. Look up the parent session in `sessions` to discover its `worktree_path`.
+///   2. Canonicalise the worktree path (via `compose::validate_worktree`).
+///   3. Find the `WorktreeTab` whose canonical path matches.
+///   4. Set `parent_worktree_tab_id` and clear `parent_session_id`.
+///
+/// Records whose parent session is missing, whose worktree path is invalid, or that have no matching `WorktreeTab` are dropped with a
+/// distinguishing `tracing::warn!`.
+fn migrate_v5_to_v6(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>) {
+    use crate::compose;
+
+    // Build a lookup: canonical worktree path → WorktreeTabId.
+    let mut path_to_tab: BTreeMap<PathBuf, WorktreeTabId> = BTreeMap::new();
+    for tab in &cfg.worktree_tabs {
+        match compose::validate_worktree(&tab.path) {
+            Ok(canonical) => {
+                path_to_tab.entry(canonical).or_insert(tab.id);
+            }
+            Err(_) => {
+                // Tab's path may not exist on this machine any more — that's OK, it just won't match any sub-sessions.
+            }
+        }
+    }
+
+    let original_len = cfg.last_open_sub_sessions.len();
+    cfg.last_open_sub_sessions.retain_mut(|rec| {
+        // Already migrated (has parent_worktree_tab_id) — keep as-is.
+        if rec.parent_worktree_tab_id.is_some() {
+            rec.parent_session_id = None;
+            return true;
+        }
+
+        let Some(parent_sid) = rec.parent_session_id else {
+            tracing::warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                "v5→v6 migration: dropping sub-session record with neither parent_session_id nor parent_worktree_tab_id",
+            );
+            return false;
+        };
+
+        let Some(parent) = sessions.get(&parent_sid) else {
+            tracing::warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                parent_session_id = %parent_sid,
+                "v5→v6 migration: dropping sub-session record whose parent session is missing",
+            );
+            return false;
+        };
+
+        let canonical = match compose::validate_worktree(&parent.worktree_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    code = "SubSessionRecordDropped",
+                    id = %rec.id,
+                    parent_session_id = %parent_sid,
+                    worktree_path = %parent.worktree_path.display(),
+                    error = ?e,
+                    "v5→v6 migration: dropping sub-session record whose parent session worktree path is invalid",
+                );
+                return false;
+            }
+        };
+
+        let Some(&tab_id) = path_to_tab.get(&canonical) else {
+            tracing::warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                parent_session_id = %parent_sid,
+                worktree_path = %parent.worktree_path.display(),
+                "v5→v6 migration: dropping sub-session record whose worktree path has no matching WorktreeTab",
+            );
+            return false;
+        };
+
+        rec.parent_worktree_tab_id = Some(tab_id);
+        rec.parent_session_id = None;
+        true
+    });
+
+    let dropped = original_len - cfg.last_open_sub_sessions.len();
+    tracing::info!(
+        migrated = cfg.last_open_sub_sessions.len(),
+        dropped,
+        "v5→v6 migration: reparented sub-session records from parent_session_id to parent_worktree_tab_id",
+    );
+}
+
+/// v6→v7 migration (Issue #45): backfill [`WorktreeTab::icon_id`] for every tab that still carries the serde default `0` (i.e. was loaded from v6
+/// JSON written before the field existed). The assignment walks `worktree_tab_order` so it is deterministic and matches the order tabs appear in the
+/// sidebar; tabs already carrying a non-zero `icon_id` are left untouched so the v7→current load path is idempotent and a partially-migrated
+/// (e.g. crash mid-write) config converges to the same end state on retry.
+///
+/// Stragglers — tabs present in `worktree_tabs` but missing from `worktree_tab_order` (this shouldn't happen on a well-formed config, but the loader
+/// is intentionally lenient about reordering drift) — are picked up in a second pass after the order-list walk so the migration can't leave any tab
+/// at `icon_id == 0`.
+fn migrate_v6_to_v7(cfg: &mut AppConfig) {
+    use crate::worktree_icon::pick_least_used_icon;
+
+    let mut backfilled = 0_usize;
+    let mut backfill_one = |tab: &mut WorktreeTab, existing: &[u32]| {
+        if tab.icon_id == 0 {
+            tab.icon_id = pick_least_used_icon(existing);
+            backfilled += 1;
+        }
+    };
+
+    // First pass: tabs in their authoritative sidebar order. Take a snapshot of the already-assigned icon ids before we start mutating, then update
+    // it as we assign — that way the deterministic "lowest icon at min count" tiebreak observes each fresh assignment when picking the next one.
+    let mut existing_icon_ids: Vec<u32> = cfg.worktree_tabs.iter().filter(|t| t.icon_id != 0).map(|t| t.icon_id).collect();
+    for id in cfg.worktree_tab_order.clone() {
+        if let Some(tab) = cfg.worktree_tabs.iter_mut().find(|t| t.id == id) {
+            let before = tab.icon_id;
+            backfill_one(tab, &existing_icon_ids);
+            if before == 0 && tab.icon_id != 0 {
+                existing_icon_ids.push(tab.icon_id);
+            }
+        }
+    }
+    // Second pass: any tab not in `worktree_tab_order` (drift defense). Same incremental update pattern.
+    let order_ids: std::collections::BTreeSet<WorktreeTabId> = cfg.worktree_tab_order.iter().copied().collect();
+    for tab in cfg.worktree_tabs.iter_mut() {
+        if !order_ids.contains(&tab.id) {
+            let before = tab.icon_id;
+            backfill_one(tab, &existing_icon_ids);
+            if before == 0 && tab.icon_id != 0 {
+                existing_icon_ids.push(tab.icon_id);
+            }
+        }
+    }
+
+    if backfilled > 0 {
+        tracing::info!(backfilled, "v6→v7 migration: assigned tree icons to worktree tabs that lacked icon_id");
     }
 }
 
@@ -1978,6 +2272,358 @@ mod tests {
         assert_eq!(ids, vec!["shell"], "v4+ must not re-run the seed pass");
     }
 
+    // ----- v4 → v5 migration: missing-worktree filter (PR #65 review-9) ----
+
+    /// Helper: serialise a session as the v4 on-disk shape (no `parentWorktreeTabId` / `childIndex`, which are v5 additions). Mirrors what
+    /// `load_sessions_strips_legacy_copilot_interactive_flag` and the other hand-written-JSON tests do — we deliberately bypass the typed `Session`
+    /// struct here so the test exercises the actual on-disk migration, not a round-trip through the current schema.
+    fn v4_session_json(id: SessionId, worktree: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "tool": "claude",
+            "worktreePath": worktree,
+            "worktreeName": "wt",
+            "label": id.to_string(),
+            "composedCommand": "claude",
+            "status": "exited",
+            "createdAt": 1_700_000_000_u64,
+            "tabIndex": 0,
+            "tempFiles": []
+        })
+    }
+
+    #[test]
+    fn migrate_v4_to_v5_skips_sessions_with_missing_worktree() {
+        // PR #65 review-9: a v4 session whose worktree directory has been deleted while the app was closed must NOT produce a `WorktreeTab` in v5 —
+        // the previous implementation fell back to `s.worktree_path.clone()` on canonicalize failure, persisting a zombie tab whose `path` resolved
+        // to nothing.
+        let td = TempDir::new().expect("td");
+        let valid_wt = TempDir::new().expect("valid wt");
+        let missing_wt = td.path().join("nonexistent-worktree");
+        // Sanity: the missing path really doesn't exist.
+        assert!(!missing_wt.exists());
+
+        let store = ConfigStore::open(td.path()).expect("open");
+        let valid_sid = SessionId(Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("uuid"));
+        let missing_sid = SessionId(Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("uuid"));
+
+        let sessions_raw = serde_json::json!({
+            valid_sid.to_string(): v4_session_json(valid_sid, valid_wt.path()),
+            missing_sid.to_string(): v4_session_json(missing_sid, &missing_wt),
+        });
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&sessions_raw).expect("ser")).expect("write");
+
+        let cfg_raw = serde_json::json!({
+            "configVersion": 4,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [valid_sid.to_string(), missing_sid.to_string()],
+            "tabOrder": [valid_sid.to_string(), missing_sid.to_string()],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": []
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        assert_eq!(cfg.worktree_tabs.len(), 1, "only the valid-worktree session should produce a tab");
+        assert_eq!(
+            cfg.worktree_tabs[0].path,
+            canon(valid_wt.path()),
+            "the surviving tab must point at the canonical valid worktree path",
+        );
+        assert_eq!(
+            cfg.worktree_tab_order,
+            vec![cfg.worktree_tabs[0].id],
+            "tab_order must contain only the surviving tab id",
+        );
+        assert_eq!(cfg.active_worktree_tab_id, None, "no active session was set, so active tab stays None");
+    }
+
+    #[test]
+    fn migrate_v4_to_v5_active_session_pointing_at_missing_worktree_leaves_active_tab_none() {
+        // Edge case: `active_session_id` references the session whose worktree was deleted. The migration must NOT synthesise a zombie active tab —
+        // `active_worktree_tab_id` must remain `None` so restore-on-launch lands on no tab rather than on a phantom one.
+        let td = TempDir::new().expect("td");
+        let valid_wt = TempDir::new().expect("valid wt");
+        let missing_wt = td.path().join("ghost-worktree");
+
+        let store = ConfigStore::open(td.path()).expect("open");
+        let valid_sid = SessionId(Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").expect("uuid"));
+        let missing_sid = SessionId(Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").expect("uuid"));
+
+        let sessions_raw = serde_json::json!({
+            valid_sid.to_string(): v4_session_json(valid_sid, valid_wt.path()),
+            missing_sid.to_string(): v4_session_json(missing_sid, &missing_wt),
+        });
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&sessions_raw).expect("ser")).expect("write");
+
+        let cfg_raw = serde_json::json!({
+            "configVersion": 4,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [valid_sid.to_string(), missing_sid.to_string()],
+            "tabOrder": [valid_sid.to_string(), missing_sid.to_string()],
+            "activeSessionId": missing_sid,
+            "customProcesses": [],
+            "lastOpenSubSessions": []
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        assert_eq!(cfg.worktree_tabs.len(), 1, "only the valid-worktree session should produce a tab");
+        assert_eq!(
+            cfg.active_worktree_tab_id, None,
+            "active_session_id pointed at a missing-worktree session, so active_worktree_tab_id stays None",
+        );
+        for tab in &cfg.worktree_tabs {
+            assert_eq!(
+                tab.active_child_id, None,
+                "no surviving tab should have active_child_id pointing at the missing session",
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_v4_to_v5_active_session_with_valid_worktree_lands_on_correct_tab() {
+        // Sanity: when `active_session_id` references a session whose worktree DOES exist, the migration must derive `active_worktree_tab_id` and
+        // set the matching tab's `active_child_id` to that session — preserving the user's last-focused terminal.
+        let td = TempDir::new().expect("td");
+        let valid_wt = TempDir::new().expect("valid wt");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let valid_sid = SessionId(Uuid::parse_str("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee").expect("uuid"));
+
+        let sessions_raw = serde_json::json!({
+            valid_sid.to_string(): v4_session_json(valid_sid, valid_wt.path()),
+        });
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&sessions_raw).expect("ser")).expect("write");
+
+        let cfg_raw = serde_json::json!({
+            "configVersion": 4,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [valid_sid.to_string()],
+            "tabOrder": [valid_sid.to_string()],
+            "activeSessionId": valid_sid,
+            "customProcesses": [],
+            "lastOpenSubSessions": []
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        assert_eq!(cfg.worktree_tabs.len(), 1);
+        let tab = &cfg.worktree_tabs[0];
+        assert_eq!(cfg.active_worktree_tab_id, Some(tab.id));
+        assert_eq!(tab.active_child_id, Some(crate::types::ChildId::Session(valid_sid)));
+    }
+
+    // ----- v4 → v5 migration: icon assignment (Issue #45) --------------
+
+    /// The v4→v5 synthesise loop must populate every freshly-created tab's `icon_id` with the deterministic least-used pick — it can't lean on the
+    /// v6→v7 backfill because that pass only runs on configs originally written under v6, and a v4-quarantined-then-loaded config completes its
+    /// migration in one shot. Mirrors the contract for `worktree_tab_open_impl`.
+    #[test]
+    fn migrate_v4_to_v5_assigns_icons_to_synthesised_tabs() {
+        use crate::worktree_icon::WORKTREE_ICON_COUNT;
+
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        // Three valid worktrees → three synthesised tabs, expecting icons 1, 2, 3.
+        let wt_a = TempDir::new().expect("wt a");
+        let wt_b = TempDir::new().expect("wt b");
+        let wt_c = TempDir::new().expect("wt c");
+        let sid_a = SessionId(Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("uuid"));
+        let sid_b = SessionId(Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("uuid"));
+        let sid_c = SessionId(Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").expect("uuid"));
+
+        let sessions_raw = serde_json::json!({
+            sid_a.to_string(): v4_session_json(sid_a, wt_a.path()),
+            sid_b.to_string(): v4_session_json(sid_b, wt_b.path()),
+            sid_c.to_string(): v4_session_json(sid_c, wt_c.path()),
+        });
+        fs::write(store.sessions_path(), serde_json::to_vec_pretty(&sessions_raw).expect("ser")).expect("write");
+
+        let cfg_raw = serde_json::json!({
+            "configVersion": 4,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [sid_a.to_string(), sid_b.to_string(), sid_c.to_string()],
+            "tabOrder": [sid_a.to_string(), sid_b.to_string(), sid_c.to_string()],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": []
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        assert_eq!(cfg.worktree_tabs.len(), 3);
+        for tab in &cfg.worktree_tabs {
+            assert!(
+                (1..=WORKTREE_ICON_COUNT).contains(&tab.icon_id),
+                "every synthesised tab must get a valid iconId, got {} on tab {}",
+                tab.icon_id,
+                tab.id
+            );
+        }
+        // Order in `worktree_tab_order` matches the synthesise order — those are the first three icons.
+        let icons_in_order: Vec<u32> = cfg
+            .worktree_tab_order
+            .iter()
+            .filter_map(|tid| cfg.worktree_tabs.iter().find(|t| t.id == *tid).map(|t| t.icon_id))
+            .collect();
+        assert_eq!(icons_in_order, vec![1, 2, 3], "synthesised tabs should walk icons 1..=3 in tab_order");
+    }
+
+    // ----- v6 → v7 migration: icon backfill (Issue #45) ----------------
+
+    /// Pre-v7 JSON has no `iconId` on worktree tabs; the loader's `serde(default)` fills it with 0 and the v6→v7 migration must replace each 0 with
+    /// a deterministic least-used pick walked in `worktree_tab_order`. Tabs that already carry a non-zero `iconId` (e.g. from a forward-compatible
+    /// frontend) must be left untouched so the migration is idempotent.
+    #[test]
+    fn migrate_v6_to_v7_backfills_zero_icon_ids_in_tab_order() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let tab_a = WorktreeTabId::new();
+        let tab_b = WorktreeTabId::new();
+        let tab_c = WorktreeTabId::new();
+        // v6 JSON: explicitly omit `iconId` on A and B (defaults to 0 via serde) and pin C to 5 so we can assert it's preserved.
+        let cfg_raw = serde_json::json!({
+            "configVersion": 6,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": [],
+            "worktreeTabs": [
+                { "id": tab_a, "path": "/repo/a", "name": "a", "label": "a", "tabIndex": 0 },
+                { "id": tab_b, "path": "/repo/b", "name": "b", "label": "b", "tabIndex": 1 },
+                { "id": tab_c, "path": "/repo/c", "name": "c", "label": "c", "tabIndex": 2, "iconId": 5 }
+            ],
+            "worktreeTabOrder": [tab_a, tab_b, tab_c],
+            "activeWorktreeTabId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        // Sort tabs to a deterministic order matching the order list — `load_config` doesn't reorder `worktree_tabs` itself.
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.icon_id)).collect();
+        // C had iconId = 5 already → must be preserved.
+        assert_eq!(by_id[&tab_c], 5, "pre-set iconId must be preserved across the backfill");
+        // A is first in tab_order with no icon yet; existing assignments are [5] (from C), so the lowest-count icons are 1..=4 and 6..=16. Pick 1.
+        assert_eq!(by_id[&tab_a], 1, "first unassigned tab in order must get icon 1");
+        // After A → 1, existing assignments are [5, 1]; B picks 2 (lowest at min count = 0).
+        assert_eq!(by_id[&tab_b], 2, "second unassigned tab in order must get icon 2");
+    }
+
+    /// Drift defense: a tab present in `worktree_tabs` but missing from `worktree_tab_order` (well-formed configs shouldn't produce this, but the
+    /// loader is intentionally lenient) must still get an iconId backfilled in the second pass — otherwise we'd persist 0 on disk forever.
+    #[test]
+    fn migrate_v6_to_v7_backfills_tabs_missing_from_order_list() {
+        use crate::worktree_icon::WORKTREE_ICON_COUNT;
+
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let tab_orphan = WorktreeTabId::new();
+        let cfg_raw = serde_json::json!({
+            "configVersion": 6,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": [],
+            "worktreeTabs": [
+                { "id": tab_orphan, "path": "/repo/orphan", "name": "orphan", "label": "orphan", "tabIndex": 0 }
+            ],
+            "worktreeTabOrder": [],
+            "activeWorktreeTabId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        let orphan = cfg.worktree_tabs.iter().find(|t| t.id == tab_orphan).expect("orphan tab present");
+        assert!(
+            (1..=WORKTREE_ICON_COUNT).contains(&orphan.icon_id),
+            "tab missing from tab_order must still get an iconId backfilled (got {})",
+            orphan.icon_id
+        );
+    }
+
+    /// Invariant defense: even when the persisted config is *already* stamped as v7, a tab carrying `icon_id == 0` (manual edit, partial write, a
+    /// frontend that round-tripped without the field) must be backfilled on load — otherwise the documented post-load invariant
+    /// ("every WorktreeTab has icon_id in 1..=N") silently breaks. The migration guard runs whenever *any* tab has a zero, regardless of
+    /// `config_version`. A correctly-stamped tab on the same record must be left untouched.
+    #[test]
+    fn loading_v7_config_with_zero_icon_id_self_heals_via_migration() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let healthy = WorktreeTabId::new();
+        let corrupted = WorktreeTabId::new();
+        let cfg_raw = serde_json::json!({
+            "configVersion": 7,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "workspaceRoot": null,
+            "worktreeRoots": [],
+            "prelaunchCommands": [],
+            "worktreePrelaunchCommands": {},
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "activeSessionId": null,
+            "customProcesses": [],
+            "lastOpenSubSessions": [],
+            "worktreeTabs": [
+                { "id": healthy,   "path": "/repo/healthy",   "name": "h", "label": "h", "tabIndex": 0, "iconId": 9 },
+                { "id": corrupted, "path": "/repo/corrupted", "name": "c", "label": "c", "tabIndex": 1, "iconId": 0 }
+            ],
+            "worktreeTabOrder": [healthy, corrupted],
+            "activeWorktreeTabId": null
+        });
+        fs::write(store.config_path(), serde_json::to_vec_pretty(&cfg_raw).expect("ser")).expect("write");
+
+        let cfg = store.load_config();
+        // Stamped version stays at current — backfill alone shouldn't bump it (it was already current).
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        let by_id: std::collections::HashMap<_, _> = cfg.worktree_tabs.iter().map(|t| (t.id, t.icon_id)).collect();
+        // Healthy tab keeps its existing assignment.
+        assert_eq!(by_id[&healthy], 9, "tab with a valid iconId must not be rewritten by the self-heal pass");
+        // Corrupted tab gets a deterministic least-used pick. Existing assignments at the time it's picked are [9] (healthy) — so the lowest
+        // count icon is 1 (and 2..=8, 10..=16); the lowest-numbered wins → 1.
+        assert_eq!(
+            by_id[&corrupted], 1,
+            "corrupted iconId == 0 must be self-healed to the deterministic least-used pick (1)"
+        );
+    }
+
     // ----- save_config: customProcesses validation --------------------
 
     #[test]
@@ -2069,10 +2715,11 @@ mod tests {
     fn save_config_round_trips_valid_custom_processes_and_records() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
-        let parent = SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"));
+        let tab_id = WorktreeTabId(Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("uuid"));
         let sub = SubSessionRecord {
             id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
-            parent_session_id: parent,
+            parent_session_id: None,
+            parent_worktree_tab_id: Some(tab_id),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -2087,10 +2734,23 @@ mod tests {
             icon: None,
             icon_data_uri: None,
         };
+        // A matching worktree tab must exist for sanitize to keep the sub-session record.
+        let tab = WorktreeTab {
+            id: tab_id,
+            path: td.path().to_owned(),
+            name: "test".to_owned(),
+            branch: None,
+            label: "test".to_owned(),
+            tab_index: 0,
+            active_child_id: None,
+            icon_id: 1,
+        };
         let after = store
             .save_config(PartialAppConfig {
                 custom_processes: Some(vec![def.clone()]),
                 last_open_sub_sessions: Some(vec![sub.clone()]),
+                worktree_tabs: Some(vec![tab]),
+                worktree_tab_order: Some(vec![tab_id]),
                 ..Default::default()
             })
             .expect("ok");

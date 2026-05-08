@@ -17,6 +17,7 @@
     "allow-worktree-prep-open-log",
     "allow-subsession",
     "allow-subsession-icon",
+    "allow-worktree-tab",
     "dialog:allow-open"
   ]
 }

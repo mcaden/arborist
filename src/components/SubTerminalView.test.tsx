@@ -35,42 +35,36 @@ vi.mock('@/hooks/use-terminal', () => ({
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { SessionId, SubSession, SubSessionId } from '@/types/arborist';
+import type { SubSession, SubSessionId, WorktreeTabId } from '@/types/arborist';
 
 import { SubTerminalView } from './SubTerminalView';
 
-const PARENT: SessionId = '00000000-0000-0000-0000-000000000a01' as SessionId;
+const PARENT = 'tab-parent' as WorktreeTabId;
 
-// Override type permits `pid: undefined` explicitly even though
-// `SubSession.pid?: number` rejects it under
-// `exactOptionalPropertyTypes: true`. Tests need to construct
-// already-exited rows where pid is gone.
 type SubOverrides = Partial<Omit<SubSession, 'id' | 'pid'>> &
   Pick<SubSession, 'id'> & {
     pid?: number | undefined;
   };
 
 function makeSub(overrides: SubOverrides): SubSession {
-  return {
-    parentSessionId: PARENT,
+  const { pid, ...restOverrides } = overrides;
+  const sub: SubSession = {
+    parentWorktreeTabId: PARENT,
     defId: 'shell',
     kind: 'terminal',
     label: 'Shell',
     status: 'running',
     composedCommand: 'sh -i',
     createdAt: 0,
-    ...overrides,
-  } as SubSession;
+    ...restOverrides,
+  };
+  if (pid !== undefined) sub.pid = pid;
+  return sub;
 }
 
-// Drop `pid` from a SubSession and apply a new status. Used by transition
-// tests to model an exit without leaving a stale PID. We can't write
-// `{...sub, status: 'exited', pid: undefined}` literally because
-// `exactOptionalPropertyTypes: true` rejects an explicit-undefined for
-// `pid?: number`.
 function withStatus(sub: SubSession, status: SubSession['status']): SubSession {
   const { pid: _drop, ...rest } = sub;
-  return { ...rest, status } as SubSession;
+  return { ...rest, status };
 }
 
 function id(suffix: string): SubSessionId {
@@ -82,7 +76,6 @@ beforeEach(() => {
   clearMock.mockReset();
   useSubSessionStore.setState({
     subSessions: [],
-    activeByParent: {},
     statusMessages: {},
     pendingClose: undefined,
     isHydrated: true,
@@ -107,8 +100,6 @@ describe('SubTerminalView', () => {
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
     expect(screen.getByRole('status', { name: /sub-session ended/i })).toBeInTheDocument();
-    // Deliberately not a dialog — must NOT render with role="dialog"
-    // so it doesn't read as a modal interruption.
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /relaunch/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument();
@@ -134,8 +125,6 @@ describe('SubTerminalView', () => {
       subSessions: [withStatus(sub, 'exited')],
     });
     rerender(<SubTerminalView subSessionId={sub.id} isActive />);
-    // The whole point of dropping the modal overlay is to keep the
-    // shell's final output visible. clear() must NOT fire here.
     expect(clearMock).not.toHaveBeenCalled();
   });
 
@@ -143,8 +132,6 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('05'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
-    // First mount with already-exited status must NOT fire a spurious
-    // clear (prev was undefined, not exited → starting).
     expect(clearMock).not.toHaveBeenCalled();
     useSubSessionStore.setState({
       subSessions: [withStatus(sub, 'starting')],
@@ -169,12 +156,6 @@ describe('SubTerminalView', () => {
     screen.getByRole('button', { name: /^close$/i }).click();
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
   });
-
-  // --- pane content dimming on exit -------------------------------------
-  // The xterm host (terminal pane content) fades to opacity-50 when the
-  // sub has exited or errored. The scrollback stays readable but the
-  // visual treatment makes "this shell is dead" instantly apparent —
-  // paired with the slim status bar at the bottom.
 
   it('dims the terminal pane content (opacity-50) when the sub has exited', () => {
     const sub = makeSub({ id: id('08'), status: 'exited', pid: undefined });

@@ -31,16 +31,19 @@ Developers working across multiple Git worktrees frequently need to spin up AI a
 
 ### 5.1 Sidebar (Vertical Tabs)
 
+The sidebar is a two-level hierarchy: each top-level row is a **worktree tab** (issue #44); its child rows are the AI-agent sessions and any custom-process sub-sessions owned by that worktree tab (`parentWorktreeTabId`). Children render flat under their parent worktree row.
+
 | ID     | Requirement |
 |--------|-------------|
 | S-01   | The sidebar MUST be displayed as a vertical tab bar on the left edge of the window. |
-| S-02   | Each tab MUST display the tool icon (Claude or Copilot logo) and the session label. |
-| S-03   | Clicking a tab MUST switch the main area to that session's terminal. |
-| S-04   | The sidebar MUST include a "+" button (or equivalent) to create a new session. |
-| S-05   | Tabs MUST support close/remove to terminate a session. |
+| S-02   | Each AI child tab MUST display the tool icon (Claude or Copilot logo) and the session label. Each custom-process child tab MUST display the process icon (when available), label, and its own status dot. Each worktree-tab row MUST display the worktree name and optional branch, but MUST NOT show AI status icons or roll-up badges. |
+| S-03   | Clicking a child tab MUST switch the main area to that session's terminal. Clicking a worktree-tab row MUST clear its `activeChildId` and show the worktree dashboard placeholder in the main area. |
+| S-04   | The sidebar MUST include a "+" button (or equivalent) to open or create a worktree tab. The flow MUST NOT ask for an AI agent; agents are launched from the worktree tab context menu after the worktree tab exists. |
+| S-05   | Tabs MUST support close/remove. Closing a worktree-tab row cascades close to all of its children (terminal-kind sub-sessions terminated, application-kind detached per CP-07). |
 | S-06   | Tabs SHOULD visually indicate the active session (highlight, border, etc.). |
-| S-07   | Tabs SHOULD support drag-to-reorder; order MUST persist across restarts. |
+| S-07   | Top-level worktree tabs SHOULD support drag-to-reorder; order MUST persist across restarts. (Per-group reorder of child tabs within a worktree is a planned follow-up and is not in scope for the v1 worktree-as-parent restructure.) |
 | S-08   | Clicking the close button MUST present a confirmation dialog before terminating the session. |
+| S-09   | Right-clicking a worktree-tab row MUST present a context menu with flat **Launch Claude**, **Launch Copilot**, enabled custom-process entries, **Custom Processes…**, and **Close worktree tab** pinned to the bottom. Selecting an agent or custom process materialises a new child under that worktree tab. |
 
 ### 5.2 Session Creation Flow
 

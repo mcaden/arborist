@@ -30,7 +30,7 @@ use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
 use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult, SessionCreateArgs, SessionId, SessionInputArgs,
-    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, Tool,
+    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, Tool, WorktreeTabId,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -65,6 +65,10 @@ pub struct AppContext {
     /// a parent that's about to disappear. The lock is only ever held for the trivial "is X in the set?" check, so it never blocks for a meaningful
     /// duration.
     pub closing_parents: Arc<Mutex<HashSet<SessionId>>>,
+    /// Worktree-tab closing tombstone. Holds the `WorktreeTabId`s of worktree tabs whose `worktree_tab_close` is currently mid-cascade.
+    /// `subsession_create_impl` and the sub-session restore second pass consult this set so a sub cannot be created or restored under a tab that's
+    /// about to disappear.
+    pub closing_worktree_tabs: Arc<Mutex<HashSet<WorktreeTabId>>>,
     /// Sessions that have been persisted but not yet PTY-spawned. Used by `restore_all_sessions` to defer the actual `pool.spawn` until the frontend
     /// reports the real terminal dimensions via `session_resize`. The first `session_resize` for a pending id atomically claims it (removing it from
     /// the map) and triggers the spawn at the right size — so the CLI's first paint never happens at the wrong width. The map value is the
@@ -240,6 +244,7 @@ impl AppContext {
             ai_session_discover,
             turn_emit,
             closing_parents: Arc::new(Mutex::new(HashSet::new())),
+            closing_worktree_tabs: Arc::new(Mutex::new(HashSet::new())),
             pending_spawn: Arc::new(Mutex::new(HashMap::new())),
             switch_lock: Arc::new(tokio::sync::RwLock::new(())),
             switch_pending: Arc::new(AtomicUsize::new(0)),
@@ -263,12 +268,33 @@ impl AppContext {
 
     /// Mark a parent as mid-close. Returns a guard that removes the id on drop — guaranteed cleanup even if the close path panics.
     #[must_use]
-    pub fn mark_parent_closing(&self, id: SessionId) -> ClosingParentGuard {
+    pub fn mark_parent_closing(&self, id: SessionId) -> ClosingGuard<SessionId> {
         if let Ok(mut g) = self.closing_parents.lock() {
             g.insert(id);
         }
-        ClosingParentGuard {
+        ClosingGuard {
             set: Arc::clone(&self.closing_parents),
+            id,
+        }
+    }
+
+    /// True iff `worktree_tab_close` is currently mid-cascade for `tab_id`.
+    #[must_use]
+    pub fn is_worktree_tab_closing(&self, id: &WorktreeTabId) -> bool {
+        match self.closing_worktree_tabs.lock() {
+            Ok(g) => g.contains(id),
+            Err(_) => true,
+        }
+    }
+
+    /// Mark a worktree tab as mid-close. Returns a guard that removes the id on drop.
+    #[must_use]
+    pub fn mark_worktree_tab_closing(&self, id: WorktreeTabId) -> ClosingGuard<WorktreeTabId> {
+        if let Ok(mut g) = self.closing_worktree_tabs.lock() {
+            g.insert(id);
+        }
+        ClosingGuard {
+            set: Arc::clone(&self.closing_worktree_tabs),
             id,
         }
     }
@@ -306,14 +332,14 @@ impl AppContext {
     }
 }
 
-/// RAII guard returned by [`AppContext::mark_parent_closing`]. Removes the id from the closing-parents set when dropped so the tombstone never
-/// outlives the cascade — even on panic.
-pub struct ClosingParentGuard {
-    set: Arc<Mutex<HashSet<SessionId>>>,
-    id: SessionId,
+/// RAII guard returned by [`AppContext::mark_parent_closing`] and [`AppContext::mark_worktree_tab_closing`]. Removes the id from the closing set
+/// when dropped so the tombstone never outlives the cascade — even on panic.
+pub struct ClosingGuard<T: Eq + std::hash::Hash + Copy> {
+    set: Arc<Mutex<HashSet<T>>>,
+    id: T,
 }
 
-impl Drop for ClosingParentGuard {
+impl<T: Eq + std::hash::Hash + Copy> Drop for ClosingGuard<T> {
     fn drop(&mut self) {
         if let Ok(mut g) = self.set.lock() {
             g.remove(&self.id);
@@ -526,11 +552,25 @@ pub fn session_list_impl(ctx: &AppContext) -> Result<Vec<SessionView>, AppError>
 // --------------------------------------------------------------------------- session_close
 // ---------------------------------------------------------------------------
 
+/// Public, **gated** session-close entrypoint. Acquires the workspace switch read-guard for the full call (including across `pool.kill().await`),
+/// then delegates to [`session_close_locked`]. Use this from any handler that does *not* already hold a `acquire_switch_read` guard.
 pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree: bool) -> Result<SessionCloseResult, AppError> {
     // Reject if a workspace switch is queued/active. Held for the full lifetime of this call (including across `pool.kill().await`) so the switch's
     // `write().await` cannot proceed until our teardown completes against the old store. See [`AppContext::switch_lock`].
     let _switch = acquire_switch_read(ctx)?;
+    session_close_locked(ctx, id, delete_worktree).await
+}
 
+/// Inner body of [`session_close_impl`] **without** the workspace-switch read guard. Callers that have already acquired the guard for the full
+/// cascade (e.g. the `session_close` command wrapper in `commands/mod.rs`, and `worktree_tab_close_impl`'s child-cascade loop) must call this
+/// directly instead of [`session_close_impl`]. Otherwise the cascade is **self-rejecting**: a workspace switch queued mid-cascade bumps
+/// `AppContext::switch_pending`, which the inner `acquire_switch_read` then observes and rejects with `WorkspaceSwitchInProgress` — even though the
+/// outer guard is still held by the same task. The cascade would then leave child sessions teardown-failed but the parent (worktree tab / session
+/// record) already removed, producing orphan records in the store.
+///
+/// **Precondition (caller-enforced):** the caller must already be holding a guard from [`acquire_switch_read`] on the same `AppContext`. Calling this
+/// without the outer guard removes the workspace-switch barrier from this code path entirely.
+pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktree: bool) -> Result<SessionCloseResult, AppError> {
     // 0. Stop the metrics watcher (Issue #3) before tearing the rest down so it
     //    never observes a half-cleaned session.
     ctx.metrics.stop(&id);
@@ -578,20 +618,21 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree
     // 3. Drop the persisted record.
     ctx.store().remove_session(&id).map_err(AppError::from)?;
 
-    // 4. Trim AppConfig ordering & active selection.
-    let cfg = ctx.store().load_config();
-    let new_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| s != &id).collect();
-    let new_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
-    let active_patch: Option<Option<SessionId>> = match cfg.active_session_id {
-        Some(active) if active == id => Some(new_order.first().copied()),
-        _ => None,
-    };
-    ctx.store()
-        .save_config(PartialAppConfig {
-            last_open_sessions: Some(new_last),
-            tab_order: Some(new_order),
-            active_session_id: active_patch,
-            ..Default::default()
+    // 4. Trim AppConfig ordering & active selection AND clear any worktree-tab `active_child_id` referencing this session — atomically. Doing the
+    //    whole mutation inside `save_config_with`'s write lock closes the read-modify-write race that the previous `load_config` + `save_config`
+    //    pattern carried (a concurrent config update between the load and the save could be overwritten by stale `last_open_sessions` / `tab_order`
+    //    vectors). The `active_child_id` cleanup is the PR #65 review-7 correctness fix: without it, a worktree tab whose last-focused child was this
+    //    session would persist a dangling pointer to a non-existent record and the next restore/focus would land on nothing.
+    let cfg_after = ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.last_open_sessions.retain(|s| s != &id);
+            cfg.tab_order.retain(|s| s != &id);
+            if cfg.active_session_id == Some(id) {
+                cfg.active_session_id = cfg.tab_order.first().copied();
+            }
+            crate::commands::worktree_tab::clear_active_child_in_config(cfg, crate::types::ChildId::Session(id));
+            true
         })
         .map_err(AppError::from)?;
 
@@ -602,7 +643,7 @@ pub async fn session_close_impl(ctx: &AppContext, id: SessionId, delete_worktree
     let mut result = SessionCloseResult::default();
     match worktree_intent {
         WorktreeDeleteIntent::Path(wt) => {
-            if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg.workspace_root) {
+            if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg_after.workspace_root) {
                 warn!(
                     session_id = %id,
                     worktree_path = %wt.display(),
@@ -1096,31 +1137,41 @@ fn ai_session_transcript_exists(tool: Tool, worktree_path: &std::path::Path, ai_
 /// No-op when nothing needs trimming, so the common path doesn't rewrite `config.json` on every launch.
 fn trim_unknown_session_refs_with_store(store: &ConfigStore, known: &std::collections::HashSet<SessionId>) -> Result<(), Error> {
     let cfg = store.load_config();
-    let mut patch = PartialAppConfig::default();
-    let mut dirty = false;
+
+    // Determine which sessions need to be dropped — used both to compute the patch AND to clear any worktree-tab `active_child_id` pointers that
+    // reference them. Without the latter, a tab whose last-focused child was a now-deleted session would keep a dangling `ChildId::Session(...)`
+    // pointer and the next restore/focus would land on nothing. (PR #65 review-7.)
+    let unknown: Vec<SessionId> = cfg
+        .last_open_sessions
+        .iter()
+        .chain(cfg.tab_order.iter())
+        .copied()
+        .filter(|s| !known.contains(s))
+        .collect();
+    let active_unknown = matches!(cfg.active_session_id, Some(active) if !known.contains(&active));
+    if unknown.is_empty() && !active_unknown {
+        return Ok(());
+    }
 
     let trimmed_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| known.contains(s)).collect();
-    if trimmed_last.len() != cfg.last_open_sessions.len() {
-        patch.last_open_sessions = Some(trimmed_last);
-        dirty = true;
-    }
-
     let trimmed_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| known.contains(s)).collect();
-    if trimmed_order.len() != cfg.tab_order.len() {
-        patch.tab_order = Some(trimmed_order);
-        dirty = true;
-    }
+    let active_patch: Option<Option<SessionId>> = if active_unknown { Some(None) } else { None };
 
-    if let Some(active) = cfg.active_session_id {
-        if !known.contains(&active) {
-            patch.active_session_id = Some(None);
-            dirty = true;
-        }
-    }
-
-    if dirty {
-        store.save_config(patch)?;
-    }
+    store.save_config_with(
+        PartialAppConfig {
+            last_open_sessions: Some(trimmed_last),
+            tab_order: Some(trimmed_order),
+            active_session_id: active_patch,
+            ..Default::default()
+        },
+        |cfg| {
+            let mut changed = false;
+            for sid in &unknown {
+                changed |= crate::commands::worktree_tab::clear_active_child_in_config(cfg, crate::types::ChildId::Session(*sid));
+            }
+            changed
+        },
+    )?;
     Ok(())
 }
 
@@ -1193,20 +1244,17 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 warn!(session_id = %id, error = ?e, "restore: remove_session failed for stale-worktree drop");
                 continue;
             }
-            let cfg = store.load_config();
-            let new_last: Vec<SessionId> = cfg.last_open_sessions.iter().copied().filter(|s| s != &id).collect();
-            let new_order: Vec<SessionId> = cfg.tab_order.iter().copied().filter(|s| s != &id).collect();
-            let active_patch: Option<Option<SessionId>> = match cfg.active_session_id {
-                Some(active) if active == id => Some(new_order.first().copied()),
-                _ => None,
-            };
-            if let Err(e) = store.save_config(PartialAppConfig {
-                last_open_sessions: Some(new_last),
-                tab_order: Some(new_order),
-                active_session_id: active_patch,
-                ..Default::default()
+            // Atomic config cleanup AND `active_child_id` clear for any worktree-tab pointing at this dropped session. (PR #65 review-7.)
+            if let Err(e) = store.save_config_with(PartialAppConfig::default(), |cfg| {
+                cfg.last_open_sessions.retain(|s| s != &id);
+                cfg.tab_order.retain(|s| s != &id);
+                if cfg.active_session_id == Some(id) {
+                    cfg.active_session_id = cfg.tab_order.first().copied();
+                }
+                crate::commands::worktree_tab::clear_active_child_in_config(cfg, crate::types::ChildId::Session(id));
+                true
             }) {
-                warn!(session_id = %id, error = ?e, "restore: save_config failed for stale-worktree drop");
+                warn!(session_id = %id, error = ?e, "restore: save_config_with failed for stale-worktree drop");
             }
             continue;
         }
@@ -1502,6 +1550,7 @@ pub fn workspace_validate_impl(
 /// having to build a real Tauri app.
 pub async fn workspace_switch_impl(
     ctx: &Arc<AppContext>,
+    sub_ctx: Option<Arc<crate::sub_sessions::SubAppContext>>,
     app_handle: &tauri::AppHandle,
     new_path: &Path,
 ) -> Result<crate::types::WorkspaceSwitchResult, AppError> {
@@ -1511,7 +1560,7 @@ pub async fn workspace_switch_impl(
         .path()
         .app_data_dir()
         .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
-    let result = workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await?;
+    let result = workspace_switch_impl_inner(ctx, sub_ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await?;
 
     // Refresh the OS window title so the new workspace name is visible (issue #56). To make this deterministic across rapid back-to-back switches we
     // hold the `ctx.workspace` READ guard across the `set_title` call rather than read-clone-drop-then-set: the inner's commit takes
@@ -1542,6 +1591,7 @@ pub async fn workspace_switch_impl(
 /// the swap with a tempdir-backed `app_data_dir` without standing up a real Tauri app.
 pub async fn workspace_switch_impl_inner(
     ctx: &Arc<AppContext>,
+    sub_ctx: Option<Arc<crate::sub_sessions::SubAppContext>>,
     app_data_dir: &Path,
     branch: &str,
     new_path: &Path,
@@ -1692,8 +1742,12 @@ pub async fn workspace_switch_impl_inner(
     // Errors from `restore_all_sessions` are best-effort logged inside the function; the only thing that *can* fail at this boundary is the
     // `spawn_blocking` JoinHandle, which we surface as Internal so the caller sees a clean failure rather than a half-restored state.
     let ctx_for_restore = Arc::clone(ctx);
+    let sub_ctx_for_restore = sub_ctx.clone();
     let restore_join = tauri::async_runtime::spawn_blocking(move || {
         restore_all_sessions(&ctx_for_restore);
+        if let Some(sc) = sub_ctx_for_restore {
+            crate::commands::subsession::restore_all_sub_sessions_impl(&ctx_for_restore, &sc);
+        }
     });
     if let Err(join_err) = restore_join.await {
         return Err(AppError::new(

@@ -53,7 +53,7 @@ use crate::pty_pool::{
     ChildCommand, KillOutcome, PtyKiller, PtyResize, PtySpawner, PtyWaiter, SpawnedChild, Utf8Stream, DROP_LOG_EVERY, KILL_GRACE,
     OUTPUT_CHANNEL_CAPACITY,
 };
-use crate::types::{Error, SessionId, SubSession, SubSessionId, SubSessionStatus};
+use crate::types::{Error, SubSession, SubSessionId, SubSessionStatus, WorktreeTabId};
 
 /// Default initial PTY size for sub-tabs. Identical to the session pool's default; the frontend re-fits on first attach.
 pub const DEFAULT_SUB_PTY_SIZE: PtySize = PtySize {
@@ -462,8 +462,8 @@ pub struct SubSessionStore {
 #[derive(Default)]
 struct StoreInner {
     by_id: BTreeMap<SubSessionId, SubSession>,
-    /// Insertion order per parent, so the sidebar renders sub-tabs underneath their parent in the same order they were created.
-    by_parent: BTreeMap<SessionId, Vec<SubSessionId>>,
+    /// Insertion order per worktree tab, so the sidebar renders sub-tabs underneath their worktree header in the same order they were created.
+    by_worktree_tab: BTreeMap<WorktreeTabId, Vec<SubSessionId>>,
 }
 
 impl SubSessionStore {
@@ -481,7 +481,7 @@ impl SubSessionStore {
         if g.by_id.contains_key(&sub.id) {
             return Err(Error::Internal(format!("sub session {} already exists", sub.id)));
         }
-        g.by_parent.entry(sub.parent_session_id).or_default().push(sub.id);
+        g.by_worktree_tab.entry(sub.parent_worktree_tab_id).or_default().push(sub.id);
         g.by_id.insert(sub.id, sub);
         Ok(())
     }
@@ -509,24 +509,24 @@ impl SubSessionStore {
     pub fn remove(&self, id: &SubSessionId) -> Option<SubSession> {
         let mut g = self.inner.lock().ok()?;
         let sub = g.by_id.remove(id)?;
-        if let Some(list) = g.by_parent.get_mut(&sub.parent_session_id) {
+        if let Some(list) = g.by_worktree_tab.get_mut(&sub.parent_worktree_tab_id) {
             list.retain(|x| x != id);
             if list.is_empty() {
-                g.by_parent.remove(&sub.parent_session_id);
+                g.by_worktree_tab.remove(&sub.parent_worktree_tab_id);
             }
         }
         Some(sub)
     }
 
-    /// Snapshot of all sub-sessions, parent-grouped insertion order preserved within each parent group, parents in no guaranteed order. Use
-    /// [`Self::list_for`] when the parent is known.
+    /// Snapshot of all sub-sessions, worktree-tab-grouped insertion order preserved within each group, tabs in no guaranteed order. Use
+    /// [`Self::list_for_worktree_tab`] when the tab is known.
     pub fn list_all(&self) -> Vec<SubSession> {
         let g = match self.inner.lock() {
             Ok(g) => g,
             Err(_) => return Vec::new(),
         };
         let mut out = Vec::with_capacity(g.by_id.len());
-        for (_parent, ids) in g.by_parent.iter() {
+        for (_tab, ids) in g.by_worktree_tab.iter() {
             for id in ids {
                 if let Some(sub) = g.by_id.get(id) {
                     out.push(sub.clone());
@@ -536,13 +536,13 @@ impl SubSessionStore {
         out
     }
 
-    /// Sub-sessions belonging to `parent`, in insertion order.
-    pub fn list_for(&self, parent: &SessionId) -> Vec<SubSession> {
+    /// Sub-sessions belonging to `tab_id`, in insertion order.
+    pub fn list_for_worktree_tab(&self, tab_id: &WorktreeTabId) -> Vec<SubSession> {
         let g = match self.inner.lock() {
             Ok(g) => g,
             Err(_) => return Vec::new(),
         };
-        let Some(ids) = g.by_parent.get(parent) else {
+        let Some(ids) = g.by_worktree_tab.get(tab_id) else {
             return Vec::new();
         };
         ids.iter().filter_map(|id| g.by_id.get(id).cloned()).collect()
@@ -599,10 +599,10 @@ impl SubAppContext {
 /// [`crate::types::CustomProcessDef`] do not retroactively rewrite
 /// already-running sub-sessions.
 #[must_use]
-pub fn build_sub_session(parent_session_id: SessionId, def: &crate::types::CustomProcessDef, composed_command: String) -> SubSession {
+pub fn build_sub_session(parent_worktree_tab_id: WorktreeTabId, def: &crate::types::CustomProcessDef, composed_command: String) -> SubSession {
     SubSession {
         id: SubSessionId::default(),
-        parent_session_id,
+        parent_worktree_tab_id,
         def_id: def.id.clone(),
         kind: def.kind,
         label: def.name.clone(),
@@ -623,11 +623,11 @@ fn now_unix_seconds() -> i64 {
         })
 }
 
-/// Compute the cwd a sub-session should spawn under: the parent session's worktree path. Centralised so future tools that need alternative working
+/// Compute the cwd a sub-session should spawn under: the worktree tab's path. Centralised so future tools that need alternative working
 /// directories (e.g. project-root over worktree) have a single place to override.
 #[must_use]
-pub fn sub_session_cwd(parent: &crate::types::Session) -> &Path {
-    parent.worktree_path.as_path()
+pub fn sub_session_cwd(worktree_path: &Path) -> &Path {
+    worktree_path
 }
 
 // --------------------------------------------------------------------------- Tests
@@ -783,10 +783,10 @@ mod tests {
 
     // ----- store tests --------------------------------------------------
 
-    fn fake_sub(parent: SessionId, label: &str) -> SubSession {
+    fn fake_sub(tab_id: WorktreeTabId, label: &str) -> SubSession {
         SubSession {
             id: SubSessionId::default(),
-            parent_session_id: parent,
+            parent_worktree_tab_id: tab_id,
             def_id: crate::types::CustomProcessDefId::new("shell"),
             kind: crate::types::CustomProcessKind::Terminal,
             label: label.to_owned(),
@@ -798,38 +798,38 @@ mod tests {
     }
 
     #[test]
-    fn store_preserves_per_parent_insertion_order() {
+    fn store_preserves_per_worktree_tab_insertion_order() {
         let store = SubSessionStore::new();
-        let parent = SessionId::new();
-        let a = fake_sub(parent, "a");
-        let b = fake_sub(parent, "b");
-        let c = fake_sub(parent, "c");
+        let tab_id = WorktreeTabId::new();
+        let a = fake_sub(tab_id, "a");
+        let b = fake_sub(tab_id, "b");
+        let c = fake_sub(tab_id, "c");
         let (ai, bi, ci) = (a.id, b.id, c.id);
         store.insert(a).unwrap();
         store.insert(b).unwrap();
         store.insert(c).unwrap();
-        let listed: Vec<_> = store.list_for(&parent).into_iter().map(|s| s.id).collect();
+        let listed: Vec<_> = store.list_for_worktree_tab(&tab_id).into_iter().map(|s| s.id).collect();
         assert_eq!(listed, vec![ai, bi, ci]);
     }
 
     #[test]
-    fn store_remove_drops_index_and_parent_bucket() {
+    fn store_remove_drops_index_and_worktree_tab_bucket() {
         let store = SubSessionStore::new();
-        let parent = SessionId::new();
-        let a = fake_sub(parent, "a");
+        let tab_id = WorktreeTabId::new();
+        let a = fake_sub(tab_id, "a");
         let aid = a.id;
         store.insert(a).unwrap();
         assert!(store.get(&aid).is_some());
         store.remove(&aid).expect("removed");
         assert!(store.get(&aid).is_none());
-        assert!(store.list_for(&parent).is_empty());
+        assert!(store.list_for_worktree_tab(&tab_id).is_empty());
     }
 
     #[test]
     fn store_set_status_clears_pid_on_exit() {
         let store = SubSessionStore::new();
-        let parent = SessionId::new();
-        let mut s = fake_sub(parent, "x");
+        let tab_id = WorktreeTabId::new();
+        let mut s = fake_sub(tab_id, "x");
         s.pid = Some(42);
         s.status = SubSessionStatus::Running;
         let id = s.id;
@@ -851,8 +851,8 @@ mod tests {
     #[test]
     fn store_insert_duplicate_id_errors() {
         let store = SubSessionStore::new();
-        let parent = SessionId::new();
-        let s = fake_sub(parent, "x");
+        let tab_id = WorktreeTabId::new();
+        let s = fake_sub(tab_id, "x");
         let dup = SubSession { ..s.clone() };
         store.insert(s).unwrap();
         let err = store.insert(dup).expect_err("dup");

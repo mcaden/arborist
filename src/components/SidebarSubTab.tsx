@@ -1,7 +1,7 @@
-// SidebarSubTab — indented row beneath a parent SidebarTab representing a
-// single sub-session (terminal or application). Sub-tabs are deliberately
-// simpler than parent tabs: no drag-reorder, no metrics line, and a single
-// status dot. Click forwards to:
+// SidebarSubTab — child row under a worktree tab representing a single
+// sub-session (terminal or application). It is visually aligned with
+// AI-session child tabs, but stays simpler: no drag-reorder, no metrics line,
+// and a single status dot. Click forwards to:
 //   * `subSessionStore.relaunch` when an *application* sub-tab is greyed
 //     (status `exited` or `error`) — the user clicked a launcher chrome
 //     for a process that died and should re-spawn under the same id;
@@ -11,7 +11,7 @@
 //     of an automatic reset of their scrollback;
 //   * otherwise `subSessionStore.focus`, which:
 //     * for terminal sub-sessions, swaps the MainArea viewport to this
-//       sub and brings the parent into view;
+//       sub and brings the owning worktree tab into view;
 //     * for application sub-sessions, raises the OS window without
 //       touching the viewport (the parent terminal stays visible).
 //
@@ -24,61 +24,35 @@
 //     to address).
 //
 // Accessibility: the row is a plain `<button>` (implicit `role="button"`),
-// not `role="tab"`. Sub-tabs live inside the parent's `<ul role="group">`
-// rather than the sidebar's `<ul role="tablist">`, so giving them the
-// `tab` role would violate the WAI-ARIA tabs pattern (which requires
-// `role="tab"` to be a child of `role="tablist"`) and would also confuse
-// the sidebar's roving-tabindex model — sub-tabs are *not* part of the
-// parent-tab Up/Down navigation. `aria-current="true"` indicates the
-// terminal sub-tab that currently owns the viewport (analogous to "current
-// item in a set"); application sub-tabs never set it because they don't
-// own the viewport.
+// not `role="tab"`, so it stays out of the sidebar's roving-tabindex model.
 
-import { useSessionActions } from '@/store/session-store';
-import { useActiveSubSessionId, useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
+import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
-import type { SessionId, SubSessionId, SubSessionStatus } from '@/types/arborist';
+import type { SubSessionId, SubSessionStatus } from '@/types/arborist';
 
 interface SidebarSubTabProps {
-  parentId: SessionId;
   subSessionId: SubSessionId;
-  /** True when the parent tab is the active session in the parent layer. */
-  parentIsActive: boolean;
 }
 
-export function SidebarSubTab({ parentId, subSessionId, parentIsActive }: SidebarSubTabProps): JSX.Element | null {
+export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element | null {
   const sub = useSubSessionById(subSessionId);
-  const activeSubId = useActiveSubSessionId(parentId);
   const subActions = useSubSessionActions();
-  const sessionActions = useSessionActions();
   const iconDataUri = useSubSessionIcon(subSessionId);
+  const isActive = useWorktreeTabStore((s) => {
+    if (!sub) return false;
+    const tab = s.tabs.find((t) => t.id === sub.parentWorktreeTabId);
+    return s.activeId === sub.parentWorktreeTabId && tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === subSessionId;
+  });
 
   if (!sub) return null;
 
-  // A terminal sub-tab is "selected" when it owns the viewport for its
-  // parent AND its parent is the active session. Application sub-tabs
-  // never get the viewport, so they're never visually selected by the
-  // viewport-swap rule (we just dim the row).
-  const isViewportOwner = sub.kind === 'terminal' && activeSubId === subSessionId && parentIsActive;
   const isExited = sub.status === 'exited' || sub.status === 'error';
 
   const handleClick = (): void => {
     if (isExited && sub.kind === 'application') {
-      // Application launcher whose process exited (or whose resolver
-      // gave up): re-spawn under the same id. Per-id dedupe in the
-      // store action prevents a double-click from spawning twice.
-      // Status flows back via `subsession://status`; the row visually
-      // transitions starting → running.
       void subActions.relaunch(subSessionId);
       return;
-    }
-    // For terminal sub-sessions, also bring the parent into view if the
-    // user clicked from another parent (otherwise activeByParent[parent]
-    // is set but `activeId` still points elsewhere — the viewport
-    // wouldn't update). Done here rather than inside the store action
-    // to avoid creating a cross-store import dependency cycle.
-    if (sub.kind === 'terminal' && !parentIsActive) {
-      void sessionActions.focus(parentId);
     }
     void subActions.focus(subSessionId);
   };
@@ -86,17 +60,13 @@ export function SidebarSubTab({ parentId, subSessionId, parentIsActive }: Sideba
   const handleClose = (e: React.MouseEvent): void => {
     e.stopPropagation();
     if (sub.kind === 'application' && !isExited) {
-      // Running app sub-tab: ask the user whether they also want to
-      // close the underlying window (e.g. quit VS Code).
       subActions.requestClose(subSessionId);
       return;
     }
-    // Terminal kind, or already-exited app kind: there's no window to
-    // address, so close immediately with the default tabOnly intent.
     void subActions.close(subSessionId);
   };
 
-  const stateClasses = isViewportOwner
+  const stateClasses = isActive
     ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100'
     : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
 
@@ -104,9 +74,9 @@ export function SidebarSubTab({ parentId, subSessionId, parentIsActive }: Sideba
     <li className="group relative px-2">
       <button
         type="button"
-        aria-current={isViewportOwner ? 'true' : undefined}
+        aria-current={isActive ? 'page' : undefined}
         onClick={handleClick}
-        className={`flex w-full items-center gap-2 rounded-md py-1 pl-7 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
+        className={`flex w-full items-center gap-2 rounded-md py-1 pl-5 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
       >
         <SubTabIcon kind={sub.kind} iconDataUri={iconDataUri} label={sub.label} />
         <span className="min-w-0 flex-1 truncate">{sub.label}</span>

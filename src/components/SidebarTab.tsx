@@ -2,12 +2,9 @@
 // an error indicator dot when the session has crashed, and a small close
 // button that opens the close-confirmation dialog.
 //
-// The whole tab is the @dnd-kit drag handle. The close button stops the
-// pointer-down event so dragging from the close glyph doesn't accidentally
-// initiate a reorder.
-
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+// Drag-to-reorder of session tabs was removed in the worktree-tab UI
+// roll-out (issue #44). The grouped layout invalidated the previous flat
+// reorder model; per-group reorder is a planned follow-up.
 
 import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
@@ -26,7 +23,6 @@ import {
   type OpenPermission,
   type OpenTool,
 } from '@/store/session-store';
-import { useSubSessionActions } from '@/store/sub-session-store';
 import type { SessionId, SessionMetrics, Tool } from '@/types/arborist';
 
 interface SidebarTabProps {
@@ -52,7 +48,6 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
   const openPermissions = useOpenPermissions(id);
   const metrics = useMetrics(id);
   const actions = useSessionActions();
-  const subActions = useSubSessionActions();
   // Pull the cached AI-tool icon URI from config. The selector is a
   // narrow string-or-undefined so unrelated config changes don't
   // re-render this row.
@@ -61,30 +56,18 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
     tool === 'claude' ? s.config.aiLaunchCommands.claudeIconDataUri : tool === 'copilot' ? s.config.aiLaunchCommands.copilotIconDataUri : undefined,
   );
 
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id,
-  });
-
   if (!session) return null;
 
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.6 : 1,
-  };
-
   const baseClasses =
-    'flex w-full flex-col items-stretch gap-0.5 rounded-md py-2 pl-2 pr-7 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
+    'flex w-full flex-col items-stretch gap-0.5 rounded-md py-2 pl-5 pr-7 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
   const stateClasses = isActive
     ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100'
     : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800';
 
   return (
-    <li ref={setNodeRef} style={style} className="group relative px-2">
+    <li className="group relative px-2">
       <button
         ref={(el) => onFocusableMounted(id, el)}
-        {...attributes}
-        {...listeners}
         type="button"
         role="tab"
         id={`session-tab-${id}`}
@@ -92,18 +75,8 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
         aria-label={`${session.tool} session ${session.label}${hasUnread && !isActive ? ' (unread output)' : ''}`}
         tabIndex={isFocused ? 0 : -1}
         onClick={() => {
-          // Clicking the parent tab is an explicit "show me the parent's
-          // terminal" gesture: clear any terminal sub-tab that currently
-          // owns the viewport for this parent so the MainArea swaps back
-          // to the parent's TerminalView. Without this the user clicks the
-          // parent tab and nothing visibly happens because
-          // `activeByParent[id]` still points at a sub-session and the
-          // MainArea's visible-id rule (see MainArea.tsx) prefers the sub.
-          //
-          // Done on click only — keyboard arrow-nav between parent tabs
-          // intentionally preserves each parent's sub-tab focus so that
-          // arrowing away and back returns the user to where they were.
-          subActions.activateParent(id);
+          // Clicking a session tab focuses it via the worktree-tab activeChildId
+          // mechanism (actions.focus sets activeChildId to this session).
           void actions.focus(id);
         }}
         onContextMenu={(e) => {
@@ -146,10 +119,6 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
       <button
         type="button"
         aria-label={`Close session ${session.label}`}
-        onPointerDown={(e) => {
-          // Don't let the drag listeners on the parent treat this as a drag.
-          e.stopPropagation();
-        }}
         onClick={(e) => {
           e.stopPropagation();
           actions.requestClose(id);
@@ -165,7 +134,7 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
 // ---------------------------------------------------------------------------
 // MetricsLine — compact second line under the label showing context-window
 // usage and total token count. Non-interactive (no nested focusables): the
-// whole tab remains the single keyboard/DnD target.
+// whole tab remains the single keyboard target.
 // ---------------------------------------------------------------------------
 
 interface MetricsLineProps {

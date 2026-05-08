@@ -7,14 +7,14 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { SubSession } from '@/types/arborist';
+import type { SubSession, WorktreeTabId } from '@/types/arborist';
 
 import * as subEvents from './sub-session-events';
 
-function makeSub(id: string, parent: string, overrides: Partial<SubSession> = {}): SubSession {
+function makeSub(id: string, parent: WorktreeTabId, overrides: Partial<SubSession> = {}): SubSession {
   return {
     id,
-    parentSessionId: parent,
+    parentWorktreeTabId: parent,
     defId: 'shell',
     kind: 'terminal',
     label: id,
@@ -30,7 +30,6 @@ beforeEach(() => {
   bridgeMock.resetBridgeMocks();
   useSubSessionStore.setState({
     subSessions: [],
-    activeByParent: {},
     statusMessages: {},
     isHydrated: false,
   });
@@ -42,7 +41,7 @@ afterEach(() => {
 
 describe('subscribeToSubStatus', () => {
   it('attaches onSubSessionStatus and routes payloads to applyStatus', () => {
-    useSubSessionStore.setState({ subSessions: [makeSub('s1', 'p1', { status: 'starting' })] });
+    useSubSessionStore.setState({ subSessions: [makeSub('s1', 'tab-p1' as WorktreeTabId, { status: 'starting' })] });
 
     subEvents.subscribeToSubStatus();
 
@@ -67,7 +66,6 @@ describe('subscribeToSubStatus', () => {
     const unlisten = subEvents.subscribeToSubStatus();
     expect(bridgeMock.onSubSessionStatus).toHaveBeenCalledTimes(1);
     unlisten();
-    // Allow the unlisten promise microtask to settle.
     await Promise.resolve();
     subEvents.subscribeToSubStatus();
     expect(bridgeMock.onSubSessionStatus).toHaveBeenCalledTimes(2);
@@ -76,7 +74,7 @@ describe('subscribeToSubStatus', () => {
 
 describe('subscribeToSubExited', () => {
   it('attaches onSubSessionExited and routes payloads to applyExited', () => {
-    useSubSessionStore.setState({ subSessions: [makeSub('s1', 'p1', { status: 'running' })] });
+    useSubSessionStore.setState({ subSessions: [makeSub('s1', 'tab-p1' as WorktreeTabId, { status: 'running' })] });
 
     subEvents.subscribeToSubExited();
 
@@ -84,7 +82,6 @@ describe('subscribeToSubExited', () => {
     const cb = bridgeMock.onSubSessionExited.mock.calls[0]![0]!;
     cb({ id: 's1', exitCode: 1 });
 
-    // Non-zero exit code synthesises 'error' (per applyExited contract).
     expect(useSubSessionStore.getState().subSessions[0]!.status).toBe('error');
   });
 

@@ -14,11 +14,11 @@ This repo is dogfooded: the user typically runs the **host** `arborist.exe` (or 
 
 Hard rules:
 
-- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `pnpm run tauri:dev`, `tauri dev`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
+- **Never** terminate `arborist.exe` / `arborist`, or its parent dev processes — `cargo run … arborist`, `pnpm dev` / `pnpm tauri:dev`, `tauri dev`, `pnpm vite`, the Vite dev server, or any `node`/`cargo` process you did not personally spawn in this session. Treat them as the user's running editor.
 - **Never** use name-based or pattern-based process kills — `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`, `Get-Process … | Stop-Process`. They will sweep up the host.
 - **Even with `Stop-Process -Id <PID>`**, only kill PIDs you captured from a child process you started yourself in this same session. If you didn't record the PID at spawn time, don't kill it.
 - If `cargo build` / `cargo run` is blocked by a "file in use" / target-locked error, **stop and ask the user** — that lock almost always means the host arborist is running. Do not "free" the lock by killing processes.
-- Do not run `pnpm run tauri:dev` or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `pnpm run build`, or `pnpm test --run` for verification instead.
+- Do not run `pnpm dev`, `pnpm tauri:dev`, `pnpm vite`, or `cargo run -p arborist` "to test changes" unless the user explicitly asks. The user already has it running. Use `cargo build`, `cargo test`, `pnpm run build`, or `pnpm test --run` for verification instead.
 
 If a task genuinely requires restarting the host, ask the user to do it — never do it yourself.
 
@@ -33,9 +33,12 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 ### Run / build
 
 ```sh
-pnpm run tauri:dev       # Vite + Tauri with HMR (frontend) and hot-recompile (backend)
-pnpm run tauri:build     # production bundle → target/release/bundle/
+pnpm dev                 # Vite + Tauri with HMR (frontend) and hot-recompile (backend); alias: pnpm tauri:dev
+pnpm vite                # Vite dev server only (no Tauri shell) — useful for browser-only iteration on UI bits
+pnpm tauri:build         # production bundle → target/release/bundle/
 ```
+
+`pnpm dev` runs `scripts/tauri-dev.mjs`, which picks a per-worktree devserver port, hands it to Vite via env, and tells Tauri to load the matching URL. Tauri's `beforeDevCommand` is `pnpm run vite` so the frontend is started automatically — do not change `pnpm dev` to invoke `vite` directly without also updating `tauri.conf.json` (otherwise Tauri will recurse into itself and the frontend will never come up).
 
 ### Lint / format / type-check
 
@@ -67,7 +70,7 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets --features 
 ### Debugging helpers
 
 ```sh
-RUST_LOG=arborist_lib=debug pnpm run tauri:dev   # verbose backend tracing
+RUST_LOG=arborist_lib=debug pnpm dev             # verbose backend tracing
 cargo run -p arborist --example config_smoke    # config-store end-to-end without Tauri
 cargo run -p arborist --features test-helpers --bin arborist-test-child # poke the PTY test child interactively
 ```

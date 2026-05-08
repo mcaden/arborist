@@ -47,6 +47,14 @@ import type {
   WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
+  WorktreeTab,
+  WorktreeTabId,
+  WorktreeTabCloseResult,
+  WorktreeTabOpenArgs,
+  WorktreeTabCloseArgs,
+  WorktreeTabFocusArgs,
+  WorktreeTabReorderArgs,
+  WorktreeTabSetActiveChildArgs,
   WorktreePrepEvent,
   WorktreePrepOpenLogArgs,
 } from '@/types/arborist';
@@ -362,12 +370,12 @@ export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Pr
 // ---------------------------------------------------------------------------
 // Phase 2: sub-session commands & events.
 //
-// Sub-sessions are children of a session and represent the "+ button"
-// items chosen from the tab context menu. Phase 2 ships *terminal* kind
-// (a second PTY in the same worktree); Phase 3 adds *application* kind
-// (detached external windows). Output for terminal sub-sessions reuses
-// the existing `session://output` channel because the UUID id space is
-// global; status changes get their own `subsession://status` channel.
+// Sub-sessions are children of a worktree tab (`parentWorktreeTabId`) and
+// represent custom processes chosen from the worktree-tab context menu.
+// Terminal sub-sessions are in-app PTYs; application sub-sessions launch
+// detached external windows. Output for terminal sub-sessions reuses the
+// existing `session://output` channel because the UUID id space is global;
+// status changes get their own `subsession://status` channel.
 // ---------------------------------------------------------------------------
 
 export function subSessionCreate(args: SubSessionCreateArgs): Promise<SubSession> {
@@ -383,8 +391,8 @@ export function subSessionFocus(id: SubSessionId): Promise<void> {
   return invoke<void>('subsession_focus', { args: { id } });
 }
 
-export function subSessionList(parentSessionId?: SessionId): Promise<SubSession[]> {
-  const args: SubSessionListArgs = parentSessionId === undefined ? {} : { parentSessionId };
+export function subSessionList(parentWorktreeTabId?: WorktreeTabId): Promise<SubSession[]> {
+  const args: SubSessionListArgs = parentWorktreeTabId === undefined ? {} : { parentWorktreeTabId };
   return invoke<SubSession[]>('subsession_list', { args });
 }
 
@@ -444,6 +452,34 @@ export function onSubSessionRestored(cb: (payload: SubSessionRestoredEvent) => v
 }
 
 // ---------------------------------------------------------------------------
+// Worktree tab commands (Issue #44)
+// ---------------------------------------------------------------------------
+
+export function worktreeTabOpen(args: WorktreeTabOpenArgs): Promise<WorktreeTab> {
+  return invoke<WorktreeTab>('worktree_tab_open', { args });
+}
+
+export function worktreeTabClose(args: WorktreeTabCloseArgs): Promise<WorktreeTabCloseResult> {
+  return invoke<WorktreeTabCloseResult>('worktree_tab_close', { args });
+}
+
+export function worktreeTabFocus(args: WorktreeTabFocusArgs): Promise<void> {
+  return invoke<void>('worktree_tab_focus', { args });
+}
+
+export function worktreeTabList(): Promise<WorktreeTab[]> {
+  return invoke<WorktreeTab[]>('worktree_tab_list');
+}
+
+export function worktreeTabReorder(args: WorktreeTabReorderArgs): Promise<void> {
+  return invoke<void>('worktree_tab_reorder', { args });
+}
+
+export function worktreeTabSetActiveChild(args: WorktreeTabSetActiveChildArgs): Promise<void> {
+  return invoke<void>('worktree_tab_set_active_child', { args });
+}
+
+// ---------------------------------------------------------------------------
 // Worktree prep (issue #63).
 //
 // `worktree_create` may spawn a one-shot prep job (`AppConfig.worktreePrepCommands`)
@@ -458,7 +494,6 @@ export function onSubSessionRestored(cb: (payload: SubSessionRestoredEvent) => v
 export function worktreePrepOpenLog(args: WorktreePrepOpenLogArgs): Promise<void> {
   return invoke<void>('worktree_prep_open_log', { args });
 }
-
 export function onWorktreePrep(cb: (payload: WorktreePrepEvent) => void): Promise<UnlistenFn> {
   return listen<WorktreePrepEvent>('worktree://prep', (event) => cb(event.payload));
 }

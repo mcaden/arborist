@@ -1,13 +1,30 @@
 // Vertical-tab sidebar — SPEC §5.1 (S-01..S-08), NF-06.
 //
-// Owns the visual layout, drag-to-reorder via @dnd-kit, full keyboard
-// navigation (arrow / Home / End / Enter / Delete / Alt+arrow), and focus
-// management after a tab is closed. Per-session state lives in the Zustand
-// session store; the *focused* tab index is purely local UI state and lives
-// here.
+// Issue #44 — sessions are now grouped under their parent **worktree tab**.
+// Top-level structure:
+//
+//   <aside role="tablist">                    (the keyboard tablist scope)
+//     [worktree header]   (li role="presentation", NOT a tab)
+//       SidebarTab        (role="tab")
+//       SidebarTab
+//       SidebarSubTab     (role="button")
+//     [worktree header]
+//       SidebarTab
+//       SidebarSubTab
+//
+// Worktree-tab headers are presentation only — they don't claim `role="tab"`,
+// so the WAI-ARIA tabs pattern still walks just session tabs (matches how
+// users moved between sessions before #44). They get their own click +
+// right-click handlers for "make this worktree active" / "close worktree" /
+// "Launch agent…" actions.
+//
+// Drag-to-reorder is intentionally **deferred** for the initial worktree-tab
+// UI roll-out: the prior implementation reordered a flat session list with
+// @dnd-kit, but in a grouped layout the visual order and the flat `ids`
+// array no longer match, which makes both pointer and Alt+arrow reorder
+// behave incorrectly. Re-introducing reorder (per-group, plus a separate
+// worktree-tab reorder) is a follow-up task tracked in plan.md.
 
-import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
-import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { CloseConfirmDialog } from './CloseConfirmDialog';
@@ -15,42 +32,73 @@ import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
 import { SidebarSubTab } from './SidebarSubTab';
 import { SidebarTab } from './SidebarTab';
+import { SidebarWorktreeTab } from './SidebarWorktreeTab';
 import { SubCloseConfirmDialog } from './SubCloseConfirmDialog';
 import { TabContextMenu } from './TabContextMenu';
 import { WorkspaceIndicator } from './WorkspaceIndicator';
-import { useActiveSessionId, useSessionActions, useSessions } from '@/store/session-store';
-import { useSubSessionsForParent } from '@/store/sub-session-store';
-import type { SessionId } from '@/types/arborist';
+import { WorktreeTabContextMenu } from './WorktreeTabContextMenu';
+import { useSessionActions, useSessions } from '@/store/session-store';
+import { useSubSessionsForWorktreeTab } from '@/store/sub-session-store';
+import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
+import type { SessionId, WorktreeTabId } from '@/types/arborist';
+
+interface SessionGroup {
+  /** `null` for the synthetic group of orphan sessions (no matching worktree tab). */
+  tabId: WorktreeTabId | null;
+  sessionIds: SessionId[];
+}
 
 export function Sidebar(): JSX.Element {
   const sessions = useSessions();
-  const activeId = useActiveSessionId();
+  const worktreeTabs = useWorktreeTabs();
+  const activeWorktreeTabId = useActiveWorktreeTabId();
   const actions = useSessionActions();
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'customProcesses'>('general');
 
-  // Single-menu invariant: at most one TabContextMenu open across all
-  // tabs. The triggering button is captured so we can restore focus on
-  // close (Esc / outside-click / activation).
+  // Per-tab right-click menus. Two flavours: one for session tabs, one for worktree-tab headers.
   const [contextMenu, setContextMenu] = useState<{
     sessionId: SessionId;
     anchor: { x: number; y: number };
     trigger: HTMLElement | null;
   } | null>(null);
+  const [worktreeContextMenu, setWorktreeContextMenu] = useState<{
+    tabId: WorktreeTabId;
+    anchor: { x: number; y: number };
+    trigger: HTMLElement | null;
+  } | null>(null);
 
-  const ids = useMemo(() => sessions.map((s) => s.id), [sessions]);
+  // Group sessions by worktree path so each header renders followed by its child sessions. Sessions whose path doesn't match any
+  // worktree tab fall into a synthetic "unlinked" group at the bottom — the boot self-heal opens tabs for all known session paths,
+  // but we render the unlinked bucket defensively so a transient drift never makes a session disappear from the sidebar.
+  const activeWorktreeTab = useMemo(() => worktreeTabs.find((t) => t.id === activeWorktreeTabId) ?? null, [worktreeTabs, activeWorktreeTabId]);
 
-  // Local roving-tabindex state. Tracks which tab the keyboard cursor is
-  // on (separate from the active/visible session — Tab nav and clicking
-  // are distinct interactions in the WAI-ARIA tabs pattern).
+  const groups = useMemo<SessionGroup[]>(() => {
+    const byPath = new Map<string, SessionId[]>();
+    const orphans: SessionId[] = [];
+    for (const s of sessions) {
+      const tab = worktreeTabs.find((t) => t.path === s.worktreePath);
+      if (!tab) {
+        orphans.push(s.id);
+        continue;
+      }
+      const list = byPath.get(tab.path) ?? [];
+      list.push(s.id);
+      byPath.set(tab.path, list);
+    }
+    const out: SessionGroup[] = worktreeTabs.map((tab) => ({ tabId: tab.id, sessionIds: byPath.get(tab.path) ?? [] }));
+    if (orphans.length > 0) out.push({ tabId: null, sessionIds: orphans });
+    return out;
+  }, [sessions, worktreeTabs]);
+
+  // Flat list of session ids in the order they're rendered. Drives the keyboard roving-tabindex.
+  const ids = useMemo(() => groups.flatMap((g) => g.sessionIds), [groups]);
+
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
 
-  // Refs to each tab's <button> so we can imperatively move DOM focus.
   const tabButtonRefs = useRef<Map<SessionId, HTMLButtonElement>>(new Map());
   const newSessionButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  // Snapshot of `ids` on the previous render. Used by the post-render
-  // effect to detect removals and focus the right neighbour.
   const previousIdsRef = useRef<SessionId[]>(ids);
 
   const onFocusableMounted = useCallback((id: SessionId, el: HTMLButtonElement | null) => {
@@ -67,9 +115,16 @@ export function Sidebar(): JSX.Element {
     setContextMenu(null);
   }, []);
 
-  // After a session is removed, move focus to the neighbour (right, then
-  // left, then the new-session button). Also keeps `focusedIndex` valid
-  // after a reorder.
+  const openWorktreeContextMenu = useCallback((tabId: WorktreeTabId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => {
+    setWorktreeContextMenu({ tabId, anchor, trigger });
+  }, []);
+
+  const closeWorktreeContextMenu = useCallback(() => {
+    setWorktreeContextMenu(null);
+  }, []);
+
+  // After a session is removed, move focus to the neighbour (right, then left, then the new-session button). Also keeps focusedIndex
+  // valid after a reorder via worktree close (which removes a swathe of ids at once).
   useEffect(() => {
     const previousIds = previousIdsRef.current;
     previousIdsRef.current = ids;
@@ -80,7 +135,6 @@ export function Sidebar(): JSX.Element {
     const sameMembers = sameLength && previousIds.every((id) => ids.includes(id));
 
     if (sameMembers) {
-      // Pure reorder — sync focusedIndex to the moved id's new position.
       const focusedId = previousIds[focusedIndex];
       if (focusedId !== undefined) {
         const newPos = ids.indexOf(focusedId);
@@ -98,8 +152,6 @@ export function Sidebar(): JSX.Element {
       return;
     }
 
-    // Find the right neighbour of the first removed id (in the previous
-    // list), falling back to the left, falling back to the tail.
     const removedIdx = previousIds.indexOf(removed[0]!);
     let nextId: SessionId | undefined;
     for (let i = removedIdx + 1; i < previousIds.length; i++) {
@@ -125,16 +177,16 @@ export function Sidebar(): JSX.Element {
     }
   }, [ids, focusedIndex]);
 
-  // Keep the keyboard cursor aligned with the active session when the
-  // user activates via mouse click / programmatic focus.
+  // Keep the keyboard cursor aligned with whatever session is currently active under the focused worktree tab. When the active tab's
+  // child changes (autolink on focus / close picking a sibling), surface that on the keyboard cursor too.
+  const activeChildSessionId = activeWorktreeTab?.activeChildId?.kind === 'session' ? activeWorktreeTab.activeChildId.id : undefined;
   useEffect(() => {
-    if (activeId === undefined) return;
-    const idx = ids.indexOf(activeId);
+    if (activeChildSessionId === undefined) return;
+    const idx = ids.indexOf(activeChildSessionId);
     if (idx !== -1 && idx !== focusedIndex) setFocusedIndex(idx);
-    // We intentionally exclude `focusedIndex` from deps: this effect only
-    // realigns when the *active* session changes from the outside.
+    // We intentionally exclude `focusedIndex` from deps: this effect only realigns when the *active* session changes from the outside.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, ids]);
+  }, [activeChildSessionId, ids]);
 
   const focusTabAt = useCallback(
     (index: number) => {
@@ -147,45 +199,18 @@ export function Sidebar(): JSX.Element {
   );
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
-    // The sidebar implements the WAI-ARIA tabs keyboard pattern. It
-    // must not intercept events that originate from descendant inputs
-    // or modal dialogs (e.g. the Settings dialog or NewSession dialog
-    // rendered inside the aside): otherwise Space/Arrow/Delete typed
-    // into a textbox would move tab focus or trigger close-confirm.
     const target = e.target as HTMLElement | null;
     if (target) {
       const tag = target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (target.isContentEditable) return;
       if (target.closest('[role="dialog"]')) return;
-      // Skip non-tab buttons inside the sidebar (Settings, Fit-debug). They
-      // bubble keydown into this tablist handler, which then `preventDefault`s
-      // Enter/Space and breaks their normal activation. Tabs themselves carry
-      // role="tab", so a tab's button passes the gate.
       if (tag === 'BUTTON' && !target.matches('[role="tab"]')) return;
     }
     if (ids.length === 0) return;
     const current = Math.min(focusedIndex, ids.length - 1);
     const currentId = ids[current];
     if (currentId === undefined) return;
-
-    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-      const delta = e.key === 'ArrowUp' ? -1 : 1;
-      const target = current + delta;
-      if (target < 0 || target >= ids.length) {
-        e.preventDefault();
-        return;
-      }
-      e.preventDefault();
-      const next = arrayMove(ids, current, target);
-      void actions.reorder(next);
-      // The post-reorder effect will sync `focusedIndex` to currentId's
-      // new position; re-focus the DOM node on the next paint.
-      requestAnimationFrame(() => {
-        tabButtonRefs.current.get(currentId)?.focus();
-      });
-      return;
-    }
 
     switch (e.key) {
       case 'ArrowDown':
@@ -207,6 +232,8 @@ export function Sidebar(): JSX.Element {
       case 'Enter':
       case ' ':
         e.preventDefault();
+        // Mirror the SidebarTab mouse-click behaviour so keyboard activation also clears any sub-session viewport claim — without this,
+        // arrowing onto a parent and pressing Enter while a sub still owns the viewport would feel like a no-op.
         void actions.focus(currentId);
         break;
       case 'Delete':
@@ -215,21 +242,6 @@ export function Sidebar(): JSX.Element {
         break;
       default:
     }
-  };
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-
-  const handleDragEnd = (event: DragEndEvent): void => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const fromIndex = ids.indexOf(String(active.id));
-    const toIndex = ids.indexOf(String(over.id));
-    if (fromIndex === -1 || toIndex === -1) return;
-    const next = arrayMove(ids, fromIndex, toIndex);
-    void actions.reorder(next);
   };
 
   const clampedFocusedIndex = Math.min(focusedIndex, Math.max(0, ids.length - 1));
@@ -245,22 +257,43 @@ export function Sidebar(): JSX.Element {
     >
       <WorkspaceIndicator />
       <NewSessionButton buttonRef={newSessionButtonRef} />
-      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-        <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-          <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1">
-            {sessions.map((session, idx) => (
-              <ParentTabGroup
-                key={session.id}
-                id={session.id}
-                isActive={session.id === activeId}
-                isFocused={idx === clampedFocusedIndex}
-                onFocusableMounted={onFocusableMounted}
-                onOpenContextMenu={openContextMenu}
-              />
-            ))}
-          </ul>
-        </SortableContext>
-      </DndContext>
+      <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1">
+        {groups.map((group) => {
+          if (group.tabId === null) {
+            // Synthetic orphan group — no header; just render the sessions so they remain reachable. Boot self-heal will open a
+            // proper tab on the next start.
+            return group.sessionIds.map((id) => {
+              const idx = ids.indexOf(id);
+              return (
+                <ParentTabGroup
+                  key={id}
+                  id={id}
+                  isActive={false}
+                  isFocused={idx === clampedFocusedIndex}
+                  onFocusableMounted={onFocusableMounted}
+                  onOpenContextMenu={openContextMenu}
+                />
+              );
+            });
+          }
+          const tabId = group.tabId;
+          const isActiveWorktree = tabId === activeWorktreeTabId;
+          return (
+            <SidebarGroupSection
+              key={tabId}
+              tabId={tabId}
+              isActiveWorktree={isActiveWorktree}
+              activeChildSessionId={isActiveWorktree ? activeChildSessionId : undefined}
+              sessionIds={group.sessionIds}
+              ids={ids}
+              clampedFocusedIndex={clampedFocusedIndex}
+              onFocusableMounted={onFocusableMounted}
+              onOpenContextMenu={openContextMenu}
+              onOpenWorktreeContextMenu={openWorktreeContextMenu}
+            />
+          );
+        })}
+      </ul>
       <div className="mt-auto flex items-center gap-1 border-t border-slate-200 px-2 py-2 dark:border-slate-800">
         <button
           type="button"
@@ -283,6 +316,14 @@ export function Sidebar(): JSX.Element {
           anchor={contextMenu.anchor}
           onClose={closeContextMenu}
           restoreFocusTo={contextMenu.trigger}
+        />
+      )}
+      {worktreeContextMenu && (
+        <WorktreeTabContextMenu
+          tabId={worktreeContextMenu.tabId}
+          anchor={worktreeContextMenu.anchor}
+          onClose={closeWorktreeContextMenu}
+          restoreFocusTo={worktreeContextMenu.trigger}
           onOpenSettings={() => {
             setSettingsInitialTab('customProcesses');
             setSettingsOpen(true);
@@ -294,10 +335,56 @@ export function Sidebar(): JSX.Element {
   );
 }
 
-// ParentTabGroup — renders a parent SidebarTab plus all its sub-tab rows
-// indented underneath. Sub-tabs are intentionally outside the @dnd-kit
-// SortableContext (no drag-reorder for sub-tabs in v1) but live inside
-// the sidebar's tablist for keyboard / focus purposes.
+interface SidebarGroupSectionProps {
+  tabId: WorktreeTabId;
+  isActiveWorktree: boolean;
+  activeChildSessionId: SessionId | undefined;
+  sessionIds: SessionId[];
+  ids: SessionId[];
+  clampedFocusedIndex: number;
+  onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
+  onOpenWorktreeContextMenu: (tabId: WorktreeTabId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => void;
+}
+
+function SidebarGroupSection({
+  tabId,
+  isActiveWorktree,
+  activeChildSessionId,
+  sessionIds,
+  ids,
+  clampedFocusedIndex,
+  onFocusableMounted,
+  onOpenContextMenu,
+  onOpenWorktreeContextMenu,
+}: SidebarGroupSectionProps): JSX.Element {
+  const subSessions = useSubSessionsForWorktreeTab(tabId);
+  return (
+    <>
+      <SidebarWorktreeTab tabId={tabId} isActive={isActiveWorktree} onOpenContextMenu={onOpenWorktreeContextMenu} />
+      {sessionIds.map((id) => {
+        const idx = ids.indexOf(id);
+        return (
+          <ParentTabGroup
+            key={id}
+            id={id}
+            isActive={isActiveWorktree && id === activeChildSessionId}
+            isFocused={idx === clampedFocusedIndex}
+            onFocusableMounted={onFocusableMounted}
+            onOpenContextMenu={onOpenContextMenu}
+          />
+        );
+      })}
+      {subSessions.map((sub) => (
+        <SidebarSubTab key={sub.id} subSessionId={sub.id} />
+      ))}
+    </>
+  );
+}
+
+// ParentTabGroup — renders a parent SidebarTab. Sub-sessions are no
+// longer nested under agent tabs — they render at the worktree-tab
+// level as flat siblings.
 interface ParentTabGroupProps {
   id: SessionId;
   isActive: boolean;
@@ -307,19 +394,7 @@ interface ParentTabGroupProps {
 }
 
 function ParentTabGroup({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: ParentTabGroupProps): JSX.Element {
-  const subSessions = useSubSessionsForParent(id);
   return (
-    <>
-      <SidebarTab id={id} isActive={isActive} isFocused={isFocused} onFocusableMounted={onFocusableMounted} onOpenContextMenu={onOpenContextMenu} />
-      {subSessions.length > 0 && (
-        <li role="presentation">
-          <ul role="group" aria-label="Sub-sessions" className="flex flex-col gap-0.5">
-            {subSessions.map((sub) => (
-              <SidebarSubTab key={sub.id} parentId={id} subSessionId={sub.id} parentIsActive={isActive} />
-            ))}
-          </ul>
-        </li>
-      )}
-    </>
+    <SidebarTab id={id} isActive={isActive} isFocused={isFocused} onFocusableMounted={onFocusableMounted} onOpenContextMenu={onOpenContextMenu} />
   );
 }

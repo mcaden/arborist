@@ -34,9 +34,17 @@ import {
   type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
-import { useSubSessionStore } from '@/store/sub-session-store';
 import { useConfigStore } from '@/store/config-store';
-import type { SessionActivityEvent, SessionId, SessionMetrics, SessionMetricsEvent, SessionStatusEvent, SessionView } from '@/types/arborist';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type {
+  ChildId,
+  SessionActivityEvent,
+  SessionId,
+  SessionMetrics,
+  SessionMetricsEvent,
+  SessionStatusEvent,
+  SessionView,
+} from '@/types/arborist';
 
 export interface SessionStoreState {
   sessions: SessionView[];
@@ -186,6 +194,12 @@ export interface SessionStoreActions {
   create: (args: SessionCreateArgs) => Promise<SessionView>;
   close: (id: SessionId, deleteWorktree?: boolean, opts?: { pruneOnError?: boolean }) => Promise<SessionCloseResult>;
   focus: (id: SessionId) => Promise<void>;
+  /**
+   * Purge every cached session whose `worktreePath` matches `path`. Returns the dropped session ids so the caller (typically
+   * `worktree-tab-store.close` after a backend cascade) can do additional cleanup. Sub-sessions are worktree-tab-owned and are dropped separately by
+   * `worktree-tab-store.close` via `dropForWorktreeTab`.
+   */
+  removeLocalForPath: (path: string) => SessionId[];
   reorder: (ids: SessionId[]) => Promise<void>;
   requestClose: (id: SessionId) => void;
   cancelClose: () => void;
@@ -305,6 +319,17 @@ export const useSessionStore = create<Store>((set, get) => {
         sessions: [...s.sessions, view],
         activeId: view.id,
       }));
+      // Auto-link the new session to its parent worktree tab (issue #44). The backend `worktree_tab_open` is idempotent on canonical path,
+      // so this is safe to call even when the tab already exists. Failures are logged but never propagated — the session itself is alive
+      // and useful; the worktree-tab store will self-heal on the next boot via `hydrate(knownPaths)`. This avoids surfacing a confusing
+      // "session created but link failed" partial-success error to the user.
+      try {
+        const wttActions = useWorktreeTabStore.getState().actions;
+        const tab = await wttActions.open(view.worktreePath);
+        await wttActions.setActiveChild(tab.id, { kind: 'session', id: view.id });
+      } catch (err) {
+        console.warn(`[session-store] worktree-tab autolink for ${view.id} failed: ${formatError(err)}`);
+      }
       return view;
     },
 
@@ -404,12 +429,22 @@ export const useSessionStore = create<Store>((set, get) => {
           patch.inTurn = next;
         }
         set(patch);
-        // Frontend convergence on parent close: drop any sub-sessions
-        // that hung off this parent so the sidebar / xterm registry
-        // don't leak orphan rows. The backend cascade is Phase 7's
-        // responsibility (CONTEXT_MENU_PLAN.md), but converging
-        // locally avoids a confusing in-between UI state.
-        useSubSessionStore.getState().actions.dropForParent(id);
+        // Worktree-tab autolink (issue #44): if this session was the active child of its parent worktree tab, pick a sibling under the same
+        // worktreePath as the replacement; if none remain, clear `activeChildId` so MainArea falls back to the dashboard. Local patch is
+        // synchronous so the sidebar/MainArea react immediately; the persisted backend write is fired-and-forget — a rejection just leaves
+        // the persisted marker stale, which is harmless until the next user action overwrites it.
+        const closingSession = sessions.find((s) => s.id === id);
+        if (closingSession) {
+          const wttState = useWorktreeTabStore.getState();
+          const parentTab = wttState.tabs.find((t) => t.path === closingSession.worktreePath);
+          if (parentTab && parentTab.activeChildId?.kind === 'session' && parentTab.activeChildId.id === id) {
+            const sibling = nextSessions.find((s) => s.worktreePath === closingSession.worktreePath);
+            const replacement: ChildId | null = sibling ? { kind: 'session', id: sibling.id } : null;
+            void wttState.actions.setActiveChild(parentTab.id, replacement).catch((err) => {
+              console.warn(`[session-store] setActiveChild(null) after close(${id}) failed: ${formatError(err)}`);
+            });
+          }
+        }
       };
 
       let succeeded = false;
@@ -427,9 +462,51 @@ export const useSessionStore = create<Store>((set, get) => {
       }
     },
 
+    removeLocalForPath: (path) => {
+      // Worktree-tab close cascades on the backend (issue #44) but emits per-session status events that don't auto-prune the row from this
+      // store — so without explicit local cleanup, closing a worktree tab leaves zombie session rows in the cache. Iterate sessions matching
+      // the canonical path and drop their derived per-session caches. Returns the dropped ids so the caller can chain further cleanup if needed.
+      // Sub-session cascade is now handled at the worktree-tab level (dropForWorktreeTab), not per session.
+      const dropped: SessionId[] = [];
+      const before = get();
+      const remaining: SessionView[] = [];
+      for (const s of before.sessions) {
+        if (s.worktreePath === path) {
+          dropped.push(s.id);
+        } else {
+          remaining.push(s);
+        }
+      }
+      if (dropped.length === 0) return dropped;
+      const dropSet = new Set(dropped);
+      const purgeMap = <V>(m: Record<string, V>): Record<string, V> => {
+        const next: Record<string, V> = {};
+        for (const [k, v] of Object.entries(m)) {
+          if (!dropSet.has(k as SessionId)) next[k as SessionId] = v;
+        }
+        return next;
+      };
+      const wasActive = before.activeId !== undefined && dropSet.has(before.activeId);
+      set({
+        sessions: remaining,
+        activeId: wasActive ? remaining[0]?.id : before.activeId,
+        pendingClose: before.pendingClose !== undefined && dropSet.has(before.pendingClose) ? undefined : before.pendingClose,
+        statusMessages: purgeMap(before.statusMessages),
+        hasUnread: purgeMap(before.hasUnread) as Record<SessionId, true>,
+        activity: purgeMap(before.activity) as Record<SessionId, SessionActivity>,
+        metrics: purgeMap(before.metrics) as Record<SessionId, SessionMetrics>,
+        lastTurnEndAt: purgeMap(before.lastTurnEndAt) as Record<SessionId, number>,
+        lastTurnDurationMs: purgeMap(before.lastTurnDurationMs) as Record<SessionId, number>,
+        openTools: purgeMap(before.openTools),
+        openPermissions: purgeMap(before.openPermissions),
+        inTurn: purgeMap(before.inTurn) as Record<SessionId, true>,
+      });
+      return dropped;
+    },
+
     focus: async (id) => {
       // Optimistic: switching tabs must feel instant.
-      const { hasUnread, activity } = get();
+      const { hasUnread, activity, sessions } = get();
       const patch: Partial<SessionStoreState> = { activeId: id };
       if (id in hasUnread) {
         const next = { ...hasUnread };
@@ -445,6 +522,27 @@ export const useSessionStore = create<Store>((set, get) => {
         patch.activity = nextActivity;
       }
       set(patch);
+      // Also focus the parent worktree tab so the sidebar's top-level highlight follows the user's intent (issue #44). If the session was
+      // loaded without a matching tab, self-heal through the idempotent open command so MainArea has a parent tab to derive visibility from.
+      const session = sessions.find((s) => s.id === id);
+      if (session) {
+        const wttActions = useWorktreeTabStore.getState().actions;
+        let tab = useWorktreeTabStore.getState().tabs.find((t) => t.path === session.worktreePath);
+        if (!tab) {
+          try {
+            tab = await wttActions.open(session.worktreePath);
+          } catch (err) {
+            console.warn(`[session-store] worktreeTabOpen during focus(${id}) failed: ${formatError(err)}`);
+          }
+        }
+        if (tab) {
+          // Fire backend writes without awaiting — the store actions update local state synchronously, and focus must feel instant.
+          void wttActions.focus(tab.id);
+          void wttActions.setActiveChild(tab.id, { kind: 'session', id }).catch((err) => {
+            console.warn(`[session-store] setActiveChild after focus(${id}) failed: ${formatError(err)}`);
+          });
+        }
+      }
       try {
         await sessionFocus({ sessionId: id });
       } catch (err) {

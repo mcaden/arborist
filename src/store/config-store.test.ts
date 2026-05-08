@@ -23,6 +23,9 @@ const SAMPLE: AppConfig = {
   activeSessionId: null,
   customProcesses: [],
   lastOpenSubSessions: [],
+  worktreeTabs: [],
+  worktreeTabOrder: [],
+  activeWorktreeTabId: null,
 };
 
 function resetStore(): void {
@@ -40,6 +43,9 @@ function resetStore(): void {
       activeSessionId: null,
       customProcesses: [],
       lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
     },
     status: 'idle',
     error: null,
@@ -154,7 +160,7 @@ describe('useConfigStore.set', () => {
     };
     const rec = {
       id: 'sub-1',
-      parentSessionId: 'sess-1',
+      parentWorktreeTabId: 'tab-sess-1',
       defId: 'shell',
       kind: 'terminal' as const,
       label: 'Shell',

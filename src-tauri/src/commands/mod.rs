@@ -13,6 +13,7 @@
 
 pub mod session;
 pub mod subsession;
+pub mod worktree_tab;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -25,7 +26,8 @@ use crate::types::{
     AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
     SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
     SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs,
-    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
+    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab,
+    WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -125,19 +127,12 @@ pub async fn session_list(app: tauri::AppHandle) -> Result<Vec<SessionView>, App
 #[tauri::command]
 pub async fn session_close(app: tauri::AppHandle, args: SessionCloseArgs) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
-    let sub_ctx = sub_ctx_of(&app)?;
-    // Refuse the entire close (parent + sub-session cascade) while a workspace switch is in progress. Without this guard, the cascade below would
-    // tear down sub-sessions even when `session_close_impl` is about to reject with `WorkspaceSwitchInProgress`, orphaning the parent in a broken
-    // half-closed state.
+    // Refuse close while a workspace switch is in progress.
     let _switch = session::acquire_switch_read(&ctx)?;
-    // Phase 7 cascade: mark the parent as closing (RAII guard ensures removal even on panic), tear down its sub-sessions, then close the parent
-    // itself. The tombstone closes the door on a concurrent `subsession_create` racing into the close window.
-    //
-    // Workspace-switch rejection *also* lives inside `session_close_impl` (it takes its own `try_read()` on `AppContext::switch_lock` for the full
-    // body, including across `pool.kill().await`) — keep the impl as the single source of truth for the gating policy.
+    // Mark the parent as closing (RAII guard) then close. Sub-sessions are NOT cascaded here — they belong to the worktree tab, not the agent
+    // session. The worktree-tab close path handles sub-session teardown.
     let _guard = ctx.mark_parent_closing(args.session_id);
-    subsession::close_for_parent_impl(&ctx, &sub_ctx, args.session_id).await;
-    session::session_close_impl(&ctx, args.session_id, args.delete_worktree).await
+    session::session_close_locked(&ctx, args.session_id, args.delete_worktree).await
 }
 
 #[tauri::command]
@@ -343,8 +338,9 @@ fn open_path_with_os(path: &std::path::Path) -> std::io::Result<()> {
 #[tauri::command]
 pub async fn workspace_switch(app: tauri::AppHandle, args: WorkspaceSwitchArgs) -> Result<WorkspaceSwitchResult, AppError> {
     let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
     let path = PathBuf::from(args.path);
-    session::workspace_switch_impl(&ctx, &app, &path).await
+    session::workspace_switch_impl(&ctx, Some(sub_ctx), &app, &path).await
 }
 
 // --------------------------------------------------------------------------- Production PtySink builder.
@@ -525,7 +521,7 @@ pub async fn subsession_focus(app: tauri::AppHandle, args: SubSessionIdArg) -> R
 #[tauri::command]
 pub async fn subsession_list(app: tauri::AppHandle, args: SubSessionListArgs) -> Result<Vec<SubSession>, AppError> {
     let sub_ctx = sub_ctx_of(&app)?;
-    subsession::subsession_list_impl(&sub_ctx, args.parent_session_id)
+    subsession::subsession_list_impl(&sub_ctx, args.parent_worktree_tab_id)
 }
 
 #[tauri::command]
@@ -632,6 +628,46 @@ pub fn build_production_sub_sink(app: tauri::AppHandle, store: Arc<crate::sub_se
     });
 
     crate::sub_sessions::SubPtySink::new(output, status, exited, restored)
+}
+
+// --------------------------------------------------------------------------- Worktree tab commands (Issue #44)
+
+#[tauri::command]
+pub async fn worktree_tab_open(app: tauri::AppHandle, args: WorktreeTabOpenArgs) -> Result<WorktreeTab, AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_open_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_close(app: tauri::AppHandle, args: WorktreeTabCloseArgs) -> Result<WorktreeTabCloseResult, AppError> {
+    let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
+    worktree_tab::worktree_tab_close_impl(&ctx, sub_ctx, args.id).await
+}
+
+#[tauri::command]
+pub async fn worktree_tab_focus(app: tauri::AppHandle, args: WorktreeTabFocusArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_focus_impl(&ctx, args.id)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_list(app: tauri::AppHandle) -> Result<Vec<WorktreeTab>, AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_list_impl(&ctx)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_reorder(app: tauri::AppHandle, args: WorktreeTabReorderArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    worktree_tab::worktree_tab_reorder_impl(&ctx, args.ids)
+}
+
+#[tauri::command]
+pub async fn worktree_tab_set_active_child(app: tauri::AppHandle, args: WorktreeTabSetActiveChildArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
+    worktree_tab::worktree_tab_set_active_child_impl(&ctx, sub_ctx, args)
 }
 
 #[cfg(test)]

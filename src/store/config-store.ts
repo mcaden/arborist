@@ -32,6 +32,9 @@ const EMPTY_CONFIG: AppConfig = {
   activeSessionId: null,
   customProcesses: [],
   lastOpenSubSessions: [],
+  worktreeTabs: [],
+  worktreeTabOrder: [],
+  activeWorktreeTabId: null,
 };
 
 export type HydrationStatus = 'idle' | 'loading' | 'ready' | 'error';

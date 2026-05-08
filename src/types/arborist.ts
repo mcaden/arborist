@@ -25,6 +25,11 @@ export type CustomProcessDefId = string;
 // MIRROR: src-tauri/src/types.rs::InstructionSetId
 export type InstructionSetId = string;
 
+// MIRROR: src-tauri/src/types.rs::WorktreeTabId
+// Stable identifier for a WorktreeTab. Backed by a UUID v4 on the Rust side;
+// distinct from SessionId/SubSessionId at the type level.
+export type WorktreeTabId = string;
+
 // MIRROR: src-tauri/src/types.rs::Tool
 export type Tool = 'claude' | 'copilot';
 
@@ -83,6 +88,31 @@ export interface SessionView {
   pid?: number;
   createdAt: number;
   tabIndex: number;
+}
+
+// MIRROR: src-tauri/src/types.rs::ChildId
+// Discriminated child identifier — either a Session or SubSession.
+// Wire shape: `{ kind: 'session', id: SessionId }` or `{ kind: 'subSession', id: SubSessionId }`.
+export type ChildId = { kind: 'session'; id: SessionId } | { kind: 'subSession'; id: SubSessionId };
+
+// MIRROR: src-tauri/src/types.rs::WorktreeTab
+// First-class worktree tab record. Parent in the sidebar hierarchy.
+// AI sessions are grouped by matching `worktreePath`; sub-sessions are owned by `parentWorktreeTabId`.
+export interface WorktreeTab {
+  id: WorktreeTabId;
+  path: string;
+  name: string;
+  branch?: string;
+  label: string;
+  tabIndex: number;
+  activeChildId?: ChildId;
+  /**
+   * Tree-icon assignment in `1..=WORKTREE_ICON_COUNT` (Issue #45). Resolved
+   * to a bundled PNG asset by `@/lib/tree-icons`. Backend always populates
+   * this; `0` only appears transiently in pre-v7 JSON before the v6→v7
+   * migration runs at load time.
+   */
+  iconId: number;
 }
 
 // MIRROR: src-tauri/src/types.rs::InstructionSet
@@ -159,6 +189,12 @@ export interface AppConfig {
    * application sub-sessions back greyed (re-launch on click).
    */
   lastOpenSubSessions: SubSessionRecord[];
+  /** First-class worktree tab records. Added in `configVersion = 5`. */
+  worktreeTabs: WorktreeTab[];
+  /** Top-level sidebar ordering over worktree tab IDs. Added in `configVersion = 5`. */
+  worktreeTabOrder: WorktreeTabId[];
+  /** Most recently focused worktree tab. Added in `configVersion = 5`. */
+  activeWorktreeTabId: WorktreeTabId | null;
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
@@ -198,12 +234,18 @@ export interface PartialAppConfig {
   customProcesses?: CustomProcessDef[];
   /** Replaces the entire `lastOpenSubSessions` list when present. */
   lastOpenSubSessions?: SubSessionRecord[];
+  /** Replaces the worktree tabs list when present. */
+  worktreeTabs?: WorktreeTab[];
+  /** Replaces the worktree tab order when present. */
+  worktreeTabOrder?: WorktreeTabId[];
+  /** Tri-state: omit to leave alone; `null` to clear; string to set. */
+  activeWorktreeTabId?: WorktreeTabId | null;
 }
 
 // MIRROR: src-tauri/src/types.rs::CustomProcessDef
 // Persisted in `AppConfig.customProcesses`. `command` is passed verbatim to
-// `$SHELL -c` (or `%COMSPEC% /c` on Windows); the parent session's worktree
-// path is set as `cwd` and **never** interpolated into the command.
+// `$SHELL -c` (or `%COMSPEC% /c` on Windows); the parent worktree tab path is
+// set as `cwd` and **never** interpolated into the command.
 export interface CustomProcessDef {
   id: CustomProcessDefId;
   name: string;
@@ -228,7 +270,7 @@ export interface CustomProcessDef {
 // in a Zustand slice (Phase 4).
 export interface SubSession {
   id: SubSessionId;
-  parentSessionId: SessionId;
+  parentWorktreeTabId: WorktreeTabId;
   defId: CustomProcessDefId;
   kind: CustomProcessKind;
   label: string;
@@ -244,7 +286,7 @@ export interface SubSession {
 // needs to attempt re-creation.
 export interface SubSessionRecord {
   id: SubSessionId;
-  parentSessionId: SessionId;
+  parentWorktreeTabId: WorktreeTabId;
   defId: CustomProcessDefId;
   kind: CustomProcessKind;
   label: string;
@@ -289,7 +331,7 @@ export interface SessionStatusEvent {
 
 // MIRROR: src-tauri/src/types.rs::SubSessionCreateArgs
 export interface SubSessionCreateArgs {
-  parentSessionId: SessionId;
+  parentWorktreeTabId: WorktreeTabId;
   defId: CustomProcessDefId;
 }
 
@@ -313,7 +355,7 @@ export interface SubSessionCloseArgs {
 
 // MIRROR: src-tauri/src/types.rs::SubSessionListArgs
 export interface SubSessionListArgs {
-  parentSessionId?: SessionId;
+  parentWorktreeTabId?: WorktreeTabId;
 }
 
 // MIRROR: src-tauri/src/types.rs::SubSessionInputArgs
@@ -358,6 +400,37 @@ export interface SubSessionExitedEvent {
 // Error) follow the restore event in normal flow.
 export interface SubSessionRestoredEvent {
   subSession: SubSession;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeTabOpenArgs
+export interface WorktreeTabOpenArgs {
+  path: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeTabCloseArgs
+export interface WorktreeTabCloseArgs {
+  id: WorktreeTabId;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeTabFocusArgs
+export interface WorktreeTabFocusArgs {
+  id: WorktreeTabId;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeTabReorderArgs
+export interface WorktreeTabReorderArgs {
+  ids: WorktreeTabId[];
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeTabSetActiveChildArgs
+export interface WorktreeTabSetActiveChildArgs {
+  id: WorktreeTabId;
+  childId?: ChildId;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeTabCloseResult
+export interface WorktreeTabCloseResult {
+  childErrors?: string[];
 }
 
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent

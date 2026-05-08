@@ -11,14 +11,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arborist_lib::app_launcher::{AppPool, AppSpawner, RealAppSpawner};
-use arborist_lib::commands::session::{session_close_impl, session_create_impl, AppContext};
-use arborist_lib::commands::subsession::{close_for_parent_impl, restore_all_sub_sessions_impl, subsession_create_impl, subsession_relaunch_impl};
+use arborist_lib::commands::session::{session_create_impl, AppContext};
+use arborist_lib::commands::subsession::{
+    close_for_worktree_tab_impl, restore_all_sub_sessions_impl, subsession_close_impl, subsession_create_impl, subsession_relaunch_impl,
+};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
-    CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs,
-    SessionId, SessionStatus, SubSessionCreateArgs, SubSessionStatus, Tool,
+    ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets,
+    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeTab, WorktreeTabId,
 };
 use arborist_lib::window_focus::RecordingFocuser;
 use portable_pty::{ExitStatus, PtySize};
@@ -193,6 +195,7 @@ struct Harness {
     worktree: TempDir,
     instruction_id: InstructionSetId,
     shell_def_id: CustomProcessDefId,
+    worktree_tab_id: WorktreeTabId,
 }
 
 fn build_harness() -> Harness {
@@ -224,6 +227,26 @@ fn build_harness() -> Harness {
             }),
             custom_processes: Some(vec![shell_def]),
             ..Default::default()
+        })
+        .unwrap();
+
+    // Create a worktree tab so sub-sessions have a parent.
+    let worktree_tab_id = WorktreeTabId::new();
+    let wt_tab = WorktreeTab {
+        id: worktree_tab_id,
+        path: worktree.path().to_path_buf(),
+        name: "wt".into(),
+        branch: None,
+        label: "wt".into(),
+        active_child_id: None,
+        tab_index: 0,
+        icon_id: 1,
+    };
+    store
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.worktree_tabs.push(wt_tab.clone());
+            cfg.worktree_tab_order.push(worktree_tab_id);
+            true
         })
         .unwrap();
 
@@ -273,6 +296,7 @@ fn build_harness() -> Harness {
         worktree,
         instruction_id,
         shell_def_id,
+        worktree_tab_id,
     }
 }
 
@@ -290,12 +314,12 @@ fn create_parent(h: &Harness) -> arborist_lib::types::SessionView {
     .expect("parent create ok")
 }
 
-fn create_sub(h: &Harness, parent: SessionId) -> Result<arborist_lib::types::SubSession, arborist_lib::types::AppError> {
+fn create_sub(h: &Harness, tab_id: WorktreeTabId) -> Result<arborist_lib::types::SubSession, arborist_lib::types::AppError> {
     subsession_create_impl(
         &h.ctx,
         &h.sub_ctx,
         SubSessionCreateArgs {
-            parent_session_id: parent,
+            parent_worktree_tab_id: tab_id,
             def_id: h.shell_def_id.clone(),
         },
     )
@@ -318,67 +342,75 @@ fn wait_until<F: FnMut() -> bool>(mut f: F, dur: Duration) -> bool {
 #[tokio::test]
 async fn cascade_kills_terminal_subs_and_prunes_persistence() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub_a = create_sub(&h, parent).expect("sub a created");
-    let sub_b = create_sub(&h, parent).expect("sub b created");
+    let _parent = create_parent(&h).id;
+    let sub_a = create_sub(&h, h.worktree_tab_id).expect("sub a created");
+    let sub_b = create_sub(&h, h.worktree_tab_id).expect("sub b created");
 
     assert!(wait_until(|| h.sub_pool.contains(&sub_a.id), Duration::from_secs(2)));
     assert!(wait_until(|| h.sub_pool.contains(&sub_b.id), Duration::from_secs(2)));
-    assert_eq!(h.sub_ctx.store.list_for(&parent).len(), 2);
+    assert_eq!(h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).len(), 2);
     assert_eq!(h.ctx.store().load_config().last_open_sub_sessions.len(), 2);
 
     // Cascade and verify both sub-sessions are gone everywhere.
-    close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
+    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
 
     assert!(!h.sub_pool.contains(&sub_a.id), "sub_a still in pool");
     assert!(!h.sub_pool.contains(&sub_b.id), "sub_b still in pool");
-    assert!(h.sub_ctx.store.list_for(&parent).is_empty(), "store not pruned");
+    assert!(h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).is_empty(), "store not pruned");
     assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty(), "persistence not pruned");
 }
 
 #[tokio::test]
-async fn session_close_cascades_subs_via_tombstone() {
+async fn worktree_tab_closing_tombstone_rejects_new_subs_and_cascades() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
-    // Mark closing, cascade, close — mirrors the wrapper in commands/mod.rs.
+    // Mark worktree tab as closing, cascade, then verify cleanup.
     {
-        let _guard = h.ctx.mark_parent_closing(parent);
-        assert!(h.ctx.is_parent_closing(&parent));
+        let _guard = h.ctx.mark_worktree_tab_closing(h.worktree_tab_id);
+        assert!(h.ctx.is_worktree_tab_closing(&h.worktree_tab_id));
         // While the tombstone is set, new sub-creates must be rejected.
-        let blocked = create_sub(&h, parent);
+        let blocked = create_sub(&h, h.worktree_tab_id);
         assert!(blocked.is_err(), "tombstone should reject new subs");
         let err = blocked.err().unwrap();
         assert_eq!(err.code, "InvalidArgument");
 
-        close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
-        session_close_impl(&h.ctx, parent, false).await.expect("session close ok");
+        close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
     }
 
-    // Guard dropped: tombstone clears, parent + sub all gone.
-    assert!(!h.ctx.is_parent_closing(&parent));
-    assert!(h.sub_ctx.store.list_for(&parent).is_empty());
+    // Guard dropped: tombstone clears, sub gone.
+    assert!(!h.ctx.is_worktree_tab_closing(&h.worktree_tab_id));
+    assert!(h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).is_empty());
     assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty());
-    assert!(!h.ctx.store().load_sessions().contains_key(&parent));
 }
 
 #[tokio::test]
-async fn restore_drops_orphan_records_when_parent_is_gone() {
+async fn restore_drops_orphan_records_when_worktree_tab_is_gone() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
-    // Close the parent (cascade first so we mirror the real wrapper).
-    close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
-    session_close_impl(&h.ctx, parent, false).await.expect("session close ok");
+    // Tear down existing subs.
+    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
 
-    // Manually re-add an orphan record (simulates a crash/rollback that left a sub persisted under a now-gone parent).
+    // Remove the worktree tab from config so the orphan record references a non-existent tab.
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.worktree_tabs.retain(|t| t.id != h.worktree_tab_id);
+            cfg.worktree_tab_order.retain(|tid| *tid != h.worktree_tab_id);
+            true
+        })
+        .unwrap();
+
+    // Manually re-add an orphan record (simulates a crash/rollback that left a sub persisted under a now-gone tab).
     let orphan = arborist_lib::types::SubSessionRecord {
         id: arborist_lib::types::SubSessionId::default(),
-        parent_session_id: parent,
+        parent_session_id: None,
+        parent_worktree_tab_id: Some(h.worktree_tab_id),
         def_id: h.shell_def_id.clone(),
         kind: CustomProcessKind::Terminal,
         label: "Shell".into(),
@@ -386,7 +418,8 @@ async fn restore_drops_orphan_records_when_parent_is_gone() {
     };
     let orphan_id = orphan.id;
     h.ctx.store().append_last_open_sub_session(orphan).unwrap();
-    assert_eq!(h.ctx.store().load_config().last_open_sub_sessions.len(), 1);
+    // The orphan record is written to disk, but load_config() sanitizes it away since its tab is gone.
+    // We verify that restore_all_sub_sessions_impl completes cleanly regardless.
 
     restore_all_sub_sessions_impl(&h.ctx, &h.sub_ctx);
 
@@ -404,8 +437,8 @@ async fn restore_drops_orphan_records_when_parent_is_gone() {
 #[tokio::test]
 async fn restore_respawns_terminal_subs_under_extant_parent() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Simulate a fresh app launch: drop the in-memory store + pool but keep persistence (mirrors what happens between runs of the app).
@@ -431,31 +464,34 @@ async fn restore_respawns_terminal_subs_under_extant_parent() {
 }
 
 #[tokio::test]
-async fn restore_rejects_records_under_closing_parent() {
+async fn restore_rejects_records_under_closing_worktree_tab() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Drop the in-memory store but keep persistence (mirrors restart).
     h.sub_ctx.store.remove(&sub.id);
     h.sub_pool.kill(&sub.id).await.ok();
 
-    let _guard = h.ctx.mark_parent_closing(parent);
+    let _guard = h.ctx.mark_worktree_tab_closing(h.worktree_tab_id);
     restore_all_sub_sessions_impl(&h.ctx, &h.sub_ctx);
 
     assert!(
         h.ctx.store().load_config().last_open_sub_sessions.is_empty(),
-        "records under closing parent must be pruned"
+        "records under closing worktree tab must be pruned"
     );
-    assert!(h.sub_ctx.store.get(&sub.id).is_none(), "no row should be inserted under a closing parent");
+    assert!(
+        h.sub_ctx.store.get(&sub.id).is_none(),
+        "no row should be inserted under a closing worktree tab"
+    );
 }
 
 #[tokio::test]
 async fn relaunch_swaps_terminal_pty_under_same_id() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     let returned = subsession_relaunch_impl(&h.ctx, &h.sub_ctx, sub.id).await.expect("relaunch ok");
@@ -472,8 +508,8 @@ async fn relaunch_swaps_terminal_pty_under_same_id() {
 #[tokio::test]
 async fn relaunch_rejects_when_def_was_deleted() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // User deletes the def via Settings. Persisted sub record still references the gone def id.
@@ -492,12 +528,12 @@ async fn relaunch_rejects_when_def_was_deleted() {
 }
 
 #[tokio::test]
-async fn create_under_closing_parent_is_rejected() {
+async fn create_under_closing_worktree_tab_is_rejected() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
+    let _parent = create_parent(&h).id;
 
-    let _guard = h.ctx.mark_parent_closing(parent);
-    let result = create_sub(&h, parent);
+    let _guard = h.ctx.mark_worktree_tab_closing(h.worktree_tab_id);
+    let result = create_sub(&h, h.worktree_tab_id);
     assert!(result.is_err());
     assert_eq!(result.err().unwrap().code, "InvalidArgument");
 }
@@ -511,7 +547,7 @@ async fn create_under_closing_parent_is_rejected() {
 #[tokio::test]
 async fn create_rolls_back_inmemory_on_persist_failure() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
+    let _parent = create_parent(&h).id;
 
     // Force every subsequent `write_atomic` to fail by replacing the config file with a directory of the same name. `tmp.persist()` can't rename a
     // NamedTempFile over a directory on either OS, so `append_last_open_sub_session` will return Err and trip the create-path rollback.
@@ -519,18 +555,18 @@ async fn create_rolls_back_inmemory_on_persist_failure() {
     std::fs::remove_file(&cfg_path).ok();
     std::fs::create_dir(&cfg_path).expect("replace config.json with dir");
 
-    let result = create_sub(&h, parent);
+    let result = create_sub(&h, h.worktree_tab_id);
     assert!(result.is_err(), "subsession_create must surface persist failure to caller");
 
     assert!(
-        h.sub_ctx.store.list_for(&parent).is_empty(),
+        h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).is_empty(),
         "in-memory store must be rolled back on persist failure"
     );
     // Pool entry rolled back too (otherwise the PTY child is leaked).
     let live_ids: Vec<_> = h
         .sub_ctx
         .store
-        .list_for(&parent)
+        .list_for_worktree_tab(&h.worktree_tab_id)
         .into_iter()
         .filter(|s| h.sub_pool.contains(&s.id))
         .collect();
@@ -542,17 +578,21 @@ async fn create_rolls_back_inmemory_on_persist_failure() {
 #[tokio::test]
 async fn cascade_kill_failure_leaves_orphan_visible() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Flip the killer to fail. Cascade hits this branch on the next pool.kill call.
     h.sub_spawner_flags.kill_fails.store(true, Ordering::SeqCst);
 
-    close_for_parent_impl(&h.ctx, &h.sub_ctx, parent).await;
+    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
 
     // Orphan record kept in the in-memory store and on disk so the user can see the runaway PID.
-    assert_eq!(h.sub_ctx.store.list_for(&parent).len(), 1, "in-memory store must keep the orphan visible");
+    assert_eq!(
+        h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).len(),
+        1,
+        "in-memory store must keep the orphan visible"
+    );
     let persisted = h.ctx.store().load_config().last_open_sub_sessions;
     assert_eq!(persisted.len(), 1, "persisted slot must keep the orphan visible");
     assert_eq!(persisted[0].id, sub.id);
@@ -572,8 +612,8 @@ async fn cascade_kill_failure_leaves_orphan_visible() {
 #[tokio::test]
 async fn restore_spawn_failure_keeps_record() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Simulate fresh app launch: drop in-memory + pool, keep persistence.
@@ -623,8 +663,8 @@ async fn restore_spawn_failure_keeps_record() {
 #[tokio::test]
 async fn relaunch_refreshes_composed_command_from_current_def() {
     let h = build_harness();
-    let parent = create_parent(&h).id;
-    let sub = create_sub(&h, parent).expect("sub created");
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Sanity: original composed_command matches the original def.
@@ -664,4 +704,203 @@ async fn relaunch_refreshes_composed_command_from_current_def() {
     assert_eq!(persisted[0].id, sub.id);
     assert_eq!(persisted[0].composed_command, "bash -i");
     assert_eq!(persisted[0].label, "Bash");
+}
+
+// --------------------------------------------------------------------------- subsession_close active_child_id cleanup + best-effort persistence
+// (PR #65 review-7 + review-8) ---------------------------------------------------------------------------
+
+/// Helper: insert a worktree tab with `active_child_id = child` directly into config (bypasses `worktree_tab_open_impl` to avoid a SubAppContext on
+/// the test side and keep the test focused on the close-path invariant). Returns the synthesised tab id.
+fn seed_tab_with_active_child(h: &Harness, path: &Path, child: ChildId) -> WorktreeTabId {
+    let tab_id = WorktreeTabId::new();
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.worktree_tabs.push(WorktreeTab {
+                id: tab_id,
+                path: path.to_path_buf(),
+                name: "wt".into(),
+                branch: None,
+                label: "wt".into(),
+                tab_index: 0,
+                active_child_id: Some(child),
+                icon_id: 1,
+            });
+            cfg.worktree_tab_order.push(tab_id);
+            true
+        })
+        .expect("seed worktree tab");
+    tab_id
+}
+
+/// Normal-path regression for PR #65 review-7: closing a sub-session must clear any worktree tab's `active_child_id` that points at the closing
+/// sub. Mirrors the equivalent test for top-level sessions in `tests/session_lifecycle_fake.rs`.
+#[tokio::test]
+async fn subsession_close_clears_worktree_tab_active_child_id_pointing_at_closed_subsession() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    let tab_id = seed_tab_with_active_child(&h, h.worktree.path(), ChildId::SubSession(sub.id));
+
+    // Close via the public command path.
+    subsession_close_impl(&h.ctx, Arc::clone(&h.sub_ctx), sub.id, SubSessionCloseIntent::TabOnly)
+        .await
+        .expect("close ok");
+
+    let cfg = h.ctx.store().load_config();
+    let tab = cfg
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .expect("tab still present after sub close");
+    assert_eq!(
+        tab.active_child_id, None,
+        "active_child_id pointing at closed sub-session must be cleared"
+    );
+    assert!(
+        cfg.last_open_sub_sessions.iter().all(|r| r.id != sub.id),
+        "persisted last_open_sub_sessions must drop the closed sub"
+    );
+}
+
+/// PR #65 review-8 fix: if `save_config_with` fails after the kill + in-memory removal, `subsession_close_impl` must still return `Ok` because the
+/// close has already happened (PTY killed, runtime gone, in-memory store cleared). Returning `Err` would surface "close failed" for an actually-
+/// completed close AND make retry impossible (sub no longer exists in the store, so a retry would NotFound). The persistence anomaly is the
+/// accepted trade-off and is documented in the swallow site's comment.
+#[tokio::test]
+async fn subsession_close_returns_ok_when_config_cleanup_fails_after_runtime_teardown() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    // Force every subsequent `write_atomic` to fail by replacing the config file with a directory of the same name. Same trick as
+    // `create_rolls_back_inmemory_on_persist_failure` above (line ~518) — `tmp.persist()` cannot rename a NamedTempFile over a directory on either
+    // OS, so the post-teardown `save_config_with` will trip Err inside the closure path.
+    let cfg_path = h.config_dir.path().join("config.json");
+    std::fs::remove_file(&cfg_path).ok();
+    std::fs::create_dir(&cfg_path).expect("replace config.json with dir");
+
+    // Close must still succeed — the kill + in-memory removal already happened, and the documented best-effort cleanup contract says we log+continue
+    // rather than make the close non-retryable for the user.
+    subsession_close_impl(&h.ctx, Arc::clone(&h.sub_ctx), sub.id, SubSessionCloseIntent::TabOnly)
+        .await
+        .expect("close must return Ok despite config cleanup failure");
+
+    // Runtime teardown actually happened: in-memory store is empty for this sub, and the PTY child is gone from the pool.
+    assert!(h.sub_ctx.store.get(&sub.id).is_none(), "in-memory store must drop the sub");
+    assert!(!h.sub_pool.contains(&sub.id), "PTY pool must drop the sub");
+}
+
+// --------------------------------------------------------------------------- close_for_worktree_tab_impl conditional save (PR #65 review-9)
+// ---------------------------------------------------------------------------
+
+/// Roll back `path`'s mtime by 60s (and snapshot its bytes) so a subsequent rewrite is detectable across filesystems with coarse mtime resolution
+/// (FAT 2s, HFS+ 1s). Mirrors the helper of the same name in `tests/worktree_tab_command.rs` — each Rust integration test file is its own crate, so
+/// duplication here is the standard pattern.
+fn snapshot_with_rolled_back_mtime(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let bytes = std::fs::read(path).expect("read config.json snapshot");
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open config.json for set_modified (write(true) does not truncate)");
+    f.set_modified(old)
+        .expect("set_modified must succeed (Rust 1.75+); fail loudly on platforms without timestamp support");
+    drop(f);
+    let mtime = std::fs::metadata(path).expect("stat").modified().expect("mtime");
+    (bytes, mtime)
+}
+
+fn snapshot_file(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let bytes = std::fs::read(path).expect("read config.json snapshot");
+    let mtime = std::fs::metadata(path).expect("stat config.json").modified().expect("mtime");
+    (bytes, mtime)
+}
+
+/// PR #65 review-9: `close_for_worktree_tab_impl` must skip its `save_config_with` cleanup when no worktree tab's `active_child_id` references any
+/// sub in the cascade. Without the conditional pre-check, every tab close with subs rewrites `config.json` — pure disk churn for the common case
+/// where the user wasn't focused on a sub when closing.
+///
+/// To isolate the pre-pass write from the per-iteration `remove_last_open_sub_session` writes that prune `last_open_sub_sessions`, we manually
+/// pre-prune that record before snapshotting — making the per-iteration prune a no-op (the helper exits early when the id isn't found, see
+/// `ConfigStore::remove_last_open_sub_session`). With both writes silent, any mtime advance proves the pre-pass write fired unnecessarily.
+#[tokio::test]
+async fn cascade_with_no_matching_active_child_skips_config_write() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    // Seed a tab with `active_child_id = None` — explicitly NOT pointing at the cascade sub.
+    let tab_id = WorktreeTabId::new();
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.worktree_tabs.push(WorktreeTab {
+                id: tab_id,
+                path: h.worktree.path().to_path_buf(),
+                name: "wt".into(),
+                branch: None,
+                label: "wt".into(),
+                tab_index: 0,
+                active_child_id: None,
+                icon_id: 1,
+            });
+            cfg.worktree_tab_order.push(tab_id);
+            true
+        })
+        .expect("seed tab");
+
+    // Pre-prune the sub record so the per-iteration `remove_last_open_sub_session` call below is a no-op (helper exits before `write_atomic` when the
+    // id is absent). This isolates the mtime check to the pre-pass write that we're testing.
+    h.ctx.store().remove_last_open_sub_session(&sub.id).expect("pre-prune");
+
+    let cfg_path = h.config_dir.path().join("config.json");
+    let (bytes_before, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
+
+    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+
+    let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
+    assert_eq!(
+        mtime_before, mtime_after,
+        "cascade pre-pass must NOT rewrite config.json when no tab's active_child_id matches any cascade sub"
+    );
+    assert_eq!(bytes_before, bytes_after, "config.json bytes must be unchanged");
+}
+
+/// Conjugate of the previous test: when a tab DOES point at a cascade sub, the cleanup must run and the file must be rewritten with the pointer
+/// cleared. Confirms the conditional pre-check doesn't accidentally suppress the legitimate cleanup write.
+#[tokio::test]
+async fn cascade_with_matching_active_child_rewrites_config_and_clears_pointer() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    let tab_id = seed_tab_with_active_child(&h, h.worktree.path(), ChildId::SubSession(sub.id));
+
+    let cfg_path = h.config_dir.path().join("config.json");
+    let (_, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
+
+    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+
+    let (_, mtime_after) = snapshot_file(&cfg_path);
+    assert!(
+        mtime_after > mtime_before,
+        "cascade pre-pass MUST rewrite config.json when a tab's active_child_id matches a cascade sub (mtime advanced)"
+    );
+
+    let cfg = h.ctx.store().load_config();
+    let tab = cfg
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .expect("tab still present after cascade");
+    assert_eq!(
+        tab.active_child_id, None,
+        "active_child_id pointing at a cascade sub must be cleared by the pre-pass"
+    );
 }

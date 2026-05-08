@@ -359,7 +359,7 @@ async fn workspace_switch_happy_path_swaps_and_returns_state() {
     // Re-point the runner at ws_b so workspace_validate_impl accepts it.
     runner.set_repo_root(ws_b.path());
 
-    let result = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_b.path())
+    let result = workspace_switch_impl_inner(&ctx, None, app_data_dir.path(), "main", ws_b.path())
         .await
         .expect("switch must succeed");
 
@@ -416,7 +416,7 @@ async fn workspace_switch_no_op_when_target_equals_current() {
 
     let (ctx, ws_canon) = build_switch_ctx(Arc::clone(&runner) as Arc<dyn GitRunner>, app_data_dir.path(), ws.path(), "main");
 
-    let result = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws.path())
+    let result = workspace_switch_impl_inner(&ctx, None, app_data_dir.path(), "main", ws.path())
         .await
         .expect("no-op switch must succeed");
 
@@ -441,7 +441,7 @@ async fn workspace_switch_refuses_invalid_target() {
     runner.clear_repo_root();
 
     let bad_target = TempDir::new().unwrap();
-    let err = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", bad_target.path())
+    let err = workspace_switch_impl_inner(&ctx, None, app_data_dir.path(), "main", bad_target.path())
         .await
         .expect_err("non-git target must error");
     assert_eq!(err.code, "InvalidPath");
@@ -471,7 +471,7 @@ async fn workspace_switch_returns_locked_when_target_is_held() {
     if cfg!(target_os = "windows") {
         let _holder = WorkspaceLockGuard::acquire(layout_b.lock_path()).expect("pre-acquire ws_b lock");
 
-        let err = workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_b.path())
+        let err = workspace_switch_impl_inner(&ctx, None, app_data_dir.path(), "main", ws_b.path())
             .await
             .expect_err("must report contention");
         assert_eq!(err.code, "WorkspaceLocked");
@@ -533,7 +533,7 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
 
     // Switch A → B.
     runner.set_repo_root(ws_b.path());
-    workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_b.path())
+    workspace_switch_impl_inner(&ctx, None, app_data_dir.path(), "main", ws_b.path())
         .await
         .expect("switch must succeed");
 
@@ -557,7 +557,7 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
 
     // Switch B → A. The records seeded above must still be present in the freshly-bound A store (so restore_all_sessions has something to spawn).
     runner.set_repo_root(ws_a.path());
-    workspace_switch_impl_inner(&ctx, app_data_dir.path(), "main", ws_a.path())
+    workspace_switch_impl_inner(&ctx, None, app_data_dir.path(), "main", ws_a.path())
         .await
         .expect("switch back must succeed");
 

@@ -20,7 +20,8 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { SessionStatus, SessionView, SubSession } from '@/types/arborist';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type { ChildId, SessionStatus, SessionView, SubSession, WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
 import { Sidebar } from './Sidebar';
 
@@ -39,11 +40,37 @@ function makeView(id: string, overrides: Partial<SessionView> = {}): SessionView
   };
 }
 
+function tabFor(session: SessionView, overrides: Partial<WorktreeTab> = {}): WorktreeTab {
+  return {
+    id: `tab-${session.id}` as WorktreeTabId,
+    path: session.worktreePath,
+    name: session.worktreeName,
+    label: session.worktreeName,
+    tabIndex: 0,
+    iconId: 1,
+    ...overrides,
+  };
+}
+
 function seed(sessions: SessionView[], activeId: string | undefined): void {
+  // Seed both stores so the Sidebar's worktree-tab-driven `isActive` derivation reflects the test's intended active session. Each session
+  // gets a synthetic worktree tab whose `activeChildId` points at the session itself. This mirrors what the production autolink in
+  // session-store.create does at runtime — without it the new grouped Sidebar would render every tab as inactive.
+  const tabs = sessions.map((s, i) => tabFor(s, { tabIndex: i }));
+  const activeSession = sessions.find((s) => s.id === activeId);
+  const activeTab = activeSession ? tabs.find((t) => t.path === activeSession.worktreePath) : undefined;
+  if (activeTab && activeSession) {
+    activeTab.activeChildId = { kind: 'session', id: activeSession.id } as ChildId;
+  }
   useSessionStore.setState({
     sessions,
     activeId,
     pendingClose: undefined,
+    isHydrated: true,
+  });
+  useWorktreeTabStore.setState({
+    tabs,
+    activeId: activeTab ? activeTab.id : null,
     isHydrated: true,
   });
 }
@@ -60,6 +87,8 @@ beforeEach(() => {
     activity: {},
     metrics: {},
   });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
+  useSubSessionStore.setState({ subSessions: [], statusMessages: {}, pendingClose: undefined, isHydrated: true });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
   // versions; provide minimal shims so CloseConfirmDialog can mount.
   const proto = HTMLDialogElement.prototype as unknown as {
@@ -107,17 +136,11 @@ describe('Sidebar', () => {
     expect(bridgeMock.sessionFocus).toHaveBeenCalledWith({ sessionId: 'b' });
   });
 
-  it('clicking the parent tab swaps the viewport back from a focused terminal sub-tab', () => {
-    // Regression: when a terminal sub-tab owns the viewport for its parent
-    // (`activeByParent[parentId] = subId`), clicking the parent tab must
-    // clear that entry so MainArea swaps back to the parent's own
-    // TerminalView. Without `subActions.activateParent(id)` in the click
-    // handler, the parent tab click was a visual no-op because MainArea's
-    // visible-id rule prefers the sub.
+  it('clicking the parent tab swaps the worktree tab back to that session', () => {
     seed([makeView('a')], 'a');
     const sub: SubSession = {
       id: 'sub-1',
-      parentSessionId: 'a',
+      parentWorktreeTabId: 'tab-a' as WorktreeTabId,
       defId: 'shell',
       kind: 'terminal',
       label: 'shell',
@@ -128,15 +151,19 @@ describe('Sidebar', () => {
     };
     useSubSessionStore.setState({
       subSessions: [sub],
-      activeByParent: { a: 'sub-1' },
       statusMessages: {},
+      isHydrated: true,
+    });
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(makeView('a'), { activeChildId: { kind: 'subSession', id: 'sub-1' } })],
+      activeId: 'tab-a' as WorktreeTabId,
       isHydrated: true,
     });
     render(<Sidebar />);
 
     fireEvent.click(tabByLabel('claude session a'));
 
-    expect(useSubSessionStore.getState().activeByParent).not.toHaveProperty('a');
+    expect(useWorktreeTabStore.getState().tabs[0]?.activeChildId).toEqual({ kind: 'session', id: 'a' });
     expect(useSessionStore.getState().activeId).toBe('a');
   });
 
@@ -279,7 +306,7 @@ describe('Sidebar', () => {
     expect(within(screen.getByRole('dialog')).getByText(/terminate session/i)).toHaveTextContent('b');
   });
 
-  it('Alt+ArrowDown swaps focused tab with the one below and persists tabOrder', async () => {
+  it('Alt+ArrowDown is a no-op (session reorder deferred for v1 worktree-tab UI)', async () => {
     seed([makeView('a'), makeView('b'), makeView('c')], 'a');
     render(<Sidebar />);
 
@@ -290,8 +317,10 @@ describe('Sidebar', () => {
       fireEvent.keyDown(tablist, { key: 'ArrowDown', altKey: true });
     });
 
-    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b', 'a', 'c']);
-    expect(bridgeMock.configSet).toHaveBeenCalledWith({ tabOrder: ['b', 'a', 'c'] });
+    // Order unchanged. Per-group session reorder is a planned follow-up; the v1 grouped sidebar drops Alt+arrow because the visual
+    // grouping no longer matches a flat session id array.
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['a', 'b', 'c']);
+    expect(bridgeMock.configSet).not.toHaveBeenCalledWith({ tabOrder: expect.any(Array) });
   });
 
   it('drag-to-reorder pipeline (handleDragEnd) persists order via config_set', async () => {
@@ -392,22 +421,15 @@ describe('Sidebar', () => {
     expect(screen.queryByText(/terminate session/i)).toBeNull();
   });
 
-  it('opens Settings on the Custom Processes tab when invoked from the empty-launch handoff', async () => {
+  it('session context menu exposes only Restart and Close actions', async () => {
     seed([makeView('a')], 'a');
     render(<Sidebar />);
     const tab = tabByLabel('claude session a');
     fireEvent.contextMenu(tab, { clientX: 10, clientY: 10 });
-    fireEvent.click(screen.getByRole('menuitem', { name: /launch/i }));
-    fireEvent.click(screen.getByTestId('tab-context-menu-empty'));
-    // The handoff is deferred via requestAnimationFrame so the menu can
-    // unmount before Settings opens.
-    await act(
-      () =>
-        new Promise<void>((resolve) => {
-          requestAnimationFrame(() => resolve());
-        }),
-    );
-    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /restart/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /close/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /launch/i })).toBeNull();
+    await act(async () => {});
   });
 
   it('opens Settings on the General tab when launched from the footer button', () => {

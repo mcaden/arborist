@@ -11,36 +11,39 @@
 //!   PTY; lifecycle limited to spawn / wait / kill. `subsession_focus`
 //!   delegates to a [`crate::window_focus::WindowFocuser`].
 
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::{info, warn};
 
 use crate::commands::session::acquire_switch_read;
+use crate::commands::worktree_tab::clear_active_child_in_config;
 use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
-    AppError, CustomProcessKind, Error, SubSession, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionId, SubSessionRecord, SubSessionStatus,
+    AppError, ChildId, CustomProcessKind, Error, PartialAppConfig, SubSession, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionId,
+    SubSessionRecord, SubSessionStatus, WorktreeTabId,
 };
 
-/// Create a new sub-session under `parent_session_id` using the `CustomProcessDef` identified by `def_id`. Validates:
+/// Create a new sub-session under `parent_worktree_tab_id` using the `CustomProcessDef` identified by `def_id`. Validates:
 ///
 /// * the def exists in `AppConfig.customProcesses`
 /// * the def is `enabled`
-/// * the parent session is known
-/// * the parent worktree directory still exists
-/// * Phase 7: the parent is not currently mid-`session_close` cascade
+/// * the parent worktree tab is known and its directory still exists
+/// * the worktree tab is not currently mid-close
 ///
 /// Persists a [`SubSessionRecord`] into `AppConfig.lastOpenSubSessions` before spawning so a crash between spawn and persist doesn't lose the entry.
 pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: SubSessionCreateArgs) -> Result<SubSession, AppError> {
     // Reject while a workspace switch is queued or active. Held for the entire body so the switch can't see a half-spawned sub-session.
     let _switch = acquire_switch_read(ctx)?;
 
-    // Phase 7 race guard: refuse new children under a closing parent. The tombstone is set synchronously by the `session_close` wrapper before
-    // cascade, and removed via RAII guard once the parent record is gone — see `commands::mod::session_close`.
-    if ctx.is_parent_closing(&args.parent_session_id) {
+    // Race guard: refuse new children under a closing worktree tab. The tombstone is set synchronously by the `worktree_tab_close` wrapper before
+    // cascade, and removed via RAII guard once the tab record is gone.
+    if ctx.is_worktree_tab_closing(&args.parent_worktree_tab_id) {
         return Err(AppError::new(
             "InvalidArgument",
-            format!("parent session {} is closing; refusing to create sub-session", args.parent_session_id),
+            format!("worktree tab {} is closing; refusing to create sub-session", args.parent_worktree_tab_id),
         ));
     }
 
@@ -57,21 +60,22 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
         ));
     }
 
-    // Look up the parent session for its worktree path.
-    let sessions = ctx.store().load_sessions();
-    let parent = sessions
-        .get(&args.parent_session_id)
-        .ok_or_else(|| AppError::new("NotFound", format!("parent session {} not found", args.parent_session_id)))?;
+    // Look up the worktree tab for its path.
+    let tab = cfg
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == args.parent_worktree_tab_id)
+        .ok_or_else(|| AppError::new("NotFound", format!("worktree tab {} not found", args.parent_worktree_tab_id)))?;
 
-    // Validate the parent worktree still exists before doing anything destructive — otherwise the user gets a low-level PtySpawnFailed instead of the
-    // dedicated `WorktreeMissing` error.
-    if !parent.worktree_path.is_dir() {
-        return Err(AppError::from(Error::WorktreeMissing(parent.worktree_path.clone())));
+    // Validate the worktree directory still exists before doing anything destructive — otherwise the user gets a low-level PtySpawnFailed instead of
+    // the dedicated `WorktreeMissing` error.
+    if !tab.path.is_dir() {
+        return Err(AppError::from(Error::WorktreeMissing(tab.path.clone())));
     }
 
     // Compose once, store-and-reuse (DESIGN §5.4 mirror).
     let composed_command = def.command.clone();
-    let sub = build_sub_session(parent.id, def, composed_command.clone());
+    let sub = build_sub_session(args.parent_worktree_tab_id, def, composed_command.clone());
 
     // Insert into the in-memory store FIRST. If that fails the persist step is never reached, so we can't orphan a record. If the subsequent persist
     // fails we roll back the in-memory insert.
@@ -79,7 +83,8 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
 
     let record = SubSessionRecord {
         id: sub.id,
-        parent_session_id: sub.parent_session_id,
+        parent_session_id: None,
+        parent_worktree_tab_id: Some(sub.parent_worktree_tab_id),
         def_id: sub.def_id.clone(),
         kind: sub.kind,
         label: sub.label.clone(),
@@ -90,7 +95,7 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
         return Err(AppError::from(e));
     }
 
-    let cwd = sub_session_cwd(parent).to_path_buf();
+    let cwd = sub_session_cwd(&tab.path).to_path_buf();
 
     // Branch on kind: terminal → SubPtyPool, application → AppPool.
     let spawn_result = match def.kind {
@@ -195,7 +200,31 @@ pub async fn subsession_close_impl(
         },
     }
     sub_ctx.store.remove(&id);
-    let _ = ctx.store().remove_last_open_sub_session(&id);
+    // Best-effort config cleanup AFTER the irreversible kill + in-memory removal above. We *log and continue* instead of propagating, by design:
+    //
+    //   * Returning `Err` here would surface "close failed" to the frontend even though the sub-session is already gone (PTY killed, runtime
+    //     dropped). Worse, the close is non-retryable from the user's perspective — re-issuing `subsession_close` would now hit a NotFound because
+    //     the in-memory store no longer contains the record.
+    //   * Round-7's `?` propagation tried to prevent a "closed in memory but visible after restart" anomaly. That reasoning was incomplete:
+    //     `restore_all_sub_sessions_impl`'s `forget_sub_session` only fires for *orphan* / *closing-parent* records, not for sub-sessions whose
+    //     parent session is still present. So if this write fails AND the parent is alive, the sub *can* genuinely re-spawn on next launch.
+    //     That's a real failure mode of best-effort persistence — we accept it because the alternative (Err on a completed close) is worse UX
+    //     and equally non-recoverable.
+    //   * Stale `WorktreeTab.active_child_id` pointers can likewise survive on write failure; they're cleaned up the next time the tab's active
+    //     child changes (or by future restore-time reconciliation, which is not implemented today).
+    if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
+        cfg.last_open_sub_sessions.retain(|r| r.id != id);
+        clear_active_child_in_config(cfg, ChildId::SubSession(id));
+        true
+    }) {
+        warn!(
+            sub_session_id = %id,
+            error = %e,
+            "subsession_close: best-effort config cleanup failed; close still completed (in-memory state cleared, kill complete). \
+             Stale `last_open_sub_sessions` row may re-spawn on next launch if parent session is still alive; stale `active_child_id` \
+             may persist on a worktree tab until the next focus change.",
+        );
+    }
     Ok(())
 }
 
@@ -231,10 +260,10 @@ pub fn subsession_focus_impl(ctx: &AppContext, sub_ctx: &SubAppContext, id: SubS
     Ok(())
 }
 
-/// List sub-sessions, optionally filtered to a parent.
-pub fn subsession_list_impl(sub_ctx: &SubAppContext, parent: Option<crate::types::SessionId>) -> Result<Vec<SubSession>, AppError> {
-    Ok(match parent {
-        Some(p) => sub_ctx.store.list_for(&p),
+/// List sub-sessions, optionally filtered to a worktree tab.
+pub fn subsession_list_impl(sub_ctx: &SubAppContext, parent_worktree_tab_id: Option<WorktreeTabId>) -> Result<Vec<SubSession>, AppError> {
+    Ok(match parent_worktree_tab_id {
+        Some(tab_id) => sub_ctx.store.list_for_worktree_tab(&tab_id),
         None => sub_ctx.store.list_all(),
     })
 }
@@ -271,11 +300,11 @@ pub fn subsession_resize_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: c
     sub_ctx.pool.resize(&args.id, args.cols, args.rows).map_err(AppError::from)
 }
 
-// --------------------------------------------------------------------------- Phase 7: parent-close cascade
+// --------------------------------------------------------------------------- Worktree-tab-close cascade
 // ---------------------------------------------------------------------------
 
-/// Tear down every sub-session belonging to `parent_id`. Called from the `session_close` wrapper BEFORE `session_close_impl` so the sidebar can
-/// converge on "parent and its children gone" in a single round trip.
+/// Tear down every sub-session belonging to `tab_id`. Called from the `worktree_tab_close` wrapper BEFORE closing child agent sessions so the
+/// sidebar can converge on "tab and all its children gone" in a single round trip.
 ///
 /// Cascade rules (mirror `subsession_close_impl`):
 ///
@@ -284,20 +313,47 @@ pub fn subsession_resize_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: c
 ///   a visible orphan than a silently-leaked PTY child. `NotFound` from the
 ///   pool (sub-session already exited on its own) counts as success.
 /// * **Application**: `app_pool.detach()` — never kill. The user's editor /
-///   file browser must survive its parent session being closed; same rule as
+///   file browser must survive its worktree tab being closed; same rule as
 ///   the explicit `subsession_close` path.
 ///
-/// Returns `()` — cascade is best-effort and never blocks the parent close. Failures are logged via `tracing::warn`.
-pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, parent_id: crate::types::SessionId) {
-    let subs = sub_ctx.store.list_for(&parent_id);
+/// Returns `()` — cascade is best-effort and never blocks the tab close. Failures are logged via `tracing::warn`.
+pub async fn close_for_worktree_tab_impl(ctx: &AppContext, sub_ctx: &SubAppContext, tab_id: crate::types::WorktreeTabId) {
+    let subs = sub_ctx.store.list_for_worktree_tab(&tab_id);
     if subs.is_empty() {
         return;
     }
     info!(
-        parent_session_id = %parent_id,
+        worktree_tab_id = %tab_id,
         sub_count = subs.len(),
-        "cascade: tearing down sub-sessions for closing parent"
+        "cascade: tearing down sub-sessions for closing worktree tab"
     );
+
+    // Pre-pass: clear any worktree-tab `active_child_id` referencing a sub of the closing tab. Done once up-front so we take
+    // the config write lock at most once for this concern.
+    let sub_ids: Vec<SubSessionId> = subs.iter().map(|s| s.id).collect();
+    let cascade_set: HashSet<SubSessionId> = sub_ids.iter().copied().collect();
+    let needs_cleanup = ctx
+        .store()
+        .load_config()
+        .worktree_tabs
+        .iter()
+        .any(|t| matches!(t.active_child_id, Some(ChildId::SubSession(sid)) if cascade_set.contains(&sid)));
+    if needs_cleanup {
+        if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
+            let mut changed = false;
+            for sid in &sub_ids {
+                changed |= clear_active_child_in_config(cfg, ChildId::SubSession(*sid));
+            }
+            changed
+        }) {
+            warn!(
+                worktree_tab_id = %tab_id,
+                error = ?e,
+                "cascade: active_child_id cleanup failed (continuing — orphan tab pointers may persist)"
+            );
+        }
+    }
+
     for sub in subs {
         match sub.kind {
             CustomProcessKind::Terminal => {
@@ -309,7 +365,7 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
                         }
                         Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
                             warn!(
-                                parent_session_id = %parent_id,
+                                worktree_tab_id = %tab_id,
                                 sub_session_id = %sub.id,
                                 pid,
                                 "cascade: PTY kill issued but reap unconfirmed within grace; \
@@ -319,14 +375,13 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
                                 &sub.id,
                                 SubSessionStatus::Error,
                                 Some(pid),
-                                Some(format!("PTY kill unconfirmed during parent close (pid {pid} may still be alive)")),
+                                Some(format!("PTY kill unconfirmed during worktree tab close (pid {pid} may still be alive)")),
                             );
-                            // Skip the prune — leave the orphan visible.
                             continue;
                         }
                         Err(e) => {
                             warn!(
-                                parent_session_id = %parent_id,
+                                worktree_tab_id = %tab_id,
                                 sub_session_id = %sub.id,
                                 error = ?e,
                                 "cascade: PTY kill failed; keeping orphan record visible"
@@ -335,23 +390,22 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
                                 &sub.id,
                                 SubSessionStatus::Error,
                                 None,
-                                Some(format!("PTY kill failed during parent close: {e}")),
+                                Some(format!("PTY kill failed during worktree tab close: {e}")),
                             );
-                            // Skip the prune — leave the orphan visible.
                             continue;
                         }
                     }
                 }
             }
             CustomProcessKind::Application => {
-                // Detach only — never kill. Closing the parent must NOT terminate the user's editor / file manager.
+                // Detach only — never kill. Closing the tab must NOT terminate the user's editor / file manager.
                 sub_ctx.app_pool.detach(&sub.id);
             }
         }
         sub_ctx.store.remove(&sub.id);
         if let Err(e) = ctx.store().remove_last_open_sub_session(&sub.id) {
             warn!(
-                parent_session_id = %parent_id,
+                worktree_tab_id = %tab_id,
                 sub_session_id = %sub.id,
                 error = ?e,
                 "cascade: persistence prune failed"
@@ -362,6 +416,19 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
 
 // --------------------------------------------------------------------------- Phase 7: restore-on-launch second pass
 // ---------------------------------------------------------------------------
+
+/// Drop a sub-session id from `AppConfig.last_open_sub_sessions` AND clear any worktree-tab `active_child_id` referencing it. Single atomic write
+/// under the config write lock. Errors are logged at `warn` (with `tag` for source attribution) but **not** propagated — the restore prune paths and
+/// other best-effort cleanup callers must always make forward progress; a config-write hiccup at restore must not strand the rest of the records.
+fn forget_sub_session(ctx: &AppContext, id: SubSessionId, tag: &'static str) {
+    if let Err(e) = ctx.store().save_config_with(PartialAppConfig::default(), |cfg| {
+        cfg.last_open_sub_sessions.retain(|r| r.id != id);
+        clear_active_child_in_config(cfg, ChildId::SubSession(id));
+        true
+    }) {
+        warn!(sub_session_id = %id, error = ?e, tag, "forget_sub_session: persistence cleanup failed");
+    }
+}
 
 /// Re-materialise every sub-session persisted in `AppConfig.lastOpenSubSessions`. Called from the `frontend_ready` wrapper AFTER
 /// `session::restore_all_sessions` so parent sessions are already present in `sessions.json` (we look up worktree paths from there).
@@ -380,6 +447,12 @@ pub async fn close_for_parent_impl(ctx: &AppContext, sub_ctx: &SubAppContext, pa
 ///   the tab greyed; clicking it triggers `subsession_relaunch` which spawns
 ///   under the same id.
 ///
+/// Reconstitute sub-sessions from `AppConfig.lastOpenSubSessions` after launch or workspace switch.
+/// Each record's `parent_worktree_tab_id` must reference a `WorktreeTab` that is currently present
+/// in config (the worktree tab was created during the v5→v6 migration or at normal creation time).
+/// Records whose parent worktree tab is missing are dropped (orphan prune). Records whose worktree
+/// tab is mid-close are also dropped defensively.
+///
 /// On a Terminal *spawn* failure we keep the persistence record so the next app launch can retry; the row is already visible via the `restored` event
 /// with status `Error`.
 pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) {
@@ -388,31 +461,45 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
     if records.is_empty() {
         return;
     }
-    let sessions = ctx.store().load_sessions();
+
+    // Build a lookup of tab id → path for cwd derivation.
+    let tab_paths: BTreeMap<WorktreeTabId, PathBuf> = cfg.worktree_tabs.iter().map(|t| (t.id, t.path.clone())).collect();
 
     info!(sub_record_count = records.len(), "restore: second pass for sub-sessions");
 
     for record in records {
-        // Orphan check: parent gone OR currently mid-close (the latter is unlikely during cold-start restore but defensive).
-        let parent = match sessions.get(&record.parent_session_id) {
-            Some(p) => p,
+        let tab_id = match record.parent_worktree_tab_id {
+            Some(tid) => tid,
             None => {
                 warn!(
                     sub_session_id = %record.id,
-                    parent_session_id = %record.parent_session_id,
-                    "restore: dropping orphan sub-session (parent gone)"
+                    "restore: dropping sub-session record with no parent_worktree_tab_id"
                 );
-                let _ = ctx.store().remove_last_open_sub_session(&record.id);
+                forget_sub_session(ctx, record.id, "restore-no-tab-id");
                 continue;
             }
         };
-        if ctx.is_parent_closing(&record.parent_session_id) {
+
+        // Orphan check: worktree tab gone OR currently mid-close.
+        let tab_path = match tab_paths.get(&tab_id) {
+            Some(p) => p.clone(),
+            None => {
+                warn!(
+                    sub_session_id = %record.id,
+                    worktree_tab_id = %tab_id,
+                    "restore: dropping orphan sub-session (worktree tab gone)"
+                );
+                forget_sub_session(ctx, record.id, "restore-orphan");
+                continue;
+            }
+        };
+        if ctx.is_worktree_tab_closing(&tab_id) {
             warn!(
                 sub_session_id = %record.id,
-                parent_session_id = %record.parent_session_id,
-                "restore: dropping sub-session under closing parent"
+                worktree_tab_id = %tab_id,
+                "restore: dropping sub-session under closing worktree tab"
             );
-            let _ = ctx.store().remove_last_open_sub_session(&record.id);
+            forget_sub_session(ctx, record.id, "restore-tab-closing");
             continue;
         }
 
@@ -424,7 +511,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
         };
         let sub = SubSession {
             id: record.id,
-            parent_session_id: record.parent_session_id,
+            parent_worktree_tab_id: tab_id,
             def_id: record.def_id.clone(),
             kind: record.kind,
             label: record.label.clone(),
@@ -447,7 +534,7 @@ pub fn restore_all_sub_sessions_impl(ctx: &AppContext, sub_ctx: &SubAppContext) 
 
         match record.kind {
             CustomProcessKind::Terminal => {
-                let cwd = sub_session_cwd(parent).to_path_buf();
+                let cwd = sub_session_cwd(&tab_path).to_path_buf();
                 match sub_ctx
                     .pool
                     .spawn_terminal(record.id, record.composed_command.clone(), cwd, sub_ctx.sink.clone())
@@ -511,20 +598,22 @@ pub async fn subsession_relaunch_impl(ctx: &AppContext, sub_ctx: &SubAppContext,
         ));
     }
 
-    // Look up the parent session for its worktree path.
-    let sessions = ctx.store().load_sessions();
-    let parent = sessions
-        .get(&existing.parent_session_id)
-        .ok_or_else(|| AppError::new("NotFound", format!("parent session {} not found", existing.parent_session_id)))?;
-    if !parent.worktree_path.is_dir() {
-        return Err(AppError::from(Error::WorktreeMissing(parent.worktree_path.clone())));
+    // Look up the worktree tab for its path.
+    let cfg = ctx.store().load_config();
+    let tab = cfg
+        .worktree_tabs
+        .iter()
+        .find(|t| t.id == existing.parent_worktree_tab_id)
+        .ok_or_else(|| AppError::new("NotFound", format!("worktree tab {} not found", existing.parent_worktree_tab_id)))?;
+    if !tab.path.is_dir() {
+        return Err(AppError::from(Error::WorktreeMissing(tab.path.clone())));
     }
-    if ctx.is_parent_closing(&existing.parent_session_id) {
+    if ctx.is_worktree_tab_closing(&existing.parent_worktree_tab_id) {
         return Err(AppError::new(
             "InvalidArgument",
             format!(
-                "parent session {} is closing; refusing to relaunch sub-session",
-                existing.parent_session_id
+                "worktree tab {} is closing; refusing to relaunch sub-session",
+                existing.parent_worktree_tab_id
             ),
         ));
     }
@@ -566,7 +655,8 @@ pub async fn subsession_relaunch_impl(ctx: &AppContext, sub_ctx: &SubAppContext,
     sub_ctx.store.insert(refreshed.clone()).map_err(AppError::from)?;
     let updated_record = SubSessionRecord {
         id: refreshed.id,
-        parent_session_id: refreshed.parent_session_id,
+        parent_session_id: None,
+        parent_worktree_tab_id: Some(refreshed.parent_worktree_tab_id),
         def_id: refreshed.def_id.clone(),
         kind: refreshed.kind,
         label: refreshed.label.clone(),
@@ -587,7 +677,7 @@ pub async fn subsession_relaunch_impl(ctx: &AppContext, sub_ctx: &SubAppContext,
     }
     (sub_ctx.sink.status)(&id, SubSessionStatus::Starting, None, None);
 
-    let cwd = sub_session_cwd(parent).to_path_buf();
+    let cwd = sub_session_cwd(&tab.path).to_path_buf();
     let spawn_result = match def.kind {
         CustomProcessKind::Terminal => sub_ctx.pool.spawn_terminal(id, composed_command, cwd, sub_ctx.sink.clone()),
         CustomProcessKind::Application => {
