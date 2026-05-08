@@ -72,10 +72,6 @@ function tabFor(session: SessionView, activeChildId?: ChildId): WorktreeTab {
   return t;
 }
 
-/**
- * Set up worktree tabs to match a list of sessions, with the worktree-tab `activeChildId` pointing at `activeId` so the new MainArea
- * derivation (which reads `(activeWorktreeTabId, tab.activeChildId)`) lights up the same session that the pre-#44 `activeId` would have.
- */
 function seedWorktreeTabs(sessions: SessionView[], activeId: string | undefined): void {
   const tabs = sessions.map((s) => tabFor(s, s.id === activeId ? ({ kind: 'session', id: s.id } as ChildId) : undefined));
   const activeTab = tabs.find((t) => sessions.find((s) => s.id === activeId)?.worktreePath === t.path);
@@ -97,7 +93,6 @@ beforeEach(() => {
   });
   useSubSessionStore.setState({
     subSessions: [],
-    activeByParent: {},
     statusMessages: {},
     isHydrated: false,
   });
@@ -118,12 +113,11 @@ describe('MainArea', () => {
     const sessions = [makeSession('s1'), makeSession('s2')];
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
     seedWorktreeTabs(sessions, 's1');
+
     render(<MainArea />);
+
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels).toHaveLength(2);
-    // Inactive panels are hidden via `visibility: hidden` (not `display:
-    // none`) so xterm.js's char-size measurement and fitAddon stay sane
-    // across tab switches.
     const wrappers = panels.map((p) => p.parentElement!);
     expect(wrappers[0]!.style.visibility).not.toBe('hidden');
     expect(wrappers[1]!.style.visibility).toBe('hidden');
@@ -135,6 +129,7 @@ describe('MainArea', () => {
     const sessions = [makeSession('s1'), makeSession('s2')];
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
     seedWorktreeTabs(sessions, 's1');
+
     const { rerender } = render(<MainArea />);
     expect(mockTerminals).toHaveLength(2);
     const initialDisposeCalls = mockTerminals.map((t) => t.dispose.mock.calls.length);
@@ -145,7 +140,6 @@ describe('MainArea', () => {
     });
     rerender(<MainArea />);
 
-    // Both terminals still exist; neither was disposed by the switch.
     expect(mockTerminals).toHaveLength(2);
     expect(mockTerminals[0]!.dispose.mock.calls.length).toBe(initialDisposeCalls[0]);
     expect(mockTerminals[1]!.dispose.mock.calls.length).toBe(initialDisposeCalls[1]);
@@ -155,23 +149,24 @@ describe('MainArea', () => {
     const sessions = [makeSession('s1'), makeSession('s2')];
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
     seedWorktreeTabs(sessions, 's1');
+
     render(<MainArea />);
     expect(mockTerminals).toHaveLength(2);
+
     act(() => {
       const next = [makeSession('s1')];
       useSessionStore.setState({ sessions: next });
       seedWorktreeTabs(next, 's1');
     });
+
     expect(mockTerminals[1]!.dispose).toHaveBeenCalled();
     expect(mockTerminals[0]!.dispose).not.toHaveBeenCalled();
   });
 
-  // ------- sub-session swap behaviour (Phase 5) ----------------------
-
   function makeSub(id: string, parentId: string, overrides: Partial<SubSession> = {}): SubSession {
     return {
       id: id as SubSessionId,
-      parentSessionId: parentId as SessionView['id'],
+      parentWorktreeTabId: `tab-${parentId}` as WorktreeTabId,
       defId: 'shell',
       kind: 'terminal',
       label: id,
@@ -179,7 +174,7 @@ describe('MainArea', () => {
       composedCommand: 'sh -i',
       createdAt: 0,
       ...overrides,
-    } as SubSession;
+    };
   }
 
   it('mounts every terminal sub-session even when not visible (T-03)', () => {
@@ -188,31 +183,34 @@ describe('MainArea', () => {
     seedWorktreeTabs(sessions, 's1');
     useSubSessionStore.setState({
       subSessions: [makeSub('sub-1', 's1'), makeSub('sub-2', 's1')],
-      activeByParent: {},
       statusMessages: {},
       isHydrated: true,
     });
+
     render(<MainArea />);
-    // 1 parent + 2 sub-session terminals.
+
     expect(mockTerminals).toHaveLength(3);
   });
 
   it('terminal sub-session swaps the visible viewport for its parent', () => {
     const sessions = [makeSession('s1')];
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
-    seedWorktreeTabs(sessions, 's1');
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(sessions[0]!, { kind: 'subSession', id: 'sub-1' as SubSessionId })],
+      activeId: 'tab-s1' as WorktreeTabId,
+      isHydrated: true,
+    });
     useSubSessionStore.setState({
       subSessions: [makeSub('sub-1', 's1')],
-      activeByParent: { s1: 'sub-1' as SubSessionId },
       statusMessages: {},
       isHydrated: true,
     });
+
     render(<MainArea />);
+
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
-    // Parent + one terminal sub.
     expect(panels).toHaveLength(2);
     const wrappers = panels.map((p) => p.parentElement!);
-    // Parent is hidden, sub is visible.
     expect(wrappers[0]!.style.visibility).toBe('hidden');
     expect(wrappers[1]!.style.visibility).not.toBe('hidden');
     expect(wrappers[1]!.getAttribute('aria-hidden')).toBe('false');
@@ -221,16 +219,20 @@ describe('MainArea', () => {
   it('application sub-session does NOT swap the viewport', () => {
     const sessions = [makeSession('s1')];
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
-    seedWorktreeTabs(sessions, 's1');
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(sessions[0]!, { kind: 'session', id: 's1' })],
+      activeId: 'tab-s1' as WorktreeTabId,
+      isHydrated: true,
+    });
     useSubSessionStore.setState({
       subSessions: [makeSub('app-1', 's1', { kind: 'application' })],
-      activeByParent: { s1: 'app-1' as SubSessionId },
       statusMessages: {},
       isHydrated: true,
     });
+
     render(<MainArea />);
+
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
-    // Only the parent panel — application subs aren't mounted in MainArea.
     expect(panels).toHaveLength(1);
     expect(panels[0]!.parentElement!.style.visibility).not.toBe('hidden');
   });
@@ -238,20 +240,22 @@ describe('MainArea', () => {
   it('inactive parent: its sub-sessions stay hidden even when active there', () => {
     const sessions = [makeSession('s1'), makeSession('s2')];
     useSessionStore.setState({ sessions, activeId: 's2', isHydrated: true });
-    seedWorktreeTabs(sessions, 's2');
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(sessions[0]!, { kind: 'subSession', id: 'sub-1' as SubSessionId }), tabFor(sessions[1]!, { kind: 'session', id: 's2' })],
+      activeId: 'tab-s2' as WorktreeTabId,
+      isHydrated: true,
+    });
     useSubSessionStore.setState({
       subSessions: [makeSub('sub-1', 's1')],
-      // s1 has a sub active, but s1 is NOT the active session.
-      activeByParent: { s1: 'sub-1' as SubSessionId },
       statusMessages: {},
       isHydrated: true,
     });
+
     render(<MainArea />);
+
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
-    // 2 parents + 1 terminal sub.
     expect(panels).toHaveLength(3);
     const wrappers = panels.map((p) => p.parentElement!);
-    // Only s2 (the active parent) is visible.
     const visible = wrappers.filter((w) => w.style.visibility !== 'hidden');
     expect(visible).toHaveLength(1);
   });

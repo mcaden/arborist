@@ -87,6 +87,7 @@ beforeEach(() => {
     metrics: {},
   });
   useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
+  useSubSessionStore.setState({ subSessions: [], statusMessages: {}, pendingClose: undefined, isHydrated: true });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
   // versions; provide minimal shims so CloseConfirmDialog can mount.
   const proto = HTMLDialogElement.prototype as unknown as {
@@ -134,17 +135,11 @@ describe('Sidebar', () => {
     expect(bridgeMock.sessionFocus).toHaveBeenCalledWith({ sessionId: 'b' });
   });
 
-  it('clicking the parent tab swaps the viewport back from a focused terminal sub-tab', () => {
-    // Regression: when a terminal sub-tab owns the viewport for its parent
-    // (`activeByParent[parentId] = subId`), clicking the parent tab must
-    // clear that entry so MainArea swaps back to the parent's own
-    // TerminalView. Without `subActions.activateParent(id)` in the click
-    // handler, the parent tab click was a visual no-op because MainArea's
-    // visible-id rule prefers the sub.
+  it('clicking the parent tab swaps the worktree tab back to that session', () => {
     seed([makeView('a')], 'a');
     const sub: SubSession = {
       id: 'sub-1',
-      parentSessionId: 'a',
+      parentWorktreeTabId: 'tab-a' as WorktreeTabId,
       defId: 'shell',
       kind: 'terminal',
       label: 'shell',
@@ -155,15 +150,19 @@ describe('Sidebar', () => {
     };
     useSubSessionStore.setState({
       subSessions: [sub],
-      activeByParent: { a: 'sub-1' },
       statusMessages: {},
+      isHydrated: true,
+    });
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(makeView('a'), { activeChildId: { kind: 'subSession', id: 'sub-1' } })],
+      activeId: 'tab-a' as WorktreeTabId,
       isHydrated: true,
     });
     render(<Sidebar />);
 
     fireEvent.click(tabByLabel('claude session a'));
 
-    expect(useSubSessionStore.getState().activeByParent).not.toHaveProperty('a');
+    expect(useWorktreeTabStore.getState().tabs[0]?.activeChildId).toEqual({ kind: 'session', id: 'a' });
     expect(useSessionStore.getState().activeId).toBe('a');
   });
 
@@ -421,22 +420,15 @@ describe('Sidebar', () => {
     expect(screen.queryByText(/terminate session/i)).toBeNull();
   });
 
-  it('opens Settings on the Custom Processes tab when invoked from the empty-launch handoff', async () => {
+  it('session context menu exposes only Restart and Close actions', async () => {
     seed([makeView('a')], 'a');
     render(<Sidebar />);
     const tab = tabByLabel('claude session a');
     fireEvent.contextMenu(tab, { clientX: 10, clientY: 10 });
-    fireEvent.click(screen.getByRole('menuitem', { name: /launch/i }));
-    fireEvent.click(screen.getByTestId('tab-context-menu-empty'));
-    // The handoff is deferred via requestAnimationFrame so the menu can
-    // unmount before Settings opens.
-    await act(
-      () =>
-        new Promise<void>((resolve) => {
-          requestAnimationFrame(() => resolve());
-        }),
-    );
-    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /restart/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /close/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /launch/i })).toBeNull();
+    await act(async () => {});
   });
 
   it('opens Settings on the General tab when launched from the footer button', () => {

@@ -5,18 +5,18 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import { useConfigStore } from '@/store/config-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
-import type { CustomProcessDef, SessionId, SubSession, SubSessionId } from '@/types/arborist';
+import type { CustomProcessDef, SubSession, SubSessionId, WorktreeTabId } from '@/types/arborist';
 
 import { useSubSessionIcon } from './use-sub-session-icon';
 
-const PARENT: SessionId = '00000000-0000-0000-0000-000000000a01' as SessionId;
+const PARENT = 'tab-parent' as WorktreeTabId;
 const SUB_ID: SubSessionId = '11111111-1111-1111-1111-111111111101' as SubSessionId;
 const ICON_DATA_URI = 'data:image/png;base64,AAA=';
 
 function makeApp(overrides: Partial<SubSession> = {}): SubSession {
   return {
     id: SUB_ID,
-    parentSessionId: PARENT,
+    parentWorktreeTabId: PARENT,
     defId: 'vscode',
     kind: 'application',
     label: 'VS Code',
@@ -25,7 +25,7 @@ function makeApp(overrides: Partial<SubSession> = {}): SubSession {
     composedCommand: 'code .',
     createdAt: 0,
     ...overrides,
-  } as SubSession;
+  };
 }
 
 function seedDef(overrides: Partial<CustomProcessDef> = {}) {
@@ -44,9 +44,6 @@ function seedDef(overrides: Partial<CustomProcessDef> = {}) {
 }
 
 function seedDefWithoutIcon(): void {
-  // Build a def with NO `iconDataUri` key at all (rather than `iconDataUri: undefined`,
-  // which exactOptionalPropertyTypes rejects). This is the "icon not yet cached"
-  // shape that orphan/cold-start defs have on disk.
   const def: CustomProcessDef = {
     id: 'vscode',
     name: 'VS Code',
@@ -62,7 +59,6 @@ function seedDefWithoutIcon(): void {
 beforeEach(() => {
   useSubSessionStore.setState({
     subSessions: [],
-    activeByParent: {},
     statusMessages: {},
     isHydrated: true,
   });
@@ -92,7 +88,6 @@ describe('useSubSessionIcon', () => {
   });
 
   it('returns undefined when the def has been deleted (orphan sub-session)', () => {
-    // No def seeded, but sub-session refers to one.
     useSubSessionStore.setState({ subSessions: [makeApp()] });
     const { result } = renderHook(() => useSubSessionIcon(SUB_ID));
     expect(result.current).toBeUndefined();

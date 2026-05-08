@@ -23,7 +23,6 @@ import {
   type OpenPermission,
   type OpenTool,
 } from '@/store/session-store';
-import { useSubSessionActions } from '@/store/sub-session-store';
 import type { SessionId, SessionMetrics, Tool } from '@/types/arborist';
 
 interface SidebarTabProps {
@@ -49,7 +48,6 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
   const openPermissions = useOpenPermissions(id);
   const metrics = useMetrics(id);
   const actions = useSessionActions();
-  const subActions = useSubSessionActions();
   // Pull the cached AI-tool icon URI from config. The selector is a
   // narrow string-or-undefined so unrelated config changes don't
   // re-render this row.
@@ -77,18 +75,8 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
         aria-label={`${session.tool} session ${session.label}${hasUnread && !isActive ? ' (unread output)' : ''}`}
         tabIndex={isFocused ? 0 : -1}
         onClick={() => {
-          // Clicking the parent tab is an explicit "show me the parent's
-          // terminal" gesture: clear any terminal sub-tab that currently
-          // owns the viewport for this parent so the MainArea swaps back
-          // to the parent's TerminalView. Without this the user clicks the
-          // parent tab and nothing visibly happens because
-          // `activeByParent[id]` still points at a sub-session and the
-          // MainArea's visible-id rule (see MainArea.tsx) prefers the sub.
-          //
-          // Done on click only — keyboard arrow-nav between parent tabs
-          // intentionally preserves each parent's sub-tab focus so that
-          // arrowing away and back returns the user to where they were.
-          subActions.activateParent(id);
+          // Clicking a session tab focuses it via the worktree-tab activeChildId
+          // mechanism (actions.focus sets activeChildId to this session).
           void actions.focus(id);
         }}
         onContextMenu={(e) => {

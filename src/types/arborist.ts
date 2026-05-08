@@ -257,7 +257,7 @@ export interface CustomProcessDef {
 // in a Zustand slice (Phase 4).
 export interface SubSession {
   id: SubSessionId;
-  parentSessionId: SessionId;
+  parentWorktreeTabId: WorktreeTabId;
   defId: CustomProcessDefId;
   kind: CustomProcessKind;
   label: string;
@@ -273,7 +273,7 @@ export interface SubSession {
 // needs to attempt re-creation.
 export interface SubSessionRecord {
   id: SubSessionId;
-  parentSessionId: SessionId;
+  parentWorktreeTabId: WorktreeTabId;
   defId: CustomProcessDefId;
   kind: CustomProcessKind;
   label: string;
@@ -318,7 +318,7 @@ export interface SessionStatusEvent {
 
 // MIRROR: src-tauri/src/types.rs::SubSessionCreateArgs
 export interface SubSessionCreateArgs {
-  parentSessionId: SessionId;
+  parentWorktreeTabId: WorktreeTabId;
   defId: CustomProcessDefId;
 }
 
@@ -342,7 +342,7 @@ export interface SubSessionCloseArgs {
 
 // MIRROR: src-tauri/src/types.rs::SubSessionListArgs
 export interface SubSessionListArgs {
-  parentSessionId?: SessionId;
+  parentWorktreeTabId?: WorktreeTabId;
 }
 
 // MIRROR: src-tauri/src/types.rs::SubSessionInputArgs

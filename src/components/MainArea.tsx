@@ -21,17 +21,15 @@
 //     single source of truth:
 //       - `activeChildId` undefined / null     → `<WorktreeDashboard>`.
 //       - `activeChildId.kind === 'session'`   → that session's terminal.
-//         If that session also has an active *terminal* sub-tab in
-//         `activeByParent`, the sub-tab's terminal takes the viewport
-//         (matches pre-#44 behaviour for sub-sessions).
 //       - `activeChildId.kind === 'subSession'` → that sub-session's
-//         terminal (or its parent session's terminal for application kind).
+//         terminal directly (sub-sessions are now owned by worktree tabs,
+//         not by agent sessions).
 
 import { SubTerminalView } from './SubTerminalView';
 import { TerminalView } from './TerminalView';
 import { WorktreeDashboard } from './WorktreeDashboard';
 import { useSessions } from '@/store/session-store';
-import { useActiveSubSessionId, useAllSubSessions } from '@/store/sub-session-store';
+import { useAllSubSessions } from '@/store/sub-session-store';
 import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
 import type { SessionId, SubSessionId } from '@/types/arborist';
 
@@ -43,20 +41,18 @@ export function MainArea(): JSX.Element {
 
   const activeWorktreeTab = worktreeTabs.find((t) => t.id === activeWorktreeTabId) ?? null;
 
-  // Resolve the active session id from worktree-tab activeChildId. When activeChildId.kind is 'subSession', look up the sub to find its
-  // parent session — sub-tabs swap the viewport via the activeByParent path (existing behaviour).
+  // Resolve the active session id and visible sub-session id from worktree-tab activeChildId.
   let activeSessionId: SessionId | undefined;
+  let visibleSubId: SubSessionId | undefined;
   if (activeWorktreeTab) {
     const child = activeWorktreeTab.activeChildId;
     if (child?.kind === 'session') {
       activeSessionId = child.id;
     } else if (child?.kind === 'subSession') {
       const sub = allSubs.find((s) => s.id === child.id);
-      if (sub) activeSessionId = sub.parentSessionId;
+      if (sub && sub.kind === 'terminal') visibleSubId = sub.id;
     }
   }
-
-  const activeSubForActiveParent = useActiveSubSessionId(activeSessionId);
 
   const showDashboard =
     worktreeTabs.length > 0 &&
@@ -69,16 +65,6 @@ export function MainArea(): JSX.Element {
         <p className="text-sm text-slate-400">No session selected — create one to begin.</p>
       </main>
     );
-  }
-
-  // Resolve visible terminal sub-id. Either explicitly via activeChildId.kind === 'subSession', or via the existing activeByParent path.
-  let visibleSubId: SubSessionId | undefined;
-  if (activeWorktreeTab?.activeChildId?.kind === 'subSession') {
-    const sub = allSubs.find((s) => s.id === activeWorktreeTab.activeChildId!.id);
-    if (sub && sub.kind === 'terminal') visibleSubId = sub.id;
-  } else if (activeSessionId !== undefined && activeSubForActiveParent) {
-    const sub = allSubs.find((s) => s.id === activeSubForActiveParent);
-    if (sub && sub.kind === 'terminal') visibleSubId = sub.id;
   }
 
   const terminalSubs = allSubs.filter((s) => s.kind === 'terminal');

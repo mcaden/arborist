@@ -3,7 +3,6 @@
 // Visible information:
 //   * Folder icon + worktree name (basename)
 //   * Branch (if known) on a sub-line
-//   * Status roll-up icon (max-priority across child sessions)
 //   * Close button (×) — cascades close to all children via worktree_tab_close
 //
 // The header is rendered as a plain button inside an `<li role="presentation">`
@@ -17,10 +16,8 @@
 
 import { useState } from 'react';
 
-import { StatusIcon } from './StatusIcon';
 import { formatError } from '@/lib/tauri-bridge';
-import { useSessionStore } from '@/store/session-store';
-import { selectWorktreeTabRollupStatus, useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
+import { useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { WorktreeTabId } from '@/types/arborist';
 
 interface SidebarWorktreeTabProps {
@@ -31,10 +28,6 @@ interface SidebarWorktreeTabProps {
 
 export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: SidebarWorktreeTabProps): JSX.Element | null {
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
-  // Subscribe to the rollup so the icon re-renders when any child changes status. Selector returns a primitive string so equality
-  // gating works out of the box.
-  const tabPath = tab?.path ?? '';
-  const rollupStatus = useSessionStore((s) => selectWorktreeTabRollupStatus(tabPath)(s));
   const wttActions = useWorktreeTabActions();
   const [buttonEl, setButtonEl] = useState<HTMLButtonElement | null>(null);
 
@@ -75,15 +68,7 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         }}
         className={`${baseClasses} ${stateClasses}`}
       >
-        <span aria-hidden="true" className="text-sm">
-          ▸
-        </span>
         <span className="min-w-0 flex-1 truncate normal-case font-semibold">{tab.name}</span>
-        {rollupStatus !== 'idle' && (
-          <span className="shrink-0">
-            <StatusIcon status={rollupStatus} title={`Children: ${rollupStatus}`} className="text-sm shrink-0" />
-          </span>
-        )}
       </button>
       <button
         type="button"

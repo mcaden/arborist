@@ -162,7 +162,7 @@ describe('useConfigStore.set', () => {
     };
     const rec = {
       id: 'sub-1',
-      parentSessionId: 'sess-1',
+      parentWorktreeTabId: 'tab-sess-1',
       defId: 'shell',
       kind: 'terminal' as const,
       label: 'Shell',

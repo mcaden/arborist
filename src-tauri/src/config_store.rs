@@ -222,11 +222,17 @@ impl ConfigStore {
             let sessions = self.load_sessions();
             migrate_v4_to_v5(&mut cfg, &sessions);
         }
+        // v5→v6: reparent sub-session records from parent_session_id to parent_worktree_tab_id. Must run after v4→v5 because it reads the
+        // synthesised worktree_tabs to resolve the mapping. Records whose parent session or matching worktree tab is missing are dropped.
+        if cfg.config_version < 6 {
+            let sessions = self.load_sessions();
+            migrate_v5_to_v6(&mut cfg, &sessions);
+        }
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
         }
         sanitize_loaded_custom_processes(&mut cfg.custom_processes);
-        sanitize_loaded_sub_session_records(&mut cfg.last_open_sub_sessions, &cfg.custom_processes);
+        sanitize_loaded_sub_session_records(&mut cfg.last_open_sub_sessions, &cfg.custom_processes, &cfg.worktree_tabs);
         validate_loaded_config(&mut cfg);
 
         // Validate default instruction set IDs against the *discovered* set. Skip validation entirely if we don't have an instructionSetsDir
@@ -988,10 +994,30 @@ fn sanitize_loaded_custom_processes(defs: &mut Vec<CustomProcessDef>) {
 /// Sanitize persisted [`SubSessionRecord`]s on load: drop any whose `def_id` no longer exists in the user's `custom_processes` (the def was deleted
 /// between sessions), and backfill `composed_command` from the def for legacy v3→v4 records that didn't persist it. Both are silent —
 /// restore-on-launch is best-effort.
-fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs: &[CustomProcessDef]) {
+fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs: &[CustomProcessDef], worktree_tabs: &[WorktreeTab]) {
     let by_id: std::collections::BTreeMap<&CustomProcessDefId, &CustomProcessDef> = defs.iter().map(|d| (&d.id, d)).collect();
+    let tab_ids: std::collections::BTreeSet<WorktreeTabId> = worktree_tabs.iter().map(|t| t.id).collect();
     let original_len = records.len();
     records.retain_mut(|rec| {
+        // Drop records that still lack the canonical parent_worktree_tab_id (pre-migration orphans).
+        let Some(tab_id) = rec.parent_worktree_tab_id else {
+            warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                "dropping sub-session record without parent_worktree_tab_id (migration orphan)",
+            );
+            return false;
+        };
+        // Drop records whose worktree tab no longer exists.
+        if !tab_ids.contains(&tab_id) {
+            warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                tab_id = %tab_id,
+                "dropping sub-session record whose worktree tab is no longer present",
+            );
+            return false;
+        }
         let Some(def) = by_id.get(&rec.def_id) else {
             warn!(
                 code = "SubSessionRecordDropped",
@@ -1004,6 +1030,8 @@ fn sanitize_loaded_sub_session_records(records: &mut Vec<SubSessionRecord>, defs
         if rec.composed_command.trim().is_empty() {
             rec.composed_command = def.command.clone();
         }
+        // Clear the legacy field — it's not needed at runtime.
+        rec.parent_session_id = None;
         true
     });
     if records.len() != original_len {
@@ -1120,6 +1148,98 @@ fn migrate_v4_to_v5(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>
         tab_count = cfg.worktree_tabs.len(),
         session_count = sessions.len(),
         "v4→v5 migration: synthesised worktree tabs from existing sessions",
+    );
+}
+
+/// v5→v6 migration: reparent `SubSessionRecord` entries from `parent_session_id` (an agent session) to `parent_worktree_tab_id` (a worktree tab).
+///
+/// For each record that still carries the legacy `parent_session_id`:
+///   1. Look up the parent session in `sessions` to discover its `worktree_path`.
+///   2. Canonicalise the worktree path (via `compose::validate_worktree`).
+///   3. Find the `WorktreeTab` whose canonical path matches.
+///   4. Set `parent_worktree_tab_id` and clear `parent_session_id`.
+///
+/// Records whose parent session is missing, whose worktree path is invalid, or that have no matching `WorktreeTab` are dropped with a
+/// distinguishing `tracing::warn!`.
+fn migrate_v5_to_v6(cfg: &mut AppConfig, sessions: &BTreeMap<SessionId, Session>) {
+    use crate::compose;
+
+    // Build a lookup: canonical worktree path → WorktreeTabId.
+    let mut path_to_tab: BTreeMap<PathBuf, WorktreeTabId> = BTreeMap::new();
+    for tab in &cfg.worktree_tabs {
+        match compose::validate_worktree(&tab.path) {
+            Ok(canonical) => {
+                path_to_tab.entry(canonical).or_insert(tab.id);
+            }
+            Err(_) => {
+                // Tab's path may not exist on this machine any more — that's OK, it just won't match any sub-sessions.
+            }
+        }
+    }
+
+    let original_len = cfg.last_open_sub_sessions.len();
+    cfg.last_open_sub_sessions.retain_mut(|rec| {
+        // Already migrated (has parent_worktree_tab_id) — keep as-is.
+        if rec.parent_worktree_tab_id.is_some() {
+            rec.parent_session_id = None;
+            return true;
+        }
+
+        let Some(parent_sid) = rec.parent_session_id else {
+            tracing::warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                "v5→v6 migration: dropping sub-session record with neither parent_session_id nor parent_worktree_tab_id",
+            );
+            return false;
+        };
+
+        let Some(parent) = sessions.get(&parent_sid) else {
+            tracing::warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                parent_session_id = %parent_sid,
+                "v5→v6 migration: dropping sub-session record whose parent session is missing",
+            );
+            return false;
+        };
+
+        let canonical = match compose::validate_worktree(&parent.worktree_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    code = "SubSessionRecordDropped",
+                    id = %rec.id,
+                    parent_session_id = %parent_sid,
+                    worktree_path = %parent.worktree_path.display(),
+                    error = ?e,
+                    "v5→v6 migration: dropping sub-session record whose parent session worktree path is invalid",
+                );
+                return false;
+            }
+        };
+
+        let Some(&tab_id) = path_to_tab.get(&canonical) else {
+            tracing::warn!(
+                code = "SubSessionRecordDropped",
+                id = %rec.id,
+                parent_session_id = %parent_sid,
+                worktree_path = %parent.worktree_path.display(),
+                "v5→v6 migration: dropping sub-session record whose worktree path has no matching WorktreeTab",
+            );
+            return false;
+        };
+
+        rec.parent_worktree_tab_id = Some(tab_id);
+        rec.parent_session_id = None;
+        true
+    });
+
+    let dropped = original_len - cfg.last_open_sub_sessions.len();
+    tracing::info!(
+        migrated = cfg.last_open_sub_sessions.len(),
+        dropped,
+        "v5→v6 migration: reparented sub-session records from parent_session_id to parent_worktree_tab_id",
     );
 }
 
@@ -2383,10 +2503,11 @@ mod tests {
     fn save_config_round_trips_valid_custom_processes_and_records() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
-        let parent = SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"));
+        let tab_id = WorktreeTabId(Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("uuid"));
         let sub = SubSessionRecord {
             id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
-            parent_session_id: parent,
+            parent_session_id: None,
+            parent_worktree_tab_id: Some(tab_id),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -2401,10 +2522,22 @@ mod tests {
             icon: None,
             icon_data_uri: None,
         };
+        // A matching worktree tab must exist for sanitize to keep the sub-session record.
+        let tab = WorktreeTab {
+            id: tab_id,
+            path: td.path().to_owned(),
+            name: "test".to_owned(),
+            branch: None,
+            label: "test".to_owned(),
+            tab_index: 0,
+            active_child_id: None,
+        };
         let after = store
             .save_config(PartialAppConfig {
                 custom_processes: Some(vec![def.clone()]),
                 last_open_sub_sessions: Some(vec![sub.clone()]),
+                worktree_tabs: Some(vec![tab]),
+                worktree_tab_order: Some(vec![tab_id]),
                 ..Default::default()
             })
             .expect("ok");

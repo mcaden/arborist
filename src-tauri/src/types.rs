@@ -386,7 +386,10 @@ pub struct DefaultInstructionSets {
 ///   `open-folder`, `vscode`) additively — only IDs not already present are inserted, never overwriting a user-edited def.
 /// * `5` — added `worktree_tabs`, `worktree_tab_order`, and `active_worktree_tab_id` (Issue #44: worktree-as-parent-tab). Migration synthesises
 ///   one [`WorktreeTab`] per unique canonical `Session.worktree_path` in `sessions.json`, preserving tab order.
-pub const CONFIG_VERSION_CURRENT: u32 = 5;
+/// * `6` — reparented sub-sessions from agent sessions to worktree tabs. `SubSession.parent_session_id` → `parent_worktree_tab_id`. Migration
+///   resolves the old parent session's worktree path to a [`WorktreeTab`]; orphan records whose parent session or matching tab is missing are
+///   dropped with a warning.
+pub const CONFIG_VERSION_CURRENT: u32 = 6;
 
 /// Per-agent CLI launch command override. Each field is a verbatim shell snippet (e.g. `"npx claude --model sonnet"`) interpolated into the composed
 /// command in place of the bare program token. Empty string means "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
@@ -790,7 +793,7 @@ pub struct SessionInputArgs {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubSessionCreateArgs {
-    pub parent_session_id: SessionId,
+    pub parent_worktree_tab_id: WorktreeTabId,
     pub def_id: CustomProcessDefId,
 }
 
@@ -832,13 +835,13 @@ pub struct SubSessionCloseArgs {
     pub intent: SubSessionCloseIntent,
 }
 
-/// Arguments for `subsession_list`. When `parent_session_id` is `None` the result is the full set across every parent; when `Some(id)` the result is
-/// filtered to that parent and ordered as the sub-sessions were created.
+/// Arguments for `subsession_list`. When `parent_worktree_tab_id` is `None` the result is the full set across every worktree tab; when `Some(id)`
+/// the result is filtered to that tab and ordered as the sub-sessions were created.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SubSessionListArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<SessionId>,
+    pub parent_worktree_tab_id: Option<WorktreeTabId>,
 }
 
 /// Arguments for `subsession_input` (terminal sub-tabs only).
@@ -1058,16 +1061,15 @@ pub struct CustomProcessDef {
 }
 
 /// In-memory + on-the-wire representation of a sub-tab. Sub-sessions live in a parallel `SubSessionStore` (Phase 2); only the lightweight
-/// [`SubSessionRecord`] is persisted across restarts. Identifies its
-/// parent via `parent_session_id` and the def that launched it via `def_id` (so the Sidebar can re-resolve the user-facing name/icon if the def is
-/// renamed).
+/// [`SubSessionRecord`] is persisted across restarts. Identifies its parent worktree tab via `parent_worktree_tab_id` and the def that launched it
+/// via `def_id` (so the Sidebar can re-resolve the user-facing name/icon if the def is renamed).
 ///
 /// MIRROR: `src/types/arborist.ts::SubSession`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubSession {
     pub id: SubSessionId,
-    pub parent_session_id: SessionId,
+    pub parent_worktree_tab_id: WorktreeTabId,
     pub def_id: CustomProcessDefId,
     pub kind: CustomProcessKind,
     pub label: String,
@@ -1083,16 +1085,29 @@ pub struct SubSession {
 }
 
 /// Lightweight restore record persisted in
-/// [`AppConfig::last_open_sub_sessions`]. Carries only what the restore
-/// pass needs to attempt re-creation: the def the sub-tab was launched from, the parent session it lived under, the user-facing label (so the sidebar
-/// can render the tab even before restore resolves), and the kind (so an Application sub-tab can come back greyed without re-launching the GUI).
+/// [`AppConfig::last_open_sub_sessions`]. Carries only what the restore pass needs to attempt re-creation: the def the sub-tab was launched from,
+/// the parent worktree tab it belongs to, the user-facing label (so the sidebar can render the tab even before restore resolves), and the kind (so
+/// an Application sub-tab can come back greyed without re-launching the GUI).
+///
+/// ## Migration note (v5 → v6)
+///
+/// v5 records carry `parentSessionId` (a [`SessionId`]). v6 records carry `parentWorktreeTabId` (a [`WorktreeTabId`]). Both fields are
+/// `Option`+`serde(default)` so v5 JSON deserialises into the current struct; the migration step in `config_store::migrate_v5_to_v6` rewrites
+/// the legacy field to the canonical one, and `sanitize_loaded_sub_session_records` drops any record that still lacks `parentWorktreeTabId`
+/// after migration.
 ///
 /// MIRROR: `src/types/arborist.ts::SubSessionRecord`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubSessionRecord {
     pub id: SubSessionId,
-    pub parent_session_id: SessionId,
+    /// Legacy v5 field — present in persisted JSON from older versions. Cleared by `migrate_v5_to_v6`; never set by new code paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
+    /// Canonical v6 field — the worktree tab this sub-session belongs to. Required at runtime; `sanitize_loaded_sub_session_records` drops records
+    /// where this is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_worktree_tab_id: Option<WorktreeTabId>,
     pub def_id: CustomProcessDefId,
     pub kind: CustomProcessKind,
     pub label: String,
@@ -1410,7 +1425,8 @@ mod tests {
             }],
             last_open_sub_sessions: vec![SubSessionRecord {
                 id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
-                parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
+                parent_session_id: None,
+                parent_worktree_tab_id: Some(WorktreeTabId(Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("uuid"))),
                 def_id: CustomProcessDefId::new("shell"),
                 kind: CustomProcessKind::Terminal,
                 label: "Shell".to_owned(),
@@ -1452,7 +1468,7 @@ mod tests {
             "lastOpenSubSessions": [
                 {
                     "id": "11111111-1111-1111-1111-111111111111",
-                    "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
+                    "parentWorktreeTabId": "22222222-2222-2222-2222-222222222222",
                     "defId": "shell",
                     "kind": "terminal",
                     "label": "Shell",
@@ -1490,7 +1506,7 @@ mod tests {
     fn sub_session_fixture() -> (SubSession, Value) {
         let value = SubSession {
             id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
-            parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
+            parent_worktree_tab_id: WorktreeTabId(Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("uuid")),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -1501,7 +1517,7 @@ mod tests {
         };
         let fixture = json!({
             "id": "11111111-1111-1111-1111-111111111111",
-            "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
+            "parentWorktreeTabId": "22222222-2222-2222-2222-222222222222",
             "defId": "shell",
             "kind": "terminal",
             "label": "Shell",
@@ -1516,7 +1532,8 @@ mod tests {
     fn sub_session_record_fixture() -> (SubSessionRecord, Value) {
         let value = SubSessionRecord {
             id: SubSessionId(Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid")),
-            parent_session_id: SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid")),
+            parent_session_id: None,
+            parent_worktree_tab_id: Some(WorktreeTabId(Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("uuid"))),
             def_id: CustomProcessDefId::new("shell"),
             kind: CustomProcessKind::Terminal,
             label: "Shell".to_owned(),
@@ -1524,7 +1541,7 @@ mod tests {
         };
         let fixture = json!({
             "id": "11111111-1111-1111-1111-111111111111",
-            "parentSessionId": "550e8400-e29b-41d4-a716-446655440000",
+            "parentWorktreeTabId": "22222222-2222-2222-2222-222222222222",
             "defId": "shell",
             "kind": "terminal",
             "label": "Shell",

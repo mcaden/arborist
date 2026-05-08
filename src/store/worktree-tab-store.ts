@@ -132,6 +132,13 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
         } catch (err) {
           console.warn(`[worktree-tab-store] removeLocalForPath(${closingTab.path}) failed: ${formatError(err)}`);
         }
+        try {
+          // Sub-sessions are now owned by worktree tabs, not by agent sessions. Drop their local cache entries so the sidebar is consistent.
+          const { useSubSessionStore } = await import('@/store/sub-session-store');
+          useSubSessionStore.getState().actions.dropForWorktreeTab(id);
+        } catch (err) {
+          console.warn(`[worktree-tab-store] dropForWorktreeTab(${id}) failed: ${formatError(err)}`);
+        }
       }
     },
 

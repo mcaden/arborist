@@ -48,6 +48,7 @@ import type {
   WorkspaceValidateResult,
   WorktreeCreateResult,
   WorktreeTab,
+  WorktreeTabId,
   WorktreeTabCloseResult,
   WorktreeTabOpenArgs,
   WorktreeTabCloseArgs,
@@ -388,8 +389,8 @@ export function subSessionFocus(id: SubSessionId): Promise<void> {
   return invoke<void>('subsession_focus', { args: { id } });
 }
 
-export function subSessionList(parentSessionId?: SessionId): Promise<SubSession[]> {
-  const args: SubSessionListArgs = parentSessionId === undefined ? {} : { parentSessionId };
+export function subSessionList(parentWorktreeTabId?: WorktreeTabId): Promise<SubSession[]> {
+  const args: SubSessionListArgs = parentWorktreeTabId === undefined ? {} : { parentWorktreeTabId };
   return invoke<SubSession[]>('subsession_list', { args });
 }
 

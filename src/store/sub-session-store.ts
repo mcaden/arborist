@@ -2,10 +2,8 @@
 // sub-session list (terminal + application kinds) so the React tree can
 // subscribe granularly to changes.
 //
-// Scope (Phase 4):
-// * Holds `SubSession` records grouped by parent session id.
-// * Tracks the active sub-tab per parent (`undefined` means the parent
-//   session itself is active, not a sub-tab).
+// Scope:
+// * Holds `SubSession` records grouped by parent worktree tab id.
 // * Exposes thin actions that wrap `subsession_*` commands and keep the
 //   cache in sync optimistically.
 // * Subscribes to `subsession://status` and `subsession://exited` (via
@@ -29,7 +27,6 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { formatError, subSessionClose, subSessionCreate, subSessionFocus, subSessionList, subSessionRelaunch } from '@/lib/tauri-bridge';
 import type {
-  SessionId,
   SubSession,
   SubSessionCloseIntent,
   SubSessionCreateArgs,
@@ -37,17 +34,12 @@ import type {
   SubSessionId,
   SubSessionRestoredEvent,
   SubSessionStatusEvent,
+  WorktreeTabId,
 } from '@/types/arborist';
 
 export interface SubSessionStoreState {
-  /** Flat list of all known sub-sessions, in creation order per parent. */
+  /** Flat list of all known sub-sessions, in creation order per worktree tab. */
   subSessions: SubSession[];
-  /**
-   * Active sub-tab per parent. `undefined` for a parent whose own
-   * terminal is showing (no sub-tab selected). Keyed by parent
-   * `SessionId`.
-   */
-  activeByParent: Record<SessionId, SubSessionId>;
   /**
    * Optional human-readable note attached to the most recent status
    * change for each sub-session (mirror of session-store pattern).
@@ -71,7 +63,7 @@ export interface SubSessionStoreState {
 export interface SubSessionStoreActions {
   /** One-shot pull of the backend list. Idempotent. */
   hydrate: () => Promise<void>;
-  /** Spawn a new sub-session under `args.parentSessionId`. */
+  /** Spawn a new sub-session under `args.parentWorktreeTabId`. */
   create: (args: SubSessionCreateArgs) => Promise<SubSession>;
   /**
    * Close a sub-session. `intent` controls what happens to the
@@ -92,25 +84,20 @@ export interface SubSessionStoreActions {
   /** Dismiss the close-confirmation dialog without closing. */
   cancelClose: () => void;
   /**
-   * Focus a sub-session: marks it active in `activeByParent` and (for
-   * application kind) calls the backend focuser. Terminal kind is a
-   * pure UI swap.
+   * Focus a sub-session: for terminal kind, a pure UI swap via
+   * worktree-tab `setActiveChild`; for application kind, calls the
+   * backend focuser.
    */
   focus: (id: SubSessionId) => Promise<void>;
   /**
-   * Activate the parent session itself (clears `activeByParent` for
-   * that parent so the parent's terminal viewport shows).
+   * Drop all sub-sessions for a worktree tab (used when the worktree
+   * tab is closed — the cascade itself happens in the backend, but
+   * the frontend converges the cache locally so the UI is consistent
+   * immediately).
    */
-  activateParent: (parentId: SessionId) => void;
+  dropForWorktreeTab: (tabId: WorktreeTabId) => void;
   /**
-   * Drop all sub-sessions for a parent (used when the parent session
-   * is closed — the cascade itself happens in the backend in Phase 7,
-   * but the frontend converges the cache locally so the UI is
-   * consistent immediately).
-   */
-  dropForParent: (parentId: SessionId) => void;
-  /**
-   * Re-spawn a sub-session under its existing id (Phase 7). Used by
+   * Re-spawn a sub-session under its existing id. Used by
    * `SidebarSubTab` when the user clicks a greyed-out application
    * sub-tab; also valid for terminal sub-tabs whose PTY died. Per-id
    * dedupe prevents a double-click from spawning twice.
@@ -120,9 +107,8 @@ export interface SubSessionStoreActions {
   applyStatus: (event: SubSessionStatusEvent) => void;
   applyExited: (event: SubSessionExitedEvent) => void;
   /**
-   * Insert a sub-session received via `subsession://restored` (Phase 7
-   * restore-on-launch). Idempotent on duplicate restores; never steals
-   * `activeByParent` away from a sub-tab the parent already owns.
+   * Insert a sub-session received via `subsession://restored`.
+   * Idempotent on duplicate restores.
    */
   applyRestored: (event: SubSessionRestoredEvent) => void;
 }
@@ -174,19 +160,9 @@ export const useSubSessionStore = create<Store>((set, get) => {
   const actions: SubSessionStoreActions = {
     hydrate: async () => {
       const all = await subSessionList();
-      // Preserve UI-only `activeByParent`, but drop entries that no
-      // longer reference a real sub-session under the same parent —
-      // otherwise selectors point at nothing after a backend resync.
-      const valid: Record<SessionId, SubSessionId> = {};
-      const { activeByParent: prev } = get();
-      for (const [parent, activeId] of Object.entries(prev)) {
-        const match = all.find((sub) => sub.id === activeId && sub.parentSessionId === parent);
-        if (match) valid[parent as SessionId] = activeId;
-      }
       set({
         subSessions: all,
         isHydrated: true,
-        activeByParent: valid,
       });
     },
 
@@ -194,38 +170,23 @@ export const useSubSessionStore = create<Store>((set, get) => {
       const sub = await subSessionCreate(args);
       set((s) => ({
         subSessions: [...s.subSessions, sub],
-        activeByParent: { ...s.activeByParent, [sub.parentSessionId]: sub.id },
       }));
       return sub;
     },
 
     close: async (id, intent) => {
-      // Capture parent before we mutate so we can re-pick a neighbour.
-      const sub = get().subSessions.find((s) => s.id === id);
       try {
         await subSessionClose(id, intent);
       } finally {
         // Always converge local state — same rationale as session-store
         // close: leaving a stale row in the sidebar is worse than briefly
         // out-of-sync with the backend.
-        const { subSessions, activeByParent, statusMessages, pendingClose } = get();
+        const { subSessions, statusMessages, pendingClose } = get();
         const next = subSessions.filter((s) => s.id !== id);
-        const nextActive: Record<SessionId, SubSessionId> = { ...activeByParent };
-        if (sub && activeByParent[sub.parentSessionId] === id) {
-          // Pick a neighbour under the same parent, or clear (back to
-          // parent terminal) if none remain.
-          const neighbour = pickNeighbour(subSessions, sub.parentSessionId, id);
-          if (neighbour) {
-            nextActive[sub.parentSessionId] = neighbour;
-          } else {
-            delete nextActive[sub.parentSessionId];
-          }
-        }
         const nextMsgs: Record<SubSessionId, string> = { ...statusMessages };
         delete nextMsgs[id];
         set({
           subSessions: next,
-          activeByParent: nextActive,
           statusMessages: nextMsgs,
           // Auto-clear pendingClose if the dialog was open for the row
           // we just closed (e.g. SubCloseConfirmDialog confirmed).
@@ -245,40 +206,20 @@ export const useSubSessionStore = create<Store>((set, get) => {
     focus: async (id) => {
       const sub = get().subSessions.find((s) => s.id === id);
       if (!sub) return;
-      if (sub.kind === 'terminal') {
-        // Optimistic UI: mark active immediately so the swap feels instant.
-        set((s) => ({
-          activeByParent: { ...s.activeByParent, [sub.parentSessionId]: id },
-        }));
-      }
       // Backend focus is only meaningful for application kind. Terminal
       // sub-sessions are a pure tab swap; the backend impl is a no-op.
       // Either way the call is cheap and centralises the dispatch.
-      // For application kind we deliberately do NOT touch activeByParent
-      // — clicking an app sub-tab is a focus gesture, not a viewport
-      // swap (CONTEXT_MENU_PLAN.md, Frontend §9).
       await subSessionFocus(id);
     },
 
-    activateParent: (parentId) => {
+    dropForWorktreeTab: (tabId) => {
       set((s) => {
-        if (!(parentId in s.activeByParent)) return {};
-        const next = { ...s.activeByParent };
-        delete next[parentId];
-        return { activeByParent: next };
-      });
-    },
-
-    dropForParent: (parentId) => {
-      set((s) => {
-        const next = s.subSessions.filter((sub) => sub.parentSessionId !== parentId);
-        if (next.length === s.subSessions.length && !(parentId in s.activeByParent)) {
+        const next = s.subSessions.filter((sub) => sub.parentWorktreeTabId !== tabId);
+        if (next.length === s.subSessions.length) {
           return {};
         }
-        const nextActive = { ...s.activeByParent };
-        delete nextActive[parentId];
         // Drop status messages for the orphaned ids.
-        const droppedIds = new Set(s.subSessions.filter((sub) => sub.parentSessionId === parentId).map((sub) => sub.id));
+        const droppedIds = new Set(s.subSessions.filter((sub) => sub.parentWorktreeTabId === tabId).map((sub) => sub.id));
         const nextMsgs: Record<SubSessionId, string> = {};
         for (const [k, v] of Object.entries(s.statusMessages)) {
           if (!droppedIds.has(k as SubSessionId)) nextMsgs[k as SubSessionId] = v;
@@ -288,7 +229,6 @@ export const useSubSessionStore = create<Store>((set, get) => {
         const nextPending = s.pendingClose !== undefined && droppedIds.has(s.pendingClose) ? undefined : s.pendingClose;
         return {
           subSessions: next,
-          activeByParent: nextActive,
           statusMessages: nextMsgs,
           pendingClose: nextPending,
         };
@@ -417,39 +357,20 @@ export const useSubSessionStore = create<Store>((set, get) => {
     },
 
     applyRestored: (event) => {
-      // Phase 7: insert a sub-session received from the restore-on-launch
-      // second pass. Idempotent — if the row is already in the cache
-      // (e.g. a duplicate restored event, or the user has already
-      // hydrated via subsession_list) we leave it alone. We also never
-      // steal `activeByParent` from a tab the parent already owns —
-      // restore happens before the user has clicked anything but the
-      // hydrate path may have repopulated `activeByParent` from the
-      // session-store's persisted active sub-tab.
+      // Insert a sub-session received from the restore-on-launch second
+      // pass. Idempotent — if the row is already in the cache (e.g. a
+      // duplicate restored event, or the user has already hydrated via
+      // subsession_list) we leave it alone.
       set((s) => {
         const incoming = event.subSession;
         if (s.subSessions.some((sub) => sub.id === incoming.id)) return {};
-        const nextSubs = [...s.subSessions, incoming];
-        const nextActive: Record<SessionId, SubSessionId> = { ...s.activeByParent };
-        if (!(incoming.parentSessionId in nextActive)) {
-          // Parent has no active sub-tab yet — adopt this one so the
-          // restored row is visible if the parent gets focused. For
-          // application kind this is harmless (clicking an app sub-tab
-          // doesn't swap the viewport anyway).
-          //
-          // We DON'T set this for application kind to preserve the
-          // existing rule that app sub-tabs never claim the viewport.
-          if (incoming.kind === 'terminal') {
-            nextActive[incoming.parentSessionId] = incoming.id;
-          }
-        }
-        return { subSessions: nextSubs, activeByParent: nextActive };
+        return { subSessions: [...s.subSessions, incoming] };
       });
     },
   };
 
   return {
     subSessions: [],
-    activeByParent: {},
     statusMessages: {},
     pendingClose: undefined,
     isHydrated: false,
@@ -457,23 +378,11 @@ export const useSubSessionStore = create<Store>((set, get) => {
   };
 });
 
-function pickNeighbour(list: SubSession[], parentId: SessionId, removingId: SubSessionId): SubSessionId | undefined {
-  const siblings = list.filter((s) => s.parentSessionId === parentId);
-  const idx = siblings.findIndex((s) => s.id === removingId);
-  if (idx === -1) return siblings[0]?.id;
-  // Prefer the next sibling, fall back to the previous.
-  return (siblings[idx + 1] ?? siblings[idx - 1])?.id;
-}
-
 // ---------------------------------------------------------------------------
 // Selectors
 // ---------------------------------------------------------------------------
 
 export const selectAllSubSessions = (s: Store): SubSession[] => s.subSessions;
-export const selectActiveByParent =
-  (parentId: SessionId | undefined) =>
-  (s: Store): SubSessionId | undefined =>
-    parentId ? s.activeByParent[parentId] : undefined;
 export const selectIsHydrated = (s: Store): boolean => s.isHydrated;
 export const selectSubStatusMessage =
   (id: SubSessionId | undefined) =>
@@ -487,12 +396,8 @@ export const selectPendingSubClose = (s: Store): SubSessionId | undefined => s.p
 
 export const useAllSubSessions = (): SubSession[] => useSubSessionStore(selectAllSubSessions);
 
-export function useSubSessionsForParent(parentId: SessionId | undefined): SubSession[] {
-  return useSubSessionStore(useShallow((s) => (parentId ? s.subSessions.filter((sub) => sub.parentSessionId === parentId) : [])));
-}
-
-export function useActiveSubSessionId(parentId: SessionId | undefined): SubSessionId | undefined {
-  return useSubSessionStore(useMemo(() => selectActiveByParent(parentId), [parentId]));
+export function useSubSessionsForWorktreeTab(tabId: WorktreeTabId | undefined): SubSession[] {
+  return useSubSessionStore(useShallow((s) => (tabId ? s.subSessions.filter((sub) => sub.parentWorktreeTabId === tabId) : [])));
 }
 
 export function useSubSessionById(id: SubSessionId | undefined): SubSession | undefined {

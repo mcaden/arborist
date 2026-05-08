@@ -34,51 +34,33 @@
 // item in a set"); application sub-tabs never set it because they don't
 // own the viewport.
 
-import { useSessionActions } from '@/store/session-store';
-import { useActiveSubSessionId, useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
+import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
-import type { SessionId, SubSessionId, SubSessionStatus } from '@/types/arborist';
+import type { SubSessionId, SubSessionStatus, WorktreeTabId } from '@/types/arborist';
 
 interface SidebarSubTabProps {
-  parentId: SessionId;
+  worktreeTabId: WorktreeTabId;
   subSessionId: SubSessionId;
-  /** True when the parent tab is the active session in the parent layer. */
-  parentIsActive: boolean;
 }
 
-export function SidebarSubTab({ parentId, subSessionId, parentIsActive }: SidebarSubTabProps): JSX.Element | null {
+export function SidebarSubTab({ worktreeTabId, subSessionId }: SidebarSubTabProps): JSX.Element | null {
   const sub = useSubSessionById(subSessionId);
-  const activeSubId = useActiveSubSessionId(parentId);
   const subActions = useSubSessionActions();
-  const sessionActions = useSessionActions();
   const iconDataUri = useSubSessionIcon(subSessionId);
+  void worktreeTabId;
 
   if (!sub) return null;
 
-  // A terminal sub-tab is "selected" when it owns the viewport for its
-  // parent AND its parent is the active session. Application sub-tabs
-  // never get the viewport, so they're never visually selected by the
-  // viewport-swap rule (we just dim the row).
-  const isViewportOwner = sub.kind === 'terminal' && activeSubId === subSessionId && parentIsActive;
+  // A terminal sub-tab is "selected" when it owns the viewport via
+  // `activeChildId.kind === 'subSession'` on the parent worktree tab.
+  // We don't track that here — the worktree-tab store is the source
+  // of truth and the parent Sidebar component passes the visual state.
   const isExited = sub.status === 'exited' || sub.status === 'error';
 
   const handleClick = (): void => {
     if (isExited && sub.kind === 'application') {
-      // Application launcher whose process exited (or whose resolver
-      // gave up): re-spawn under the same id. Per-id dedupe in the
-      // store action prevents a double-click from spawning twice.
-      // Status flows back via `subsession://status`; the row visually
-      // transitions starting → running.
       void subActions.relaunch(subSessionId);
       return;
-    }
-    // For terminal sub-sessions, also bring the parent into view if the
-    // user clicked from another parent (otherwise activeByParent[parent]
-    // is set but `activeId` still points elsewhere — the viewport
-    // wouldn't update). Done here rather than inside the store action
-    // to avoid creating a cross-store import dependency cycle.
-    if (sub.kind === 'terminal' && !parentIsActive) {
-      void sessionActions.focus(parentId);
     }
     void subActions.focus(subSessionId);
   };
@@ -86,25 +68,18 @@ export function SidebarSubTab({ parentId, subSessionId, parentIsActive }: Sideba
   const handleClose = (e: React.MouseEvent): void => {
     e.stopPropagation();
     if (sub.kind === 'application' && !isExited) {
-      // Running app sub-tab: ask the user whether they also want to
-      // close the underlying window (e.g. quit VS Code).
       subActions.requestClose(subSessionId);
       return;
     }
-    // Terminal kind, or already-exited app kind: there's no window to
-    // address, so close immediately with the default tabOnly intent.
     void subActions.close(subSessionId);
   };
 
-  const stateClasses = isViewportOwner
-    ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100'
-    : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
+  const stateClasses = 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
 
   return (
     <li className="group relative px-2">
       <button
         type="button"
-        aria-current={isViewportOwner ? 'true' : undefined}
         onClick={handleClick}
         className={`flex w-full items-center gap-2 rounded-md py-1 pl-7 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
       >

@@ -34,7 +34,6 @@ import {
   type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
-import { useSubSessionStore } from '@/store/sub-session-store';
 import { useConfigStore } from '@/store/config-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type {
@@ -430,12 +429,6 @@ export const useSessionStore = create<Store>((set, get) => {
           patch.inTurn = next;
         }
         set(patch);
-        // Frontend convergence on parent close: drop any sub-sessions
-        // that hung off this parent so the sidebar / xterm registry
-        // don't leak orphan rows. The backend cascade is Phase 7's
-        // responsibility (CONTEXT_MENU_PLAN.md), but converging
-        // locally avoids a confusing in-between UI state.
-        useSubSessionStore.getState().actions.dropForParent(id);
         // Worktree-tab autolink (issue #44): if this session was the active child of its parent worktree tab, pick a sibling under the same
         // worktreePath as the replacement; if none remain, clear `activeChildId` so MainArea falls back to the dashboard. Local patch is
         // synchronous so the sidebar/MainArea react immediately; the persisted backend write is fired-and-forget — a rejection just leaves
@@ -473,8 +466,8 @@ export const useSessionStore = create<Store>((set, get) => {
     removeLocalForPath: (path) => {
       // Worktree-tab close cascades on the backend (issue #44) but emits per-session status events that don't auto-prune the row from this
       // store — so without explicit local cleanup, closing a worktree tab leaves zombie session rows in the cache. Iterate sessions matching
-      // the canonical path, drop their derived per-session caches, and cascade to sub-sessions via `dropForParent`. Returns the dropped ids
-      // so the caller can chain further cleanup if needed.
+      // the canonical path and drop their derived per-session caches. Returns the dropped ids so the caller can chain further cleanup if needed.
+      // Sub-session cascade is now handled at the worktree-tab level (dropForWorktreeTab), not per session.
       const dropped: SessionId[] = [];
       const before = get();
       const remaining: SessionView[] = [];
@@ -509,8 +502,6 @@ export const useSessionStore = create<Store>((set, get) => {
         openPermissions: purgeMap(before.openPermissions),
         inTurn: purgeMap(before.inTurn) as Record<SessionId, true>,
       });
-      const subActions = useSubSessionStore.getState().actions;
-      for (const id of dropped) subActions.dropForParent(id);
       return dropped;
     },
 

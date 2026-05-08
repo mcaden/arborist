@@ -205,7 +205,7 @@ describe('close', () => {
     expect(useSessionStore.getState().activeId).toBe('a');
   });
 
-  it('drops sub-sessions for the closed parent (frontend convergence, Phase 5)', async () => {
+  it('leaves worktree-owned sub-sessions alone when closing a session', async () => {
     useSessionStore.setState({
       sessions: [makeView({ id: 'p1' }), makeView({ id: 'p2' })],
       activeId: 'p1',
@@ -214,7 +214,7 @@ describe('close', () => {
       subSessions: [
         {
           id: 'sub-1' as never,
-          parentSessionId: 'p1' as never,
+          parentWorktreeTabId: 'tab-p1' as never,
           defId: 'shell',
           kind: 'terminal',
           label: 'Shell',
@@ -224,7 +224,7 @@ describe('close', () => {
         },
         {
           id: 'sub-2' as never,
-          parentSessionId: 'p2' as never,
+          parentWorktreeTabId: 'tab-p2' as never,
           defId: 'shell',
           kind: 'terminal',
           label: 'Shell',
@@ -233,17 +233,14 @@ describe('close', () => {
           createdAt: 0,
         },
       ],
-      activeByParent: { p1: 'sub-1' as never, p2: 'sub-2' as never },
       statusMessages: {},
       isHydrated: true,
     });
 
     await useSessionStore.getState().actions.close('p1');
 
-    const { subSessions, activeByParent } = useSubSessionStore.getState();
-    expect(subSessions.map((s) => s.id)).toEqual(['sub-2']);
-    expect('p1' in activeByParent).toBe(false);
-    expect(activeByParent.p2).toBe('sub-2');
+    const { subSessions } = useSubSessionStore.getState();
+    expect(subSessions.map((s) => s.id)).toEqual(['sub-1', 'sub-2']);
   });
 
   it('clears pendingClose when the targeted session is closed', async () => {
@@ -362,7 +359,7 @@ describe('focus', () => {
 });
 
 describe('removeLocalForPath', () => {
-  it('drops every session matching the path and cascades to sub-sessions via dropForParent', () => {
+  it('drops every session matching the path without touching worktree-owned sub-sessions', () => {
     useSessionStore.setState({
       sessions: [
         makeView({ id: 's1', worktreePath: '/repo/a' }),
@@ -371,17 +368,12 @@ describe('removeLocalForPath', () => {
       ],
       activeId: 's3',
     });
-    const dropForParent = vi.spyOn(useSubSessionStore.getState().actions, 'dropForParent').mockImplementation(() => undefined);
-
     const dropped = useSessionStore.getState().actions.removeLocalForPath('/repo/a');
 
     expect(dropped).toEqual(['s1', 's3']);
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['s2']);
     // Active session was removed so a neighbour is picked.
     expect(useSessionStore.getState().activeId).toBe('s2');
-    expect(dropForParent).toHaveBeenCalledWith('s1');
-    expect(dropForParent).toHaveBeenCalledWith('s3');
-    dropForParent.mockRestore();
   });
 
   it('returns an empty list when no session matches the path (no-op)', () => {
@@ -389,15 +381,11 @@ describe('removeLocalForPath', () => {
       sessions: [makeView({ id: 's1', worktreePath: '/repo/a' })],
       activeId: 's1',
     });
-    const dropForParent = vi.spyOn(useSubSessionStore.getState().actions, 'dropForParent').mockImplementation(() => undefined);
-
     const dropped = useSessionStore.getState().actions.removeLocalForPath('/repo/none');
 
     expect(dropped).toEqual([]);
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['s1']);
     expect(useSessionStore.getState().activeId).toBe('s1');
-    expect(dropForParent).not.toHaveBeenCalled();
-    dropForParent.mockRestore();
   });
 });
 

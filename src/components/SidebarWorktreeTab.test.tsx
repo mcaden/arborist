@@ -84,7 +84,7 @@ describe('SidebarWorktreeTab', () => {
     expect(onOpen).toHaveBeenCalledWith(TAB_ID, { x: 12, y: 34 }, expect.any(HTMLElement));
   });
 
-  it('shows the rolled-up status icon when a child reports a non-idle status', () => {
+  it('does not render a rolled-up status icon even when a child reports an error', () => {
     useSessionStore.setState({
       sessions: [session('s1', 'error')],
       isHydrated: true,
@@ -92,12 +92,10 @@ describe('SidebarWorktreeTab', () => {
 
     render(<SidebarWorktreeTab tabId={TAB_ID} isActive={false} onOpenContextMenu={noop} />);
 
-    // StatusIcon for 'error' renders a role="img" with the status name in its accessible label.
-    expect(screen.getByRole('img', { name: /error/i })).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /error/i })).toBeNull();
   });
 
-  it('hides the status icon when the rolled-up status is idle', () => {
-    // No children at all -> rollup is 'idle' -> no icon rendered.
+  it('does not render a status icon when no child status is present', () => {
     render(<SidebarWorktreeTab tabId={TAB_ID} isActive={false} onOpenContextMenu={noop} />);
 
     expect(screen.queryByRole('img', { name: /error|attention|awaiting|running|working|thinking|starting/i })).toBeNull();

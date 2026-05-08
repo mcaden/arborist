@@ -248,7 +248,7 @@ describe('arborist type mirrors', () => {
   it('SubSession fixture matches TS interface key set', () => {
     assertExactKeys(
       subSessionFixture as unknown as Record<string, unknown>,
-      ['id', 'parentSessionId', 'defId', 'kind', 'label', 'status', 'composedCommand', 'createdAt'],
+      ['id', 'parentWorktreeTabId', 'defId', 'kind', 'label', 'status', 'composedCommand', 'createdAt'],
       ['pid'],
       'SubSession',
     );
@@ -257,7 +257,7 @@ describe('arborist type mirrors', () => {
   it('SubSessionRecord fixture matches TS interface key set', () => {
     assertExactKeys(
       subSessionRecordFixture as unknown as Record<string, unknown>,
-      ['id', 'parentSessionId', 'defId', 'kind', 'label'],
+      ['id', 'parentWorktreeTabId', 'defId', 'kind', 'label'],
       ['composedCommand'],
       'SubSessionRecord',
     );

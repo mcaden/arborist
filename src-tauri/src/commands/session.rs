@@ -30,7 +30,7 @@ use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
 use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult, SessionCreateArgs, SessionId, SessionInputArgs,
-    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, Tool,
+    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, Tool, WorktreeTabId,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -65,6 +65,10 @@ pub struct AppContext {
     /// a parent that's about to disappear. The lock is only ever held for the trivial "is X in the set?" check, so it never blocks for a meaningful
     /// duration.
     pub closing_parents: Arc<Mutex<HashSet<SessionId>>>,
+    /// Worktree-tab closing tombstone. Holds the `WorktreeTabId`s of worktree tabs whose `worktree_tab_close` is currently mid-cascade.
+    /// `subsession_create_impl` and the sub-session restore second pass consult this set so a sub cannot be created or restored under a tab that's
+    /// about to disappear.
+    pub closing_worktree_tabs: Arc<Mutex<HashSet<WorktreeTabId>>>,
     /// Sessions that have been persisted but not yet PTY-spawned. Used by `restore_all_sessions` to defer the actual `pool.spawn` until the frontend
     /// reports the real terminal dimensions via `session_resize`. The first `session_resize` for a pending id atomically claims it (removing it from
     /// the map) and triggers the spawn at the right size — so the CLI's first paint never happens at the wrong width. The map value is the
@@ -237,6 +241,7 @@ impl AppContext {
             ai_session_discover,
             turn_emit,
             closing_parents: Arc::new(Mutex::new(HashSet::new())),
+            closing_worktree_tabs: Arc::new(Mutex::new(HashSet::new())),
             pending_spawn: Arc::new(Mutex::new(HashMap::new())),
             switch_lock: Arc::new(tokio::sync::RwLock::new(())),
             switch_pending: Arc::new(AtomicUsize::new(0)),
@@ -259,12 +264,33 @@ impl AppContext {
 
     /// Mark a parent as mid-close. Returns a guard that removes the id on drop — guaranteed cleanup even if the close path panics.
     #[must_use]
-    pub fn mark_parent_closing(&self, id: SessionId) -> ClosingParentGuard {
+    pub fn mark_parent_closing(&self, id: SessionId) -> ClosingGuard<SessionId> {
         if let Ok(mut g) = self.closing_parents.lock() {
             g.insert(id);
         }
-        ClosingParentGuard {
+        ClosingGuard {
             set: Arc::clone(&self.closing_parents),
+            id,
+        }
+    }
+
+    /// True iff `worktree_tab_close` is currently mid-cascade for `tab_id`.
+    #[must_use]
+    pub fn is_worktree_tab_closing(&self, id: &WorktreeTabId) -> bool {
+        match self.closing_worktree_tabs.lock() {
+            Ok(g) => g.contains(id),
+            Err(_) => true,
+        }
+    }
+
+    /// Mark a worktree tab as mid-close. Returns a guard that removes the id on drop.
+    #[must_use]
+    pub fn mark_worktree_tab_closing(&self, id: WorktreeTabId) -> ClosingGuard<WorktreeTabId> {
+        if let Ok(mut g) = self.closing_worktree_tabs.lock() {
+            g.insert(id);
+        }
+        ClosingGuard {
+            set: Arc::clone(&self.closing_worktree_tabs),
             id,
         }
     }
@@ -302,14 +328,14 @@ impl AppContext {
     }
 }
 
-/// RAII guard returned by [`AppContext::mark_parent_closing`]. Removes the id from the closing-parents set when dropped so the tombstone never
-/// outlives the cascade — even on panic.
-pub struct ClosingParentGuard {
-    set: Arc<Mutex<HashSet<SessionId>>>,
-    id: SessionId,
+/// RAII guard returned by [`AppContext::mark_parent_closing`] and [`AppContext::mark_worktree_tab_closing`]. Removes the id from the closing set
+/// when dropped so the tombstone never outlives the cascade — even on panic.
+pub struct ClosingGuard<T: Eq + std::hash::Hash + Copy> {
+    set: Arc<Mutex<HashSet<T>>>,
+    id: T,
 }
 
-impl Drop for ClosingParentGuard {
+impl<T: Eq + std::hash::Hash + Copy> Drop for ClosingGuard<T> {
     fn drop(&mut self) {
         if let Ok(mut g) = self.set.lock() {
             g.remove(&self.id);
@@ -1521,6 +1547,7 @@ pub fn workspace_validate_impl(
 /// having to build a real Tauri app.
 pub async fn workspace_switch_impl(
     ctx: &Arc<AppContext>,
+    sub_ctx: Option<Arc<crate::sub_sessions::SubAppContext>>,
     app_handle: &tauri::AppHandle,
     new_path: &Path,
 ) -> Result<crate::types::WorkspaceSwitchResult, AppError> {
@@ -1530,7 +1557,7 @@ pub async fn workspace_switch_impl(
         .path()
         .app_data_dir()
         .map_err(|e| AppError::new("Io", format!("app_data_dir: {e}")))?;
-    let result = workspace_switch_impl_inner(ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await?;
+    let result = workspace_switch_impl_inner(ctx, sub_ctx, &app_data_dir, crate::BUILD_BRANCH, new_path).await?;
 
     // Refresh the OS window title so the new workspace name is visible (issue #56). To make this deterministic across rapid back-to-back switches we
     // hold the `ctx.workspace` READ guard across the `set_title` call rather than read-clone-drop-then-set: the inner's commit takes
@@ -1561,6 +1588,7 @@ pub async fn workspace_switch_impl(
 /// the swap with a tempdir-backed `app_data_dir` without standing up a real Tauri app.
 pub async fn workspace_switch_impl_inner(
     ctx: &Arc<AppContext>,
+    sub_ctx: Option<Arc<crate::sub_sessions::SubAppContext>>,
     app_data_dir: &Path,
     branch: &str,
     new_path: &Path,
@@ -1710,8 +1738,12 @@ pub async fn workspace_switch_impl_inner(
     // Errors from `restore_all_sessions` are best-effort logged inside the function; the only thing that *can* fail at this boundary is the
     // `spawn_blocking` JoinHandle, which we surface as Internal so the caller sees a clean failure rather than a half-restored state.
     let ctx_for_restore = Arc::clone(ctx);
+    let sub_ctx_for_restore = sub_ctx.clone();
     let restore_join = tauri::async_runtime::spawn_blocking(move || {
         restore_all_sessions(&ctx_for_restore);
+        if let Some(sc) = sub_ctx_for_restore {
+            crate::commands::subsession::restore_all_sub_sessions_impl(&ctx_for_restore, &sc);
+        }
     });
     if let Err(join_err) = restore_join.await {
         return Err(AppError::new(

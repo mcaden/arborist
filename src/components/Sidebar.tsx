@@ -37,7 +37,7 @@ import { TabContextMenu } from './TabContextMenu';
 import { WorkspaceIndicator } from './WorkspaceIndicator';
 import { WorktreeTabContextMenu } from './WorktreeTabContextMenu';
 import { useSessionActions, useSessions } from '@/store/session-store';
-import { useSubSessionsForParent } from '@/store/sub-session-store';
+import { useSubSessionsForWorktreeTab } from '@/store/sub-session-store';
 import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
 import type { SessionId, WorktreeTabId } from '@/types/arborist';
 
@@ -314,10 +314,6 @@ export function Sidebar(): JSX.Element {
           anchor={contextMenu.anchor}
           onClose={closeContextMenu}
           restoreFocusTo={contextMenu.trigger}
-          onOpenSettings={() => {
-            setSettingsInitialTab('customProcesses');
-            setSettingsOpen(true);
-          }}
         />
       )}
       {worktreeContextMenu && (
@@ -356,6 +352,7 @@ function SidebarGroupSection({
   onOpenContextMenu,
   onOpenWorktreeContextMenu,
 }: SidebarGroupSectionProps): JSX.Element {
+  const subSessions = useSubSessionsForWorktreeTab(tabId);
   return (
     <>
       <SidebarWorktreeTab tabId={tabId} isActive={isActiveWorktree} onOpenContextMenu={onOpenWorktreeContextMenu} />
@@ -372,13 +369,16 @@ function SidebarGroupSection({
           />
         );
       })}
+      {subSessions.map((sub) => (
+        <SidebarSubTab key={sub.id} worktreeTabId={tabId} subSessionId={sub.id} />
+      ))}
     </>
   );
 }
 
-// ParentTabGroup — renders a parent SidebarTab plus all its sub-tab rows indented underneath. Sub-tabs live inside the sidebar's
-// tablist for keyboard / focus purposes, but are not themselves keyboard `role="tab"` participants today (kept consistent with the
-// pre-#44 behaviour to avoid scope creep in the worktree-tab UI roll-out).
+// ParentTabGroup — renders a parent SidebarTab. Sub-sessions are no
+// longer nested under agent tabs — they render at the worktree-tab
+// level as flat siblings.
 interface ParentTabGroupProps {
   id: SessionId;
   isActive: boolean;
@@ -388,19 +388,7 @@ interface ParentTabGroupProps {
 }
 
 function ParentTabGroup({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: ParentTabGroupProps): JSX.Element {
-  const subSessions = useSubSessionsForParent(id);
   return (
-    <>
-      <SidebarTab id={id} isActive={isActive} isFocused={isFocused} onFocusableMounted={onFocusableMounted} onOpenContextMenu={onOpenContextMenu} />
-      {subSessions.length > 0 && (
-        <li role="presentation">
-          <ul role="group" aria-label="Sub-sessions" className="flex flex-col gap-0.5">
-            {subSessions.map((sub) => (
-              <SidebarSubTab key={sub.id} parentId={id} subSessionId={sub.id} parentIsActive={isActive} />
-            ))}
-          </ul>
-        </li>
-      )}
-    </>
+    <SidebarTab id={id} isActive={isActive} isFocused={isFocused} onFocusableMounted={onFocusableMounted} onOpenContextMenu={onOpenContextMenu} />
   );
 }

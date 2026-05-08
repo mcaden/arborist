@@ -127,19 +127,11 @@ pub async fn session_list(app: tauri::AppHandle) -> Result<Vec<SessionView>, App
 #[tauri::command]
 pub async fn session_close(app: tauri::AppHandle, args: SessionCloseArgs) -> Result<SessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
-    let sub_ctx = sub_ctx_of(&app)?;
-    // Refuse the entire close (parent + sub-session cascade) while a workspace switch is in progress. This **outer** guard is held for the full
-    // body — including across `close_for_parent_impl` and `session_close_locked` — so the switch's `write().await` cannot proceed until both halves
-    // of the cascade complete.
+    // Refuse close while a workspace switch is in progress.
     let _switch = session::acquire_switch_read(&ctx)?;
-    // Phase 7 cascade: mark the parent as closing (RAII guard ensures removal even on panic), tear down its sub-sessions, then close the parent
-    // itself. The tombstone closes the door on a concurrent `subsession_create` racing into the close window.
-    //
-    // The parent close uses `session_close_locked` (NOT `session_close_impl`) because we already hold the switch read-guard; calling the gated
-    // wrapper would re-enter `acquire_switch_read`, which checks `AppContext::switch_pending` independently of guard ownership and would reject
-    // mid-cascade if a workspace switch were queued in the gap — leaving sub-sessions torn down but the parent record orphaned.
+    // Mark the parent as closing (RAII guard) then close. Sub-sessions are NOT cascaded here — they belong to the worktree tab, not the agent
+    // session. The worktree-tab close path handles sub-session teardown.
     let _guard = ctx.mark_parent_closing(args.session_id);
-    subsession::close_for_parent_impl(&ctx, &sub_ctx, args.session_id).await;
     session::session_close_locked(&ctx, args.session_id, args.delete_worktree).await
 }
 
@@ -256,8 +248,9 @@ pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) ->
 #[tauri::command]
 pub async fn workspace_switch(app: tauri::AppHandle, args: WorkspaceSwitchArgs) -> Result<WorkspaceSwitchResult, AppError> {
     let ctx = ctx_of(&app)?;
+    let sub_ctx = sub_ctx_of(&app)?;
     let path = PathBuf::from(args.path);
-    session::workspace_switch_impl(&ctx, &app, &path).await
+    session::workspace_switch_impl(&ctx, Some(sub_ctx), &app, &path).await
 }
 
 // --------------------------------------------------------------------------- Production PtySink builder.
@@ -438,7 +431,7 @@ pub async fn subsession_focus(app: tauri::AppHandle, args: SubSessionIdArg) -> R
 #[tauri::command]
 pub async fn subsession_list(app: tauri::AppHandle, args: SubSessionListArgs) -> Result<Vec<SubSession>, AppError> {
     let sub_ctx = sub_ctx_of(&app)?;
-    subsession::subsession_list_impl(&sub_ctx, args.parent_session_id)
+    subsession::subsession_list_impl(&sub_ctx, args.parent_worktree_tab_id)
 }
 
 #[tauri::command]
