@@ -51,9 +51,10 @@ The sidebar is a two-level hierarchy: each top-level row is a **worktree tab** (
 |--------|-------------|
 | C-01   | Pressing the "+" button MUST present a choice of tool: Claude or Copilot. |
 | C-02   | After tool selection, the app MUST prompt the user to select a worktree directory. The picker SHOULD offer a list of worktrees detected from configured root repositories (see §5.5) in addition to a manual OS file picker. |
-| C-03   | After worktree selection, the app MUST compose a single shell invocation that runs configured pre-launch commands followed by the CLI launch command, all within the worktree directory, and open a new terminal in the main area executing that invocation. |
+| C-03   | After worktree selection, the app MUST open a new terminal in the main area that runs the CLI launch command in the worktree's directory. (Issue #63 separated one-shot setup from per-session launch — see C-06; pre-launch joining was removed in `configVersion = 5`.) |
 | C-04   | The instruction set used MAY be configurable per-tool (see §5.4); when none is configured, the CLI relies on its built-in `cwd`-based discovery (see I-04). |
 | C-05   | Multiple sessions for the same tool and worktree MUST be allowed. The new session's tab label MUST append a numeric suffix to disambiguate (e.g., "my-feature 2", "my-feature 3"). |
+| C-06   | When a new worktree is created via `worktree_create` and `AppConfig.worktreePrepCommands` is non-empty, the app MUST asynchronously run those commands once in the worktree's directory, capture combined stdout/stderr to a per-prep log under `<app_data_dir>/worktree-prep-logs/`, and surface lifecycle (running / success / failure) via an in-app banner with a "View log" affordance. Prep failures MUST NOT prevent the worktree from being created. |
 
 ### 5.3 Main Terminal Area
 
@@ -83,13 +84,13 @@ The sidebar is a two-level hierarchy: each top-level row is a **worktree tab** (
 | W-02   | Detected worktrees from configured root repos SHOULD be presented as a quick-pick list during session creation. |
 | W-03   | The user MUST always be able to pick any directory manually via an OS file picker, regardless of W-01. |
 
-### 5.6 Shell Commands at Launch
+### 5.6 Session Launch Composition
 
 | ID     | Requirement |
 |--------|-------------|
-| L-01   | Before launching the CLI, the app MUST compose a single shell invocation consisting of a configurable list of commands (e.g., `nvm use`, `git status`, environment setup) followed by the CLI launch command, all run within the worktree directory. |
-| L-02   | The command list SHOULD be configurable globally and overridable per-worktree. |
-| L-03   | All commands in the invocation MUST be joined with `&&` so that a failing command halts the sequence and the session enters an error state. |
+| L-01   | Session launch MUST execute the configured CLI command in the selected worktree directory using process `cwd` (not by interpolating `cd <path>` into the shell string). |
+| L-02   | Session restart and restore MUST reuse each session's persisted composed command verbatim. |
+| L-03   | One-shot setup commands are out-of-band from session launch and are governed by C-06 (`AppConfig.worktreePrepCommands` via `worktree_create`). |
 
 ### 5.7 Custom Processes & Sub-Tabs
 

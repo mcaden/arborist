@@ -16,8 +16,7 @@ const SAMPLE: AppConfig = {
   instructionSetsDir: '/cfg/instr',
   workspaceRoot: null,
   worktreeRoots: ['/repo'],
-  prelaunchCommands: ['nvm use'],
-  worktreePrelaunchCommands: { '/repo/feat-x': ['asdf reshim'] },
+  worktreePrepCommands: ['nvm use'],
   aiLaunchCommands: { claude: '', copilot: '' },
   lastOpenSessions: [],
   tabOrder: [],
@@ -37,8 +36,7 @@ function resetStore(): void {
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
-      prelaunchCommands: [],
-      worktreePrelaunchCommands: {},
+      worktreePrepCommands: [],
       aiLaunchCommands: { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
@@ -93,7 +91,7 @@ describe('useConfigStore.set', () => {
     // store contract still needs to defend against an accidental
     // `undefined` slipping through e.g. `Object.fromEntries`.
     const diff = {
-      prelaunchCommands: ['nvm use'],
+      worktreePrepCommands: ['nvm use'],
       // explicit undefined must be stripped
       instructionSetsDir: undefined,
     } as unknown as PartialAppConfig;
@@ -102,7 +100,7 @@ describe('useConfigStore.set', () => {
 
     expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
     const [arg] = bridgeMock.configSet.mock.calls[0]!;
-    expect(arg).toEqual({ prelaunchCommands: ['nvm use'] });
+    expect(arg).toEqual({ worktreePrepCommands: ['nvm use'] });
     expect(arg).not.toHaveProperty('instructionSetsDir');
   });
 
@@ -113,12 +111,12 @@ describe('useConfigStore.set', () => {
     // `iconDataUri`, which the frontend never sends).
     bridgeMock.configSet.mockResolvedValueOnce({
       ...SAMPLE,
-      prelaunchCommands: ['echo hi'],
+      worktreePrepCommands: ['echo hi'],
     });
 
-    await useConfigStore.getState().set({ prelaunchCommands: ['echo hi'] });
+    await useConfigStore.getState().set({ worktreePrepCommands: ['echo hi'] });
 
-    expect(useConfigStore.getState().config.prelaunchCommands).toEqual(['echo hi']);
+    expect(useConfigStore.getState().config.worktreePrepCommands).toEqual(['echo hi']);
     // Untouched fields survive (mirrored from the returned snapshot).
     expect(useConfigStore.getState().config.instructionSetsDir).toBe('/cfg/instr');
   });

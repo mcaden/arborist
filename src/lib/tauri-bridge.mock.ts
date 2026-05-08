@@ -66,8 +66,7 @@ const defaultAppConfig = (): AppConfig => ({
   // picker is exercised explicitly when a test overrides this to `null`.
   workspaceRoot: '/mock/workspace',
   worktreeRoots: [],
-  prelaunchCommands: [],
-  worktreePrelaunchCommands: {},
+  worktreePrepCommands: [],
   aiLaunchCommands: { claude: '', copilot: '' },
   lastOpenSessions: [],
   tabOrder: [],
@@ -135,6 +134,10 @@ export const worktreeTabList: Mock<typeof realBridge.worktreeTabList> = vi.fn(()
 export const worktreeTabReorder: Mock<typeof realBridge.worktreeTabReorder> = vi.fn(() => Promise.resolve());
 export const worktreeTabSetActiveChild: Mock<typeof realBridge.worktreeTabSetActiveChild> = vi.fn(() => Promise.resolve());
 
+export const worktreePrepOpenLog: Mock<typeof realBridge.worktreePrepOpenLog> = vi.fn(() => Promise.resolve());
+
+export const onWorktreePrep: Mock<typeof realBridge.onWorktreePrep> = vi.fn(() => Promise.resolve(noopUnlisten));
+
 // Re-export the bridge's argument-shape interfaces so consumers importing
 // from the mock get identical types.
 export type { SessionCreateArgs, SessionIdArg, SessionCloseArgs, SessionCloseResult, SessionResizeArgs, SessionInputArgs } from './tauri-bridge';
@@ -182,6 +185,8 @@ export function resetBridgeMocks(): void {
   worktreeTabList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreeTabReorder.mockReset().mockImplementation(() => Promise.resolve());
   worktreeTabSetActiveChild.mockReset().mockImplementation(() => Promise.resolve());
+  worktreePrepOpenLog.mockReset().mockImplementation(() => Promise.resolve());
+  onWorktreePrep.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
 }
 
 // Compile-time guard: this module must export every member of the real
@@ -228,5 +233,7 @@ const _shapeCheck = {
   worktreeTabList,
   worktreeTabReorder,
   worktreeTabSetActiveChild,
+  worktreePrepOpenLog,
+  onWorktreePrep,
 } satisfies typeof realBridge;
 void _shapeCheck;

@@ -55,6 +55,8 @@ import type {
   WorktreeTabFocusArgs,
   WorktreeTabReorderArgs,
   WorktreeTabSetActiveChildArgs,
+  WorktreePrepEvent,
+  WorktreePrepOpenLogArgs,
 } from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
@@ -475,4 +477,23 @@ export function worktreeTabReorder(args: WorktreeTabReorderArgs): Promise<void> 
 
 export function worktreeTabSetActiveChild(args: WorktreeTabSetActiveChildArgs): Promise<void> {
   return invoke<void>('worktree_tab_set_active_child', { args });
+}
+
+// ---------------------------------------------------------------------------
+// Worktree prep (issue #63).
+//
+// `worktree_create` may spawn a one-shot prep job (`AppConfig.worktreePrepCommands`)
+// in the new worktree's cwd, with combined stdout/stderr captured to a log
+// under `<app_data_dir>/worktree-prep-logs/<prepId>.log`. The backend emits
+// a `worktree://prep` event on start and on exit. The frontend surfaces a
+// banner driven from those events and exposes a "View log" affordance that
+// invokes `worktree_prep_open_log` (an OS opener wrapped in Rust so we don't
+// need a broad shell-open capability).
+// ---------------------------------------------------------------------------
+
+export function worktreePrepOpenLog(args: WorktreePrepOpenLogArgs): Promise<void> {
+  return invoke<void>('worktree_prep_open_log', { args });
+}
+export function onWorktreePrep(cb: (payload: WorktreePrepEvent) => void): Promise<UnlistenFn> {
+  return listen<WorktreePrepEvent>('worktree://prep', (event) => cb(event.payload));
 }

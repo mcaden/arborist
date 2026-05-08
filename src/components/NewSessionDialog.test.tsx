@@ -22,8 +22,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     instructionSetsDir: '/sets',
     workspaceRoot: REPO_ROOT,
     worktreeRoots: [REPO_ROOT],
-    prelaunchCommands: ['nvm use 20'],
-    worktreePrelaunchCommands: {},
+    worktreePrepCommands: ['nvm use 20'],
     aiLaunchCommands: { claude: '', copilot: '' },
     lastOpenSessions: [],
     tabOrder: [],
@@ -156,7 +155,7 @@ describe('NewSessionDialog', () => {
 
   it('New tab validates name and creates worktree on submit', async () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockResolvedValue(makeTab(path));
 
     render(<NewSessionDialog />);
@@ -182,7 +181,7 @@ describe('NewSessionDialog', () => {
 
   it('validates trimmed name', async () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockResolvedValue(makeTab(path));
 
     render(<NewSessionDialog />);
@@ -221,7 +220,7 @@ describe('NewSessionDialog', () => {
 
   it('surfaces open-tab failures while preserving the worktree', async () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockRejectedValue(new Error('open failed'));
     bridgeMock.worktreesList.mockResolvedValueOnce([]).mockResolvedValueOnce([makeWt(path, 'my-feature')]);
 
@@ -247,7 +246,7 @@ describe('NewSessionDialog', () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
     let resolveRefresh: (value: WorktreeInfo[]) => void = () => {};
 
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockRejectedValue(new Error('open failed'));
     bridgeMock.worktreesList.mockResolvedValueOnce([]).mockImplementationOnce(
       () =>
@@ -276,7 +275,7 @@ describe('NewSessionDialog', () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
     let resolveOpen: (value: WorktreeTab) => void = () => {};
 
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockImplementation(
       () =>
         new Promise<WorktreeTab>((resolve) => {
@@ -305,7 +304,7 @@ describe('NewSessionDialog', () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
     let resolveOpen: (value: WorktreeTab) => void = () => {};
 
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockImplementation(
       () =>
         new Promise<WorktreeTab>((resolve) => {
@@ -333,7 +332,7 @@ describe('NewSessionDialog', () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
     let resolveOpen: (value: WorktreeTab) => void = () => {};
 
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockImplementation(
       () =>
         new Promise<WorktreeTab>((resolve) => {
@@ -433,7 +432,7 @@ describe('NewSessionDialog', () => {
     let resolveFreshList: (value: WorktreeInfo[]) => void = () => {};
     let listCallCount = 0;
 
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockRejectedValue(new Error('open failed'));
     bridgeMock.worktreesList.mockImplementation(
       () =>
@@ -529,7 +528,7 @@ describe('NewSessionDialog', () => {
 
   it('focuses the retry button after create succeeds but open fails', async () => {
     const path = `${REPO_ROOT}/.worktrees/my-feature`;
-    bridgeMock.worktreeCreate.mockResolvedValue({ path });
+    bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockRejectedValue(new Error('open failed'));
     bridgeMock.worktreesList.mockResolvedValue([]);
 

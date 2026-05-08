@@ -158,8 +158,7 @@ describe('configGet', () => {
       instructionSetsDir: '/cfg/instr',
       workspaceRoot: null,
       worktreeRoots: [],
-      prelaunchCommands: [],
-      worktreePrelaunchCommands: {},
+      worktreePrepCommands: [],
       aiLaunchCommands: { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
@@ -188,8 +187,7 @@ describe('configSet', () => {
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
-      prelaunchCommands: ['nvm use'],
-      worktreePrelaunchCommands: {},
+      worktreePrepCommands: ['nvm use'],
       aiLaunchCommands: { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
@@ -201,7 +199,7 @@ describe('configSet', () => {
       activeWorktreeTabId: null,
     };
     invokeMock.mockResolvedValueOnce(merged);
-    const patch: PartialAppConfig = { prelaunchCommands: ['nvm use'] };
+    const patch: PartialAppConfig = { worktreePrepCommands: ['nvm use'] };
 
     const result = await bridge.configSet(patch);
 
@@ -326,8 +324,7 @@ describe('workspaceSwitch', () => {
     instructionSetsDir: '/cfg/instr',
     workspaceRoot: '/new/ws',
     worktreeRoots: [],
-    prelaunchCommands: [],
-    worktreePrelaunchCommands: {},
+    worktreePrepCommands: [],
     aiLaunchCommands: { claude: '', copilot: '' },
     lastOpenSessions: ['sid-restored'],
     tabOrder: ['sid-restored'],

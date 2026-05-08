@@ -12,7 +12,6 @@
 //! * ID newtypes use `#[serde(transparent)]` so they appear as plain strings on
 //!   the wire while remaining strongly typed in Rust.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -389,14 +388,16 @@ pub struct DefaultInstructionSets {
 /// * `4` — added `ai_launch_commands` (per-agent CLI launch override),
 ///   `custom_processes`, and `last_open_sub_sessions` (context-menu / sub-tab feature). Migration seeds the built-in custom-process defs (`shell`,
 ///   `open-folder`, `vscode`) additively — only IDs not already present are inserted, never overwriting a user-edited def.
-/// * `5` — added `worktree_tabs`, `worktree_tab_order`, and `active_worktree_tab_id` (Issue #44: worktree-as-parent-tab). Migration synthesises
+/// * `5` — replaced `prelaunch_commands` + `worktree_prelaunch_commands` with `worktree_prep_commands` (issue #63). Migration drops both legacy
+///   keys silently because the old per-session semantics are incompatible with one-shot worktree prep.
+/// * `6` — added `worktree_tabs`, `worktree_tab_order`, and `active_worktree_tab_id` (Issue #44: worktree-as-parent-tab). Migration synthesises
 ///   one [`WorktreeTab`] per unique canonical `Session.worktree_path` in `sessions.json`, preserving tab order.
-/// * `6` — reparented sub-sessions from agent sessions to worktree tabs. `SubSession.parent_session_id` → `parent_worktree_tab_id`. Migration
+/// * `7` — reparented sub-sessions from agent sessions to worktree tabs. `SubSession.parent_session_id` → `parent_worktree_tab_id`. Migration
 ///   resolves the old parent session's worktree path to a [`WorktreeTab`]; orphan records whose parent session or matching tab is missing are
 ///   dropped with a warning.
-/// * `7` — added [`WorktreeTab::icon_id`] (Issue #45: per-worktree icon). Migration backfills any tab with `icon_id == 0` (the serde default for
-///   pre-v7 records) by walking [`AppConfig::worktree_tab_order`] and applying [`crate::worktree_icon::pick_least_used_icon`] incrementally.
-pub const CONFIG_VERSION_CURRENT: u32 = 7;
+/// * `8` — added [`WorktreeTab::icon_id`] (Issue #45: per-worktree icon). Migration backfills any tab with `icon_id == 0` (the serde default for
+///   pre-v8 records) by walking [`AppConfig::worktree_tab_order`] and applying [`crate::worktree_icon::pick_least_used_icon`] incrementally.
+pub const CONFIG_VERSION_CURRENT: u32 = 8;
 
 /// Per-agent CLI launch command override. Each field is a verbatim shell snippet (e.g. `"npx claude --model sonnet"`) interpolated into the composed
 /// command in place of the bare program token. Empty string means "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
@@ -429,9 +430,17 @@ pub struct AppConfig {
     #[serde(default)]
     pub workspace_root: Option<PathBuf>,
     pub worktree_roots: Vec<PathBuf>,
-    pub prelaunch_commands: Vec<String>,
-    /// Per-worktree overrides. Key = canonicalized worktree path as a string.
-    pub worktree_prelaunch_commands: BTreeMap<String, Vec<String>>,
+    /// Shell commands run **once** in the new worktree's directory after
+    /// `worktree_create` succeeds (issue #63). Joined with ` && ` and passed to
+    /// the platform shell. Output is captured to a per-prep log file under
+    /// `<app_data_dir>/worktree-prep-logs/<prep-id>.log`. Blank/whitespace-only
+    /// entries are filtered out before joining.
+    ///
+    /// `#[serde(default)]` so v4 configs that lack the new field still
+    /// deserialize cleanly — the migration logic in `config_store.rs` then
+    /// bumps the version stamp and rewrites the file.
+    #[serde(default)]
+    pub worktree_prep_commands: Vec<String>,
     /// Per-agent CLI launch override. Empty fields fall back to the hardcoded defaults (`claude` / `copilot`). Added in `configVersion = 4`.
     #[serde(default)]
     pub ai_launch_commands: AiLaunchCommands,
@@ -476,8 +485,7 @@ impl Default for AppConfig {
             instruction_sets_dir: PathBuf::new(),
             workspace_root: None,
             worktree_roots: Vec::new(),
-            prelaunch_commands: Vec::new(),
-            worktree_prelaunch_commands: BTreeMap::new(),
+            worktree_prep_commands: Vec::new(),
             ai_launch_commands: AiLaunchCommands::default(),
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
@@ -528,9 +536,7 @@ pub struct PartialAppConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub worktree_roots: Option<Vec<PathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub prelaunch_commands: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub worktree_prelaunch_commands: Option<BTreeMap<String, Vec<String>>>,
+    pub worktree_prep_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ai_launch_commands: Option<PartialAiLaunchCommands>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1023,13 +1029,91 @@ pub struct WorktreeCreateArgs {
     pub name: String,
 }
 
-/// Result of `worktree_create`. `path` is the canonical absolute path to the newly-created worktree directory.
+/// Result of `worktree_create`. `path` is the canonical absolute path to the newly-created worktree directory. `prep` is `Some(...)` iff the user has
+/// configured at least one non-blank `worktree_prep_commands` entry; the prep child runs in the background and reports completion via the
+/// `worktree://prep` event channel.
 ///
 /// MIRROR: `src/types/arborist.ts::WorktreeCreateResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeCreateResult {
     pub path: PathBuf,
+    /// Always present on the wire (serialised as `null` when no prep was kicked off) so the TS contract is unambiguous.
+    pub prep: Option<WorktreePrepInfo>,
+}
+
+/// Newtype wrapper for prep-run identifiers. UUID v4. Distinct from `SessionId` so the two spaces cannot accidentally cross over.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorktreePrepId(pub Uuid);
+
+impl WorktreePrepId {
+    #[must_use]
+    pub fn new_v4() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for WorktreePrepId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+/// Info describing a kicked-off prep run, returned in [`WorktreeCreateResult::prep`] and echoed in [`WorktreePrepEvent`] payloads.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreePrepInfo`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePrepInfo {
+    pub prep_id: WorktreePrepId,
+    /// The new worktree's canonical absolute path.
+    pub worktree_path: PathBuf,
+    /// Absolute path to the per-prep log file under `<app_data_dir>/worktree-prep-logs/`.
+    pub log_path: PathBuf,
+}
+
+/// Lifecycle event for a worktree-prep run. Emitted on the Tauri channel `worktree://prep`.
+///
+/// Payloads are intentionally self-contained (each variant carries `prep_id`, `worktree_path`, `log_path`) so the frontend store can render a
+/// completed-prep banner even if it missed the corresponding `started` event (e.g. a very fast prep that exits before the listener is attached).
+///
+/// MIRROR: `src/types/arborist.ts::WorktreePrepEvent`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum WorktreePrepEvent {
+    /// Prep was kicked off (the shell child has been spawned, or spawn failed and we're emitting `started` followed immediately by `exited` for
+    /// presentation symmetry — see `worktree_prep::maybe_spawn`).
+    Started {
+        prep_id: WorktreePrepId,
+        worktree_path: PathBuf,
+        log_path: PathBuf,
+        /// Joined-with-` && ` script that was passed to the shell. Surfaced so the banner can show what's running without the user having to open
+        /// the log file.
+        command: String,
+        /// Unix timestamp (seconds since epoch) when the child was spawned (or when the spawn-failure was recorded).
+        started_at: i64,
+    },
+    /// Prep finished. `exit_code` is `None` for signal exits, spawn failures, or any non-clean termination; `error_message` carries a human-readable
+    /// reason in those cases. Both nullable fields are always present on the wire (serialised as `null`) so the TS contract is unambiguous.
+    Exited {
+        prep_id: WorktreePrepId,
+        worktree_path: PathBuf,
+        log_path: PathBuf,
+        exit_code: Option<i32>,
+        error_message: Option<String>,
+        started_at: i64,
+        finished_at: i64,
+    },
+}
+
+/// Arguments for `worktree_prep_open_log`.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreePrepOpenLogArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePrepOpenLogArgs {
+    pub log_path: PathBuf,
 }
 
 // --------------------------------------------------------------------------- Custom processes / sub-sessions (Phase 1: types only; backend lands in
@@ -1399,10 +1483,8 @@ mod tests {
     }
 
     fn app_config_fixture() -> (AppConfig, Value) {
-        let mut overrides = BTreeMap::new();
-        overrides.insert("/repo/feature-x".to_owned(), vec!["nvm use".to_owned(), "asdf reshim".to_owned()]);
         let value = AppConfig {
-            config_version: 4,
+            config_version: 5,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
@@ -1410,8 +1492,7 @@ mod tests {
             instruction_sets_dir: PathBuf::from("/cfg/instructions"),
             workspace_root: Some(PathBuf::from("/repo")),
             worktree_roots: vec![PathBuf::from("/repo")],
-            prelaunch_commands: vec!["source ~/.zshenv".to_owned()],
-            worktree_prelaunch_commands: overrides,
+            worktree_prep_commands: vec!["npm install".to_owned()],
             ai_launch_commands: AiLaunchCommands {
                 claude: "npx claude".to_owned(),
                 copilot: String::new(),
@@ -1444,7 +1525,7 @@ mod tests {
             active_worktree_tab_id: None,
         };
         let fixture = json!({
-            "configVersion": 4,
+            "configVersion": 5,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
@@ -1452,10 +1533,7 @@ mod tests {
             "instructionSetsDir": "/cfg/instructions",
             "workspaceRoot": "/repo",
             "worktreeRoots": ["/repo"],
-            "prelaunchCommands": ["source ~/.zshenv"],
-            "worktreePrelaunchCommands": {
-                "/repo/feature-x": ["nvm use", "asdf reshim"]
-            },
+            "worktreePrepCommands": ["npm install"],
             "aiLaunchCommands": {
                 "claude": "npx claude",
                 "copilot": ""
@@ -1567,8 +1645,7 @@ mod tests {
             instruction_sets_dir: None,
             workspace_root: None,
             worktree_roots: Some(vec![PathBuf::from("/repo")]),
-            prelaunch_commands: None,
-            worktree_prelaunch_commands: None,
+            worktree_prep_commands: None,
             ai_launch_commands: None,
             last_open_sessions: None,
             tab_order: None,
@@ -1697,8 +1774,7 @@ mod tests {
         assert!(!obj.contains_key("configVersion"));
         assert!(!obj.contains_key("instructionSetsDir"));
         assert!(!obj.contains_key("workspaceRoot"));
-        assert!(!obj.contains_key("prelaunchCommands"));
-        assert!(!obj.contains_key("worktreePrelaunchCommands"));
+        assert!(!obj.contains_key("worktreePrepCommands"));
         assert!(!obj.contains_key("lastOpenSessions"));
         assert!(!obj.contains_key("tabOrder"));
         assert!(!obj.contains_key("activeSessionId"));

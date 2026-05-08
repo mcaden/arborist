@@ -162,8 +162,14 @@ export interface AppConfig {
    */
   workspaceRoot: string | null;
   worktreeRoots: string[];
-  prelaunchCommands: string[];
-  worktreePrelaunchCommands: Record<string, string[]>;
+  /**
+   * Issue #63: shell commands run **once per worktree creation** in the new
+   * worktree's `cwd`, with stdout+stderr captured to a per-prep log file.
+   * Renamed from `prelaunchCommands` in `configVersion = 5`. The previous
+   * per-session prelaunch behaviour (and its per-worktree override map) was
+   * removed in the same migration.
+   */
+  worktreePrepCommands: string[];
   /** Per-agent CLI launch override. Empty string fields fall back to the
    * hardcoded defaults. Added in `configVersion = 4`. */
   aiLaunchCommands: AiLaunchCommands;
@@ -218,8 +224,8 @@ export interface PartialAppConfig {
    */
   workspaceRoot?: string | null;
   worktreeRoots?: string[];
-  prelaunchCommands?: string[];
-  worktreePrelaunchCommands?: Record<string, string[]>;
+  /** Issue #63 — see {@link AppConfig.worktreePrepCommands}. */
+  worktreePrepCommands?: string[];
   aiLaunchCommands?: PartialAiLaunchCommands;
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
@@ -524,9 +530,63 @@ export interface WorkspaceValidateResult {
 
 // MIRROR: src-tauri/src/types.rs::WorktreeCreateResult
 // Returned by the `worktree_create` command (Roadmap §2.2). `path` is the
-// canonical absolute path to the newly-created worktree directory.
+// canonical absolute path to the newly-created worktree directory. `prep`
+// is `null` when the user has no `worktreePrepCommands` configured (issue
+// #63); when present, it identifies the in-flight prep run whose lifecycle
+// arrives on the `worktree://prep` event channel.
 export interface WorktreeCreateResult {
   path: string;
+  prep: WorktreePrepInfo | null;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreePrepId
+// UUID v4 identifying a single prep run. Distinct from SessionId.
+export type WorktreePrepId = string;
+
+// MIRROR: src-tauri/src/types.rs::WorktreePrepInfo
+// Returned in `WorktreeCreateResult.prep` and echoed in `WorktreePrepEvent`
+// payloads so the frontend can correlate events to the originating create.
+export interface WorktreePrepInfo {
+  prepId: WorktreePrepId;
+  worktreePath: string;
+  logPath: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreePrepEvent
+// Lifecycle event for a worktree-prep run, emitted on `worktree://prep`.
+// Both variants carry `prepId`/`worktreePath`/`logPath` so the frontend
+// store can render a completed-prep banner even if it missed the matching
+// `started` event (e.g. a very fast prep that exited before the listener
+// attached).
+export type WorktreePrepEvent =
+  | {
+      kind: 'started';
+      prepId: WorktreePrepId;
+      worktreePath: string;
+      logPath: string;
+      command: string;
+      /** Unix timestamp (seconds since epoch) when the child was spawned. */
+      startedAt: number;
+    }
+  | {
+      kind: 'exited';
+      prepId: WorktreePrepId;
+      worktreePath: string;
+      logPath: string;
+      /** Process exit code, or `null` for signal exits / spawn failures. */
+      exitCode: number | null;
+      /** Human-readable reason populated when `exitCode` is `null`. */
+      errorMessage: string | null;
+      startedAt: number;
+      finishedAt: number;
+    };
+
+// MIRROR: src-tauri/src/types.rs::WorktreePrepOpenLogArgs
+// Args for the `worktree_prep_open_log` command — the backend canonicalises
+// the path and asserts it lives under `<app_data_dir>/worktree-prep-logs/`
+// before invoking the OS-default opener.
+export interface WorktreePrepOpenLogArgs {
+  logPath: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorkspaceSwitchArgs

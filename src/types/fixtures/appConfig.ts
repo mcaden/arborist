@@ -7,7 +7,7 @@
 import type { AppConfig } from '../arborist';
 
 export const appConfigFixture = {
-  configVersion: 4,
+  configVersion: 5,
   defaultInstructionSets: {
     claude: 'claude-default',
     copilot: 'copilot-default',
@@ -15,10 +15,7 @@ export const appConfigFixture = {
   instructionSetsDir: '/cfg/instructions',
   workspaceRoot: '/repo',
   worktreeRoots: ['/repo'],
-  prelaunchCommands: ['source ~/.zshenv'],
-  worktreePrelaunchCommands: {
-    '/repo/feature-x': ['nvm use', 'asdf reshim'],
-  },
+  worktreePrepCommands: ['npm install', 'cargo build'],
   aiLaunchCommands: {
     claude: 'npx claude',
     copilot: '',

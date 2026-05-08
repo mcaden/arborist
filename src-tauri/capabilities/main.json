@@ -14,6 +14,7 @@
     "allow-workspace-validate",
     "allow-workspace-switch",
     "allow-worktree-create",
+    "allow-worktree-prep-open-log",
     "allow-subsession",
     "allow-subsession-icon",
     "allow-worktree-tab",
