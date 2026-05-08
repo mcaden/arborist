@@ -32,8 +32,9 @@ use crate::types::{Error, InstructionSet, SessionId, TempFileSpec, Tool};
 /// files the caller must materialise before spawning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposedInvocation {
-    /// Full shell command — prelaunch commands joined with `&&` followed by the per-tool CLI launch command. This is stored verbatim on
-    /// `Session.composed_command` and reused by `session_restart` and restore-on-launch (DESIGN §5.4 / §5.5).
+    /// Full shell command — the per-tool CLI launch command. Stored verbatim on `Session.composed_command` and reused by `session_restart` and
+    /// restore-on-launch (DESIGN §5.4 / §5.5). Issue #63 retired the `prelaunch_commands` join: those snippets now run once per worktree creation
+    /// via the `worktree_prep` module, not in front of every session shell.
     pub composed_command: String,
     /// Files the backend must write to disk before spawning the PTY. For Claude this contains exactly one entry (the `--system-prompt` file). For
     /// Copilot this is empty.
@@ -53,9 +54,6 @@ pub struct ComposeInputs<'a> {
     /// * Copilot ignores this field — it is launched bare regardless, and reads
     ///   `.github/copilot-instructions.md` from `cwd`.
     pub instruction_set: Option<&'a InstructionSet>,
-    /// Verbatim, in declaration order. They are joined with ` && ` ahead of the CLI command and passed through *without* re-quoting — they are
-    /// already user-authored shell snippets (DESIGN §5.6).
-    pub prelaunch_commands: &'a [String],
     /// In-memory contents of the selected instruction set file. The caller reads the file (and enforces the size cap from DESIGN §8); compose stays
     /// pure. Must be `Some` when [`Self::instruction_set`] is `Some`, `None` otherwise. Ignored for Copilot.
     pub instruction_set_contents: Option<&'a str>,
@@ -79,14 +77,10 @@ pub struct ComposeInputs<'a> {
 pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation, Error> {
     let quoter = platform_shell().quoter;
 
-    let (cli_cmd, temp_files) = match inputs.tool {
+    let (composed_command, temp_files) = match inputs.tool {
         Tool::Claude => build_claude(inputs, quoter),
         Tool::Copilot => build_copilot(inputs, quoter),
     };
-
-    let mut parts: Vec<String> = inputs.prelaunch_commands.iter().map(String::clone).collect();
-    parts.push(cli_cmd);
-    let composed_command = parts.join(" && ");
 
     Ok(ComposedInvocation {
         composed_command,
@@ -266,8 +260,8 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 /// bare (DESIGN §5.4 — the immutable record never contains `--resume`); the splice happens on a clone at every spawn.
 ///
 /// We append at the end of the command rather than parse and re-emit the CLI invocation. Both `claude` and `copilot` accept positional flags in any
-/// order, and the trailing token of `composed_command` is always the CLI invocation (DESIGN §5.6 step 3 — `[prelaunch && ]<cli>`), so appending binds
-/// correctly even when the user has prelaunch hooks that themselves contain `&&` inside quoted strings.
+/// order, and the trailing token of `composed_command` is the CLI invocation (DESIGN §5.6 step 3), so appending binds correctly. Issue #63 retired
+/// the legacy `prelaunch && cli` chaining — there are no leading hooks anymore — but the append-at-end strategy remains correct either way.
 ///
 /// `ai_session_id` is shell-quoted using the host quoter only when it contains characters that could be interpreted by the shell. In practice CLI
 /// session ids are UUIDs (ASCII alphanumerics + `-`), and quoting them is actively harmful on Windows: the `cmd.exe` quoter wraps the value in
@@ -553,21 +547,13 @@ mod tests {
         }
     }
 
-    fn inputs<'a>(
-        tool: Tool,
-        worktree: &'a Path,
-        label: &'a str,
-        is: Option<&'a InstructionSet>,
-        prelaunch: &'a [String],
-        body: Option<&'a str>,
-    ) -> ComposeInputs<'a> {
+    fn inputs<'a>(tool: Tool, worktree: &'a Path, label: &'a str, is: Option<&'a InstructionSet>, body: Option<&'a str>) -> ComposeInputs<'a> {
         ComposeInputs {
             session_id: fixed_id(),
             tool,
             worktree_path: worktree,
             worktree_label: label,
             instruction_set: is,
-            prelaunch_commands: prelaunch,
             instruction_set_contents: body,
             cli_launch_command: None,
         }
@@ -581,11 +567,11 @@ mod tests {
     // -- composition: Claude --------------------------------------------
 
     #[test]
-    fn claude_compose_no_prelaunch() {
+    fn claude_compose_basic() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\repos\\my-feature" } else { "/repos/my-feature" });
         let is = instr_set(Tool::Claude);
         let body = "# Instructions\nBe helpful.\n";
-        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", Some(&is), &[], Some(body))).expect("compose");
+        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", Some(&is), Some(body))).expect("compose");
 
         let expected_path = session_temp_dir(&fixed_id()).join("system-prompt.md");
         let quoted = host_quote(&expected_path.to_string_lossy());
@@ -603,16 +589,6 @@ mod tests {
         assert!(!r.composed_command.contains(&*wt.to_string_lossy()));
         // No `cd "..." &&` shenanigans either.
         assert!(!r.composed_command.contains("cd "));
-    }
-
-    #[test]
-    fn claude_compose_with_prelaunch() {
-        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let is = instr_set(Tool::Claude);
-        let pre = vec!["nvm use 20".to_owned(), "source .env".to_owned()];
-        let r = compose_command(&inputs(Tool::Claude, &wt, "wt", Some(&is), &pre, Some("body"))).expect("compose");
-
-        assert!(r.composed_command.starts_with("nvm use 20 && source .env && claude --system-prompt "));
     }
 
     #[test]
@@ -639,7 +615,7 @@ mod tests {
     #[test]
     fn claude_compose_without_instruction_set_drops_system_prompt() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\repos\\my-feature" } else { "/repos/my-feature" });
-        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", None, &[], None)).expect("compose");
+        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", None, None)).expect("compose");
 
         assert_eq!(r.composed_command, "claude");
         assert!(r.temp_files.is_empty());
@@ -647,22 +623,13 @@ mod tests {
         assert!(!r.composed_command.contains(&*wt.to_string_lossy()));
     }
 
-    #[test]
-    fn claude_compose_without_instruction_set_keeps_prelaunch() {
-        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let pre = vec!["nvm use 20".to_owned()];
-        let r = compose_command(&inputs(Tool::Claude, &wt, "wt", None, &pre, None)).expect("compose");
-        assert_eq!(r.composed_command, "nvm use 20 && claude");
-        assert!(r.temp_files.is_empty());
-    }
-
     // -- composition: Copilot -------------------------------------------
 
     #[test]
-    fn copilot_compose_no_prelaunch() {
+    fn copilot_compose_basic() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Copilot);
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), &[], Some("ignored"))).expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), Some("ignored"))).expect("compose");
 
         // Modern `copilot` starts in interactive mode by default. The legacy `--interactive <string>` flag was removed and now triggers a "too many
         // arguments" error from the CLI itself, so we spawn it bare and rely on `cwd`-based discovery for repo guidance.
@@ -676,19 +643,10 @@ mod tests {
     }
 
     #[test]
-    fn copilot_compose_with_prelaunch() {
-        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let is = instr_set(Tool::Copilot);
-        let pre = vec!["echo hi".to_owned(), "true".to_owned()];
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), &pre, Some(""))).expect("compose");
-        assert_eq!(r.composed_command, "echo hi && true && copilot");
-    }
-
-    #[test]
     fn copilot_compose_does_not_leak_worktree_path_when_path_contains_spaces() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\my repos\\feature" } else { "/my repos/feature" });
         let is = instr_set(Tool::Copilot);
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "feature", Some(&is), &[], Some(""))).expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "feature", Some(&is), Some(""))).expect("compose");
         // Bare `copilot` — no worktree path, no `--interactive`, regardless of how spicy the path looks. This is the regression test for the
         // pre-removal behaviour where we used to interpolate the path into a quoted `--interactive` argument.
         assert_eq!(r.composed_command, "copilot");
@@ -700,7 +658,7 @@ mod tests {
     fn claude_compose_uses_cli_launch_command_override() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         let is = instr_set(Tool::Claude);
-        let mut i = inputs(Tool::Claude, &wt, "wt", Some(&is), &[], Some("body"));
+        let mut i = inputs(Tool::Claude, &wt, "wt", Some(&is), Some("body"));
         i.cli_launch_command = Some("npx claude --model sonnet");
         let r = compose_command(&i).expect("compose");
         // Override is inserted verbatim in place of the bare `claude` token; the `--system-prompt` flag is still appended.
@@ -710,7 +668,7 @@ mod tests {
     #[test]
     fn copilot_compose_uses_cli_launch_command_override() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let mut i = inputs(Tool::Copilot, &wt, "wt", None, &[], None);
+        let mut i = inputs(Tool::Copilot, &wt, "wt", None, None);
         i.cli_launch_command = Some("gh copilot");
         let r = compose_command(&i).expect("compose");
         assert_eq!(r.composed_command, "gh copilot");
@@ -720,21 +678,11 @@ mod tests {
     fn empty_or_whitespace_override_falls_back_to_default() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         for s in [Some(""), Some("   "), None] {
-            let mut i = inputs(Tool::Copilot, &wt, "wt", None, &[], None);
+            let mut i = inputs(Tool::Copilot, &wt, "wt", None, None);
             i.cli_launch_command = s;
             let r = compose_command(&i).expect("compose");
             assert_eq!(r.composed_command, "copilot", "override={:?}", s);
         }
-    }
-
-    #[test]
-    fn override_composes_with_prelaunch_commands() {
-        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let pre = vec!["nvm use 20".to_owned()];
-        let mut i = inputs(Tool::Copilot, &wt, "wt", None, &pre, None);
-        i.cli_launch_command = Some("copilot --foo bar");
-        let r = compose_command(&i).expect("compose");
-        assert_eq!(r.composed_command, "nvm use 20 && copilot --foo bar");
     }
 
     // -- with_resume ----------------------------------------------------
@@ -754,8 +702,9 @@ mod tests {
     }
 
     #[test]
-    fn with_resume_keeps_prelaunch_chain_intact() {
-        // Prelaunch commands chained via && precede the CLI invocation. Appending --resume at the end binds to the trailing CLI token.
+    fn with_resume_appends_to_chain_with_and_and() {
+        // Even if the composed command contains `&&` chains (e.g. via cli_launch_command override), appending `--resume` at the end still binds to
+        // the trailing CLI token — the regression target is that we don't try to parse the chain.
         let base = "echo hi && nvm use 20 && copilot";
         let out = with_resume(base, Tool::Copilot, "sess-9");
         assert_eq!(out, format!("{base} --resume sess-9"));

@@ -20,6 +20,7 @@ pub mod sub_sessions;
 pub mod types;
 pub mod vscode_owner;
 pub mod window_focus;
+pub mod worktree_prep;
 
 pub use types::{
     AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
@@ -308,6 +309,7 @@ pub fn run() {
             commands::workspace_validate,
             commands::workspace_switch,
             commands::worktree_create,
+            commands::worktree_prep_open_log,
             commands::subsession_create,
             commands::subsession_close,
             commands::subsession_focus,

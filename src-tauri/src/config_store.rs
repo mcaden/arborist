@@ -215,6 +215,11 @@ impl ConfigStore {
         if cfg.config_version < 4 {
             seed_default_custom_processes(&mut cfg.custom_processes);
         }
+        // v4→v5: drop `prelaunchCommands` + `worktreePrelaunchCommands` (handled implicitly — those JSON keys are unknown to the v5 schema and
+        // serde silently ignores them on deserialize). The new `worktreePrepCommands` field comes in defaulted-empty via `#[serde(default)]`. No
+        // value preservation is performed: the prior per-session-prelaunch use cases (`nvm use`, `source .env`, venv activation) are incompatible
+        // with the new one-shot worktree-creation semantics, so silently re-running them once and never again would be more confusing than a clean
+        // reset. (Single-user pre-1.0 cycle; explicitly approved by the owner — see issue #63.)
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
         }
@@ -519,23 +524,9 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
         }
     }
 
-    let raw_overrides = std::mem::take(&mut cfg.worktree_prelaunch_commands);
-    let mut filtered = BTreeMap::new();
-    for (key, cmds) in raw_overrides {
-        match dunce::canonicalize(&key) {
-            Ok(c) if c.is_dir() => {
-                filtered.insert(c.to_string_lossy().into_owned(), cmds);
-            }
-            Ok(_) | Err(_) => {
-                warn!(
-                    code = "InvalidPath",
-                    key = %key,
-                    "worktreePrelaunchCommands key does not canonicalize to an existing dir; dropping",
-                );
-            }
-        }
-    }
-    cfg.worktree_prelaunch_commands = filtered;
+    // Drop the per-worktree prelaunch overrides map silently — issue #63 retired this concept along with the per-session prelaunch_commands. Old v4
+    // configs lacked the new `worktree_prep_commands` field and serde just defaulted it; the unknown-field tolerance for `worktreePrelaunchCommands`
+    // and `prelaunchCommands` is implicit (serde ignores unrecognised JSON keys). Nothing to do here.
 }
 
 // --------------------------------------------------------------------------- Partial merge / save validation
@@ -600,8 +591,8 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         }
         cfg.worktree_roots = out;
     }
-    if let Some(cmds) = patch.prelaunch_commands {
-        cfg.prelaunch_commands = cmds;
+    if let Some(cmds) = patch.worktree_prep_commands {
+        cfg.worktree_prep_commands = cmds;
     }
     if let Some(launch) = patch.ai_launch_commands {
         let crate::types::PartialAiLaunchCommands { claude, copilot } = launch;
@@ -618,28 +609,6 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
             }
             cfg.ai_launch_commands.copilot = c;
         }
-    }
-    if let Some(overrides) = patch.worktree_prelaunch_commands {
-        let mut out = BTreeMap::new();
-        for (key, cmds) in overrides {
-            let p = PathBuf::from(&key);
-            if p.is_relative() {
-                return Err(Error::InvalidPath(format!("worktreePrelaunchCommands key must be absolute, got {key}",)));
-            }
-            match dunce::canonicalize(&p) {
-                Ok(c) if c.is_dir() => {
-                    out.insert(c.to_string_lossy().into_owned(), cmds);
-                }
-                Ok(_) | Err(_) => {
-                    warn!(
-                        code = "InvalidPath",
-                        key = %key,
-                        "worktreePrelaunchCommands key does not canonicalize to an existing dir; dropping",
-                    );
-                }
-            }
-        }
-        cfg.worktree_prelaunch_commands = out;
     }
     if let Some(s) = patch.last_open_sessions {
         cfg.last_open_sessions = s;
@@ -1134,7 +1103,6 @@ mod tests {
     use super::*;
     use crate::types::{CustomProcessDef, CustomProcessDefId, CustomProcessKind, SessionStatus, SubSessionId, SubSessionRecord, TempFileSpec};
     use pretty_assertions::assert_eq;
-    use std::collections::BTreeMap;
     use std::fs::{self, File};
     use std::io::Write;
     use tempfile::TempDir;
@@ -1374,40 +1342,20 @@ mod tests {
     }
 
     #[test]
-    fn save_config_drops_bad_override_keys_silently() {
-        let td = TempDir::new().expect("td");
-        let store = ConfigStore::open(td.path()).expect("open");
-        let good = td.path().join("good-wt");
-        fs::create_dir_all(&good).expect("mkdir");
-        let mut overrides = BTreeMap::new();
-        overrides.insert(good.to_string_lossy().into_owned(), vec!["nvm use".to_owned()]);
-        // Absolute, but does not exist on disk.
-        overrides.insert(td.path().join("ghost-wt").to_string_lossy().into_owned(), vec!["nope".to_owned()]);
-        let patch = PartialAppConfig {
-            worktree_prelaunch_commands: Some(overrides),
-            ..Default::default()
-        };
-        let cfg = store.save_config(patch).expect("ok");
-        assert_eq!(cfg.worktree_prelaunch_commands.len(), 1);
-        let canon_good = canon(&good).to_string_lossy().into_owned();
-        assert!(cfg.worktree_prelaunch_commands.contains_key(&canon_good));
-    }
-
-    #[test]
     fn merge_preserves_unspecified_fields() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
 
-        // First write: set prelaunch_commands.
+        // First write: set worktree_prep_commands.
         let first = store
             .save_config(PartialAppConfig {
-                prelaunch_commands: Some(vec!["echo hi".to_owned()]),
+                worktree_prep_commands: Some(vec!["echo hi".to_owned()]),
                 ..Default::default()
             })
             .expect("ok");
-        assert_eq!(first.prelaunch_commands, vec!["echo hi".to_owned()]);
+        assert_eq!(first.worktree_prep_commands, vec!["echo hi".to_owned()]);
 
-        // Second write: set tab_order only — prelaunch_commands must survive.
+        // Second write: set tab_order only — worktree_prep_commands must survive.
         let id = SessionId::new();
         let second = store
             .save_config(PartialAppConfig {
@@ -1415,7 +1363,7 @@ mod tests {
                 ..Default::default()
             })
             .expect("ok");
-        assert_eq!(second.prelaunch_commands, vec!["echo hi".to_owned()]);
+        assert_eq!(second.worktree_prep_commands, vec!["echo hi".to_owned()]);
         assert_eq!(second.tab_order, vec![id]);
     }
 
@@ -1481,24 +1429,30 @@ mod tests {
     }
 
     #[test]
-    fn load_drops_invalid_per_worktree_override_keys() {
+    fn load_v4_config_drops_legacy_prelaunch_fields() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
-            "configVersion": 1,
+            "configVersion": 4,
             "defaultInstructionSets": { "claude": "", "copilot": "" },
             "instructionSetsDir": "",
             "worktreeRoots": [],
-            "prelaunchCommands": [],
+            "prelaunchCommands": ["nvm use", "source .env"],
             "worktreePrelaunchCommands": {
-                "/definitely/not/a/real/path/arborist-test": ["echo nope"]
+                "/some/path": ["asdf reshim"]
             },
             "lastOpenSessions": [],
             "tabOrder": []
         });
         fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
+
         let cfg = store.load_config();
-        assert!(cfg.worktree_prelaunch_commands.is_empty());
+        // v4→v5 migration drops both legacy keys silently — see issue #63 docs in `migrate_v_to_current`.
+        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
+        assert!(
+            cfg.worktree_prep_commands.is_empty(),
+            "worktree_prep_commands must NOT be seeded from legacy prelaunch values — semantics differ",
+        );
     }
 
     // ----- Session round-trip & status update ---------------------------
@@ -1732,7 +1686,7 @@ mod tests {
         // Absent in patch → preserved.
         let after_noop = store
             .save_config(PartialAppConfig {
-                prelaunch_commands: Some(vec!["echo hi".to_owned()]),
+                worktree_prep_commands: Some(vec!["echo hi".to_owned()]),
                 ..Default::default()
             })
             .expect("noop");
@@ -1791,7 +1745,7 @@ mod tests {
         // Absent → preserved.
         let after_noop = store
             .save_config(PartialAppConfig {
-                prelaunch_commands: Some(vec!["echo hi".to_owned()]),
+                worktree_prep_commands: Some(vec!["echo hi".to_owned()]),
                 ..Default::default()
             })
             .expect("noop");

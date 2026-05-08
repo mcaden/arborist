@@ -12,7 +12,7 @@ function seedConfig(
   overrides: Partial<{
     workspaceRoot: string | null;
     instructionSetsDir: string;
-    prelaunchCommands: string[];
+    worktreePrepCommands: string[];
     aiLaunchCommands: { claude: string; copilot: string };
   }> = {},
 ): void {
@@ -23,8 +23,7 @@ function seedConfig(
       instructionSetsDir: overrides.instructionSetsDir ?? '/cfg/instr',
       workspaceRoot: overrides.workspaceRoot ?? '/work',
       worktreeRoots: [],
-      prelaunchCommands: overrides.prelaunchCommands ?? [],
-      worktreePrelaunchCommands: {},
+      worktreePrepCommands: overrides.worktreePrepCommands ?? [],
       aiLaunchCommands: overrides.aiLaunchCommands ?? { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
@@ -57,8 +56,7 @@ afterEach(() => {
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
-      prelaunchCommands: [],
-      worktreePrelaunchCommands: {},
+      worktreePrepCommands: [],
       aiLaunchCommands: { claude: '', copilot: '' },
       lastOpenSessions: [],
       tabOrder: [],
@@ -72,16 +70,16 @@ afterEach(() => {
 });
 
 describe('SettingsDialog', () => {
-  it('shows the current workspace root, instructions dir, and prelaunch commands', () => {
+  it('shows the current workspace root, instructions dir, and worktree prep commands', () => {
     seedConfig({
       workspaceRoot: '/repos/grove',
       instructionSetsDir: '/cfg/instr',
-      prelaunchCommands: ['source ~/.zshenv', 'nvm use 20'],
+      worktreePrepCommands: ['source ~/.zshenv', 'nvm use 20'],
     });
     render(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-workspace-path')).toHaveTextContent('/repos/grove');
     expect(screen.getByLabelText(/instruction sets directory/i)).toHaveValue('/cfg/instr');
-    expect(screen.getByLabelText(/pre-launch commands/i)).toHaveValue('source ~/.zshenv\nnvm use 20');
+    expect(screen.getByLabelText(/worktree prep commands/i)).toHaveValue('source ~/.zshenv\nnvm use 20');
   });
 
   it('Save button is disabled until something changes', () => {
@@ -98,11 +96,11 @@ describe('SettingsDialog', () => {
   it('persists only the changed fields and closes on success', async () => {
     seedConfig({
       instructionSetsDir: '/old',
-      prelaunchCommands: ['echo a'],
+      worktreePrepCommands: ['echo a'],
     });
     const onClose = vi.fn();
     render(<SettingsDialog onClose={onClose} />);
-    fireEvent.change(screen.getByLabelText(/pre-launch commands/i), {
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
       target: { value: 'echo a\necho b\n' },
     });
     await act(async () => {
@@ -110,22 +108,22 @@ describe('SettingsDialog', () => {
     });
     expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      prelaunchCommands: ['echo a', 'echo b'],
+      worktreePrepCommands: ['echo a', 'echo b'],
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('parses the prelaunch textarea by trimming and dropping blank lines', async () => {
-    seedConfig({ prelaunchCommands: [] });
+  it('parses the worktree prep textarea by trimming and dropping blank lines', async () => {
+    seedConfig({ worktreePrepCommands: [] });
     render(<SettingsDialog onClose={() => {}} />);
-    fireEvent.change(screen.getByLabelText(/pre-launch commands/i), {
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
       target: { value: '  source ~/.zshenv  \n\n  nvm use 20\n' },
     });
     await act(async () => {
       screen.getByRole('button', { name: /^save$/i }).click();
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      prelaunchCommands: ['source ~/.zshenv', 'nvm use 20'],
+      worktreePrepCommands: ['source ~/.zshenv', 'nvm use 20'],
     });
   });
 

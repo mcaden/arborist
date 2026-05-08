@@ -27,7 +27,7 @@ import { isInsideWorktreesDir } from '@/lib/worktree-paths';
 import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
-import { selectPrelaunchCommands, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
+import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useSessionActions } from '@/store/session-store';
 import type { Tool, WorktreeInfo } from '@/types/arborist';
@@ -54,7 +54,6 @@ export function NewSessionDialog(): JSX.Element | null {
   const close = useNewSessionDialog((s) => s.close);
   const actions = useSessionActions();
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
-  const prelaunchCommands = useConfigStore(selectPrelaunchCommands);
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const firstFocusRef = useRef<HTMLInputElement | null>(null);
@@ -165,12 +164,10 @@ export function NewSessionDialog(): JSX.Element | null {
       });
   }, [isOpen, step, workspaceRoot]);
 
-  // Resolve the prelaunchCommands the backend would actually run for the
-  // chosen worktree (DESIGN §5.6 / §8.1): per-worktree override (if set)
-  // wins, else the global list. We don't have a TS-side override map per
-  // worktree yet (config-store exposes only the global list), so we
-  // surface the global list as the preview.
-  const previewPrelaunch = prelaunchCommands;
+  // Issue #63 retired the per-session prelaunch preview: prep commands now run
+  // once on worktree creation (kicked off by `worktree_create` in the backend)
+  // rather than ahead of every session shell. The post-create `worktree://prep`
+  // event channel surfaces progress via `WorktreePrepBanner`.
 
   // Focus the first interactive element of the new step whenever the
   // user advances/goes back. Skip the very first render after open
@@ -522,19 +519,6 @@ export function NewSessionDialog(): JSX.Element | null {
             </div>
 
             {worktree && <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>}
-
-            <details className="mt-3 rounded border border-slate-200 px-2 py-1 text-xs dark:border-slate-700">
-              <summary className="cursor-pointer">Pre-launch commands ({previewPrelaunch.length})</summary>
-              {previewPrelaunch.length === 0 ? (
-                <p className="px-1 py-1 text-slate-500">(none)</p>
-              ) : (
-                <ol className="list-decimal space-y-0.5 px-5 py-1 font-mono">
-                  {previewPrelaunch.map((cmd, idx) => (
-                    <li key={`${idx}-${cmd}`}>{cmd}</li>
-                  ))}
-                </ol>
-              )}
-            </details>
 
             {worktree && (
               <p className="mt-2 truncate text-xs text-slate-500">

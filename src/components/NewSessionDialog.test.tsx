@@ -22,8 +22,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     instructionSetsDir: '/sets',
     workspaceRoot: REPO_ROOT,
     worktreeRoots: [REPO_ROOT],
-    prelaunchCommands: ['nvm use 20'],
-    worktreePrelaunchCommands: {},
+    worktreePrepCommands: ['nvm use 20'],
     aiLaunchCommands: { claude: '', copilot: '' },
     lastOpenSessions: [],
     tabOrder: [],
@@ -166,6 +165,7 @@ describe('NewSessionDialog', () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'new-id',
@@ -209,6 +209,39 @@ describe('NewSessionDialog', () => {
       ),
     );
     await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
+  });
+
+  it('starts the chained session without waiting for async worktree prep to finish', async () => {
+    bridgeMock.worktreesList.mockResolvedValue([]);
+    bridgeMock.worktreeCreate.mockResolvedValue({
+      path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: {
+        prepId: 'prep-1',
+        worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+        logPath: '/data/prep-1.log',
+      },
+    });
+    bridgeMock.sessionCreate.mockResolvedValue({
+      id: 'new-id',
+      tool: 'claude',
+      worktreePath: `${REPO_ROOT}/.worktrees/my-feature`,
+      worktreeName: 'my-feature',
+      label: 'my-feature',
+      status: 'running',
+      createdAt: 1,
+      tabIndex: 0,
+    } satisfies SessionView);
+
+    render(<NewSessionDialog />);
+    openDialog();
+    fireEvent.click(screen.getByRole('radio', { name: /claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(/step 2 of 2/i);
+
+    fireEvent.change(await screen.findByLabelText(/branch \/ worktree name/i), { target: { value: 'my-feature' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create worktree & session$/i }));
+
+    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalled());
   });
 
   it('ignores stale Step-2 worktreesList when workspaceRoot flips to null mid-flight', async () => {
@@ -295,6 +328,7 @@ describe('NewSessionDialog', () => {
   it('does not let a stale Step-2 worktreesList overwrite the post-failure refresh result', async () => {
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     bridgeMock.sessionCreate.mockRejectedValue(new Error('spawn failed'));
 
@@ -370,6 +404,7 @@ describe('NewSessionDialog', () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     bridgeMock.sessionCreate.mockResolvedValue({
       id: 'new-id',
@@ -437,6 +472,7 @@ describe('NewSessionDialog', () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     bridgeMock.sessionCreate.mockRejectedValue(new Error('spawn failed'));
 
@@ -462,6 +498,7 @@ describe('NewSessionDialog', () => {
   it('exposes the retry button immediately after session-create failure even if worktreesList is slow', async () => {
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     bridgeMock.sessionCreate.mockRejectedValue(new Error('spawn failed'));
     // Hold the post-failure worktreesList refresh pending — the user must
@@ -501,6 +538,7 @@ describe('NewSessionDialog', () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     // Hold session creation pending so we can observe the in-flight UI.
     let resolveSession: (value: SessionView) => void = () => {};
@@ -549,6 +587,7 @@ describe('NewSessionDialog', () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     let resolveSession: (value: SessionView) => void = () => {};
     bridgeMock.sessionCreate.mockImplementation(
@@ -595,6 +634,7 @@ describe('NewSessionDialog', () => {
     bridgeMock.worktreesList.mockResolvedValue([]);
     bridgeMock.worktreeCreate.mockResolvedValue({
       path: `${REPO_ROOT}/.worktrees/my-feature`,
+      prep: null,
     });
     let resolveSession: (value: SessionView) => void = () => {};
     bridgeMock.sessionCreate.mockImplementation(

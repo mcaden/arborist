@@ -36,6 +36,7 @@ import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { selectIsSwitching, useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
+import { useWorktreePrepStore } from '@/store/worktree-prep-store';
 
 type BootStatus = 'booting' | 'ready' | 'error';
 
@@ -113,6 +114,7 @@ export function App(): JSX.Element {
     let unlistenSubStatus: (() => void) | null = null;
     let unlistenSubExited: (() => void) | null = null;
     let unlistenSubRestored: (() => void) | null = null;
+    let unlistenWorktreePrep: (() => void) | null = null;
 
     const boot = async (): Promise<void> => {
       try {
@@ -131,6 +133,9 @@ export function App(): JSX.Element {
         // sub-session and the frontend store needs the row hydrated
         // before any subsequent status event can update it.
         unlistenSubRestored = subscribeToSubRestored();
+        // `worktree://prep` is attached here too so even a sub-second prep
+        // that exits before this effect runs again won't be lost. Issue #63.
+        unlistenWorktreePrep = await useWorktreePrepStore.getState().subscribe();
         await useSessionStore.getState().actions.hydrate();
         if (cancelled) return;
         await useSubSessionStore.getState().actions.hydrate();
@@ -190,6 +195,13 @@ export function App(): JSX.Element {
       if (unlistenSubRestored) {
         try {
           unlistenSubRestored();
+        } catch {
+          // ignore
+        }
+      }
+      if (unlistenWorktreePrep) {
+        try {
+          unlistenWorktreePrep();
         } catch {
           // ignore
         }

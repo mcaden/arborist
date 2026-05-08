@@ -2,15 +2,14 @@
 
 Arborist keeps all persistent state in JSON files inside the OS-specific
 **app data directory** that Tauri provides. Most workspace-level knobs
-(workspace root, instruction-sets directory, pre-launch commands, per-agent
+(workspace root, instruction-sets directory, worktree prep commands, per-agent
 CLI launch overrides) are editable in the in-app **Settings** dialog
 (reachable from the sidebar footer), and the active workspace can be
 swapped at runtime from the same dialog without restarting. This document
 is the reference for the on-disk layout, the minimum valid `config.json`,
-hand-editing knobs that don't yet have a UI (per-worktree pre-launch
-overrides), and what to do when Arborist quarantines a corrupt file. If
-you do hand-edit, shut down the **specific Arborist instance** bound to
-that `(branch, workspace)` pair first and reload by relaunching it.
+and what to do when Arborist quarantines a corrupt file. If you do
+hand-edit, shut down the **specific Arborist instance** bound to that
+`(branch, workspace)` pair first and reload by relaunching it.
 
 ## On-disk layout
 
@@ -84,7 +83,7 @@ to other pairs can keep running.
 
 ```json
 {
-  "configVersion": 4,
+  "configVersion": 5,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -92,8 +91,7 @@ to other pairs can keep running.
   "instructionSetsDir": "/absolute/path/to/instructions",
   "workspaceRoot": "/absolute/path/to/repo",
   "worktreeRoots": ["/absolute/path/to/repo"],
-  "prelaunchCommands": [],
-  "worktreePrelaunchCommands": {},
+  "worktreePrepCommands": [],
   "aiLaunchCommands": { "claude": "", "copilot": "" },
   "lastOpenSessions": [],
   "tabOrder": []
@@ -102,7 +100,7 @@ to other pairs can keep running.
 
 Field notes:
 
-- `configVersion` — schema version of the file. Currently `4` (see
+- `configVersion` — schema version of the file. Currently `5` (see
   `CONFIG_VERSION_CURRENT` in `src-tauri/src/types.rs`). Bumped only when
   the on-disk shape changes; older versions are quarantined (see below).
 - `instructionSetsDir` — must be an **absolute** path that points at an
@@ -120,11 +118,15 @@ Field notes:
   as `instructionSetsDir`. Entries that no longer exist on disk are dropped
   (with a warning) on load. Retained for forward compatibility; new
   installations should use `workspaceRoot`.
-- `prelaunchCommands[]` — global commands joined with `&&` before each CLI
-  launch (SPEC §5.6). They run as the user; review them carefully.
-- `worktreePrelaunchCommands` — per-worktree overrides. Keys are
-  canonicalized worktree paths; entries whose paths don't canonicalize to an
-  existing directory are dropped on load.
+- `worktreePrepCommands[]` — one-shot setup commands that run **once**, in
+  the new worktree's directory, when a worktree is created via
+  `worktree_create` (issue #63). Combined stdout+stderr is captured to
+  `<app_data_dir>/worktree-prep-logs/<prepId>.log`; lifecycle is reported
+  through the `worktree://prep` event. Blank/whitespace-only entries are
+  filtered out. They run as the user — review them carefully. Renamed from
+  `prelaunchCommands` in `configVersion = 5`. The previous per-CLI-launch
+  semantics were removed; if you need to re-run setup on every session,
+  bake it into a script invoked via `aiLaunchCommands` instead.
 - `defaultInstructionSets.{claude,copilot}` — IDs of the default instruction
   set per tool. The ID is the filename (without the `.md` extension) of the
   file inside `instructionSetsDir`. If the configured ID isn't present, the

@@ -25,6 +25,7 @@
 
 import { SubTerminalView } from './SubTerminalView';
 import { TerminalView } from './TerminalView';
+import { WorktreePrepBanner } from './WorktreePrepBanner';
 import { useActiveSessionId, useSessions } from '@/store/session-store';
 import { useActiveSubSessionId, useAllSubSessions } from '@/store/sub-session-store';
 
@@ -38,9 +39,10 @@ export function MainArea(): JSX.Element {
     return (
       <main
         data-testid="main-area"
-        className="flex h-full min-w-0 flex-1 items-center justify-center bg-white text-slate-700 dark:bg-slate-950 dark:text-slate-200"
+        className="relative flex h-full min-w-0 flex-1 items-center justify-center bg-white text-slate-700 dark:bg-slate-950 dark:text-slate-200"
       >
         <p className="text-sm text-slate-400">No session selected — create one to begin.</p>
+        <WorktreePrepBanner />
       </main>
     );
   }
@@ -58,6 +60,7 @@ export function MainArea(): JSX.Element {
 
   return (
     <main data-testid="main-area" className="relative flex h-full min-w-0 flex-1 bg-black">
+      <WorktreePrepBanner />
       {sessions.map((session) => {
         const active = visibleSubId === undefined && session.id === activeId;
         return (

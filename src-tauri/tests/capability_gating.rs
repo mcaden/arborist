@@ -86,6 +86,10 @@ fn main_capability_allows_core_default_and_ping() {
         "main capability must include allow-worktree-create so worktree_create is callable; got {identifiers:?}",
     );
     assert!(
+        identifiers.contains(&"allow-worktree-prep-open-log"),
+        "main capability must include allow-worktree-prep-open-log so worktree_prep_open_log is callable; got {identifiers:?}",
+    );
+    assert!(
         identifiers.contains(&"dialog:allow-open"),
         "main capability must include dialog:allow-open so the file picker is callable; got {identifiers:?}",
     );
@@ -255,6 +259,20 @@ fn allow_worktree_create_permission_file_declares_command() {
     let path = manifest_dir().join("permissions").join("allow-worktree-create.toml");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(raw.contains("worktree_create"));
+}
+
+#[test]
+fn main_capability_grants_worktree_prep_open_log() {
+    let path = manifest_dir().join("permissions").join("allow-worktree-prep-open-log.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktree-prep-open-log\""),
+        "permission identifier must remain `allow-worktree-prep-open-log`",
+    );
+    assert!(
+        raw.contains("\"worktree_prep_open_log\""),
+        "permission must allow the `worktree_prep_open_log` command",
+    );
 }
 
 #[test]

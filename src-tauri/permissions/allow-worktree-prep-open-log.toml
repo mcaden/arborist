@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-worktree-prep-open-log"
+description = "Allows the frontend to ask the backend to open a worktree-prep log file in the user's OS-default handler. The backend canonicalises the path and rejects anything outside `<app_data_dir>/worktree-prep-logs/` so this command cannot be abused as a generic file-opener (issue #63)."
+commands.allow = [
+    "worktree_prep_open_log",
+]

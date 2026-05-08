@@ -155,6 +155,9 @@ pub struct AppContext {
     /// return, early return, panic). Handlers load this counter under their read guard to detect a queued switch and reject (or silently `Ok` for
     /// resize/frontend_ready).
     pub switch_pending: Arc<AtomicUsize>,
+    /// Issue #63: in-flight worktree-prep registry. The `worktree_create` wrapper inserts here when it kicks off a prep; the prep watcher task removes
+    /// itself on exit. App shutdown / workspace switch can call [`crate::worktree_prep::WorktreePrepRegistry::kill_all`] for best-effort cleanup.
+    pub prep_registry: Arc<crate::worktree_prep::WorktreePrepRegistry>,
 }
 
 /// RAII counter for [`AppContext::switch_pending`]. Increments on `new`, decrements on drop. Held by `workspace_switch_impl_inner` for the entire
@@ -240,6 +243,7 @@ impl AppContext {
             pending_spawn: Arc::new(Mutex::new(HashMap::new())),
             switch_lock: Arc::new(tokio::sync::RwLock::new(())),
             switch_pending: Arc::new(AtomicUsize::new(0)),
+            prep_registry: Arc::new(crate::worktree_prep::WorktreePrepRegistry::new()),
         }
     }
 
@@ -385,7 +389,6 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         worktree_path: &worktree,
         worktree_label: &label,
         instruction_set: set_opt.as_ref(),
-        prelaunch_commands: prelaunch_for(&cfg, &worktree),
         instruction_set_contents: contents_opt.as_deref(),
         cli_launch_command: Some(cli_override),
     })
@@ -1642,6 +1645,7 @@ pub async fn workspace_switch_impl_inner(
         g.clear();
     }
     ctx.metrics.stop_all_and_join();
+    ctx.prep_registry.kill_all();
 
     // Step 7 — **park** old workspace sessions. We kill the PTYs but **preserve** every session record (sessions.json, lastOpenSessions, tabOrder,
     // activeSessionId untouched). When the user switches back to this workspace, restore_all_sessions will re-spawn the PTYs from the persisted
@@ -1779,7 +1783,7 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
         ))));
     }
 
-    Ok(WorktreeCreateResult { path: new_path })
+    Ok(WorktreeCreateResult { path: new_path, prep: None })
 }
 
 /// Look up an instruction set by ID, validating that its tool matches the requested one.
@@ -1822,14 +1826,6 @@ fn read_instruction_file(path: &std::path::Path) -> Result<String, AppError> {
         return Err(AppError::from(Error::InstructionFileTooLarge(path.into())));
     }
     std::fs::read_to_string(path).map_err(|e| AppError::from(Error::Io(e)))
-}
-
-fn prelaunch_for<'a>(cfg: &'a crate::types::AppConfig, worktree: &std::path::Path) -> &'a [String] {
-    let key = worktree.to_string_lossy().into_owned();
-    cfg.worktree_prelaunch_commands
-        .get(&key)
-        .map(Vec::as_slice)
-        .unwrap_or(cfg.prelaunch_commands.as_slice())
 }
 
 fn materialise_temp_files(files: &[crate::types::TempFileSpec]) -> Result<(), AppError> {
