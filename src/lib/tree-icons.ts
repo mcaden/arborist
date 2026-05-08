@@ -11,9 +11,10 @@
 //
 // Runtime contract: callers pass the integer they got from a `WorktreeTab`
 // and expect a non-empty string URL back. Out-of-range values (0, > N,
-// negative, NaN) fall back to `tree_1.png` with a single console.warn so a
-// regression in the backend assignment doesn't break the sidebar layout —
-// every worktree tab keeps rendering *something*.
+// negative, NaN) fall back to `tree_1.png` and emit at most one
+// `console.warn` per unique invalid id for the lifetime of the page — so a
+// regression in the backend assignment surfaces in dev exactly once per bad
+// id rather than spamming the console on every re-render of the sidebar.
 
 const ICON_MODULES = import.meta.glob<string>('../assets/tree-icons/tree_*.png', {
   eager: true,
@@ -36,6 +37,12 @@ for (const [path, url] of Object.entries(ICON_MODULES)) {
   }
 }
 
+// Tracks which invalid `iconId`s we've already warned about so re-renders
+// (or repeat lookups in a render-heavy view) don't flood the console.
+// Module-scoped on purpose: the goal is one warning per unique bad id for
+// the lifetime of the page, not per call site or per component instance.
+const WARNED_IDS = new Set<number>();
+
 /**
  * Number of bundled tree icons. Mirrors the Rust constant
  * `crate::worktree_icon::WORKTREE_ICON_COUNT`. Derived from the actual
@@ -48,8 +55,9 @@ export const WORKTREE_ICON_COUNT = ICONS_BY_ID.size;
  * Resolve a `WorktreeTab.iconId` to a bundled asset URL. Returns the
  * `tree_1.png` URL as a fallback for ids outside `1..=WORKTREE_ICON_COUNT`
  * — the backend should never produce one, but the sidebar must still
- * render an `<img>` with a real `src` if it does. Logs a single warning
- * per call site so the regression is visible in dev.
+ * render an `<img>` with a real `src` if it does. Emits at most one
+ * `console.warn` per unique invalid id for the lifetime of the module
+ * (re-renders with the same bad id stay silent).
  */
 export function getTreeIconUrl(iconId: number): string {
   const direct = ICONS_BY_ID.get(iconId);
@@ -64,6 +72,12 @@ export function getTreeIconUrl(iconId: number): string {
     console.error('[tree-icons] no tree icons bundled — check src/assets/tree-icons/');
     return '';
   }
-  console.warn(`[tree-icons] iconId ${iconId} out of range (1..=${WORKTREE_ICON_COUNT}); falling back to tree_1.png`);
+  // Normalise NaN to a stable sentinel so repeated calls with NaN dedupe
+  // (NaN !== NaN, so a raw Set<number> would warn forever for NaN inputs).
+  const warnKey = Number.isNaN(iconId) ? Number.NEGATIVE_INFINITY : iconId;
+  if (!WARNED_IDS.has(warnKey)) {
+    WARNED_IDS.add(warnKey);
+    console.warn(`[tree-icons] iconId ${iconId} out of range (1..=${WORKTREE_ICON_COUNT}); falling back to tree_1.png`);
+  }
   return fallback;
 }
