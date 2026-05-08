@@ -41,15 +41,17 @@ export function MainArea(): JSX.Element {
 
   const activeWorktreeTab = worktreeTabs.find((t) => t.id === activeWorktreeTabId) ?? null;
 
-  // Resolve the active session id and visible sub-session id from worktree-tab activeChildId.
+  // Resolve the active session id and visible sub-session id from worktree-tab activeChildId. Stale or invalid children deliberately fall
+  // back to the dashboard instead of leaving every terminal wrapper hidden.
   let activeSessionId: SessionId | undefined;
   let visibleSubId: SubSessionId | undefined;
   if (activeWorktreeTab) {
     const child = activeWorktreeTab.activeChildId;
     if (child?.kind === 'session') {
-      activeSessionId = child.id;
+      const session = sessions.find((s) => s.id === child.id && s.worktreePath === activeWorktreeTab.path);
+      if (session) activeSessionId = session.id;
     } else if (child?.kind === 'subSession') {
-      const sub = allSubs.find((s) => s.id === child.id);
+      const sub = allSubs.find((s) => s.id === child.id && s.parentWorktreeTabId === activeWorktreeTab.id);
       if (sub && sub.kind === 'terminal') visibleSubId = sub.id;
     }
   }
@@ -57,7 +59,10 @@ export function MainArea(): JSX.Element {
   const showDashboard =
     worktreeTabs.length > 0 &&
     activeWorktreeTab !== null &&
-    (activeWorktreeTab.activeChildId === undefined || activeWorktreeTab.activeChildId === null);
+    (activeWorktreeTab.activeChildId === undefined ||
+      activeWorktreeTab.activeChildId === null ||
+      (activeWorktreeTab.activeChildId.kind === 'session' && activeSessionId === undefined) ||
+      (activeWorktreeTab.activeChildId.kind === 'subSession' && visibleSubId === undefined));
 
   if (sessions.length === 0 && worktreeTabs.length === 0) {
     return (

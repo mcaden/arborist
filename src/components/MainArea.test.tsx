@@ -237,6 +237,43 @@ describe('MainArea', () => {
     expect(panels[0]!.parentElement!.style.visibility).not.toBe('hidden');
   });
 
+  it('shows the dashboard instead of a blank pane when activeChildId points at a missing session', () => {
+    const sessions = [makeSession('s1')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(sessions[0]!, { kind: 'session', id: 'missing' })],
+      activeId: 'tab-s1' as WorktreeTabId,
+      isHydrated: true,
+    });
+
+    render(<MainArea />);
+
+    expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[0]!.parentElement!.style.visibility).toBe('hidden');
+  });
+
+  it('shows the dashboard instead of a blank pane when activeChildId points at an application sub-session', () => {
+    const sessions = [makeSession('s1')];
+    useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
+    useWorktreeTabStore.setState({
+      tabs: [tabFor(sessions[0]!, { kind: 'subSession', id: 'app-1' as SubSessionId })],
+      activeId: 'tab-s1' as WorktreeTabId,
+      isHydrated: true,
+    });
+    useSubSessionStore.setState({
+      subSessions: [makeSub('app-1', 's1', { kind: 'application' })],
+      statusMessages: {},
+      isHydrated: true,
+    });
+
+    render(<MainArea />);
+
+    expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[0]!.parentElement!.style.visibility).toBe('hidden');
+  });
+
   it('inactive parent: its sub-sessions stay hidden even when active there', () => {
     const sessions = [makeSession('s1'), makeSession('s2')];
     useSessionStore.setState({ sessions, activeId: 's2', isHydrated: true });

@@ -231,8 +231,8 @@ export interface PartialAppConfig {
 
 // MIRROR: src-tauri/src/types.rs::CustomProcessDef
 // Persisted in `AppConfig.customProcesses`. `command` is passed verbatim to
-// `$SHELL -c` (or `%COMSPEC% /c` on Windows); the parent session's worktree
-// path is set as `cwd` and **never** interpolated into the command.
+// `$SHELL -c` (or `%COMSPEC% /c` on Windows); the parent worktree tab path is
+// set as `cwd` and **never** interpolated into the command.
 export interface CustomProcessDef {
   id: CustomProcessDefId;
   name: string;

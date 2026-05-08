@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn store_preserves_per_parent_insertion_order() {
+    fn store_preserves_per_worktree_tab_insertion_order() {
         let store = SubSessionStore::new();
         let tab_id = WorktreeTabId::new();
         let a = fake_sub(tab_id, "a");
@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn store_remove_drops_index_and_parent_bucket() {
+    fn store_remove_drops_index_and_worktree_tab_bucket() {
         let store = SubSessionStore::new();
         let tab_id = WorktreeTabId::new();
         let a = fake_sub(tab_id, "a");

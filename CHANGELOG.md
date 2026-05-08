@@ -11,17 +11,16 @@ and this project follows semantic versioning once it reaches a stable v1.
 
 The sidebar is now a two-level hierarchy: each top-level row is a **worktree
 tab** (one per `WorktreeTab` record), and its child rows are the AI-agent
-sessions (and any custom-process sub-sessions) whose `worktreePath` matches
-the tab. Clicking a worktree row clears its `activeChildId` and shows a
-**WorktreeDashboard** placeholder in the main area; clicking a child shows
-its terminal as before. Right-clicking a worktree row exposes a **Launch ▸**
-submenu (Claude / Copilot) that materialises a new agent session under the
-worktree. Closing a worktree row cascades close to all of its children.
+sessions and custom-process sub-sessions owned by that worktree tab. Clicking a
+worktree row clears its `activeChildId` and shows a **WorktreeDashboard**
+placeholder in the main area; clicking a child shows its terminal as before.
+Right-clicking a worktree row exposes flat **Launch Claude** / **Launch
+Copilot** entries plus enabled custom-process entries. Closing a worktree row
+cascades close to all of its children.
 
-The new-session flow is unchanged at the entry point — the `+` button still
-opens `NewSessionDialog` (tool → worktree → create) — but on success the
-session-store also calls `worktreeTabOpen({path})` to ensure the parent tab
-exists and `worktreeTabSetActiveChild({…})` to wire it up.
+The `+` button now opens `NewSessionDialog` as a worktree-only flow: it opens
+an existing worktree tab or creates a new worktree and opens its tab. AI agents
+are launched afterward from the worktree row context menu.
 
 Drag-to-reorder and Alt+Arrow reorder are **deferred for v1**: the grouped
 layout breaks the previous flat-id reorder model, and per-group reorder is a
@@ -38,7 +37,7 @@ that session in two flavours:
 - **Terminal** — a PTY hosted in-app (cwd = the parent's worktree),
   rendered with `xterm.js` exactly like a top-level session.
 - **Application** — an external GUI program spawned **detached** so closing
-  Arborist (or the parent session) does not kill it. Clicking the sub-tab
+  Arborist (or the parent worktree tab) does not kill it. Clicking the sub-tab
   attempts to focus the program's OS window via a platform-gated focuser
   (`user32` on Windows, `osascript` on macOS, `wmctrl` on Linux X11; Wayland
   reports `Unsupported`). Closing the sub-tab only drops Arborist's tracking.
@@ -102,7 +101,7 @@ the UUID id space is global across `Session` and `SubSession`.
 - `Unsupported` — e.g. window-focus on Wayland.
 - `AppSpawnFailed` — application kind spawn failure.
 - `InvalidCustomProcessDef` — `config_set` boundary validation rejection.
-- `InvalidArgument` (with message "parent session … is closing") —
+- `InvalidArgument` (with message "parent worktree tab … is closing") —
   `subsession_create` / `subsession_relaunch` against a parent currently
   mid-cascade.
 

@@ -903,7 +903,7 @@ Closing a top-level session must tear down its sub-sessions atomically:
 ```
 Frontend invokes Tauri command: session_close { sessionId, deleteWorktree? }
   → session_close wrapper (commands/mod.rs):
-      1. Sets a tombstone: AppContext.closing_parents.insert(sessionId).
+      1. Sets a tombstone: AppContext.closing_parents.insert(parent id).
          Held via an RAII ClosingParentGuard so the entry is removed even
          if the close path panics. Refuses concurrent subsession_create
          and skips orphaned restore records under this parent.
@@ -930,7 +930,7 @@ frontend_ready (one-shot) →
   spawn_blocking { restore_all_sessions(ctx); restore_all_sub_sessions_impl(ctx, sub_ctx) }
 
 restore_all_sub_sessions_impl iterates AppConfig.lastOpenSubSessions:
-  - If the parent session is missing or in closing_parents: drop the
+  - If the parent worktree tab is missing or in closing_parents: drop the
     persisted record + skip (treats as orphan).
   - If def deleted: drop the persisted record + skip (sanitize_loaded_sub_session_records
     also runs at config-load time as a defence in depth).
@@ -1142,7 +1142,7 @@ shell command that runs something unintended on the user's machine.
 - **Custom-process commands**: A `CustomProcessDef.command` is composed at
   sub-session creation time and stored verbatim in `SubSession.composedCommand`,
   then passed to the platform shell (`$SHELL -c <cmd>` on Unix, `%COMSPEC% /c
-  <cmd>` on Windows) with `cwd` set to the parent session's worktree path. The
+  <cmd>` on Windows) with `cwd` set to the parent worktree tab's path. The
   worktree path is **never** interpolated into the command string. Defs come
   exclusively from validated config (the Settings tab applies the same rules as
   `validate_custom_processes`); free-form user input from the chat / terminal
