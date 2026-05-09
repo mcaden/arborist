@@ -35,7 +35,7 @@ writeFileSync(
   overridePath,
   JSON.stringify({
     build: {
-      beforeDevCommand: `pnpm run vite -- --port=${port} --strictPort`,
+      beforeDevCommand: `pnpm run vite --port=${port} --strictPort`,
       devUrl: `http://localhost:${port}`,
     },
   }),
