@@ -104,7 +104,7 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
             {...(toolIconDataUri !== undefined ? { iconDataUri: toolIconDataUri } : {})}
             className={isActive ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300' : 'h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400'}
           />
-          <span className="min-w-0 flex-1 truncate">{session.label}</span>
+          <span className="min-w-0 flex-1 truncate">{toolDisplayName(session.tool)}</span>
           <SessionStatusIndicator
             status={displayStatus}
             hasUnread={hasUnread && !isActive}
@@ -199,6 +199,17 @@ function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element
 }
 
 /** Format a token count as `12.3k` for >= 1000, else as the raw number. */
+// AI session tabs sit *under* a worktree tab that already shows the
+// worktree name, so the row itself just identifies which CLI it hosts.
+function toolDisplayName(tool: Tool): string {
+  switch (tool) {
+    case 'claude':
+      return 'Claude CLI';
+    case 'copilot':
+      return 'Copilot CLI';
+  }
+}
+
 function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   const k = n / 1000;
