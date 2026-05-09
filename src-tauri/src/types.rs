@@ -428,6 +428,13 @@ pub struct WorktreeGitStatus {
     pub files: Vec<GitStatusFile>,
     /// `true` when [`Self::files`] was truncated to fit [`MAX_GIT_STATUS_FILES`].
     pub files_truncated: bool,
+    /// `Some(message)` when the snapshot could not be produced (e.g. path missing,
+    /// not a git repository, `git` binary unavailable, non-zero status exit). Counts
+    /// and `files` will be empty/zero in that case. `None` indicates a successful
+    /// snapshot — callers should distinguish "clean tree" from "failed to read"
+    /// using this field rather than inferring from zero counts.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
 }
 
 /// Cap on the per-file list returned in [`WorktreeGitStatus::files`]. Counts are unaffected; only the detail list is bounded so a worktree with

@@ -3,9 +3,13 @@
 // aggregate AI-usage summary for every session bound to this worktree, plus
 // the header and launch buttons that were the original placeholder.
 //
-// Backend contract: `worktreeGitStatus(path)` always resolves — on git
-// failures the backend returns a default-valued `WorktreeGitStatus` (no
-// branch, zero counts) so we surface "unable to read git status" inline.
+// Backend contract: `worktreeGitStatus(path)` always resolves. A successful
+// snapshot leaves `result.error` undefined; on git discovery failures (path
+// missing, not a repo, git binary unavailable, non-zero status exit) the
+// backend populates `result.error` with a human-readable message and zeroes
+// the counts. The panel shows that message inline so users can distinguish
+// "clean tree" from "unable to read git status". A rejected `invoke()` (rare
+// — e.g. capability denied) is treated the same way via the catch handler.
 //
 // The git panel polls every 5s while mounted; a manual "Refresh" button is
 // also exposed. Polling is intentionally simple — a notify-based file
@@ -185,6 +189,10 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
             </p>
           ) : !status ? (
             <p className="text-xs text-slate-500 dark:text-slate-400">Loading…</p>
+          ) : status.error ? (
+            <p data-testid="worktree-dashboard-git-error" className="text-xs text-red-600 dark:text-red-400">
+              Unable to read git status: {status.error}
+            </p>
           ) : (
             <>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">

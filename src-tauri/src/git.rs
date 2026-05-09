@@ -219,7 +219,10 @@ impl GitRunner for RealGitRunner {
                 worktree = %worktree_path.display(),
                 "git_status: worktree path is not a directory"
             );
-            return Ok(WorktreeGitStatus::default());
+            return Ok(WorktreeGitStatus {
+                error: Some(format!("worktree path does not exist or is not a directory: {}", worktree_path.display())),
+                ..Default::default()
+            });
         }
         let output = match git_command()
             .current_dir(worktree_path)
@@ -239,17 +242,28 @@ impl GitRunner for RealGitRunner {
                     error = %e,
                     "git_status: git binary not invokable; returning empty status",
                 );
-                return Ok(WorktreeGitStatus::default());
+                return Ok(WorktreeGitStatus {
+                    error: Some(format!("git binary unavailable: {e}")),
+                    ..Default::default()
+                });
             }
         };
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             warn!(
                 code = "GitUnavailable",
                 worktree = %worktree_path.display(),
-                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                stderr = %stderr,
                 "git_status: git status failed; returning empty status",
             );
-            return Ok(WorktreeGitStatus::default());
+            return Ok(WorktreeGitStatus {
+                error: Some(if stderr.is_empty() {
+                    "git status exited non-zero".to_string()
+                } else {
+                    stderr
+                }),
+                ..Default::default()
+            });
         }
         Ok(parse_status_v2(&output.stdout))
     }
@@ -1026,7 +1040,10 @@ locked migrating to slow disk
         let dir = tempfile::TempDir::new().unwrap();
         let runner = RealGitRunner;
         let s = runner.git_status(dir.path()).expect("graceful degradation");
-        assert_eq!(s, WorktreeGitStatus::default());
+        // `error` is set so the dashboard can distinguish "clean" from "unreadable";
+        // every other field is at its default.
+        assert!(s.error.is_some(), "non-repo dir should populate `error`");
+        assert_eq!(WorktreeGitStatus { error: None, ..s.clone() }, WorktreeGitStatus::default());
     }
 
     #[test]
@@ -1035,6 +1052,7 @@ locked migrating to slow disk
         let s = runner
             .git_status(Path::new("/no/such/path/arborist-test-status"))
             .expect("graceful degradation");
-        assert_eq!(s, WorktreeGitStatus::default());
+        assert!(s.error.as_deref().unwrap_or("").contains("does not exist"));
+        assert_eq!(WorktreeGitStatus { error: None, ..s.clone() }, WorktreeGitStatus::default());
     }
 }

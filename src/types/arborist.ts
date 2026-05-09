@@ -522,6 +522,12 @@ export interface WorktreeInfo {
 // entries in `WorktreeGitStatus.files`.
 export type GitStatusFileKind = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
 
+// MIRROR: src-tauri/src/types.rs::WorktreeGitStatusArgs
+// Args for the `worktree_git_status` command (Issue #55).
+export interface WorktreeGitStatusArgs {
+  path: string;
+}
+
 // MIRROR: src-tauri/src/types.rs::GitStatusFile
 // One file entry in `WorktreeGitStatus.files` (Issue #55). `status` is the
 // raw porcelain-v2 XY code (e.g. `"M."`, `"MM"`, `"??"`, `"UU"`); `kind` is
@@ -550,6 +556,13 @@ export interface WorktreeGitStatus {
   conflicted: number;
   files: GitStatusFile[];
   filesTruncated: boolean;
+  /**
+   * Set to a human-readable message when the snapshot could not be produced
+   * (e.g. path missing, not a git repository, `git` binary unavailable). Counts
+   * are zero in that case. The dashboard distinguishes "clean tree" from
+   * "unreadable" by inspecting this field rather than the counts.
+   */
+  error?: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorkspaceValidateResult

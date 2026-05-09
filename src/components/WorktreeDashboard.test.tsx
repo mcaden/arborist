@@ -189,6 +189,27 @@ describe('WorktreeDashboard', () => {
     });
   });
 
+  it('surfaces an inline error when the backend reports a structured failure', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      ahead: 0,
+      behind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+      error: 'not a git repository',
+    });
+
+    render(<WorktreeDashboard tabId={TAB_ID} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-git-error')).toHaveTextContent(/not a git repository/);
+    });
+  });
+
   it('aggregates input/output tokens across sessions for this worktree only', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     useSessionStore.setState({
