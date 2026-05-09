@@ -85,7 +85,7 @@ beforeEach(() => {
     activity: {},
     metrics: {},
   });
-  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, pendingClose: undefined, isHydrated: false });
   useSubSessionStore.setState({ subSessions: [], statusMessages: {}, pendingClose: undefined, isHydrated: true });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
   // versions; provide minimal shims so the worktree close-confirm dialog

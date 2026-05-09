@@ -40,7 +40,7 @@ function session(id: string, status: SessionView['status'] = 'running'): Session
 
 beforeEach(() => {
   bridgeMock.resetBridgeMocks();
-  useWorktreeTabStore.setState({ tabs: [tab({ branch: 'feat/x' })], activeId: null, isHydrated: false });
+  useWorktreeTabStore.setState({ tabs: [tab({ branch: 'feat/x' })], activeId: null, pendingClose: undefined, isHydrated: false });
   useSessionStore.setState({ sessions: [], activeId: undefined, isHydrated: false });
 });
 

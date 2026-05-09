@@ -30,7 +30,7 @@ beforeEach(() => {
     status: 'ready',
     error: null,
   }));
-  useWorktreeTabStore.setState({ tabs: [tab()], activeId: TAB_ID, isHydrated: true });
+  useWorktreeTabStore.setState({ tabs: [tab()], activeId: TAB_ID, pendingClose: undefined, isHydrated: true });
 });
 
 afterEach(() => {
