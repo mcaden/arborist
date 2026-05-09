@@ -213,13 +213,14 @@ where
 }
 
 fn assign_ai_launch(slot: &mut Option<String>, flag: &str, value: &str) -> Result<(), BootError> {
-    if value.is_empty() {
-        return Err(BootError::Cli(format!("{flag}= requires a value")));
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(BootError::Cli(format!("{flag} requires a non-empty value")));
     }
     if slot.is_some() {
         return Err(BootError::Cli(format!("{flag} specified more than once")));
     }
-    *slot = Some(value.to_owned());
+    *slot = Some(trimmed.to_owned());
     Ok(())
 }
 
@@ -841,7 +842,7 @@ mod tests {
     fn parse_cli_args_ai_launch_claude_empty_equals_value_errors() {
         let err = parse_cli_args(["arborist", "--ai-launch-claude="]).unwrap_err();
         match err {
-            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-claude") && msg.contains("requires a value")),
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-claude") && msg.contains("non-empty")),
             other => panic!("expected BootError::Cli, got {other:?}"),
         }
     }
@@ -850,9 +851,40 @@ mod tests {
     fn parse_cli_args_ai_launch_copilot_empty_equals_value_errors() {
         let err = parse_cli_args(["arborist", "--ai-launch-copilot="]).unwrap_err();
         match err {
-            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-copilot") && msg.contains("requires a value")),
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-copilot") && msg.contains("non-empty")),
             other => panic!("expected BootError::Cli, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_whitespace_only_value_errors() {
+        // `--ai-launch-claude="   "` (whitespace-only, non-empty string) must
+        // be rejected — otherwise `compose::cli_program_for_tool` would later
+        // trim the override down to empty and silently fall back to the bare
+        // `claude` token, making the CLI flag look like it worked.
+        let err = parse_cli_args(["arborist", "--ai-launch-claude=   "]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-claude") && msg.contains("non-empty")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_copilot_whitespace_only_value_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-copilot=\t \t"]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-copilot") && msg.contains("non-empty")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_trims_value() {
+        // A value with surrounding whitespace is accepted but stored trimmed,
+        // so it matches what `compose::cli_program_for_tool` will splice into
+        // the composed shell command.
+        let args = parse_cli_args(["arborist", "--ai-launch-claude=  /usr/local/bin/test-child  "]).unwrap();
+        assert_eq!(args.ai_launch_claude.as_deref(), Some("/usr/local/bin/test-child"));
     }
 
     #[test]

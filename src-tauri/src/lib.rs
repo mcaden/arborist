@@ -271,6 +271,26 @@ pub fn run() {
             ));
             app.manage(sub_ctx.clone());
 
+            // Apply `--ai-launch-claude` / `--ai-launch-copilot` overrides if supplied. Persisted into the workspace's config so users / the e2e
+            // harness can replace the bare `claude` / `copilot` program tokens without setting any environment variable.
+            //
+            // Done *before* the startup icon backfill below so the backfill sees the final config — if a future change makes any icon-relevant
+            // field depend on `ai_launch_commands` (e.g. resolving the launcher's exe to extract its OS icon), the warm-cache pass will pick it up
+            // on first boot rather than waiting until next startup.
+            if cli_args.ai_launch_claude.is_some() || cli_args.ai_launch_copilot.is_some() {
+                let store = ctx_for_backfill.store();
+                let patch = types::PartialAppConfig {
+                    ai_launch_commands: Some(types::PartialAiLaunchCommands {
+                        claude: cli_args.ai_launch_claude.clone(),
+                        copilot: cli_args.ai_launch_copilot.clone(),
+                    }),
+                    ..Default::default()
+                };
+                if let Err(err) = store.save_config(patch) {
+                    tracing::warn!(%err, "failed to apply --ai-launch-* CLI overrides to config");
+                }
+            }
+
             // Best-effort: warm the persisted icon cache for every sidebar entry now, so the first render after startup doesn't show emoji-then-icon
             // flicker. Failures are non-fatal — the frontend already has a graceful fallback (the bundled SVG / emoji glyph).
             //
@@ -290,22 +310,6 @@ pub fn run() {
                     );
                 } else {
                     tracing::debug!("startup icon backfill: cache populated");
-                }
-            }
-
-            // Apply `--ai-launch-claude` / `--ai-launch-copilot` overrides if supplied. Persisted into the workspace's config so users / the e2e
-            // harness can replace the bare `claude` / `copilot` program tokens without setting any environment variable.
-            if cli_args.ai_launch_claude.is_some() || cli_args.ai_launch_copilot.is_some() {
-                let store = ctx_for_backfill.store();
-                let patch = types::PartialAppConfig {
-                    ai_launch_commands: Some(types::PartialAiLaunchCommands {
-                        claude: cli_args.ai_launch_claude.clone(),
-                        copilot: cli_args.ai_launch_copilot.clone(),
-                    }),
-                    ..Default::default()
-                };
-                if let Err(err) = store.save_config(patch) {
-                    tracing::warn!(%err, "failed to apply --ai-launch-* CLI overrides to config");
                 }
             }
 
