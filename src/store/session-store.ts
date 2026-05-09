@@ -1038,6 +1038,49 @@ export function useSessionById(id: SessionId | undefined): SessionView | undefin
   return useMemo(() => (id ? sessions.find((s) => s.id === id) : undefined), [sessions, id]);
 }
 
+// Per-`sessions`-array cache of the (tool, worktreePath) ordinal map. We
+// key the cache on the array *reference* the store hands out: the array
+// is replaced by every mutating action, so a hit on the same reference
+// across many renders means we built the map at most once per real
+// state change. Each SidebarTab calls `useToolSiblingOrdinal` and gets
+// an O(1) lookup against the shared map instead of re-scanning sessions.
+const ordinalCache = new WeakMap<readonly SessionView[], ReadonlyMap<SessionId, number>>();
+
+function getToolSiblingOrdinalMap(sessions: readonly SessionView[]): ReadonlyMap<SessionId, number> {
+  const cached = ordinalCache.get(sessions);
+  if (cached) return cached;
+  const groups = new Map<string, SessionView[]>();
+  for (const s of sessions) {
+    const key = `${s.tool}\u0000${s.worktreePath}`;
+    const arr = groups.get(key);
+    if (arr) arr.push(s);
+    else groups.set(key, [s]);
+  }
+  const ordinals = new Map<SessionId, number>();
+  for (const arr of groups.values()) {
+    if (arr.length <= 1) continue;
+    arr.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    for (let i = 1; i < arr.length; i++) {
+      ordinals.set(arr[i]!.id, i + 1);
+    }
+  }
+  ordinalCache.set(sessions, ordinals);
+  return ordinals;
+}
+
+/**
+ * 1-based ordinal for a session that shares its `(tool, worktreePath)`
+ * with at least one other session, or `undefined` for the lone or first
+ * sibling. Mirrors the suffix convention `dedupe_label` uses on the
+ * backend so visible AI tab labels can disambiguate (e.g. `Claude CLI 2`).
+ *
+ * Returns a primitive, so `useSessionStore` uses `===` equality and
+ * SidebarTabs only re-render when *their* ordinal flips.
+ */
+export function useToolSiblingOrdinal(id: SessionId | undefined): number | undefined {
+  return useSessionStore((s) => (id ? getToolSiblingOrdinalMap(s.sessions).get(id) : undefined));
+}
+
 const selectActions = (s: Store): SessionStoreActions => s.actions;
 
 /**

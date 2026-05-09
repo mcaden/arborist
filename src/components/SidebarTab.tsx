@@ -19,7 +19,7 @@ import {
   useOpenTools,
   useSessionActions,
   useSessionById,
-  useSessionStore,
+  useToolSiblingOrdinal,
   type DisplayStatus,
   type OpenPermission,
   type OpenTool,
@@ -56,19 +56,11 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
   const toolIconDataUri = useConfigStore((s) =>
     tool === 'claude' ? s.config.aiLaunchCommands.claudeIconDataUri : tool === 'copilot' ? s.config.aiLaunchCommands.copilotIconDataUri : undefined,
   );
-  // When more than one session of the same tool exists under the same
-  // worktree, append a 1-based ordinal so the rows are visually
-  // distinguishable. Mirrors the trailing-number convention used by
-  // `dedupe_label` in the backend (first sibling has no suffix).
-  const siblingSuffix = useSessionStore((s) => {
-    const me = s.sessions.find((x) => x.id === id);
-    if (!me) return '';
-    const siblings = s.sessions.filter((x) => x.tool === me.tool && x.worktreePath === me.worktreePath);
-    if (siblings.length <= 1) return '';
-    const sorted = [...siblings].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-    const idx = sorted.findIndex((x) => x.id === id);
-    return idx <= 0 ? '' : ` ${idx + 1}`;
-  });
+  // `useToolSiblingOrdinal` builds a single (tool, worktreePath) ->
+  // ordinal map per `sessions` array reference and shares it across
+  // every SidebarTab — each tab's lookup is O(1) and the hook returns
+  // a primitive so unrelated session changes don't re-render this row.
+  const siblingOrdinal = useToolSiblingOrdinal(id);
 
   if (!session) return null;
 
@@ -118,7 +110,9 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
             {...(toolIconDataUri !== undefined ? { iconDataUri: toolIconDataUri } : {})}
             className={isActive ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300' : 'h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400'}
           />
-          <span className="min-w-0 flex-1 truncate">{toolDisplayName(session.tool) + siblingSuffix}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {toolDisplayName(session.tool) + (siblingOrdinal !== undefined ? ` ${siblingOrdinal}` : '')}
+          </span>
           <SessionStatusIndicator
             status={displayStatus}
             hasUnread={hasUnread && !isActive}
