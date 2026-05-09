@@ -97,7 +97,7 @@ export function SidebarTab({
 
   return (
     <li className={`group relative pr-2 ${nested ? 'ml-6' : 'ml-2'}`}>
-      {nested && <BranchDecoration isLastInGroup={isLastInGroup} />}
+      {nested && <BranchDecoration isLastInGroup={isLastInGroup} anchorTop="18px" />}
       <button
         ref={(el) => onFocusableMounted(id, el)}
         type="button"
