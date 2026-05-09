@@ -2,7 +2,7 @@
 // session list so the React tree can subscribe granularly to changes.
 //
 // Scope (Phase 8):
-// * Holds `SessionView` records + UI-only fields (`activeId`, `pendingClose`).
+// * Holds `SessionView` records + UI-only fields (`activeId`).
 // * Exposes thin actions that wrap the relevant Tauri commands and keep the
 //   cache in sync optimistically.
 // * Subscribes to `session://status` (via `lib/session-events.ts`) to update
@@ -50,8 +50,6 @@ export interface SessionStoreState {
   sessions: SessionView[];
   /** Currently focused tab. `undefined` when no session exists. */
   activeId: SessionId | undefined;
-  /** Id of the session whose close-confirm modal is open (Phase 9). */
-  pendingClose: SessionId | undefined;
   isHydrated: boolean;
   /**
    * Optional human-readable note attached to the most recent status
@@ -201,8 +199,6 @@ export interface SessionStoreActions {
    */
   removeLocalForPath: (path: string) => SessionId[];
   reorder: (ids: SessionId[]) => Promise<void>;
-  requestClose: (id: SessionId) => void;
-  cancelClose: () => void;
   applyStatus: (evt: SessionStatusEvent) => void;
   /**
    * Mark a session as having received unread output. No-op if the
@@ -229,7 +225,6 @@ type Store = SessionStoreState & { actions: SessionStoreActions };
 const INITIAL_STATE: SessionStoreState = {
   sessions: [],
   activeId: undefined,
-  pendingClose: undefined,
   isHydrated: false,
   statusMessages: {},
   hasUnread: {},
@@ -294,12 +289,6 @@ export const useSessionStore = create<Store>((set, get) => {
       set({
         sessions,
         activeId,
-        // Drop any in-flight close-confirm modal state. It was scoped
-        // to a session in the OLD workspace, and surviving across the
-        // swap would either dangle (the id no longer matches anything
-        // we render) or — worse, if a new-workspace session happens to
-        // share the id — auto-target the wrong session for close.
-        pendingClose: undefined,
         isHydrated: true,
         statusMessages: {},
         hasUnread: {},
@@ -356,7 +345,6 @@ export const useSessionStore = create<Store>((set, get) => {
         const {
           sessions,
           activeId,
-          pendingClose,
           statusMessages,
           hasUnread,
           activity,
@@ -379,9 +367,6 @@ export const useSessionStore = create<Store>((set, get) => {
           // session closes.
           patch.activeId = pickNeighbour(sessions, id);
         }
-        // `pendingClose` is closed automatically when the session it
-        // referenced is gone.
-        if (pendingClose === id) patch.pendingClose = undefined;
         // Drop any orphan status-message keyed under this session id.
         if (id in statusMessages) {
           const next = { ...statusMessages };
@@ -490,7 +475,6 @@ export const useSessionStore = create<Store>((set, get) => {
       set({
         sessions: remaining,
         activeId: wasActive ? remaining[0]?.id : before.activeId,
-        pendingClose: before.pendingClose !== undefined && dropSet.has(before.pendingClose) ? undefined : before.pendingClose,
         statusMessages: purgeMap(before.statusMessages),
         hasUnread: purgeMap(before.hasUnread) as Record<SessionId, true>,
         activity: purgeMap(before.activity) as Record<SessionId, SessionActivity>,
@@ -572,14 +556,6 @@ export const useSessionStore = create<Store>((set, get) => {
       // `tabOrder` selector stays in sync without an extra round trip.
       const merged = await configSet({ tabOrder: ids });
       useConfigStore.setState({ config: merged });
-    },
-
-    requestClose: (id) => {
-      set({ pendingClose: id });
-    },
-
-    cancelClose: () => {
-      set({ pendingClose: undefined });
     },
 
     applyStatus: (evt) => {
@@ -843,7 +819,6 @@ export const useSessionStore = create<Store>((set, get) => {
 
 export const selectSessions = (s: Store): SessionView[] => s.sessions;
 export const selectActiveId = (s: Store): SessionId | undefined => s.activeId;
-export const selectPendingClose = (s: Store): SessionId | undefined => s.pendingClose;
 export const selectIsHydrated = (s: Store): boolean => s.isHydrated;
 export const selectStatusMessage =
   (id: SessionId | undefined) =>
@@ -939,7 +914,6 @@ export function selectDisplayStatus(id: SessionId | undefined, nowSec: number = 
 
 export const useSessions = (): SessionView[] => useSessionStore(selectSessions);
 export const useActiveSessionId = (): SessionId | undefined => useSessionStore(selectActiveId);
-export const usePendingClose = (): SessionId | undefined => useSessionStore(selectPendingClose);
 export const useIsHydrated = (): boolean => useSessionStore(selectIsHydrated);
 export const useStatusMessage = (id: SessionId | undefined): string | undefined => useSessionStore(selectStatusMessage(id));
 export const useHasUnread = (id: SessionId | undefined): boolean => useSessionStore(selectHasUnread(id));

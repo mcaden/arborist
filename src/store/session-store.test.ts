@@ -29,7 +29,6 @@ function resetStore(): void {
   useSessionStore.setState({
     sessions: [],
     activeId: undefined,
-    pendingClose: undefined,
     isHydrated: false,
     statusMessages: {},
     hasUnread: {},
@@ -244,17 +243,6 @@ describe('close', () => {
     expect(subSessions.map((s) => s.id)).toEqual(['sub-1', 'sub-2']);
   });
 
-  it('clears pendingClose when the targeted session is closed', async () => {
-    useSessionStore.setState({
-      sessions: [makeView({ id: 'a' })],
-      pendingClose: 'a',
-    });
-
-    await useSessionStore.getState().actions.close('a');
-
-    expect(useSessionStore.getState().pendingClose).toBeUndefined();
-  });
-
   it('prunes the session locally even when the backend close rejects', async () => {
     useSessionStore.setState({
       sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
@@ -447,19 +435,6 @@ describe('reorder', () => {
   });
 });
 
-describe('requestClose / cancelClose', () => {
-  it('toggles pendingClose without any bridge call', () => {
-    useSessionStore.getState().actions.requestClose('x');
-    expect(useSessionStore.getState().pendingClose).toBe('x');
-
-    useSessionStore.getState().actions.cancelClose();
-    expect(useSessionStore.getState().pendingClose).toBeUndefined();
-
-    expect(bridgeMock.sessionClose).not.toHaveBeenCalled();
-    expect(bridgeMock.configSet).not.toHaveBeenCalled();
-  });
-});
-
 describe('adoptWorkspace', () => {
   it('replaces sessions and reconciles activeId from the supplied activeSessionId', () => {
     useSessionStore.setState({
@@ -490,19 +465,14 @@ describe('adoptWorkspace', () => {
     expect(useSessionStore.getState().activeId).toBe('first');
   });
 
-  it('clears pendingClose so a stale close-confirm modal cannot leak across the workspace switch', () => {
-    // Regression: without this reset, an open close-confirm dialog
-    // for a session in the OLD workspace would either dangle (id no
-    // longer renders) or — worse, on id collision — auto-target the
-    // wrong session for close in the NEW workspace.
+  it('replaces sessions cleanly across a workspace switch', () => {
     useSessionStore.setState({
       sessions: [makeView({ id: 'old' })],
-      pendingClose: 'old',
     });
 
     useSessionStore.getState().actions.adoptWorkspace([makeView({ id: 'new' })], null);
 
-    expect(useSessionStore.getState().pendingClose).toBeUndefined();
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['new']);
   });
 
   it('resets every per-session derived cache to avoid stale entries leaking', () => {

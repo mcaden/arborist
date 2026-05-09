@@ -30,7 +30,7 @@ beforeEach(() => {
     status: 'ready',
     error: null,
   }));
-  useWorktreeTabStore.setState({ tabs: [tab()], activeId: TAB_ID, isHydrated: true });
+  useWorktreeTabStore.setState({ tabs: [tab()], activeId: TAB_ID, pendingClose: undefined, isHydrated: true });
 });
 
 afterEach(() => {
@@ -47,11 +47,12 @@ describe('WorktreeTabContextMenu', () => {
     expect(screen.getByTestId('worktree-tab-context-menu-close')).toBeInTheDocument();
   });
 
-  it('Close calls worktreeTabClose for this tab and dismisses the menu', () => {
+  it('Close requests close (sets pendingClose) and dismisses the menu', () => {
     const onClose = vi.fn();
     render(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
     fireEvent.click(screen.getByTestId('worktree-tab-context-menu-close'));
-    expect(bridgeMock.worktreeTabClose).toHaveBeenCalledWith({ id: TAB_ID });
+    expect(useWorktreeTabStore.getState().pendingClose).toBe(TAB_ID);
+    expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
 

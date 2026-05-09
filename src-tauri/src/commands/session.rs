@@ -643,7 +643,7 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
     let mut result = SessionCloseResult::default();
     match worktree_intent {
         WorktreeDeleteIntent::Path(wt) => {
-            if let Err(error) = delete_worktree_after_close(ctx, &id, &wt, &cfg_after.workspace_root) {
+            if let Err(error) = delete_worktree_after_close(ctx, &format!("session {id}"), &wt, &cfg_after.workspace_root) {
                 warn!(
                     session_id = %id,
                     worktree_path = %wt.display(),
@@ -748,7 +748,15 @@ enum WorktreeDeleteIntent {
 
 /// Helper: validate and execute `git worktree remove --force`. Refuses to touch the configured `workspace_root` itself (i.e. the main checkout), any
 /// path that is not contained under the workspace root, or any path still claimed by another live session.
-fn delete_worktree_after_close(ctx: &AppContext, id: &SessionId, worktree_path: &Path, workspace_root: &Option<PathBuf>) -> Result<(), AppError> {
+///
+/// Pub(crate) so `commands::worktree_tab` can re-use the same safety checks for the worktree-tab close + delete flow.
+/// `caller_label` is logged alongside the success/failure message so worktree-tab callers and session callers can be distinguished in traces.
+pub(crate) fn delete_worktree_after_close(
+    ctx: &AppContext,
+    caller_label: &str,
+    worktree_path: &Path,
+    workspace_root: &Option<PathBuf>,
+) -> Result<(), AppError> {
     // Require an explicit workspace root. Without it we have neither a safe `-C` directory to invoke git from (running git inside the worktree we're
     // about to delete fails on Windows because the OS locks a process's CWD) nor a basis for the containment check below.
     let root = workspace_root
@@ -810,9 +818,9 @@ fn delete_worktree_after_close(ctx: &AppContext, id: &SessionId, worktree_path: 
 
     ctx.git_runner.remove_worktree(&repo_root, worktree_path).map_err(AppError::from)?;
     info!(
-        session_id = %id,
+        caller = %caller_label,
         worktree = %worktree_path.display(),
-        "worktree removed after session close",
+        "worktree removed after close",
     );
     Ok(())
 }

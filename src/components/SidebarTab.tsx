@@ -1,6 +1,8 @@
 // A single vertical tab in the sidebar. Renders the tool icon, the label,
 // an error indicator dot when the session has crashed, and a small close
-// button that opens the close-confirmation dialog.
+// button that immediately closes the AI-agent session (no confirmation —
+// the worktree-deletion confirmation lives on the worktree parent tab,
+// see WorktreeCloseConfirmDialog).
 //
 // Drag-to-reorder of session tabs was removed in the worktree-tab UI
 // roll-out (issue #44). The grouped layout invalidated the previous flat
@@ -8,6 +10,7 @@
 
 import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
+import { formatError } from '@/lib/tauri-bridge';
 import { useConfigStore } from '@/store/config-store';
 import {
   useDisplayStatus,
@@ -129,7 +132,9 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
         aria-label={`Close session ${session.label}`}
         onClick={(e) => {
           e.stopPropagation();
-          actions.requestClose(id);
+          void actions.close(id, false).catch((err) => {
+            console.warn(`[sidebar-tab] close failed for session ${id}: ${formatError(err)}`);
+          });
         }}
         className="absolute right-3 top-1.5 rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >

@@ -114,9 +114,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   };
 
   const handleClose = (): void => {
-    void wttActions.close(tabId).catch((err) => {
-      console.warn(`[WorktreeTabContextMenu] close(${tabId}) failed: ${formatError(err)}`);
-    });
+    wttActions.requestClose(tabId);
     closeMenu();
   };
 

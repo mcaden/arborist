@@ -40,7 +40,7 @@ function session(id: string, status: SessionView['status'] = 'running'): Session
 
 beforeEach(() => {
   bridgeMock.resetBridgeMocks();
-  useWorktreeTabStore.setState({ tabs: [tab({ branch: 'feat/x' })], activeId: null, isHydrated: false });
+  useWorktreeTabStore.setState({ tabs: [tab({ branch: 'feat/x' })], activeId: null, pendingClose: undefined, isHydrated: false });
   useSessionStore.setState({ sessions: [], activeId: undefined, isHydrated: false });
 });
 
@@ -80,12 +80,13 @@ describe('SidebarWorktreeTab', () => {
     expect(bridgeMock.worktreeTabSetActiveChild).toHaveBeenCalledWith({ id: TAB_ID });
   });
 
-  it('clicking close calls worktreeTabClose', () => {
+  it('clicking close requests close (sets pendingClose) without immediately invoking the bridge', () => {
     render(<SidebarWorktreeTab tabId={TAB_ID} isActive={false} onOpenContextMenu={noop} />);
 
     fireEvent.click(screen.getByTestId(`worktree-tab-close-${TAB_ID}`));
 
-    expect(bridgeMock.worktreeTabClose).toHaveBeenCalledWith({ id: TAB_ID });
+    expect(useWorktreeTabStore.getState().pendingClose).toBe(TAB_ID);
+    expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
   });
 
   it('right-click invokes the onOpenContextMenu callback with viewport coordinates', () => {

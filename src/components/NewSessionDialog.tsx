@@ -8,7 +8,7 @@
 // `.worktrees/` directory, or create a new one by name.
 //
 // Renders via the native `<dialog>` element using `showModal()`/`close()`,
-// matching the pattern set by `CloseConfirmDialog` (jsdom shim installed
+// matching the pattern set by `WorktreeCloseConfirmDialog` (jsdom shim installed
 // in tests covers `showModal`/`close`).
 
 import { useEffect, useMemo, useRef, useState } from 'react';

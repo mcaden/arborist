@@ -27,7 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
-import { CloseConfirmDialog } from './CloseConfirmDialog';
+import { WorktreeCloseConfirmDialog } from './WorktreeCloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
 import { SidebarSubTab } from './SidebarSubTab';
@@ -40,6 +40,7 @@ import { WorktreeTabContextMenu } from './WorktreeTabContextMenu';
 import { useSessionActions, useSessions } from '@/store/session-store';
 import { useSubSessionsForWorktreeTab } from '@/store/sub-session-store';
 import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
+import { formatError } from '@/lib/tauri-bridge';
 import type { SessionId, WorktreeTabId } from '@/types/arborist';
 
 interface SessionGroup {
@@ -238,7 +239,9 @@ export function Sidebar(): JSX.Element {
         break;
       case 'Delete':
         e.preventDefault();
-        actions.requestClose(currentId);
+        void actions.close(currentId, false).catch((err) => {
+          console.warn(`[sidebar] keyboard close failed for session ${currentId}: ${formatError(err)}`);
+        });
         break;
       default:
     }
@@ -308,7 +311,7 @@ export function Sidebar(): JSX.Element {
           <span>Settings</span>
         </button>
       </div>
-      <CloseConfirmDialog />
+      <WorktreeCloseConfirmDialog />
       <SubCloseConfirmDialog />
       {contextMenu && (
         <TabContextMenu

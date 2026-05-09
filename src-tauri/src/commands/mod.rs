@@ -642,7 +642,7 @@ pub async fn worktree_tab_open(app: tauri::AppHandle, args: WorktreeTabOpenArgs)
 pub async fn worktree_tab_close(app: tauri::AppHandle, args: WorktreeTabCloseArgs) -> Result<WorktreeTabCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
-    worktree_tab::worktree_tab_close_impl(&ctx, sub_ctx, args.id).await
+    worktree_tab::worktree_tab_close_impl(&ctx, sub_ctx, args.id, args.delete_worktree).await
 }
 
 #[tauri::command]

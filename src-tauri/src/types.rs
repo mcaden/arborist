@@ -931,13 +931,19 @@ pub struct WorktreeTabOpenArgs {
 }
 
 /// Arguments for `worktree_tab_close`. Cascades close to all child
-/// sessions and sub-sessions under the tab.
+/// sessions and sub-sessions under the tab. The optional `delete_worktree`
+/// flag asks the backend to run `git worktree remove --force` on the
+/// tab's worktree directory after every child has been torn down. The
+/// backend refuses to delete the configured workspace root (main worktree)
+/// or any path outside the workspace root.
 ///
 /// MIRROR: `src/types/arborist.ts::WorktreeTabCloseArgs`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeTabCloseArgs {
     pub id: WorktreeTabId,
+    #[serde(default)]
+    pub delete_worktree: bool,
 }
 
 /// Arguments for `worktree_tab_focus`.
@@ -973,7 +979,11 @@ pub struct WorktreeTabSetActiveChildArgs {
 
 /// Result of `worktree_tab_close`. Reports any errors encountered while
 /// cascading close to child sessions/sub-sessions without failing the
-/// whole operation.
+/// whole operation. The optional `worktree_delete_error` reports a
+/// failure of the post-cascade `git worktree remove` step (only set when
+/// the caller passed `delete_worktree=true`); the worktree tab itself is
+/// always removed from config regardless of deletion outcome so the UI
+/// can converge on a "tab gone" state.
 ///
 /// MIRROR: `src/types/arborist.ts::WorktreeTabCloseResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -982,6 +992,11 @@ pub struct WorktreeTabCloseResult {
     /// Per-child errors that occurred during cascade close.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub child_errors: Vec<String>,
+    /// Error message from the post-cascade `git worktree remove --force` step,
+    /// only populated when the caller asked to delete the worktree directory
+    /// and the deletion failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_delete_error: Option<String>,
 }
 
 /// Arguments for `workspace_validate` (Roadmap §1.1).

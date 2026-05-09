@@ -81,9 +81,7 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         data-testid={`worktree-tab-close-${tab.id}`}
         onClick={(e) => {
           e.stopPropagation();
-          void wttActions.close(tab.id).catch((err) => {
-            console.warn(`[SidebarWorktreeTab] close(${tab.id}) failed: ${formatError(err)}`);
-          });
+          wttActions.requestClose(tab.id);
         }}
         className="absolute right-3 top-4 rounded p-0.5 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >

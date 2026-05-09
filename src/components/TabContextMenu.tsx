@@ -109,7 +109,9 @@ export function TabContextMenu({ parentSessionId, anchor, onClose, restoreFocusT
   };
 
   const handleClose = (): void => {
-    sessionActions.requestClose(parentSessionId);
+    void sessionActions.close(parentSessionId, false).catch((err: unknown) => {
+      console.warn(`[TabContextMenu] session_close failed: ${formatError(err)}`);
+    });
     closeMenu();
   };
 
