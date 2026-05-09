@@ -168,23 +168,44 @@ impl WindowFinder for VsCodeWindowFinder {
 /// 2. The remainder is split on ` - ` segments (`<filename> - <folder> [- <variants>]`); we match the workspace folder against an explicit segment,
 ///    not a substring of the whole title. This is the difference between "find the workspace named `code`" and "steal any window whose open file
 ///    contains the word `code`" (e.g. `code.js - other-project - Visual Studio Code`).
-/// 3. Trailing decorations VS Code appends when title-related settings are non-default — ` [Workspace]`, ` [Folder]`, ` (Restricted Mode)` etc. — are
-///    stripped from each segment before comparison.
+/// 3. Known trailing decorations VS Code appends when title-related settings are non-default — ` [Workspace]`, ` [Folder]`,
+///    ` (Restricted Mode)`, ` (Workspace Trust Required)`, ` [Administrator]`, ` [Sudo]` — are stripped from the end of each segment before
+///    comparison. We strip *only* this hard-coded list, not arbitrary `[`/`(` substrings, so that legitimate folder names containing brackets or
+///    parentheses (e.g. `foo (bar)`, `a [b]`) still match.
 fn title_matches_workspace(title: &str, needle_lower: &str) -> bool {
+    /// Decorations to strip — already lowercased, leading space included so we match `<folder> [Workspace]` and not `Workspace[Workspace]`.
+    const KNOWN_SUFFIXES: &[&str] = &[
+        " [workspace]",
+        " [folder]",
+        " [administrator]",
+        " [sudo]",
+        " (restricted mode)",
+        " (workspace trust required)",
+    ];
+
+    fn strip_known_suffixes(seg: &str) -> &str {
+        let mut cleaned = seg.trim_end();
+        // Loop because VS Code can stack decorations (e.g. ` [Workspace] [Administrator]`); strip them one suffix at a time.
+        loop {
+            let mut stripped = false;
+            for suffix in KNOWN_SUFFIXES {
+                if let Some(rest) = cleaned.strip_suffix(suffix) {
+                    cleaned = rest.trim_end();
+                    stripped = true;
+                    break;
+                }
+            }
+            if !stripped {
+                return cleaned;
+            }
+        }
+    }
+
     let Some(remainder) = title.strip_suffix(TITLE_SUFFIX) else {
         return false;
     };
     let remainder_lower = remainder.to_lowercase();
-    remainder_lower.split(" - ").any(|seg| {
-        let mut cleaned = seg;
-        if let Some(idx) = cleaned.find(" [") {
-            cleaned = &cleaned[..idx];
-        }
-        if let Some(idx) = cleaned.find(" (") {
-            cleaned = &cleaned[..idx];
-        }
-        cleaned.trim() == needle_lower
-    })
+    remainder_lower.split(" - ").any(|seg| strip_known_suffixes(seg).trim() == needle_lower)
 }
 
 // --------------------------------------------------------------------------- Platform: Windows
@@ -530,38 +551,59 @@ mod unix_liveness {
     use std::time::Duration;
 
     /// Window-based liveness probe with PID-death fallback. Mirrors the Windows probe (see `WindowsLivenessProbe`): VS Code is multi-window, so
-    /// closing **the workspace** doesn't necessarily kill the editor process. We poll once per second and return either when the PID dies (fast
-    /// path) or when the workspace window has been gone for two consecutive polls (debounce against transient enumeration misses).
+    /// closing **the workspace** doesn't necessarily kill the editor process.
+    ///
+    /// Cadence: PID liveness is checked every second (a cheap syscall); window enumeration — which spawns `osascript` / `wmctrl` and is comparatively
+    /// expensive — runs once per `WINDOW_POLL_EVERY` ticks. With the default debounce (2 consecutive misses), workspace-close detection latency is up
+    /// to `WINDOW_POLL_EVERY * (WINDOW_GONE_THRESHOLD - 1)` + ~`WINDOW_POLL_EVERY` seconds (≈ 10 s); process-exit detection stays at ~1 s.
     pub(super) struct UnixLivenessProbe {
         pub pid: u32,
         pub basename: String,
     }
 
+    /// True iff the OS reports the PID as still alive. `kill(pid, 0)` performs no actual signalling; it only checks whether the kernel still has a
+    /// process record we'd be allowed to address. We must distinguish the failure modes:
+    ///
+    /// * `ESRCH` — no such process. Definitively dead.
+    /// * `EPERM` — process exists but we lack permission to signal it (e.g. it changed uid via `setuid`, or sandbox/capability restrictions). The
+    ///   process is **still alive**; reporting it as dead would prematurely flip the sub-tab to `Exited` while VS Code is still running.
+    /// * Anything else (`EINVAL`, etc.) — treat conservatively as alive; the worst case is a delayed `Exited` event.
+    fn pid_alive(pid: u32) -> bool {
+        // SAFETY: signal 0 + numeric pid; no pointer arguments. errno is read via the standard wrapper, which is safe.
+        if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
     impl LivenessProbe for UnixLivenessProbe {
         fn wait_for_death(self: Box<Self>) {
             let mut window_gone_polls: u32 = 0;
+            let mut tick: u32 = 0;
             const WINDOW_GONE_THRESHOLD: u32 = 2;
+            const WINDOW_POLL_EVERY: u32 = 5;
 
             loop {
-                // (1) Process-death fast path. `kill(pid, 0)` returns 0 iff the process exists and we have permission to signal it; on macOS and
-                // Linux the launcher and the Code process run as the same user, so a non-zero return effectively means "process is gone".
-                // SAFETY: literal signal 0 + numeric pid; no dereferenced pointers.
-                let alive = unsafe { libc::kill(self.pid as libc::pid_t, 0) } == 0;
-                if !alive {
+                // (1) Process-death fast path — cheap syscall, runs every tick. Distinguishes ESRCH (gone) from EPERM (alive but inaccessible).
+                if !pid_alive(self.pid) {
                     return;
                 }
 
-                // (2) Window-based check. If the workspace window is no longer enumerable for `WINDOW_GONE_THRESHOLD` consecutive polls, treat the
-                // workspace as closed even though the editor process is still alive (other windows / workspaces).
-                if super::platform::find_vscode_window(&self.basename).is_none() {
-                    window_gone_polls = window_gone_polls.saturating_add(1);
-                    if window_gone_polls >= WINDOW_GONE_THRESHOLD {
-                        return;
+                // (2) Window-based check — expensive (spawns osascript / wmctrl) so we throttle to one in every WINDOW_POLL_EVERY ticks. If the
+                // workspace window is no longer enumerable for `WINDOW_GONE_THRESHOLD` consecutive *window* polls, treat the workspace as closed
+                // even though the editor process is still alive (other windows / workspaces).
+                if tick % WINDOW_POLL_EVERY == 0 {
+                    if super::platform::find_vscode_window(&self.basename).is_none() {
+                        window_gone_polls = window_gone_polls.saturating_add(1);
+                        if window_gone_polls >= WINDOW_GONE_THRESHOLD {
+                            return;
+                        }
+                    } else {
+                        window_gone_polls = 0;
                     }
-                } else {
-                    window_gone_polls = 0;
                 }
 
+                tick = tick.wrapping_add(1);
                 std::thread::sleep(Duration::from_millis(1_000));
             }
         }
@@ -706,8 +748,28 @@ mod tests {
             "file.rs - my-feature (Restricted Mode) - Visual Studio Code",
             "my-feature"
         ));
+        // Stacked decorations.
+        assert!(title_matches_workspace(
+            "file.rs - my-feature [Workspace] [Administrator] - Visual Studio Code",
+            "my-feature"
+        ));
         // Case-insensitive folder match (NTFS / macOS HFS+ default).
         assert!(title_matches_workspace("file.rs - My-Feature - Visual Studio Code", "my-feature"));
+    }
+
+    #[test]
+    fn title_matches_workspace_preserves_brackets_and_parens_in_folder_names() {
+        // Regression: previously any " [" or " (" in a segment was treated as the start of a decoration and truncated, which broke folder names like
+        // `foo (bar)` or `a [b]`. Only the hard-coded VS Code decoration suffixes should be stripped.
+        assert!(title_matches_workspace("file.rs - foo (bar) - Visual Studio Code", "foo (bar)"));
+        assert!(title_matches_workspace("file.rs - a [b] - Visual Studio Code", "a [b]"));
+        // Decoration after a bracket-bearing folder name still strips correctly.
+        assert!(title_matches_workspace(
+            "file.rs - foo (bar) [Workspace] - Visual Studio Code",
+            "foo (bar)"
+        ));
+        // Unknown bracket markers are *not* stripped — the segment remains literal, so a wrong-folder claim still fails.
+        assert!(!title_matches_workspace("file.rs - other [SomeUnknownTag] - Visual Studio Code", "other"));
     }
 
     #[test]
