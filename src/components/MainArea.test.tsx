@@ -16,7 +16,7 @@ const mockTerminals: Array<{
 }> = [];
 
 vi.mock('@xterm/xterm', () => {
-  const Terminal = vi.fn().mockImplementation(() => {
+  const Terminal = vi.fn(function (this: Record<string, unknown>) {
     const inst = {
       open: vi.fn(),
       write: vi.fn(),
@@ -29,13 +29,15 @@ vi.mock('@xterm/xterm', () => {
       rows: 24,
     };
     mockTerminals.push(inst);
-    return inst;
+    Object.assign(this, inst);
   });
   return { Terminal };
 });
 
 vi.mock('@xterm/addon-fit', () => ({
-  FitAddon: vi.fn().mockImplementation(() => ({ fit: vi.fn(), dispose: vi.fn() })),
+  FitAddon: vi.fn(function (this: Record<string, unknown>) {
+    Object.assign(this, { fit: vi.fn(), dispose: vi.fn() });
+  }),
 }));
 
 import { MainArea } from './MainArea';

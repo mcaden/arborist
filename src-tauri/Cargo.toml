@@ -51,7 +51,7 @@ tauri-plugin-store = "2.4"
 tauri-plugin-dialog = "2.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "1"
+thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread", "process", "io-util"] }
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -61,11 +61,11 @@ sha2 = "0.10"
 fs2 = "0.4"
 # default-features disabled to avoid xdg-portal + gtk3 conflict on Linux
 # (tauri-plugin-dialog already enables rfd/gtk3; rfd panics if both are active)
-rfd = { version = "0.16", default-features = false }
+rfd = { version = "0.17", default-features = false }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
-tokio-util = { version = "0.7.18", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
@@ -76,7 +76,7 @@ png = "0.17"
 
 [dev-dependencies]
 pretty_assertions = "1"
-rstest = "0.23"
+rstest = "0.26"
 serial_test = "3"
 
 [features]

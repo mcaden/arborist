@@ -20,8 +20,8 @@ import type { AppConfig, SessionView, WorkspaceSwitchResult } from '@/types/arbo
 
 vi.mock('@/lib/tauri-bridge', () => import('@/lib/tauri-bridge.mock'));
 
-let configAdopt: ReturnType<typeof vi.fn>;
-let sessionAdopt: ReturnType<typeof vi.fn>;
+let configAdopt: ReturnType<typeof vi.fn<(sessions: SessionView[], activeSessionId: string | null) => void>>;
+let sessionAdopt: ReturnType<typeof vi.fn<(sessions: SessionView[], activeSessionId: string | null) => void>>;
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -56,8 +56,8 @@ function makeResult(overrides: Partial<WorkspaceSwitchResult> = {}): WorkspaceSw
 
 beforeEach(() => {
   resetBridgeMocks();
-  configAdopt = vi.fn();
-  sessionAdopt = vi.fn();
+  configAdopt = vi.fn<(sessions: SessionView[], activeSessionId: string | null) => void>();
+  sessionAdopt = vi.fn<(sessions: SessionView[], activeSessionId: string | null) => void>();
   useConfigStore.setState({ adoptWorkspace: configAdopt } as never);
   useSessionStore.setState((s) => ({
     actions: { ...s.actions, adoptWorkspace: sessionAdopt },

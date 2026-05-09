@@ -96,7 +96,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const handleTablistKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>): void => {
       const order: SettingsTab[] = ['general', 'customProcesses'];
-      const refs: Record<SettingsTab, RefObject<HTMLButtonElement>> = {
+      const refs: Record<SettingsTab, RefObject<HTMLButtonElement | null>> = {
         general: generalTabRef,
         customProcesses: customProcessesTabRef,
       };

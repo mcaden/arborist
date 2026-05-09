@@ -11,6 +11,7 @@ pub mod commands;
 pub mod compose;
 pub mod config_store;
 pub mod copilot_events;
+pub mod explorer_owner;
 pub mod git;
 pub mod icon_backfill;
 pub mod process_icon;

@@ -148,7 +148,9 @@ export function TabContextMenu({ parentSessionId, anchor, onClose, restoreFocusT
       className="min-w-[180px] rounded border border-slate-200 bg-white py-1 text-sm text-slate-800 shadow-lg dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
     >
       <MenuItem
-        ref={(el) => (itemRefs.current.restart = el)}
+        ref={(el) => {
+          itemRefs.current.restart = el;
+        }}
         onClick={handleRestart}
         isFocused={focusedItem === 'restart'}
         onMouseEnter={() => focusItem('restart')}
@@ -156,7 +158,9 @@ export function TabContextMenu({ parentSessionId, anchor, onClose, restoreFocusT
         Restart
       </MenuItem>
       <MenuItem
-        ref={(el) => (itemRefs.current.close = el)}
+        ref={(el) => {
+          itemRefs.current.close = el;
+        }}
         onClick={handleClose}
         isFocused={focusedItem === 'close'}
         onMouseEnter={() => focusItem('close')}
