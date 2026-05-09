@@ -36,13 +36,16 @@ import { SubTabContextMenu } from './SubTabContextMenu';
 import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
+import { BranchDecoration } from './BranchDecoration';
 import type { SubSessionId, SubSessionStatus } from '@/types/arborist';
 
 interface SidebarSubTabProps {
   subSessionId: SubSessionId;
+  /** Marks the last child of its worktree group so the rail terminates with an "└" elbow. */
+  isLastInGroup?: boolean;
 }
 
-export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element | null {
+export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSubTabProps): JSX.Element | null {
   const sub = useSubSessionById(subSessionId);
   const subActions = useSubSessionActions();
   const iconDataUri = useSubSessionIcon(subSessionId);
@@ -80,7 +83,8 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
     : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
 
   return (
-    <li className="group relative px-2">
+    <li className="group relative ml-6 pr-2">
+      <BranchDecoration isLastInGroup={isLastInGroup} />
       <button
         ref={rowButtonRef}
         type="button"
