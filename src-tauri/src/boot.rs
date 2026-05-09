@@ -191,6 +191,9 @@ where
             let next_str = next
                 .to_str()
                 .ok_or_else(|| BootError::Cli("--ai-launch-claude value is not valid UTF-8".into()))?;
+            if next_str.is_empty() || next_str.starts_with("--") {
+                return Err(BootError::Cli("--ai-launch-claude requires a value (got flag-like value)".into()));
+            }
             assign_ai_launch(&mut out.ai_launch_claude, "--ai-launch-claude", next_str)?;
         } else if let Some(value) = s.strip_prefix("--ai-launch-copilot=") {
             assign_ai_launch(&mut out.ai_launch_copilot, "--ai-launch-copilot", value)?;
@@ -199,6 +202,9 @@ where
             let next_str = next
                 .to_str()
                 .ok_or_else(|| BootError::Cli("--ai-launch-copilot value is not valid UTF-8".into()))?;
+            if next_str.is_empty() || next_str.starts_with("--") {
+                return Err(BootError::Cli("--ai-launch-copilot requires a value (got flag-like value)".into()));
+            }
             assign_ai_launch(&mut out.ai_launch_copilot, "--ai-launch-copilot", next_str)?;
         }
         // unknown args ignored
@@ -762,6 +768,125 @@ mod tests {
             BootError::Cli(msg) => assert!(msg.contains("--workspace value is not valid UTF-8")),
             other => panic!("expected BootError::Cli, got {other:?}"),
         }
+    }
+
+    // ----- --ai-launch-claude / --ai-launch-copilot --------------------
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_equals_form() {
+        let args = parse_cli_args(["arborist", "--ai-launch-claude=/usr/local/bin/test-child"]).unwrap();
+        assert_eq!(args.ai_launch_claude.as_deref(), Some("/usr/local/bin/test-child"));
+        assert!(args.ai_launch_copilot.is_none());
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_space_separated() {
+        let args = parse_cli_args(["arborist", "--ai-launch-claude", "/usr/local/bin/test-child"]).unwrap();
+        assert_eq!(args.ai_launch_claude.as_deref(), Some("/usr/local/bin/test-child"));
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_copilot_equals_form() {
+        let args = parse_cli_args(["arborist", "--ai-launch-copilot=/usr/local/bin/test-child"]).unwrap();
+        assert_eq!(args.ai_launch_copilot.as_deref(), Some("/usr/local/bin/test-child"));
+        assert!(args.ai_launch_claude.is_none());
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_copilot_space_separated() {
+        let args = parse_cli_args(["arborist", "--ai-launch-copilot", "/usr/local/bin/test-child"]).unwrap();
+        assert_eq!(args.ai_launch_copilot.as_deref(), Some("/usr/local/bin/test-child"));
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_missing_value_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-claude"]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-claude requires a value")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_copilot_missing_value_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-copilot"]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-copilot requires a value")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_flag_like_value_errors() {
+        // Regression: bare `--ai-launch-claude --workspace /ws` must NOT silently
+        // assign `--workspace` as the launch command and then fail to parse the
+        // workspace path. Mirror the strict behaviour we apply to `--workspace`.
+        let err = parse_cli_args(["arborist", "--ai-launch-claude", "--workspace", "/ws"]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-claude") && msg.contains("flag-like")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_copilot_flag_like_value_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-copilot", "--workspace", "/ws"]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-copilot") && msg.contains("flag-like")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_empty_equals_value_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-claude="]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-claude") && msg.contains("requires a value")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_copilot_empty_equals_value_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-copilot="]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-copilot") && msg.contains("requires a value")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_claude_duplicate_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-claude=/a", "--ai-launch-claude", "/b"]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-claude specified more than once")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_copilot_duplicate_errors() {
+        let err = parse_cli_args(["arborist", "--ai-launch-copilot=/a", "--ai-launch-copilot=/b"]).unwrap_err();
+        match err {
+            BootError::Cli(msg) => assert!(msg.contains("--ai-launch-copilot specified more than once")),
+            other => panic!("expected BootError::Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_args_ai_launch_both_with_workspace() {
+        // Realistic Linux e2e invocation: --workspace alongside both AI launch overrides.
+        let args = parse_cli_args([
+            "arborist",
+            "--workspace",
+            "/tmp/ws",
+            "--ai-launch-claude=/usr/local/bin/test-child",
+            "--ai-launch-copilot=/usr/local/bin/test-child",
+        ])
+        .unwrap();
+        assert_eq!(args.workspace.as_deref(), Some(Path::new("/tmp/ws")));
+        assert_eq!(args.ai_launch_claude.as_deref(), Some("/usr/local/bin/test-child"));
+        assert_eq!(args.ai_launch_copilot.as_deref(), Some("/usr/local/bin/test-child"));
     }
 
     // ----- hint_file_path ----------------------------------------------
