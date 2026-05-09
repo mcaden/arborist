@@ -13,7 +13,8 @@
 //!
 //! - **`OSC 0;<title>`** / **`OSC 2;<title>`** → [`ActivityEvent::Title`]. Both
 //!   terminate with either BEL (`\x07`) or ST (`\x1b\\`).
-//! - **`OSC 9;<msg>`** (legacy ConEmu desktop notification — non-numeric payload) → [`ActivityEvent::Attention`].
+//! - **`OSC 9;<msg>`** (legacy ConEmu desktop notification — payload has no `<n>;<...>` numeric-subcommand shape, so a digit-only `<msg>` like
+//!   `OSC 9;42` is still a notification) → [`ActivityEvent::Attention`].
 //! - **`OSC 9;2;<msg>`** (explicit ConEmu notification subcommand) → [`ActivityEvent::Attention`].
 //! - **`OSC 777;notify;...`** (rxvt/Kitty notification) →
 //!   [`ActivityEvent::Attention`].
@@ -58,12 +59,13 @@ const OSC_MAX_LEN: usize = 4096;
 pub enum ActivityEvent {
     /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
     Title { value: String },
-    /// Generic "the user should look at this tab" cue: explicit notification escapes only — legacy `OSC 9;<text>` (non-numeric payload), the
-    /// explicit `OSC 9;2;<text>` notification subcommand, and `OSC 777;notify;...`. **Standalone BEL is intentionally ignored** — both `claude`
-    /// and `copilot` ring the bell as part of normal readline-style behavior (autocomplete misses, backspace at column 0, scrollback edge),
-    /// which produced an unacceptable rate of false-positive "attention required" cues while the agent was simply thinking. Numeric `OSC 9`
-    /// subcommands other than `2` — notably `9;4;<state>;<value>` taskbar progress, which `claude` emits continuously while thinking — are also
-    /// ignored. If a CLI wants to demand attention, it must do so via a real notification OSC.
+    /// Generic "the user should look at this tab" cue: explicit notification escapes only — legacy `OSC 9;<text>` (any payload that does not
+    /// match the `<n>;<...>` numeric-subcommand shape, including digit-only messages like `OSC 9;42`), the explicit `OSC 9;2;<text>`
+    /// notification subcommand, and `OSC 777;notify;...`. **Standalone BEL is intentionally ignored** — both `claude` and `copilot` ring the
+    /// bell as part of normal readline-style behavior (autocomplete misses, backspace at column 0, scrollback edge), which produced an
+    /// unacceptable rate of false-positive "attention required" cues while the agent was simply thinking. Numeric `OSC 9` subcommands other
+    /// than `2` — notably `9;4;<state>;<value>` taskbar progress, which `claude` emits continuously while thinking — are also ignored. If a
+    /// CLI wants to demand attention, it must do so via a real notification OSC.
     Attention,
     /// Output is flowing. Emitted on the first byte after an idle window (or the very first byte of the session). Idempotent — only fires on the
     /// idle→working transition.
@@ -259,17 +261,23 @@ impl ActivityScanner {
             "0" | "2" => out.push(ActivityEvent::Title { value: rest.to_owned() }),
             "9" => {
                 // ConEmu/Windows Terminal `OSC 9` family. The original ConEmu form `OSC 9;<text>` is a desktop notification (Attention).
-                // Later subcommands prefix the payload with a numeric selector:
+                // Later subcommands prefix the payload with a numeric selector *followed by another `;`*:
                 //   9;1;<cwd>             set CWD
                 //   9;2;<msg>             desktop notification (Attention)
                 //   9;3;<title>           set tab title
                 //   9;4;<state>;<value>   taskbar progress (claude emits this continuously while thinking)
                 //   9;9;<cwd>             set CWD
-                // Treat as Attention only when the payload is the legacy non-numeric form *or* the explicit `9;2;...` notification subcommand.
-                // Anything else — including the unknown future numeric subcommand we haven't seen yet — is silently ignored, because a false
-                // bell while the agent is mid-thought is much worse than missing a notification we don't understand.
-                let first = rest.split(';').next().unwrap_or("");
-                let is_numeric_subcommand = !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit());
+                // Treat as Attention only when the payload is the legacy notification form (no `<n>;<...>` shape — including digit-only
+                // messages like `OSC 9;42`) *or* the explicit `9;2;...` notification subcommand. Anything else — including the unknown
+                // future numeric subcommand we haven't seen yet — is silently ignored, because a false bell while the agent is mid-thought
+                // is much worse than missing a notification we don't understand.
+                let mut parts = rest.splitn(2, ';');
+                let first = parts.next().unwrap_or("");
+                let has_more_segments = parts.next().is_some();
+                // A numeric subcommand requires the shape `<digits>;<...>` — i.e. digits *followed by another `;`*. A digit-only payload with no
+                // trailing `;` (e.g. `OSC 9;42\a`) is a legacy notification whose message text just happens to be numeric, not a subcommand;
+                // treating it as a subcommand would drop a real notification.
+                let is_numeric_subcommand = has_more_segments && !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit());
                 if !is_numeric_subcommand || first == "2" {
                     out.push(ActivityEvent::Attention);
                 }
@@ -445,6 +453,22 @@ mod tests {
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]9;2;hello\x07");
         assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::Attention]);
+    }
+
+    #[test]
+    fn osc_9_legacy_notification_with_digit_only_message_is_attention() {
+        // Regression for review feedback on PR #88: a legacy `OSC 9;<text>` whose message text happens to be all digits (or starts with digits
+        // and contains no further `;`) must not be misclassified as a numeric subcommand and dropped. The disambiguation rule is "shape
+        // `<n>;<...>` with a *second* `;`", not "first segment is digits".
+        for payload in [b"\x1b]9;42\x07".as_slice(), b"\x1b]9;7thing\x07"] {
+            let mut s = ActivityScanner::new();
+            let evs = s.feed_bytes(payload);
+            assert_eq!(
+                evs,
+                vec![ActivityEvent::Working, ActivityEvent::Attention],
+                "payload {payload:?} should fire Attention"
+            );
+        }
     }
 
     #[test]
