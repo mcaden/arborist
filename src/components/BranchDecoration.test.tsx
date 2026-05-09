@@ -39,7 +39,7 @@ describe('BranchDecoration', () => {
     const y2 = Number(line.getAttribute('y2'));
     expect(x2 - x1).toBe(y2 - y1);
     expect(y2 - y1).toBeGreaterThan(0);
-    expect(line.getAttribute('stroke-width')).toBe('4');
+    expect(line.getAttribute('stroke-width')).toBe('2');
   });
 
   it('non-last child draws a full-height trunk that bridges the flex gap on both ends', () => {
@@ -57,17 +57,17 @@ describe('BranchDecoration', () => {
     expect(trunk.style.top).toBe('-2px');
     // Trunk does NOT extend to the bottom — it stops where the diagonal starts.
     expect(trunk.style.bottom).toBe('');
-    // Default anchorTop is 50%; trunk height = anchorTop - (DIAG - 2)px = 50% - 10px.
-    expect(trunk.style.height).toBe('calc(50% - 10px)');
+    // Default anchorTop is 50%; trunk height = anchorTop - (DIAG - 2)px = 50% - 6px.
+    expect(trunk.style.height).toBe('calc(50% - 6px)');
   });
 
   it('honours a non-default anchorTop for both the diagonal SVG and the node', () => {
     const host = renderDecoration({ isLastInGroup: false, anchorTop: '18px' });
     const svg = host.children[1] as SVGElement;
     const node = host.children[2] as HTMLElement;
-    // SVG sits `DIAG` (12) px above the anchor so its diagonal lands on it.
-    // jsdom normalises `calc(18px - 12px)` to `calc(6px)`.
-    expect(svg.style.top).toBe('calc(6px)');
+    // SVG sits `DIAG` (8) px above the anchor so its diagonal lands on it.
+    // jsdom normalises `calc(18px - 8px)` to `calc(10px)`.
+    expect(svg.style.top).toBe('calc(10px)');
     // Node centred on the anchor (translate handles the centring).
     expect(node.style.top).toBe('18px');
     expect(node.style.transform).toContain('translate(-50%, -50%)');
@@ -76,7 +76,7 @@ describe('BranchDecoration', () => {
   it('positions the node at the trunk-centre + DIAG horizontally', () => {
     const host = renderDecoration({ isLastInGroup: false });
     const node = host.children[2] as HTMLElement;
-    // STROKE/2 (2) + DIAG (12) = 14px from the host's left edge.
-    expect(node.style.left).toBe('14px');
+    // STROKE/2 (1) + DIAG (8) = 9px from the host's left edge.
+    expect(node.style.left).toBe('9px');
   });
 });

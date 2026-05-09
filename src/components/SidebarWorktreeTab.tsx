@@ -70,7 +70,7 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         }}
         className={`${baseClasses} ${stateClasses}`}
       >
-        <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center">
+        <span aria-hidden="true" className="-ml-1 flex h-5 w-5 shrink-0 items-center justify-center">
           <img src={getTreeIconUrl(tab.iconId)} alt="" draggable={false} className="h-5 w-5 object-contain" />
         </span>
         <span className="min-w-0 flex-1 truncate">{tab.name}</span>

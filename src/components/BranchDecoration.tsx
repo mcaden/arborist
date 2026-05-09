@@ -27,8 +27,8 @@ import type { CSSProperties } from 'react';
 // Geometry constants (px). All strokes (trunk + diagonal) are `STROKE`px
 // thick; the diagonal travels `DIAG` px on each axis from the trunk's
 // centre line down-and-right to the node centre.
-const STROKE = 4;
-const DIAG = 12;
+const STROKE = 2;
+const DIAG = 8;
 // Trunk centre-line x in px (so the diagonal originates on the trunk's
 // centre, not its left edge).
 const TRUNK_CX = STROKE / 2;
@@ -78,7 +78,7 @@ export function BranchDecoration({ isLastInGroup, anchorTop = '50%' }: BranchDec
       </svg>
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute h-2.5 w-2.5 rounded-full bg-slate-400 ring-2 ring-slate-50 dark:bg-slate-400 dark:ring-slate-900"
+        className="pointer-events-none absolute h-[7.5px] w-[7.5px] rounded-full border-2 border-slate-400 bg-slate-50 dark:border-slate-400 dark:bg-slate-900"
         style={{ left: `${NODE_CX}px`, top: anchorTop, transform: 'translate(-50%, -50%)' }}
       />
     </>
