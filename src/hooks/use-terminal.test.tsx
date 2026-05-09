@@ -26,8 +26,8 @@ const mockTerminals: Array<{
 }> = [];
 
 vi.mock('@xterm/xterm', () => {
-  const Terminal = vi.fn().mockImplementation(() => {
-    const inst: (typeof mockTerminals)[number] = {
+  const Terminal = vi.fn(function (this: (typeof mockTerminals)[number]) {
+    Object.assign(this, {
       open: vi.fn(),
       write: vi.fn(),
       onData: vi.fn(),
@@ -44,22 +44,20 @@ vi.mock('@xterm/xterm', () => {
           handleCharSizeChanged: vi.fn(),
         },
       },
-    };
-    inst.onData.mockImplementation((cb: (data: string) => void) => {
-      inst._dataCb = cb;
     });
-    mockTerminals.push(inst);
-    return inst;
+    this.onData.mockImplementation((cb: (data: string) => void) => {
+      this._dataCb = cb;
+    });
+    mockTerminals.push(this);
   });
   return { Terminal };
 });
 
 const mockFitAddons: Array<{ fit: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }> = [];
 vi.mock('@xterm/addon-fit', () => {
-  const FitAddon = vi.fn().mockImplementation(() => {
-    const inst = { fit: vi.fn(), dispose: vi.fn() };
-    mockFitAddons.push(inst);
-    return inst;
+  const FitAddon = vi.fn(function (this: (typeof mockFitAddons)[number]) {
+    Object.assign(this, { fit: vi.fn(), dispose: vi.fn() });
+    mockFitAddons.push(this);
   });
   return { FitAddon };
 });

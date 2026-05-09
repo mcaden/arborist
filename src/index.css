@@ -1,8 +1,16 @@
 @import './assets/fonts/fonts.css';
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+/* Tailwind v4 reads our v3 JS config (content globs + theme.extend +
+   darkMode) via the @config directive so the migration doesn't have to
+   inline every theme token in CSS. */
+@config '../tailwind.config.js';
+
+/* `darkMode: 'class'` from the JS config is still respected, but v4 also
+   needs the dark variant to know about both the .dark class and any
+   nested descendants. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 html,
 body,

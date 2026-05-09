@@ -16,8 +16,6 @@
 //! - **`OSC 9;<msg>`** (ConEmu notification) → [`ActivityEvent::Attention`].
 //! - **`OSC 777;notify;...`** (rxvt/Kitty notification) →
 //!   [`ActivityEvent::Attention`].
-//! - **Standalone BEL** (a `\x07` byte that is *not* terminating an OSC
-//!   sequence) → [`ActivityEvent::Attention`].
 //! - **Output byte-rate**: a session that has not produced bytes for
 //!   [`IDLE_THRESHOLD`] is reported as [`ActivityEvent::Idle`]; the next byte
 //!   after an idle window flips it back to [`ActivityEvent::Working`].
@@ -55,7 +53,10 @@ const OSC_MAX_LEN: usize = 4096;
 pub enum ActivityEvent {
     /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
     Title { value: String },
-    /// Generic "the user should look at this tab" cue: standalone BEL, `OSC 9`, `OSC 777;notify;...`.
+    /// Generic "the user should look at this tab" cue: explicit notification escapes only (`OSC 9`, `OSC 777;notify;...`). **Standalone BEL is
+    /// intentionally ignored** — both `claude` and `copilot` ring the bell as part of normal readline-style behavior (autocomplete misses,
+    /// backspace at column 0, scrollback edge), which produced an unacceptable rate of false-positive "attention required" cues while the agent
+    /// was simply thinking. If a CLI wants to demand attention, it must do so via a real notification OSC.
     Attention,
     /// Output is flowing. Emitted on the first byte after an idle window (or the very first byte of the session). Idempotent — only fires on the
     /// idle→working transition.
@@ -101,7 +102,7 @@ pub enum ActivityEvent {
 
 #[derive(Debug)]
 enum ParseState {
-    /// Default: scanning for `\x1b` (ESC) or standalone BEL.
+    /// Default: scanning for `\x1b` (ESC). Stray BEL bytes are intentionally consumed and ignored here.
     Ground,
     /// Saw `\x1b`, awaiting the next byte to disambiguate (OSC `]`, CSI `[`, or something we don't care about).
     Esc,
@@ -182,20 +183,22 @@ impl ActivityScanner {
 
     fn consume_byte(&mut self, b: u8, out: &mut Vec<ActivityEvent>) {
         match self.state {
-            ParseState::Ground => match b {
-                0x1b => self.state = ParseState::Esc,
-                0x07 => out.push(ActivityEvent::Attention),
-                _ => {}
-            },
+            ParseState::Ground => {
+                // 0x07 (BEL) is intentionally consumed silently here — see `ActivityEvent::Attention` doc. Real "look at this tab" cues come via
+                // OSC 9 / OSC 777;notify, which terminate with BEL inside the OscPayload state below.
+                if b == 0x1b {
+                    self.state = ParseState::Esc;
+                }
+            }
             ParseState::Esc => match b {
                 b']' => {
                     self.osc_buf.clear();
                     self.state = ParseState::OscPayload { saw_esc: false };
                 }
                 _ => {
-                    // CSI (`[`), single-char escapes, and anything else we don't care about. Returning to Ground here is a simplification — we don't
-                    // need to fully parse CSI since we only care about OSC and standalone BEL. The trade-off: a `BEL` *inside* a CSI body would be
-                    // misclassified, but real CSI sequences never contain BEL.
+                    // CSI (`[`), single-char escapes, and anything else we don't care about. Returning to Ground here is a simplification — we
+                    // don't need to fully parse CSI since we only care about OSC. (We used to also attribute standalone BEL inside CSI as a
+                    // false attention cue; BEL is no longer surfaced from Ground at all, so the trade-off is moot.)
                     self.state = ParseState::Ground;
                 }
             },
@@ -389,10 +392,13 @@ mod tests {
     }
 
     #[test]
-    fn standalone_bel_emits_attention() {
+    fn standalone_bel_is_ignored() {
+        // Both `claude` and `copilot` ring BEL during normal readline-style operation (no autocomplete match, backspace at col 0, etc.). Surfacing
+        // those as "attention required" produced too many false positives, so a bare BEL in Ground is now a no-op. Real attention cues come via
+        // OSC 9 / OSC 777;notify (covered by their own tests below).
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"hi\x07there");
-        assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::Attention]);
+        assert_eq!(evs, vec![ActivityEvent::Working]);
     }
 
     #[test]
@@ -453,10 +459,12 @@ mod tests {
     }
 
     #[test]
-    fn csi_does_not_corrupt_state_or_swallow_subsequent_bel() {
+    fn csi_does_not_corrupt_state_or_swallow_subsequent_osc() {
+        // Originally asserted that a BEL after a CSI surfaced as Attention. Standalone BEL is no longer an attention trigger, but the underlying
+        // invariant we care about — CSI doesn't leave the parser in a stuck state — is still worth pinning. After a CSI, a follow-up OSC 9 must
+        // still parse cleanly.
         let mut s = ActivityScanner::new();
-        // Cursor-position CSI followed by a real attention BEL.
-        let evs = s.feed_bytes(b"\x1b[12;3H\x07");
+        let evs = s.feed_bytes(b"\x1b[12;3H\x07\x1b]9;ping\x07");
         assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::Attention]);
     }
 

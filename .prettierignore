@@ -5,6 +5,7 @@ coverage
 src-tauri/gen
 target
 package-lock.json
+pnpm-lock.yaml
 dev/
 .github/
 instructions/

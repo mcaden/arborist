@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import { WORKTREE_ICON_COUNT, getTreeIconUrl } from './tree-icons';
 
@@ -7,8 +7,8 @@ import { WORKTREE_ICON_COUNT, getTreeIconUrl } from './tree-icons';
 // with the production-shaped icon map). Instead, every test below uses a *unique* invalid id so cross-test pollution doesn't matter — repeated calls
 // with the same id are the assertion target, not absolute call counts.
 describe('getTreeIconUrl', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
-  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: MockInstance<typeof console.warn>;
+  let errorSpy: MockInstance<typeof console.error>;
 
   beforeEach(() => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -77,7 +77,9 @@ describe('getTreeIconUrl', () => {
     getTreeIconUrl(Number.NaN);
     getTreeIconUrl(Number.NaN);
     getTreeIconUrl(Number.NaN);
-    const nanCalls = warnSpy.mock.calls.slice(before).filter((args) => typeof args[0] === 'string' && (args[0] as string).includes('iconId NaN'));
+    const nanCalls = warnSpy.mock.calls
+      .slice(before)
+      .filter((args: unknown[]) => typeof args[0] === 'string' && (args[0] as string).includes('iconId NaN'));
     expect(nanCalls).toHaveLength(1);
   });
 });
