@@ -164,18 +164,24 @@ describe('WorktreeDashboard', () => {
 
   it('clicking Refresh re-invokes worktreeGitStatus', async () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
+    // Fake the 5s polling interval so the assertion below is deterministic on
+    // slow CI — we only want to count: the initial mount call + the click.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<WorktreeDashboard tabId={TAB_ID} />);
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+      await waitFor(() => {
+        expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
+      });
 
-    await waitFor(() => {
-      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
-    });
+      fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
 
-    fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
-
-    await waitFor(() => {
-      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(2);
-    });
+      await waitFor(() => {
+        expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('surfaces an inline error when git status fails', async () => {

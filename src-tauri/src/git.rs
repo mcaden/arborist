@@ -74,9 +74,10 @@ pub trait GitRunner: Send + Sync {
     fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error>;
 
     /// Snapshot `git status --porcelain=v2 --branch -z` for `worktree_path` (Issue #55: worktree dashboard). Returns a populated
-    /// [`WorktreeGitStatus`] on success and [`WorktreeGitStatus::default`] on any failure (missing dir, not a repo, missing `git` binary, parse
-    /// error). The dashboard surfaces "unable to read git status" rather than blocking on errors — same graceful-degradation contract as
-    /// [`Self::list_worktrees`].
+    /// [`WorktreeGitStatus`] on success. On discovery failure (missing dir, not a repo, missing `git` binary, non-zero status exit) returns a
+    /// default-valued struct with [`WorktreeGitStatus::error`] populated. Output parsing itself is best-effort and lossy: unrecognised porcelain
+    /// records are silently skipped (see [`parse_status_v2`]), so callers never see a "parse error" — the worst case is missing entries, not a
+    /// signalled failure. The dashboard distinguishes "clean tree" from "unreadable" by inspecting `error`.
     fn git_status(&self, worktree_path: &Path) -> Result<WorktreeGitStatus, Error>;
 }
 
