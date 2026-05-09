@@ -71,7 +71,7 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
     : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800';
 
   return (
-    <li className="group relative px-2">
+    <li className="group relative ml-5 border-l border-slate-200 pl-1 pr-2 dark:border-slate-700">
       <button
         type="button"
         aria-current={isActive ? 'page' : undefined}
