@@ -1807,12 +1807,16 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
     }
 
     // Materialise `<workspace>/.arborist/` and its `.gitignore` before computing the worktree path so the new layout is committable from a fresh
-    // checkout.
+    // checkout. Map IO error kinds back to user-actionable AppError variants so the frontend can render a clear message rather than "Internal".
     crate::repo_settings::ensure_arborist_dir(&workspace).map_err(|e| {
-        AppError::from(Error::Internal(format!(
-            "could not prepare {}: {e}",
-            workspace.join(crate::repo_settings::ARBORIST_DIR).display()
-        )))
+        let arborist = workspace.join(crate::repo_settings::ARBORIST_DIR);
+        let msg = format!("could not prepare {}: {e}", arborist.display());
+        let err = match e.kind() {
+            std::io::ErrorKind::InvalidInput => Error::InvalidPath(msg),
+            std::io::ErrorKind::PermissionDenied => Error::PermissionDenied(msg),
+            _ => Error::Internal(msg),
+        };
+        AppError::from(err)
     })?;
 
     let relative = std::path::PathBuf::from(crate::repo_settings::WORKTREES_REL).join(&validated);

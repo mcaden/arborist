@@ -90,8 +90,32 @@ impl RepoSettings {
     /// settings are advisory and must never block session creation.
     #[must_use]
     pub fn load(workspace: &Path) -> Self {
-        let path = workspace.join(ARBORIST_DIR).join(SETTINGS_FILENAME);
-        let meta = match fs::metadata(&path) {
+        // Defence in depth: refuse to follow a symlinked `.arborist` or
+        // `settings.json`. A repo checkout is potentially untrusted, and a
+        // symlink could redirect reads outside the workspace and influence
+        // commands via the resulting overlay.
+        let arborist = workspace.join(ARBORIST_DIR);
+        match fs::symlink_metadata(&arborist) {
+            Ok(m) if m.file_type().is_symlink() => {
+                warn!(
+                    code = "InvalidPath",
+                    path = %arborist.display(),
+                    "ignoring symlinked .arborist directory; using user-level defaults",
+                );
+                return Self::default();
+            }
+            Ok(_) | Err(_) => {}
+        }
+        let path = arborist.join(SETTINGS_FILENAME);
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_symlink() => {
+                warn!(
+                    code = "InvalidPath",
+                    path = %path.display(),
+                    "ignoring symlinked .arborist/settings.json; using user-level defaults",
+                );
+                return Self::default();
+            }
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::default(),
             Err(e) => {
@@ -190,10 +214,40 @@ pub fn ensure_arborist_dir(workspace: &Path) -> io::Result<PathBuf> {
         fs::create_dir_all(&dir)?;
     }
     let gitignore = dir.join(".gitignore");
-    if !gitignore.exists() {
-        // Best-effort: a write failure here is non-fatal for worktree creation.
-        if let Err(e) = fs::write(&gitignore, GITIGNORE_BODY) {
-            warn!(code = "Io", path = %gitignore.display(), error = %e, "could not write .arborist/.gitignore");
+    match fs::read_to_string(&gitignore) {
+        Ok(existing) => {
+            // File exists: append `.worktrees/` if (and only if) it is not
+            // already listed as its own line. We treat the line as present
+            // when any non-comment, non-negation line equals `.worktrees/`
+            // (with or without a trailing slash). Anything fancier — pattern
+            // negation, glob trickery — is left to the user; we just want to
+            // guarantee the default ignore is not silently missing.
+            let already_listed = existing.lines().any(|raw| {
+                let line = raw.trim();
+                if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+                    return false;
+                }
+                line.trim_end_matches('/') == ".worktrees"
+            });
+            if !already_listed {
+                let mut updated = existing;
+                if !updated.is_empty() && !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                updated.push_str(GITIGNORE_BODY);
+                if let Err(e) = fs::write(&gitignore, updated) {
+                    warn!(code = "Io", path = %gitignore.display(), error = %e, "could not append .worktrees/ to .arborist/.gitignore");
+                }
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Best-effort: a write failure here is non-fatal for worktree creation.
+            if let Err(e) = fs::write(&gitignore, GITIGNORE_BODY) {
+                warn!(code = "Io", path = %gitignore.display(), error = %e, "could not write .arborist/.gitignore");
+            }
+        }
+        Err(e) => {
+            warn!(code = "Io", path = %gitignore.display(), error = %e, "could not read .arborist/.gitignore; leaving as-is");
         }
     }
     Ok(dir)
@@ -322,6 +376,79 @@ mod tests {
         };
         repo.apply_to(&mut cfg);
         assert_eq!(cfg.ai_launch_commands.claude_icon_data_uri.as_deref(), Some("data:image/png;base64,KEEP"));
+    }
+
+    #[test]
+    fn ensure_arborist_dir_appends_worktrees_line_when_missing() {
+        let dir = tempdir().unwrap();
+        let arborist = dir.path().join(ARBORIST_DIR);
+        fs::create_dir_all(&arborist).unwrap();
+        // Pre-existing .gitignore that lists *something else* but not .worktrees/.
+        fs::write(arborist.join(".gitignore"), "build/\nlocal-secrets/\n").unwrap();
+
+        ensure_arborist_dir(dir.path()).unwrap();
+
+        let gitignore = fs::read_to_string(arborist.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("build/"), "preserves user entries");
+        assert!(gitignore.contains("local-secrets/"), "preserves user entries");
+        assert!(gitignore.lines().any(|l| l.trim_end_matches('/') == ".worktrees"), "appends .worktrees/");
+    }
+
+    #[test]
+    fn ensure_arborist_dir_does_not_duplicate_worktrees_line() {
+        let dir = tempdir().unwrap();
+        ensure_arborist_dir(dir.path()).unwrap();
+        ensure_arborist_dir(dir.path()).unwrap();
+        let gitignore = fs::read_to_string(dir.path().join(ARBORIST_DIR).join(".gitignore")).unwrap();
+        let count = gitignore.lines().filter(|l| l.trim_end_matches('/') == ".worktrees").count();
+        assert_eq!(count, 1, "expected exactly one .worktrees/ entry, got {count}: {gitignore:?}");
+    }
+
+    #[test]
+    fn ensure_arborist_dir_handles_missing_trailing_newline() {
+        let dir = tempdir().unwrap();
+        let arborist = dir.path().join(ARBORIST_DIR);
+        fs::create_dir_all(&arborist).unwrap();
+        fs::write(arborist.join(".gitignore"), "build/").unwrap(); // no trailing newline
+
+        ensure_arborist_dir(dir.path()).unwrap();
+
+        let gitignore = fs::read_to_string(arborist.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("build/"));
+        assert!(gitignore.lines().any(|l| l.trim_end_matches('/') == ".worktrees"));
+    }
+
+    #[test]
+    fn load_rejects_symlinked_settings_file() {
+        // Symlink/junction creation is privileged on Windows; only assert on Unix.
+        #[cfg(unix)]
+        {
+            let dir = tempdir().unwrap();
+            let arborist = dir.path().join(ARBORIST_DIR);
+            fs::create_dir_all(&arborist).unwrap();
+            // A real settings file outside the workspace, then a symlink pointing at it.
+            let outside = dir.path().join("attacker.json");
+            fs::write(&outside, r#"{ "worktreePrepCommands": ["pwned"] }"#).unwrap();
+            std::os::unix::fs::symlink(&outside, arborist.join(SETTINGS_FILENAME)).unwrap();
+
+            let out = RepoSettings::load(dir.path());
+            assert_eq!(out, RepoSettings::default(), "symlinked settings.json must not be honoured");
+        }
+    }
+
+    #[test]
+    fn load_rejects_symlinked_arborist_dir() {
+        #[cfg(unix)]
+        {
+            let dir = tempdir().unwrap();
+            let other = dir.path().join("elsewhere");
+            fs::create_dir_all(&other).unwrap();
+            fs::write(other.join(SETTINGS_FILENAME), r#"{ "worktreePrepCommands": ["pwned"] }"#).unwrap();
+            std::os::unix::fs::symlink(&other, dir.path().join(ARBORIST_DIR)).unwrap();
+
+            let out = RepoSettings::load(dir.path());
+            assert_eq!(out, RepoSettings::default(), "symlinked .arborist must not be honoured");
+        }
     }
 
     #[test]
