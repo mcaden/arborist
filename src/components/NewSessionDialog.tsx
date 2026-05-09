@@ -216,7 +216,7 @@ export function NewSessionDialog(): JSX.Element | null {
         if (creating || submitting) return;
         onCancel();
       }}
-      className="w-[28rem] rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+      className="fixed inset-0 m-auto h-fit w-[28rem] rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
     >
       <h2 id="new-session-title" className="mb-3 text-base font-semibold">
         Add worktree
