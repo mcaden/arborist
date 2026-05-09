@@ -396,7 +396,8 @@ pub struct GitStatusFile {
 
 /// Snapshot of `git status` for a single worktree (Issue #55). Returned by the `worktree_git_status` command and used by the worktree dashboard.
 /// All "count" fields are `0` and `files` is empty when the working tree is clean. On any failure (path missing, not a git repo, parse error,
-/// `git` binary missing) the implementation returns [`Self::default`] — the dashboard surfaces "unable to read git status" rather than blocking.
+/// `git` binary missing) the implementation returns a default-valued struct with [`Self::error`] populated to a human-readable message — the
+/// dashboard distinguishes "clean tree" from "unreadable" by inspecting `error` (a successful snapshot leaves it `None`).
 ///
 /// MIRROR: `src/types/arborist.ts::WorktreeGitStatus`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]

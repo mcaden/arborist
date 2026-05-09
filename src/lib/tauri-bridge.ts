@@ -269,10 +269,14 @@ export function worktreesList(repoRoot: string): Promise<WorktreeInfo[]> {
 
 /**
  * Snapshot `git status` for a worktree (Issue #55: worktree dashboard). Always
- * resolves — on any backend discovery failure the result is a default-valued
- * {@link WorktreeGitStatus} with empty counts and `branch === undefined`, so
- * the dashboard can render "unable to read git status" inline rather than
- * surfacing a toast.
+ * resolves. The returned {@link WorktreeGitStatus} carries an optional `error`
+ * field: when set, the snapshot could not be produced (path missing, not a git
+ * repository, `git` binary unavailable, non-zero `git status` exit) and the
+ * counts are zero. The dashboard distinguishes "clean tree" from "unreadable"
+ * by inspecting `error` rather than the counts (a clean tree on a detached
+ * HEAD also has zero counts and `branch === undefined`, but `error` is unset).
+ * A rejected `invoke()` (rare — e.g. capability denied) is surfaced via the
+ * caller's catch handler.
  */
 export function worktreeGitStatus(path: string): Promise<WorktreeGitStatus> {
   return invoke<WorktreeGitStatus>('worktree_git_status', {
