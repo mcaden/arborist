@@ -66,8 +66,9 @@ describe('BranchDecoration', () => {
     const svg = host.children[1] as SVGElement;
     const node = host.children[2] as HTMLElement;
     // SVG sits `DIAG` (8) px above the anchor so its diagonal lands on it.
-    // jsdom normalises `calc(18px - 8px)` to `calc(10px)`.
-    expect(svg.style.top).toBe('calc(10px)');
+    // Different jsdom/cssstyle versions may preserve the authored `calc(...)`
+    // expression or simplify it during serialisation.
+    expect(['calc(18px - 8px)', 'calc(10px)']).toContain(svg.style.top);
     // Node centred on the anchor (translate handles the centring).
     expect(node.style.top).toBe('18px');
     expect(node.style.transform).toContain('translate(-50%, -50%)');
