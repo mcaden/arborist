@@ -19,6 +19,7 @@ import {
   useOpenTools,
   useSessionActions,
   useSessionById,
+  useSessionStore,
   type DisplayStatus,
   type OpenPermission,
   type OpenTool,
@@ -55,6 +56,19 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
   const toolIconDataUri = useConfigStore((s) =>
     tool === 'claude' ? s.config.aiLaunchCommands.claudeIconDataUri : tool === 'copilot' ? s.config.aiLaunchCommands.copilotIconDataUri : undefined,
   );
+  // When more than one session of the same tool exists under the same
+  // worktree, append a 1-based ordinal so the rows are visually
+  // distinguishable. Mirrors the trailing-number convention used by
+  // `dedupe_label` in the backend (first sibling has no suffix).
+  const siblingSuffix = useSessionStore((s) => {
+    const me = s.sessions.find((x) => x.id === id);
+    if (!me) return '';
+    const siblings = s.sessions.filter((x) => x.tool === me.tool && x.worktreePath === me.worktreePath);
+    if (siblings.length <= 1) return '';
+    const sorted = [...siblings].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    const idx = sorted.findIndex((x) => x.id === id);
+    return idx <= 0 ? '' : ` ${idx + 1}`;
+  });
 
   if (!session) return null;
 
@@ -104,7 +118,7 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
             {...(toolIconDataUri !== undefined ? { iconDataUri: toolIconDataUri } : {})}
             className={isActive ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300' : 'h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400'}
           />
-          <span className="min-w-0 flex-1 truncate">{toolDisplayName(session.tool)}</span>
+          <span className="min-w-0 flex-1 truncate">{toolDisplayName(session.tool) + siblingSuffix}</span>
           <SessionStatusIndicator
             status={displayStatus}
             hasUnread={hasUnread && !isActive}
@@ -198,7 +212,6 @@ function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element
   );
 }
 
-/** Format a token count as `12.3k` for >= 1000, else as the raw number. */
 // AI session tabs sit *under* a worktree tab that already shows the
 // worktree name, so the row itself just identifies which CLI it hosts.
 function toolDisplayName(tool: Tool): string {
@@ -210,6 +223,7 @@ function toolDisplayName(tool: Tool): string {
   }
 }
 
+/** Format a token count as `12.3k` for >= 1000, else as the raw number. */
 function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   const k = n / 1000;
