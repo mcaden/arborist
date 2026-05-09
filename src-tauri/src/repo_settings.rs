@@ -188,10 +188,17 @@ impl RepoSettings {
 }
 
 /// Compatibility helper used during `worktree_create`: ensure
-/// `<workspace>/.arborist/` exists and contains a `.gitignore` listing
-/// `.worktrees/`. Idempotent.
+/// `<workspace>/.arborist/` exists, and best-effort attempt to keep its
+/// `.gitignore` listing `.worktrees/`. Idempotent.
 ///
 /// Returns the absolute path of the materialised `.arborist/` directory.
+///
+/// **Contract:** the directory itself is required — directory-creation
+/// failures (or the symlink/non-directory rejections below) propagate as
+/// `Err`. The `.gitignore` maintenance is best-effort: write/read errors on
+/// the gitignore are logged and swallowed so a transient filesystem hiccup
+/// does not block worktree creation. Callers that need a guaranteed
+/// gitignore should check `dir.join(".gitignore")` after this returns.
 ///
 /// Refuses to follow a `.arborist` symlink (defence in depth: a symlinked
 /// `.arborist` could redirect worktree creation outside the workspace).
