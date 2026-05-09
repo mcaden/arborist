@@ -268,7 +268,7 @@ export function Sidebar(): JSX.Element {
             return group.sessionIds.map((id) => {
               const idx = ids.indexOf(id);
               return (
-                <ParentTabGroup
+                <SidebarTab
                   key={id}
                   id={id}
                   isActive={false}
@@ -374,7 +374,7 @@ function SidebarGroupSection({
         const idx = ids.indexOf(id);
         const isLastInGroup = subSessions.length === 0 && i === lastSessionIndex;
         return (
-          <ParentTabGroup
+          <SidebarTab
             key={id}
             id={id}
             isActive={isActiveWorktree && id === activeChildSessionId}
@@ -389,32 +389,5 @@ function SidebarGroupSection({
         <SidebarSubTab key={sub.id} subSessionId={sub.id} isLastInGroup={i === lastSubIndex} />
       ))}
     </>
-  );
-}
-
-// ParentTabGroup — renders a parent SidebarTab. Sub-sessions are no
-// longer nested under agent tabs — they render at the worktree-tab
-// level as flat siblings.
-interface ParentTabGroupProps {
-  id: SessionId;
-  isActive: boolean;
-  isFocused: boolean;
-  onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
-  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
-  nested?: boolean;
-  isLastInGroup?: boolean;
-}
-
-function ParentTabGroup({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu, nested, isLastInGroup }: ParentTabGroupProps): JSX.Element {
-  return (
-    <SidebarTab
-      id={id}
-      isActive={isActive}
-      isFocused={isFocused}
-      onFocusableMounted={onFocusableMounted}
-      onOpenContextMenu={onOpenContextMenu}
-      {...(nested !== undefined ? { nested } : {})}
-      {...(isLastInGroup !== undefined ? { isLastInGroup } : {})}
-    />
   );
 }
