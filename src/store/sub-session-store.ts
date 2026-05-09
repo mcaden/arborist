@@ -158,15 +158,21 @@ export const useSubSessionStore = create<Store>((set, get) => {
   // a no-op.
   const relaunchPending = new Set<SubSessionId>();
 
-  // Sub-sessions whose spawn was triggered by an explicit user action
-  // (create or relaunch) and that should receive focus once they reach
-  // `running`. Application-kind sub-sessions reject focus while their
-  // status is still `starting` (see `subsession_focus_impl`), which
-  // caused the inconsistent post-spawn focus reported in #50 — focus
-  // succeeded only when the spawn happened to finish before the call
-  // landed. We stage the intent here and drain it in `applyStatus`
-  // when the running transition arrives. Lives outside Zustand state
-  // so it doesn't trigger subscriber re-renders.
+  // Application-kind sub-sessions whose `create` call resolved while
+  // status was still `starting` and that should receive focus once they
+  // reach `running`. `subsession_focus_impl` rejects focus on app-kind
+  // subs that aren't yet running, which caused the inconsistent
+  // post-spawn focus reported in #50 — focus succeeded only when the
+  // spawn happened to finish before the call landed. We stage the
+  // intent here and drain it in `applyStatus` when the running
+  // transition arrives. Lives outside Zustand state so it doesn't
+  // trigger subscriber re-renders.
+  //
+  // Scope is intentionally narrow: only `create` populates this set.
+  // `relaunch` deliberately does NOT — per the comment on that action,
+  // clicking a greyed-out app sub-tab to revive it is a revive gesture
+  // and shouldn't steal viewport focus from whatever the user is
+  // currently working on.
   const pendingFocus = new Set<SubSessionId>();
 
   const actions: SubSessionStoreActions = {

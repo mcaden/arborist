@@ -116,7 +116,14 @@ describe('useSubSessionStore', () => {
       // focus is fire-and-forget, but synchronous up to the first await.
       await Promise.resolve();
 
+      // Backend is told to focus (no-op for terminal kind, but the bridge call is the contract).
       expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
+      // The actual user-visible win condition for #50: the parent worktree tab is now active and points at the new sub-session, so MainArea
+      // swaps to its PTY. A regression that reverted the UI swap (e.g. dropping the `setActiveChild` call) would still call the bridge but
+      // leave these untouched.
+      const wttState = useWorktreeTabStore.getState();
+      expect(wttState.activeId).toBe(TAB_A);
+      expect(wttState.tabs.find((t) => t.id === TAB_A)?.activeChildId).toEqual({ kind: 'subSession', id: sub.id });
     });
 
     it('auto-focuses a running application-kind sub-session immediately (issue #50)', async () => {
