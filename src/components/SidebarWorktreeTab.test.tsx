@@ -89,13 +89,26 @@ describe('SidebarWorktreeTab', () => {
     expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
   });
 
-  it('right-click invokes the onOpenContextMenu callback with viewport coordinates', () => {
+  it('clicking the ⋮ button invokes the onOpenContextMenu callback with viewport coordinates', () => {
+    const onOpen = vi.fn();
+    render(<SidebarWorktreeTab tabId={TAB_ID} isActive={false} onOpenContextMenu={onOpen} />);
+
+    fireEvent.click(screen.getByTestId(`worktree-tab-menu-${TAB_ID}`));
+
+    expect(onOpen).toHaveBeenCalledWith(
+      TAB_ID,
+      expect.objectContaining({ x: expect.any(Number) as number, y: expect.any(Number) as number }),
+      expect.any(HTMLElement),
+    );
+  });
+
+  it('right-click does NOT open the context menu (moved to ⋮ button, issue #49)', () => {
     const onOpen = vi.fn();
     render(<SidebarWorktreeTab tabId={TAB_ID} isActive={false} onOpenContextMenu={onOpen} />);
 
     fireEvent.contextMenu(screen.getByTestId(`worktree-tab-${TAB_ID}`), { clientX: 12, clientY: 34 });
 
-    expect(onOpen).toHaveBeenCalledWith(TAB_ID, { x: 12, y: 34 }, expect.any(HTMLElement));
+    expect(onOpen).not.toHaveBeenCalled();
   });
 
   it('does not render a rolled-up status icon even when a child reports an error', () => {

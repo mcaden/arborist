@@ -23,9 +23,16 @@
 //   * Application kind, already exited — immediate close (no window
 //     to address).
 //
+// A vertical-ellipsis (⋮) button next to the close × opens
+// `SubTabContextMenu` (Restart + Close), mirroring the AI session-tab
+// affordance added in issue #49.
+//
 // Accessibility: the row is a plain `<button>` (implicit `role="button"`),
 // not `role="tab"`, so it stays out of the sidebar's roving-tabindex model.
 
+import { useRef, useState } from 'react';
+
+import { SubTabContextMenu } from './SubTabContextMenu';
 import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import { useSubSessionIcon } from '@/hooks/use-sub-session-icon';
@@ -44,6 +51,8 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
     const tab = s.tabs.find((t) => t.id === sub.parentWorktreeTabId);
     return s.activeId === sub.parentWorktreeTabId && tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === subSessionId;
   });
+  const rowButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [menu, setMenu] = useState<{ anchor: { x: number; y: number } } | null>(null);
 
   if (!sub) return null;
 
@@ -73,14 +82,29 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
   return (
     <li className="group relative px-2">
       <button
+        ref={rowButtonRef}
         type="button"
         aria-current={isActive ? 'page' : undefined}
         onClick={handleClick}
-        className={`flex w-full items-center gap-2 rounded-md py-1 pl-5 pr-7 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
+        className={`flex w-full items-center gap-2 rounded-md py-1 pl-5 pr-12 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${stateClasses}`}
       >
         <SubTabIcon kind={sub.kind} iconDataUri={iconDataUri} label={sub.label} />
         <span className="min-w-0 flex-1 truncate">{sub.label}</span>
         <SubStatusDot status={sub.status} />
+      </button>
+      <button
+        type="button"
+        aria-label={`More actions for sub-session ${sub.label}`}
+        aria-haspopup="menu"
+        data-testid={`sub-tab-menu-${subSessionId}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          setMenu({ anchor: { x: rect.left, y: rect.bottom + 2 } });
+        }}
+        className="absolute right-7 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-xs leading-none text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+      >
+        <span aria-hidden="true">⋮</span>
       </button>
       <button
         type="button"
@@ -90,6 +114,9 @@ export function SidebarSubTab({ subSessionId }: SidebarSubTabProps): JSX.Element
       >
         <span aria-hidden="true">×</span>
       </button>
+      {menu && (
+        <SubTabContextMenu subSessionId={subSessionId} anchor={menu.anchor} onClose={() => setMenu(null)} restoreFocusTo={rowButtonRef.current} />
+      )}
     </li>
   );
 }
