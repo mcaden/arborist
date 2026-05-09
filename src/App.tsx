@@ -310,10 +310,7 @@ function ReadyAppShell(): JSX.Element {
       <div
         className="flex h-full w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100"
         aria-busy={isSwitching || undefined}
-        // `inert` is a boolean attribute; React passes it through when
-        // truthy. Cast to `unknown` because the global JSX intrinsics
-        // for `<div>` only added `inert` typing in newer React types.
-        {...(isSwitching ? ({ inert: '' } as unknown as { inert: string }) : {})}
+        inert={isSwitching || undefined}
       >
         <Sidebar />
         <MainArea />
