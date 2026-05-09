@@ -32,10 +32,14 @@
 //!   compositor doesn't expose the workspace window, `find_vscode_window` returns `None`
 //!   and the sub-tab keeps the launcher PID.
 //!
-//! On macOS and Linux the `hwnd` field of [`WindowTarget`] is reported as `0` — those
-//! platforms don't expose an `hwnd`-style focus API ([`crate::window_focus`]'s
-//! `focus_hwnd`/`post_close_message` are Windows-only), so the [`AppPool`] always falls
-//! back to PID-based focus. The PID itself is the meaningful re-discovery output.
+//! On macOS the `hwnd` field of [`WindowTarget`] is reported as `0` (System Events
+//! doesn't surface a stable per-window handle that maps to a focus syscall). On
+//! Linux/BSD the `hwnd` field carries the X11 window id parsed from `wmctrl` —
+//! it's preserved on the wire even though [`crate::window_focus`]'s
+//! `focus_hwnd`/`post_close_message` are Windows-only today, so a future
+//! Unix-side `focus_hwnd` can adopt it without reshaping this module. Either
+//! way the [`AppPool`] currently falls back to PID-based focus on Unix, and the
+//! PID itself is the meaningful re-discovery output.
 //!
 //! ## Polling
 //!
@@ -143,8 +147,9 @@ impl OwnerResolver for VsCodeOwnerResolver {
 /// [`WindowFinder`] that re-runs the VS Code title heuristic, used as
 /// the stale-handle escape hatch for [`crate::app_launcher::AppPool::focus`] and [`crate::app_launcher::AppPool::request_window_close`].
 ///
-/// On macOS and Linux the returned `hwnd` is `0` — those platforms don't expose an `hwnd`-style focus API, so the result is only meaningful on
-/// Windows. Re-finding the window still has value as a liveness/ownership probe, but `AppPool` will fall through to PID-based focus on Unix.
+/// On macOS the returned `hwnd` is always `0` (System Events doesn't surface a stable per-window handle). On Linux/BSD it's the X11 window id parsed
+/// from `wmctrl`. Either way `WindowFocuser::focus_hwnd`/`post_close_message` are Windows-only today so the result is only acted on by `AppPool` on
+/// Windows; on Unix the call falls through to PID-based focus and the X11 id is currently informational only.
 pub struct VsCodeWindowFinder {
     basename: String,
 }
