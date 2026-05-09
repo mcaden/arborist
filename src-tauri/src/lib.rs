@@ -330,6 +330,7 @@ pub fn run() {
             commands::session_restart,
             commands::frontend_ready,
             commands::worktrees_list,
+            commands::worktree_git_status,
             commands::workspace_validate,
             commands::workspace_switch,
             commands::worktree_create,

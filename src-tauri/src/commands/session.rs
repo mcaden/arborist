@@ -1361,6 +1361,13 @@ pub fn worktrees_list_impl(ctx: &AppContext, repo_root: &std::path::Path) -> Res
     ctx.git_runner.list_worktrees(repo_root).map_err(AppError::from)
 }
 
+/// Snapshot `git status` for a single worktree (Issue #55: worktree dashboard). Always returns `Ok(...)` even when discovery fails — the runner
+/// itself degrades gracefully to [`WorktreeGitStatus::default`] on missing dir / non-repo / `git` binary missing, and the dashboard surfaces an
+/// "unable to read git status" hint rather than blocking the user.
+pub fn worktree_git_status_impl(ctx: &AppContext, worktree_path: &std::path::Path) -> Result<crate::types::WorktreeGitStatus, AppError> {
+    ctx.git_runner.git_status(worktree_path).map_err(AppError::from)
+}
+
 // --------------------------------------------------------------------------- workspace_validate / worktree_create (Roadmap §1, §2)
 // ---------------------------------------------------------------------------
 

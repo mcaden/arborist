@@ -18,7 +18,7 @@ use std::process::Command;
 
 use tracing::{debug, warn};
 
-use crate::types::{Error, WorktreeInfo};
+use crate::types::{Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
 
 /// Build a `git` [`Command`] with the repo-selection environment variables stripped.
 ///
@@ -72,6 +72,12 @@ pub trait GitRunner: Send + Sync {
     ///
     /// Errors are surfaced as [`Error::Internal`] carrying git's stderr so the frontend can show the user a meaningful message.
     fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), Error>;
+
+    /// Snapshot `git status --porcelain=v2 --branch -z` for `worktree_path` (Issue #55: worktree dashboard). Returns a populated
+    /// [`WorktreeGitStatus`] on success and [`WorktreeGitStatus::default`] on any failure (missing dir, not a repo, missing `git` binary, parse
+    /// error). The dashboard surfaces "unable to read git status" rather than blocking on errors — same graceful-degradation contract as
+    /// [`Self::list_worktrees`].
+    fn git_status(&self, worktree_path: &Path) -> Result<WorktreeGitStatus, Error>;
 }
 
 /// Production [`GitRunner`] that shells out to the system `git`.
@@ -205,6 +211,48 @@ impl GitRunner for RealGitRunner {
         }
         Ok(())
     }
+
+    fn git_status(&self, worktree_path: &Path) -> Result<WorktreeGitStatus, Error> {
+        if !worktree_path.is_dir() {
+            debug!(
+                code = "GitUnavailable",
+                worktree = %worktree_path.display(),
+                "git_status: worktree path is not a directory"
+            );
+            return Ok(WorktreeGitStatus::default());
+        }
+        let output = match git_command()
+            .current_dir(worktree_path)
+            .arg("-C")
+            .arg(worktree_path)
+            // `--porcelain=v2` for unambiguous machine-readable output, `--branch` to surface the branch / upstream / ahead-behind header,
+            // `-z` so paths are NUL-separated (no escaping or quoting), `--untracked-files=normal` so we count individual untracked files
+            // instead of just the directory shorthand.
+            .args(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                warn!(
+                    code = "GitUnavailable",
+                    worktree = %worktree_path.display(),
+                    error = %e,
+                    "git_status: git binary not invokable; returning empty status",
+                );
+                return Ok(WorktreeGitStatus::default());
+            }
+        };
+        if !output.status.success() {
+            warn!(
+                code = "GitUnavailable",
+                worktree = %worktree_path.display(),
+                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                "git_status: git status failed; returning empty status",
+            );
+            return Ok(WorktreeGitStatus::default());
+        }
+        Ok(parse_status_v2(&output.stdout))
+    }
 }
 
 /// Parse `git worktree list --porcelain` output. The first block is the main worktree; subsequent blocks are linked worktrees. Detached HEADs produce
@@ -287,6 +335,179 @@ impl PartialWorktree {
             is_locked: self.is_locked,
         })
     }
+}
+
+/// Parse `git status --porcelain=v2 --branch -z` output into a [`WorktreeGitStatus`] (Issue #55).
+///
+/// Format reference: <https://git-scm.com/docs/git-status#_porcelain_format_version_2>
+///
+/// Records are separated by NUL bytes (`-z`), so we split on `\0` and walk each record. The leading character determines record kind:
+///
+/// * `# branch.<key> <value>` — header lines emitted with `--branch`. We extract `head` (short SHA), `branch` (current branch name; `(detached)`
+///   indicates detached HEAD), `upstream` (tracking branch, omitted when none), and `ahead/behind` (`+N -M`).
+/// * `1 XY <subN..> <…>` — ordinary changed file. Counts contribute via the X/Y columns: X = staged, Y = unstaged.
+/// * `2 XY <subN..> <…> <orig_path>\0<new_path>` — renamed/copied file. Same XY rules; `-z` splits the original and new path with the inter-record
+///   NUL too, so the orig_path lives in the *next* record. We consume it and surface only the new path.
+/// * `u XY <subN..>` — unmerged (conflicted) entry.
+/// * `? <path>` — untracked file.
+/// * `! <path>` — ignored (we do not surface these).
+///
+/// Pure function — no IO. Robust to empty input and unrecognised record prefixes (silently skipped).
+pub(crate) fn parse_status_v2(input: &[u8]) -> WorktreeGitStatus {
+    let mut status = WorktreeGitStatus::default();
+
+    // Split on NUL. `-z` produces a *trailing* NUL too, so the final element is typically an empty record we skip.
+    let mut iter = input.split(|b| *b == 0).peekable();
+    while let Some(rec) = iter.next() {
+        if rec.is_empty() {
+            continue;
+        }
+        let line = String::from_utf8_lossy(rec);
+        let line = line.as_ref();
+        if let Some(rest) = line.strip_prefix("# ") {
+            parse_status_branch_header(&mut status, rest);
+            continue;
+        }
+        let mut chars = line.chars();
+        let kind = chars.next();
+        match kind {
+            Some('1') => parse_status_changed_record(&mut status, line, false),
+            Some('2') => {
+                parse_status_changed_record(&mut status, line, true);
+                // Renamed/copied records are followed by the original path as a *separate* NUL-terminated record. Consume and discard it so the
+                // outer loop doesn't try to interpret a bare path as a status code.
+                let _ = iter.next();
+            }
+            Some('u') => parse_status_unmerged_record(&mut status, line),
+            Some('?') => parse_status_untracked_record(&mut status, line),
+            Some('!') => { /* ignored (`--ignored` not requested but defensively skip) */ }
+            _ => { /* unknown — ignore for forward compatibility */ }
+        }
+    }
+
+    status
+}
+
+/// Parse one `# branch.<key> <value>` header, mutating `status` in place. Unknown keys are ignored.
+fn parse_status_branch_header(status: &mut WorktreeGitStatus, rest: &str) {
+    // `rest` looks like `branch.oid <sha>`, `branch.head <name>`, `branch.upstream <name>`, `branch.ab +N -M`.
+    let Some((key, value)) = rest.split_once(' ') else {
+        return;
+    };
+    match key {
+        "branch.oid" => {
+            let v = value.trim();
+            if !v.is_empty() && v != "(initial)" {
+                // 12-char short sha is plenty for a UI badge while staying unambiguous in any reasonable repo.
+                let short = v.chars().take(12).collect::<String>();
+                status.head = Some(short);
+            }
+        }
+        "branch.head" => {
+            let v = value.trim();
+            if !v.is_empty() && v != "(detached)" {
+                status.branch = Some(v.to_owned());
+            }
+        }
+        "branch.upstream" => {
+            let v = value.trim();
+            if !v.is_empty() {
+                status.upstream = Some(v.to_owned());
+            }
+        }
+        "branch.ab" => {
+            // Format: `+<ahead> -<behind>`.
+            let mut parts = value.split_whitespace();
+            if let Some(a) = parts.next() {
+                if let Some(stripped) = a.strip_prefix('+') {
+                    status.ahead = stripped.parse().unwrap_or(0);
+                }
+            }
+            if let Some(b) = parts.next() {
+                if let Some(stripped) = b.strip_prefix('-') {
+                    status.behind = stripped.parse().unwrap_or(0);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Parse a `1 XY ...` (ordinary) or `2 XY ... orig_path` (renamed/copied) record. The path lives at the end of the line for `1`, and immediately
+/// after the rename-score/sub-summary for `2`. We don't parse the sub-fields beyond what we need — the categorical counts only depend on the XY
+/// columns.
+fn parse_status_changed_record(status: &mut WorktreeGitStatus, line: &str, is_renamed: bool) {
+    // Layout (space-separated):
+    //   ordinary:  `1 XY sub mH mI mW hH hI <path>`
+    //   renamed:   `2 XY sub mH mI mW hH hI X<score> <path>` (then NUL-separated orig_path in the next record)
+    let mut parts = line.splitn(if is_renamed { 10 } else { 9 }, ' ');
+    let _ = parts.next(); // record kind
+    let xy = parts.next().unwrap_or("..");
+    let path = parts.last().unwrap_or("").to_owned();
+    let (x, y) = parse_xy(xy);
+    let mut staged_hit = false;
+    let mut unstaged_hit = false;
+    if x != '.' && x != ' ' {
+        status.staged += 1;
+        staged_hit = true;
+    }
+    if y != '.' && y != ' ' {
+        status.unstaged += 1;
+        unstaged_hit = true;
+    }
+    let kind = if staged_hit {
+        GitStatusFileKind::Staged
+    } else {
+        GitStatusFileKind::Unstaged
+    };
+    push_status_file(status, path.clone(), kind, xy);
+    // If both columns are dirty, also surface a second list entry so the file appears under both staged and unstaged when the user expands the
+    // panel. The counts already reflect this above. We add at most one extra entry per file.
+    if staged_hit && unstaged_hit {
+        push_status_file(status, path, GitStatusFileKind::Unstaged, xy);
+    }
+}
+
+fn parse_status_unmerged_record(status: &mut WorktreeGitStatus, line: &str) {
+    // Layout: `u XY sub m1 m2 m3 mW h1 h2 h3 <path>`
+    let mut parts = line.splitn(11, ' ');
+    let _ = parts.next();
+    let xy = parts.next().unwrap_or("..");
+    let path = parts.last().unwrap_or("").to_owned();
+    status.conflicted += 1;
+    push_status_file(status, path, GitStatusFileKind::Conflicted, xy);
+}
+
+fn parse_status_untracked_record(status: &mut WorktreeGitStatus, line: &str) {
+    // Layout: `? <path>`. We don't have an XY code; surface `??` to match porcelain-v1 conventions UIs already render.
+    let path = line.get(2..).unwrap_or("").to_owned();
+    if path.is_empty() {
+        return;
+    }
+    status.untracked += 1;
+    push_status_file(status, path, GitStatusFileKind::Untracked, "??");
+}
+
+fn parse_xy(xy: &str) -> (char, char) {
+    let mut chars = xy.chars();
+    let x = chars.next().unwrap_or('.');
+    let y = chars.next().unwrap_or('.');
+    (x, y)
+}
+
+fn push_status_file(status: &mut WorktreeGitStatus, path: String, kind: GitStatusFileKind, xy: &str) {
+    if path.is_empty() {
+        return;
+    }
+    if status.files.len() >= MAX_GIT_STATUS_FILES {
+        status.files_truncated = true;
+        return;
+    }
+    status.files.push(GitStatusFile {
+        path,
+        kind,
+        status: xy.to_owned(),
+    });
 }
 
 #[cfg(test)]
@@ -651,5 +872,169 @@ locked migrating to slow disk
                 "clean_test_git_command() must remove {var}; got {removed:?}"
             );
         }
+    }
+
+    // --- parse_status_v2 unit tests --- //
+
+    fn join_nul(records: &[&str]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for r in records {
+            buf.extend_from_slice(r.as_bytes());
+            buf.push(0);
+        }
+        buf
+    }
+
+    #[test]
+    fn parse_status_v2_clean_tree_with_branch_header() {
+        let raw = join_nul(&[
+            "# branch.oid 0123456789abcdef0123456789abcdef01234567",
+            "# branch.head main",
+            "# branch.upstream origin/main",
+            "# branch.ab +0 -0",
+        ]);
+        let s = parse_status_v2(&raw);
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(s.head.as_deref(), Some("0123456789ab"));
+        assert_eq!(s.ahead, 0);
+        assert_eq!(s.behind, 0);
+        assert_eq!(s.staged, 0);
+        assert_eq!(s.unstaged, 0);
+        assert_eq!(s.untracked, 0);
+        assert!(s.files.is_empty());
+        assert!(!s.files_truncated);
+    }
+
+    #[test]
+    fn parse_status_v2_detached_head_omits_branch() {
+        let raw = join_nul(&["# branch.oid abcdef0000000000000000000000000000000000", "# branch.head (detached)"]);
+        let s = parse_status_v2(&raw);
+        assert_eq!(s.branch, None);
+        assert_eq!(s.head.as_deref(), Some("abcdef000000"));
+    }
+
+    #[test]
+    fn parse_status_v2_ahead_behind() {
+        let raw = join_nul(&["# branch.head feat", "# branch.upstream origin/feat", "# branch.ab +3 -2"]);
+        let s = parse_status_v2(&raw);
+        assert_eq!(s.ahead, 3);
+        assert_eq!(s.behind, 2);
+    }
+
+    #[test]
+    fn parse_status_v2_staged_unstaged_untracked_conflicted() {
+        let raw = join_nul(&[
+            "# branch.head main",
+            "1 M. N... 100644 100644 100644 aa bb staged.txt",
+            "1 .M N... 100644 100644 100644 cc dd unstaged.txt",
+            "1 MM N... 100644 100644 100644 ee ff both.txt",
+            "u UU N... 100644 100644 100644 100644 11 22 33 conflict.txt",
+            "? untracked.txt",
+        ]);
+        let s = parse_status_v2(&raw);
+        assert_eq!(s.staged, 2, "M. and MM contribute to staged");
+        assert_eq!(s.unstaged, 2, ".M and MM contribute to unstaged");
+        assert_eq!(s.conflicted, 1);
+        assert_eq!(s.untracked, 1);
+        // 4 unique paths but `both.txt` appears twice (staged + unstaged) and untracked.txt + conflict.txt each contribute one => 6 entries.
+        assert_eq!(s.files.len(), 6);
+        assert!(s
+            .files
+            .iter()
+            .any(|f| f.path == "untracked.txt" && f.kind == GitStatusFileKind::Untracked));
+        assert!(s
+            .files
+            .iter()
+            .any(|f| f.path == "conflict.txt" && f.kind == GitStatusFileKind::Conflicted));
+        assert!(s.files.iter().any(|f| f.path == "staged.txt" && f.kind == GitStatusFileKind::Staged));
+        assert!(s.files.iter().any(|f| f.path == "unstaged.txt" && f.kind == GitStatusFileKind::Unstaged));
+    }
+
+    #[test]
+    fn parse_status_v2_renamed_record_consumes_orig_path() {
+        let raw = join_nul(&[
+            "# branch.head main",
+            "2 R. N... 100644 100644 100644 aa bb R100 new.txt",
+            "old.txt",
+            "1 .M N... 100644 100644 100644 cc dd after.txt",
+        ]);
+        let s = parse_status_v2(&raw);
+        assert_eq!(s.staged, 1);
+        assert_eq!(s.unstaged, 1);
+        // `old.txt` must NOT have been treated as its own status record (no false "after.txt is unstaged" mis-attribution).
+        let new_paths: Vec<&str> = s.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(new_paths.contains(&"new.txt"), "expected new.txt in {new_paths:?}");
+        assert!(new_paths.contains(&"after.txt"), "expected after.txt in {new_paths:?}");
+        assert!(!new_paths.contains(&"old.txt"), "old.txt must be discarded");
+    }
+
+    #[test]
+    fn parse_status_v2_files_truncated_when_over_cap() {
+        let mut records = vec!["# branch.head main".to_owned()];
+        for i in 0..MAX_GIT_STATUS_FILES + 5 {
+            records.push(format!("? f{i}.txt"));
+        }
+        let refs: Vec<&str> = records.iter().map(String::as_str).collect();
+        let s = parse_status_v2(&join_nul(&refs));
+        assert_eq!(
+            s.untracked as usize,
+            MAX_GIT_STATUS_FILES + 5,
+            "counts authoritative regardless of truncation"
+        );
+        assert_eq!(s.files.len(), MAX_GIT_STATUS_FILES);
+        assert!(s.files_truncated);
+    }
+
+    #[test]
+    fn parse_status_v2_empty_input() {
+        let s = parse_status_v2(b"");
+        assert_eq!(s, WorktreeGitStatus::default());
+    }
+
+    #[test]
+    fn real_runner_git_status_clean_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_git_repo(dir.path());
+        let runner = RealGitRunner;
+        let s = runner.git_status(dir.path()).expect("git_status ok");
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.staged, 0);
+        assert_eq!(s.unstaged, 0);
+        assert_eq!(s.untracked, 0);
+        assert_eq!(s.conflicted, 0);
+        assert!(s.files.is_empty());
+    }
+
+    #[test]
+    fn real_runner_git_status_detects_unstaged_and_untracked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_git_repo(dir.path());
+        // Modify the committed file (unstaged) and add a new untracked file.
+        std::fs::write(dir.path().join("README"), b"changed").unwrap();
+        std::fs::write(dir.path().join("new-file.txt"), b"hello").unwrap();
+        let runner = RealGitRunner;
+        let s = runner.git_status(dir.path()).expect("git_status ok");
+        assert_eq!(s.unstaged, 1, "modified README is unstaged");
+        assert_eq!(s.untracked, 1, "new-file.txt is untracked");
+        assert!(s.files.iter().any(|f| f.path == "README" && f.kind == GitStatusFileKind::Unstaged));
+        assert!(s.files.iter().any(|f| f.path == "new-file.txt" && f.kind == GitStatusFileKind::Untracked));
+    }
+
+    #[test]
+    fn real_runner_git_status_returns_default_for_non_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let runner = RealGitRunner;
+        let s = runner.git_status(dir.path()).expect("graceful degradation");
+        assert_eq!(s, WorktreeGitStatus::default());
+    }
+
+    #[test]
+    fn real_runner_git_status_returns_default_for_missing_dir() {
+        let runner = RealGitRunner;
+        let s = runner
+            .git_status(Path::new("/no/such/path/arborist-test-status"))
+            .expect("graceful degradation");
+        assert_eq!(s, WorktreeGitStatus::default());
     }
 }

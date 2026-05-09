@@ -47,6 +47,7 @@ import type {
   WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
+  WorktreeGitStatus,
   WorktreeTab,
   WorktreeTabId,
   WorktreeTabCloseResult,
@@ -264,6 +265,19 @@ export function instructionsList(): Promise<InstructionSet[]> {
  */
 export function worktreesList(repoRoot: string): Promise<WorktreeInfo[]> {
   return invoke<WorktreeInfo[]>('worktrees_list', { repoRoot });
+}
+
+/**
+ * Snapshot `git status` for a worktree (Issue #55: worktree dashboard). Always
+ * resolves — on any backend discovery failure the result is a default-valued
+ * {@link WorktreeGitStatus} with empty counts and `branch === undefined`, so
+ * the dashboard can render "unable to read git status" inline rather than
+ * surfacing a toast.
+ */
+export function worktreeGitStatus(path: string): Promise<WorktreeGitStatus> {
+  return invoke<WorktreeGitStatus>('worktree_git_status', {
+    args: { path },
+  });
 }
 
 /**

@@ -62,6 +62,9 @@ impl GitRunner for FakeGitRunner {
     fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path) -> Result<(), Error> {
         Ok(())
     }
+    fn git_status(&self, _worktree_path: &Path) -> Result<arborist_lib::types::WorktreeGitStatus, Error> {
+        Ok(arborist_lib::types::WorktreeGitStatus::default())
+    }
 }
 
 fn null_sink() -> PtySink {

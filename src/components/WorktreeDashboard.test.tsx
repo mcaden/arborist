@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -129,5 +129,82 @@ describe('WorktreeDashboard', () => {
     // No tab in the store with this id.
     const { container } = render(<WorktreeDashboard tabId={TAB_ID} />);
     expect(container.firstChild).toBeNull();
+  });
+
+  it('renders git status counts and ahead/behind from the backend', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab({ branch: 'feature-x' })] });
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      branch: 'feature-x',
+      head: 'deadbeef',
+      upstream: 'origin/feature-x',
+      ahead: 2,
+      behind: 1,
+      staged: 1,
+      unstaged: 2,
+      untracked: 3,
+      conflicted: 0,
+      files: [
+        { path: 'a.ts', kind: 'staged', status: 'M.' },
+        { path: 'b.ts', kind: 'unstaged', status: '.M' },
+      ],
+      filesTruncated: false,
+    });
+
+    render(<WorktreeDashboard tabId={TAB_ID} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-count-staged')).toHaveTextContent('1');
+    });
+    expect(screen.getByTestId('worktree-dashboard-count-unstaged')).toHaveTextContent('2');
+    expect(screen.getByTestId('worktree-dashboard-count-untracked')).toHaveTextContent('3');
+    expect(screen.getByTestId('worktree-dashboard-count-conflicted')).toHaveTextContent('0');
+    expect(screen.getByTestId('worktree-dashboard-ahead-behind')).toHaveTextContent(/↑2.*↓1/);
+    expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledWith('/repo/feature-x');
+  });
+
+  it('clicking Refresh re-invokes worktreeGitStatus', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+
+    render(<WorktreeDashboard tabId={TAB_ID} />);
+
+    await waitFor(() => {
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
+
+    await waitFor(() => {
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('surfaces an inline error when git status fails', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    bridgeMock.worktreeGitStatus.mockRejectedValueOnce(new Error('git not found'));
+
+    render(<WorktreeDashboard tabId={TAB_ID} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-git-error')).toHaveTextContent(/git not found/);
+    });
+  });
+
+  it('aggregates input/output tokens across sessions for this worktree only', () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    useSessionStore.setState({
+      sessions: [session('s1', '/repo/feature-x'), session('s2', '/repo/feature-x'), session('s3', '/other')],
+      metrics: {
+        s1: { sessionId: 's1', inputTokens: 100, outputTokens: 50, model: 'claude-sonnet-4-6', observedAt: 1 },
+        s2: { sessionId: 's2', inputTokens: 200, outputTokens: 75, model: 'claude-sonnet-4-6', observedAt: 2 },
+        // s3 is in a different worktree — must not contribute.
+        s3: { sessionId: 's3', inputTokens: 999, outputTokens: 999, observedAt: 3 },
+      },
+      isHydrated: true,
+    });
+
+    render(<WorktreeDashboard tabId={TAB_ID} />);
+
+    expect(screen.getByTestId('worktree-dashboard-input-tokens')).toHaveTextContent('300');
+    expect(screen.getByTestId('worktree-dashboard-output-tokens')).toHaveTextContent('125');
   });
 });

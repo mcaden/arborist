@@ -224,6 +224,17 @@ pub async fn worktrees_list(app: tauri::AppHandle, repo_root: String) -> Result<
     session::worktrees_list_impl(&ctx, &path)
 }
 
+/// Snapshot `git status` for a worktree (Issue #55). Always returns `Ok(...)`; on any discovery failure the result is a default-valued
+/// [`crate::types::WorktreeGitStatus`] so the dashboard surfaces "unable to read git status" rather than blocking.
+#[tauri::command]
+pub async fn worktree_git_status(
+    app: tauri::AppHandle,
+    args: crate::types::WorktreeGitStatusArgs,
+) -> Result<crate::types::WorktreeGitStatus, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::worktree_git_status_impl(&ctx, &args.path)
+}
+
 /// Validate a candidate workspace root (Roadmap §1.1). Never errors for the "invalid path" case — the picker shows inline feedback.
 #[tauri::command]
 pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateArgs) -> Result<WorkspaceValidateResult, AppError> {

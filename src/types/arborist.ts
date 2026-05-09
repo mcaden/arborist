@@ -516,6 +516,42 @@ export interface WorktreeInfo {
   isLocked: boolean;
 }
 
+// MIRROR: src-tauri/src/types.rs::GitStatusFileKind
+// Categorical state of a single file in a worktree's working tree (Issue #55).
+// A file with both X and Y dirty surfaces as both `staged` and `unstaged`
+// entries in `WorktreeGitStatus.files`.
+export type GitStatusFileKind = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
+
+// MIRROR: src-tauri/src/types.rs::GitStatusFile
+// One file entry in `WorktreeGitStatus.files` (Issue #55). `status` is the
+// raw porcelain-v2 XY code (e.g. `"M."`, `"MM"`, `"??"`, `"UU"`); `kind` is
+// the digestible category the dashboard groups by.
+export interface GitStatusFile {
+  path: string;
+  kind: GitStatusFileKind;
+  status: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeGitStatus
+// Returned by the `worktree_git_status` command (Issue #55: worktree
+// dashboard). All counts are `0` and `files` is empty when the working tree
+// is clean. On any backend discovery failure the backend returns a
+// default-valued struct (no branch / counts zero / no files) — the dashboard
+// surfaces "unable to read git status" rather than blocking.
+export interface WorktreeGitStatus {
+  branch?: string;
+  head?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  files: GitStatusFile[];
+  filesTruncated: boolean;
+}
+
 // MIRROR: src-tauri/src/types.rs::WorkspaceValidateResult
 // Returned by the `workspace_validate` command (Roadmap §1.1). `error` is
 // only populated when `valid === false`.

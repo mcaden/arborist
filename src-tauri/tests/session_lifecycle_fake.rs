@@ -220,6 +220,9 @@ impl GitRunner for RecordingGitRunner {
         }
         Ok(())
     }
+    fn git_status(&self, _worktree_path: &Path) -> Result<arborist_lib::types::WorktreeGitStatus, arborist_lib::types::Error> {
+        Ok(arborist_lib::types::WorktreeGitStatus::default())
+    }
 }
 
 fn build_harness() -> Harness {

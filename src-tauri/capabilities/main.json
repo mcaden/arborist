@@ -11,6 +11,7 @@
     "allow-session",
     "allow-frontend-ready",
     "allow-worktrees-list",
+    "allow-worktree-git-status",
     "allow-workspace-validate",
     "allow-workspace-switch",
     "allow-worktree-create",
