@@ -10,6 +10,7 @@
 
 import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
+import { BranchDecoration } from './BranchDecoration';
 import { formatError } from '@/lib/tauri-bridge';
 import { useConfigStore } from '@/store/config-store';
 import {
@@ -40,9 +41,30 @@ interface SidebarTabProps {
    * tabs.
    */
   onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
+  /**
+   * Render the git-branch style "trunk + branch + node" decoration on
+   * the left edge so this tab visually nests under its parent worktree
+   * header. Defaults to `true`; orphan sessions (no matching worktree)
+   * pass `false` so they render flush without a phantom rail.
+   */
+  nested?: boolean;
+  /**
+   * When `nested`, marks the last child of its worktree group so the
+   * rail terminates with an "└" elbow at the node instead of carrying
+   * on into the next group.
+   */
+  isLastInGroup?: boolean;
 }
 
-export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: SidebarTabProps): JSX.Element | null {
+export function SidebarTab({
+  id,
+  isActive,
+  isFocused,
+  onFocusableMounted,
+  onOpenContextMenu,
+  nested = true,
+  isLastInGroup = false,
+}: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
   const hasUnread = useHasUnread(id);
   const displayStatus = useDisplayStatus(id);
@@ -74,7 +96,8 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
     : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800';
 
   return (
-    <li className="group relative ml-5 border-l border-slate-200 pl-1 pr-2 dark:border-slate-700">
+    <li className={`group relative pr-2 ${nested ? 'ml-6' : 'ml-2'}`}>
+      {nested && <BranchDecoration isLastInGroup={isLastInGroup} />}
       <button
         ref={(el) => onFocusableMounted(id, el)}
         type="button"
