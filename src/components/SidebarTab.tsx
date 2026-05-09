@@ -46,7 +46,7 @@ interface SidebarTabProps {
    * owns the menu state so only one menu is open at a time across all
    * tabs.
    */
-  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => void;
 }
 
 export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: SidebarTabProps): JSX.Element | null {
@@ -104,8 +104,9 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
           // / Home / End / Delete / Enter / Space.
           if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
             e.preventDefault();
-            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-            onOpenContextMenu(id, { x: rect.left + 8, y: rect.bottom });
+            const tabButton = e.currentTarget as HTMLElement;
+            const rect = tabButton.getBoundingClientRect();
+            onOpenContextMenu(id, { x: rect.left + 8, y: rect.bottom }, tabButton);
           }
         }}
         className={`${baseClasses} ${stateClasses}`}
@@ -139,9 +140,13 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
           e.stopPropagation();
           // Anchor the menu to the button's bottom-left corner so it
           // drops down from the ⋮ trigger. TabContextMenu clamps to the
-          // viewport, so over-flow beyond the right edge is handled.
-          const rect = e.currentTarget.getBoundingClientRect();
-          onOpenContextMenu(id, { x: rect.left, y: rect.bottom + 2 });
+          // viewport, so overflow beyond the right edge is handled.
+          // Pass the ⋮ button itself as the focus-restore target so
+          // keyboard users who tabbed to ⋮ get focus back here on close
+          // (rather than jumping to the tab row).
+          const button = e.currentTarget;
+          const rect = button.getBoundingClientRect();
+          onOpenContextMenu(id, { x: rect.left, y: rect.bottom + 2 }, button);
         }}
         className="absolute right-7 top-1.5 rounded p-1 leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
