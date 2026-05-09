@@ -45,7 +45,7 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Normalized tag: '${tag}' (raw: '${RAW}')"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
@@ -98,14 +98,14 @@ jobs:
       # Check out the exact tag the user requested (normalized by the verify
       # job) so the built binaries correspond to the release tag rather than
       # the default branch HEAD.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ needs.verify.outputs.tag }}
 
       - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable

@@ -93,7 +93,7 @@ export async function changeWorkspace(path: string): Promise<void> {
       result = await workspaceSwitch(path);
     } catch (err) {
       if (isAppErrorLike(err) && err.code === 'WorkspaceLocked') {
-        throw new Error('That workspace is already open in another Arborist window. Close it there and try again.');
+        throw new Error('That workspace is already open in another Arborist window. Close it there and try again.', { cause: err });
       }
       throw err;
     }

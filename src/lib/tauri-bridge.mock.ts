@@ -21,13 +21,16 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 // itself. Importing the real bridge here would create a circular dependency:
 // the vi.mock factory loads this file, which would try to load `./tauri-bridge`,
 // which is the module being mocked, deadlocking Vitest's module resolver.
-import { formatError, isAppErrorLike } from '@/lib/tauri-error';
+import * as tauriError from '@/lib/tauri-error';
 import type * as realBridge from './tauri-bridge';
 import type { AppConfig } from '@/types/arborist';
 
 // Pure helpers (no Tauri side effects) — re-export so tests get the same
-// formatting as production.
-export { formatError, isAppErrorLike };
+// formatting as production. Indirected through `tauriError.*` instead of named
+// re-export so vitest 4 + vite 8 cannot tree-shake / strip the bindings before
+// the mocked bridge is consumed by the test subject.
+export const formatError: typeof tauriError.formatError = (err) => tauriError.formatError(err);
+export const isAppErrorLike: typeof tauriError.isAppErrorLike = (v): v is tauriError.AppErrorLike => tauriError.isAppErrorLike(v);
 export type { AppErrorLike } from '@/lib/tauri-error';
 
 // Every command stub rejects by default so a forgotten `mockResolvedValue`
