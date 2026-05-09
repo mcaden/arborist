@@ -158,6 +158,23 @@ export const useSubSessionStore = create<Store>((set, get) => {
   // a no-op.
   const relaunchPending = new Set<SubSessionId>();
 
+  // Application-kind sub-sessions whose `create` call resolved while
+  // status was still `starting` and that should receive focus once they
+  // reach `running`. `subsession_focus_impl` rejects focus on app-kind
+  // subs that aren't yet running, which caused the inconsistent
+  // post-spawn focus reported in #50 — focus succeeded only when the
+  // spawn happened to finish before the call landed. We stage the
+  // intent here and drain it in `applyStatus` when the running
+  // transition arrives. Lives outside Zustand state so it doesn't
+  // trigger subscriber re-renders.
+  //
+  // Scope is intentionally narrow: only `create` populates this set.
+  // `relaunch` deliberately does NOT — per the comment on that action,
+  // clicking a greyed-out app sub-tab to revive it is a revive gesture
+  // and shouldn't steal viewport focus from whatever the user is
+  // currently working on.
+  const pendingFocus = new Set<SubSessionId>();
+
   const actions: SubSessionStoreActions = {
     hydrate: async () => {
       const all = await subSessionList();
@@ -172,11 +189,24 @@ export const useSubSessionStore = create<Store>((set, get) => {
       set((s) => ({
         subSessions: [...s.subSessions, sub],
       }));
+      // Auto-focus the freshly spawned sub-session (#50). Terminal-kind
+      // focus is a pure UI swap and works at any status, so dispatch
+      // immediately. Application-kind focus needs `running` on the
+      // backend; if we're already there, fire now, otherwise stage and
+      // let `applyStatus` drain when the status flips.
+      if (sub.kind === 'terminal' || sub.status === 'running') {
+        void actions.focus(sub.id).catch((err) => {
+          console.warn(`[sub-session-store] auto-focus after create(${sub.id}) failed: ${formatError(err)}`);
+        });
+      } else {
+        pendingFocus.add(sub.id);
+      }
       return sub;
     },
 
     close: async (id, intent) => {
       const closingSub = get().subSessions.find((s) => s.id === id);
+      pendingFocus.delete(id);
       try {
         await subSessionClose(id, intent);
       } finally {
@@ -238,13 +268,15 @@ export const useSubSessionStore = create<Store>((set, get) => {
     },
 
     dropForWorktreeTab: (tabId) => {
+      const droppedIds = new Set(
+        get()
+          .subSessions.filter((sub) => sub.parentWorktreeTabId === tabId)
+          .map((sub) => sub.id),
+      );
+      if (droppedIds.size === 0) return;
+      for (const id of droppedIds) pendingFocus.delete(id);
       set((s) => {
-        const next = s.subSessions.filter((sub) => sub.parentWorktreeTabId !== tabId);
-        if (next.length === s.subSessions.length) {
-          return {};
-        }
-        // Drop status messages for the orphaned ids.
-        const droppedIds = new Set(s.subSessions.filter((sub) => sub.parentWorktreeTabId === tabId).map((sub) => sub.id));
+        const next = s.subSessions.filter((sub) => !droppedIds.has(sub.id));
         const nextMsgs: Record<SubSessionId, string> = {};
         for (const [k, v] of Object.entries(s.statusMessages)) {
           if (!droppedIds.has(k as SubSessionId)) nextMsgs[k as SubSessionId] = v;
@@ -360,6 +392,20 @@ export const useSubSessionStore = create<Store>((set, get) => {
         }
         return { subSessions: nextSubs, statusMessages: nextMsgs };
       });
+      // Drain any deferred auto-focus once the backend reports the
+      // process is actually running — see `pendingFocus` in `create`
+      // (#50). Terminal states clear the entry without focusing so a
+      // sub that died before reaching `running` doesn't haunt the set.
+      if (pendingFocus.has(event.id)) {
+        if (event.status === 'running') {
+          pendingFocus.delete(event.id);
+          void actions.focus(event.id).catch((err) => {
+            console.warn(`[sub-session-store] deferred auto-focus for ${event.id} failed: ${formatError(err)}`);
+          });
+        } else if (isTerminalStatus(event.status)) {
+          pendingFocus.delete(event.id);
+        }
+      }
     },
 
     applyExited: (event) => {
@@ -379,6 +425,9 @@ export const useSubSessionStore = create<Store>((set, get) => {
         nextSubs[idx] = withStatusAndPid(current, synthetic, undefined);
         return { subSessions: nextSubs };
       });
+      // Process never reached `running`; drop any deferred focus so it
+      // doesn't fire if a new sub-session reuses the id later.
+      pendingFocus.delete(event.id);
     },
 
     applyRestored: (event) => {

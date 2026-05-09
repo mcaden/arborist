@@ -102,6 +102,76 @@ describe('useSubSessionStore', () => {
       expect(returned).toEqual(sub);
       expect(useSubSessionStore.getState().subSessions).toEqual([sub]);
     });
+
+    it('auto-focuses a terminal-kind sub-session immediately (issue #50)', async () => {
+      const tab = makeTab(TAB_A);
+      useWorktreeTabStore.setState({ tabs: [tab], activeId: null, isHydrated: true });
+      const sub = makeSub({ id: id('30'), kind: 'terminal', status: 'starting', pid: undefined });
+      bridgeMock.subSessionCreate.mockResolvedValueOnce(sub);
+
+      await useSubSessionStore.getState().actions.create({
+        parentWorktreeTabId: TAB_A,
+        defId: 'shell',
+      });
+      // focus is fire-and-forget, but synchronous up to the first await.
+      await Promise.resolve();
+
+      // Backend is told to focus (no-op for terminal kind, but the bridge call is the contract).
+      expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
+      // The actual user-visible win condition for #50: the parent worktree tab is now active and points at the new sub-session, so MainArea
+      // swaps to its PTY. A regression that reverted the UI swap (e.g. dropping the `setActiveChild` call) would still call the bridge but
+      // leave these untouched.
+      const wttState = useWorktreeTabStore.getState();
+      expect(wttState.activeId).toBe(TAB_A);
+      expect(wttState.tabs.find((t) => t.id === TAB_A)?.activeChildId).toEqual({ kind: 'subSession', id: sub.id });
+    });
+
+    it('auto-focuses a running application-kind sub-session immediately (issue #50)', async () => {
+      const sub = makeSub({ id: id('31'), kind: 'application', status: 'running', pid: 5555 });
+      bridgeMock.subSessionCreate.mockResolvedValueOnce(sub);
+
+      await useSubSessionStore.getState().actions.create({
+        parentWorktreeTabId: TAB_A,
+        defId: 'editor',
+      });
+      await Promise.resolve();
+
+      expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
+    });
+
+    it('defers application-kind focus until status flips to running (issue #50)', async () => {
+      const sub = makeSub({ id: id('32'), kind: 'application', status: 'starting', pid: undefined });
+      bridgeMock.subSessionCreate.mockResolvedValueOnce(sub);
+
+      await useSubSessionStore.getState().actions.create({
+        parentWorktreeTabId: TAB_A,
+        defId: 'editor',
+      });
+      await Promise.resolve();
+      expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+
+      useSubSessionStore.getState().actions.applyStatus({ id: sub.id, status: 'running', pid: 5555 });
+      await Promise.resolve();
+
+      expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
+    });
+
+    it('does not focus a deferred application-kind sub-session that exits before running (issue #50)', async () => {
+      const sub = makeSub({ id: id('33'), kind: 'application', status: 'starting', pid: undefined });
+      bridgeMock.subSessionCreate.mockResolvedValueOnce(sub);
+
+      await useSubSessionStore.getState().actions.create({
+        parentWorktreeTabId: TAB_A,
+        defId: 'editor',
+      });
+      // Spawn fails before reaching running.
+      useSubSessionStore.getState().actions.applyStatus({ id: sub.id, status: 'error', message: 'boom' });
+      // Spurious late status (e.g. relaunch) shouldn't refire the deferred focus.
+      useSubSessionStore.getState().actions.applyStatus({ id: sub.id, status: 'running', pid: 1 });
+      await Promise.resolve();
+
+      expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+    });
   });
 
   describe('close', () => {
