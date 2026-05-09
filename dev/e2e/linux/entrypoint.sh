@@ -46,7 +46,7 @@ start_dbus() {
 
 setup_home() {
   # Use a fresh ephemeral HOME so each run starts clean (no leftover config)
-  export HOME="${ARBORIST_E2E_HOME:-/tmp/arborist-home}"
+  export HOME="${E2E_HOME:-/tmp/arborist-home}"
   mkdir -p "$HOME"
   echo "[entrypoint] HOME=$HOME"
 }
@@ -57,18 +57,18 @@ setup_home() {
 # legacy config → native picker`, and only the first arm is non-interactive).
 # wdio.conf.ts passes this path via tauri:options.args = ["--workspace", …].
 setup_test_workspace() {
-  export ARBORIST_TEST_WORKSPACE="${ARBORIST_TEST_WORKSPACE:-/tmp/arborist-test-workspace}"
-  if [ ! -d "$ARBORIST_TEST_WORKSPACE/.git" ]; then
-    rm -rf "$ARBORIST_TEST_WORKSPACE"
-    mkdir -p "$ARBORIST_TEST_WORKSPACE"
-    git -C "$ARBORIST_TEST_WORKSPACE" init -q -b main
-    git -C "$ARBORIST_TEST_WORKSPACE" config user.email "e2e@arborist.local"
-    git -C "$ARBORIST_TEST_WORKSPACE" config user.name "Arborist E2E"
-    echo "# Arborist e2e test workspace" > "$ARBORIST_TEST_WORKSPACE/README.md"
-    git -C "$ARBORIST_TEST_WORKSPACE" add README.md
-    git -C "$ARBORIST_TEST_WORKSPACE" commit -q -m "initial commit"
+  export E2E_TEST_WORKSPACE="${E2E_TEST_WORKSPACE:-/tmp/arborist-test-workspace}"
+  if [ ! -d "$E2E_TEST_WORKSPACE/.git" ]; then
+    rm -rf "$E2E_TEST_WORKSPACE"
+    mkdir -p "$E2E_TEST_WORKSPACE"
+    git -C "$E2E_TEST_WORKSPACE" init -q -b main
+    git -C "$E2E_TEST_WORKSPACE" config user.email "e2e@arborist.local"
+    git -C "$E2E_TEST_WORKSPACE" config user.name "Arborist E2E"
+    echo "# Arborist e2e test workspace" > "$E2E_TEST_WORKSPACE/README.md"
+    git -C "$E2E_TEST_WORKSPACE" add README.md
+    git -C "$E2E_TEST_WORKSPACE" commit -q -m "initial commit"
   fi
-  echo "[entrypoint] ARBORIST_TEST_WORKSPACE=$ARBORIST_TEST_WORKSPACE"
+  echo "[entrypoint] E2E_TEST_WORKSPACE=$E2E_TEST_WORKSPACE"
 }
 
 # ---- modes ------------------------------------------------------------------
@@ -126,7 +126,7 @@ run_shell() {
   echo "[entrypoint] AppImage extracted at /opt/arborist/"
   echo "[entrypoint] tauri-driver is at /usr/local/bin/tauri-driver"
   echo "[entrypoint] arborist-test-child is at /usr/local/bin/arborist-test-child"
-  echo "[entrypoint] Test workspace: $ARBORIST_TEST_WORKSPACE"
+  echo "[entrypoint] Test workspace: $E2E_TEST_WORKSPACE"
   echo ""
   exec bash "$@"
 }

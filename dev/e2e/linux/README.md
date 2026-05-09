@@ -48,8 +48,8 @@ pnpm e2e:linux:shell
 
 ### Hermetic CLI testing
 
-No real `claude` or `copilot` CLIs are installed. The env vars `ARBORIST_CLI_OVERRIDE_CLAUDE`
-and `ARBORIST_CLI_OVERRIDE_COPILOT` point at `arborist-test-child`, which provides a
+No real `claude` or `copilot` CLIs are installed. The boot CLI flags `--ai-launch-claude`
+and `--ai-launch-copilot` (set by `wdio.conf.ts`) point at `arborist-test-child`, which provides a
 deterministic line-based protocol (`ARBORIST-TEST-CHILD READY`, `quit`, `exit N`, `flood K`,
 `unicode`, and echo).
 

@@ -1020,14 +1020,12 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `subsession_relaunch` | `{ id }` | `SubSession` | Re-spawn a sub-session under the same id, refreshing `composedCommand` from the current def. See §5.7.7. Errors: `NotFound` (def deleted), `InvalidArgument` (def disabled or parent closing), `WorktreeMissing`, `PtySpawnFailed`/`AppSpawnFailed`/`ToolMissing`. |
 | `subsession_icon` | `{ id }` | `string \| null` | Best-effort fetch of the OS application icon for an `application`-kind sub-session, returned as a `data:image/png;base64,…` URI. Returns `null` (not an error) for terminal sub-sessions, exited PIDs, unsupported platforms, and lookup misses; the frontend falls back to a generic emoji on `null`. Backed by `IconCache` (keyed by canonical exe path; never re-extracts the same exe). Extraction runs on `tokio::task::spawn_blocking`. Per-platform: Windows uses `SHGetFileInfoW` + `DrawIconEx`; macOS shells out to `plutil` + `sips` against the `.app` bundle; Linux walks `~/.local/share/applications` + `/usr/share/applications` for a matching `.desktop` file and resolves `Icon=` against standard `hicolor` PNG paths (no SVG, no full XDG theme resolution). |
 
-> **Test-only seam.** The Rust backend consults two env vars,
-> `ARBORIST_CLI_OVERRIDE_CLAUDE` and `ARBORIST_CLI_OVERRIDE_COPILOT`, when composing
-> a session's command. If set, the value replaces the bare `claude` / `copilot`
-> program token (already shell-quoted). Production never sets these; they exist
-> only so integration tests can drive the full lifecycle against a deterministic
-> child process. The override path is encoded verbatim into the persisted
-> `composedCommand`, so restarting the session with the env var unset will spawn
-> the literal path (not fall back to `claude`/`copilot`). See
+> **Test-only seam.** The integration tests and Linux e2e harness override
+> the `claude` / `copilot` program tokens through the user-facing
+> `AppConfig.ai_launch_commands` config field — there is no environment-variable
+> seam. For e2e, `--ai-launch-claude=<path>` and `--ai-launch-copilot=<path>`
+> CLI flags (parsed in `boot::parse_cli_args`) seed the same config field at
+> boot. Production users get the same plumbing via the Settings dialog. See
 > `compose::cli_program_for_tool`.
 
 ### Events (Rust → Frontend)

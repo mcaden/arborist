@@ -17,7 +17,12 @@ const APP_BINARY = "/opt/arborist/AppRun";
 // Without --workspace, arborist's boot resolution falls through to the native
 // folder picker and blocks forever in headless mode (the WebView is never
 // created → tauri-driver/WebKitWebDriver session POST hangs until timeout).
-const TEST_WORKSPACE = process.env.ARBORIST_TEST_WORKSPACE ?? "/tmp/arborist-test-workspace";
+const TEST_WORKSPACE = process.env.E2E_TEST_WORKSPACE ?? "/tmp/arborist-test-workspace";
+// Path to the deterministic stand-in for `claude` / `copilot` shipped by the
+// Dockerfile. Passed to arborist via `--ai-launch-claude` / `--ai-launch-copilot`
+// so the bare `claude` / `copilot` program tokens in the composed PTY command
+// resolve to this binary instead of requiring the real CLIs to be installed.
+const TEST_CHILD = "/usr/local/bin/arborist-test-child";
 const DRIVER_PORT = 4444;
 const DRIVER_STARTUP_TIMEOUT_MS = 10_000;
 const DRIVER_POLL_INTERVAL_MS = 100;
@@ -59,7 +64,12 @@ export const config: WebdriverIO.Config = {
       maxInstances: 1,
       "tauri:options": {
         application: APP_BINARY,
-        args: ["--workspace", TEST_WORKSPACE],
+        args: [
+          "--workspace",
+          TEST_WORKSPACE,
+          `--ai-launch-claude=${TEST_CHILD}`,
+          `--ai-launch-copilot=${TEST_CHILD}`,
+        ],
       },
     },
   ],

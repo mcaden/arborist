@@ -3,15 +3,11 @@ import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
 import { relative, isAbsolute } from 'node:path';
 
-function devPort(): number {
-  const raw = process.env.ARBORIST_DEV_PORT;
-  // Same validation rule as scripts/tauri-dev.mjs: integer in [1, 65535].
-  // Reject `Number()`-coerced forms like "1e3" or " 42 " so both entrypoints
-  // agree on what counts as a valid override.
-  if (!raw || !/^\d+$/.test(raw)) return 1420;
-  const n = Number(raw);
-  return n >= 1 && n <= 65535 ? n : 1420;
-}
+// Default dev port. The actual per-worktree port is supplied by
+// `scripts/tauri-dev.mjs` via vite's `--port=<n>` CLI flag (see Vite's
+// preview/server options) — kept out of this config so the codebase carries
+// no project-specific environment variables.
+const DEFAULT_DEV_PORT = 1420;
 
 const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 
@@ -40,7 +36,7 @@ export default defineConfig({
   },
   clearScreen: false,
   server: {
-    port: devPort(),
+    port: DEFAULT_DEV_PORT,
     strictPort: true,
     watch: {
       // Arborist creates linked git worktrees under `<workspaceRoot>/.worktrees/<name>/`.

@@ -434,7 +434,7 @@ fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
 }
 
 fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
-    let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command, quoter);
+    let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command);
 
     // No user instruction set: launch plain `claude`. The agent still auto-discovers `CLAUDE.md` from its `cwd` (the worktree). Skipping
     // `--system-prompt` keeps the launch surface minimal and lets the agent derive its location from `pwd`/`git` without us having to fabricate a
@@ -464,22 +464,14 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
     )
 }
 
-fn build_copilot(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     // Modern `copilot` (the standalone GitHub Copilot CLI) starts in interactive mode by default. The legacy `--interactive <string>` flag was
     // removed and now triggers a "too many arguments" usage error from the CLI itself. We therefore spawn `copilot` with no arguments and rely on its
     // `cwd`-based discovery of `.github/copilot-instructions.md` for repository guidance — the PTY pool already passes the worktree as `cwd`. The
     // worktree context block (label + path) is intentionally dropped here; the agent can derive its location from `pwd`/`git` if it needs to.
-    let cli_cmd = cli_program_for_tool(Tool::Copilot, inputs.cli_launch_command, quoter);
+    let cli_cmd = cli_program_for_tool(Tool::Copilot, inputs.cli_launch_command);
     (cli_cmd, Vec::new())
 }
-
-/// Environment variable consulted by [`cli_program_for_tool`] to override the `claude` executable. **Test-only seam** — production code never sets
-/// this, but integration tests point it at `arborist-test-child` so they can drive the full Tauri command/event surface end-to-end without a real
-/// Claude install. Documented here so the override path is auditable.
-pub const CLAUDE_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_CLAUDE";
-
-/// Sibling of [`CLAUDE_OVERRIDE_ENV`] for the `copilot` executable.
-pub const COPILOT_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_COPILOT";
 
 /// Resolve the program token for `tool`. Precedence (highest first):
 ///
@@ -488,31 +480,14 @@ pub const COPILOT_OVERRIDE_ENV: &str = "ARBORIST_CLI_OVERRIDE_COPILOT";
 ///    authored by the user — not a single argument — so callers can add flags
 ///    like `--model sonnet` directly. Persisted by the Settings dialog into
 ///    `AppConfig.ai_launch_commands`.
-/// 2. **Test-seam env var** (`ARBORIST_CLI_OVERRIDE_*`): set by integration
-///    tests to point at `arborist-test-child`. Returned **shell-quoted** so
-///    paths with spaces still work.
-/// 3. **Default**: the bare CLI name (`claude` / `copilot`).
-///
-/// The override path is invisible to the persisted `composed_command` once the env var is unset, so do not rely on the env-var path across restarts.
-fn cli_program_for_tool(tool: Tool, config_override: Option<&str>, quoter: Quoter) -> String {
-    // 1. Config override (verbatim).
+/// 2. **Default**: the bare CLI name (`claude` / `copilot`).
+fn cli_program_for_tool(tool: Tool, config_override: Option<&str>) -> String {
     if let Some(s) = config_override {
         let trimmed = s.trim();
         if !trimmed.is_empty() {
             return trimmed.to_owned();
         }
     }
-    // 2. Test-seam env override (quoted).
-    let var = match tool {
-        Tool::Claude => CLAUDE_OVERRIDE_ENV,
-        Tool::Copilot => COPILOT_OVERRIDE_ENV,
-    };
-    if let Ok(path) = std::env::var(var) {
-        if !path.is_empty() {
-            return quoter(&path);
-        }
-    }
-    // 3. Default.
     match tool {
         Tool::Claude => "claude".to_owned(),
         Tool::Copilot => "copilot".to_owned(),

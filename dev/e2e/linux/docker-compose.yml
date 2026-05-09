@@ -31,8 +31,6 @@ services:
       # nested-mount problem that fails on Docker Desktop's 9P filesystem.
       - ./specs:/specs:ro
     environment:
-      - ARBORIST_CLI_OVERRIDE_CLAUDE=/usr/local/bin/arborist-test-child
-      - ARBORIST_CLI_OVERRIDE_COPILOT=/usr/local/bin/arborist-test-child
       - RUST_LOG=arborist_lib=info
       - WEBKIT_DISABLE_COMPOSITING_MODE=1
     tmpfs:
@@ -88,8 +86,6 @@ services:
       - ./specs:/specs:rw
       - ../../..:/src:ro
     environment:
-      - ARBORIST_CLI_OVERRIDE_CLAUDE=/usr/local/bin/arborist-test-child
-      - ARBORIST_CLI_OVERRIDE_COPILOT=/usr/local/bin/arborist-test-child
       - RUST_LOG=arborist_lib=debug
       - WEBKIT_DISABLE_COMPOSITING_MODE=1
     tmpfs:

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Build a `git` Command with repo-selection environment variables stripped.
@@ -5,9 +6,9 @@ use std::process::Command;
 /// build.rs runs as a child of `cargo`, which under a husky pre-push hook
 /// inherits `GIT_DIR`/`GIT_WORK_TREE`/etc. from the outer `git push`. Without
 /// stripping them, our branch detection would report the *outer* repo's
-/// branch and bake the wrong value into `ARBORIST_BUILD_BRANCH`. Mirrors
-/// `git::git_command()` (kept duplicated because build scripts can't depend
-/// on the crate being built).
+/// branch and bake the wrong value into the generated `build_branch.txt`.
+/// Mirrors `git::git_command()` (kept duplicated because build scripts can't
+/// depend on the crate being built).
 fn git_command() -> Command {
     let mut cmd = Command::new("git");
     for var in [
@@ -34,11 +35,11 @@ fn git_command() -> Command {
 ///
 /// Returns an empty string if none succeed or the branch is detached / `HEAD`.
 ///
-/// Note: there is intentionally no `ARBORIST_BUILD_BRANCH` override input.
-/// CI vars + git already cover every legitimate case, and an env-var input
-/// would silently leak into PTY children spawned by the running app (which
-/// inherit the build/dev shell's env), baking the wrong branch into any
-/// nested `tauri:dev` invocation.
+/// Note: there is intentionally no env-var override input. CI vars + git
+/// already cover every legitimate case, and an env-var input would silently
+/// leak into PTY children spawned by the running app (which inherit the
+/// build/dev shell's env), baking the wrong branch into any nested
+/// `tauri:dev` invocation.
 fn detect_branch() -> String {
     for var in ["GITHUB_HEAD_REF", "GITHUB_REF_NAME"] {
         if let Ok(v) = std::env::var(var) {
@@ -79,11 +80,16 @@ fn sanitize_branch(raw: &str) -> String {
 
 fn main() {
     let branch = sanitize_branch(&detect_branch());
-    println!("cargo:rustc-env=ARBORIST_BUILD_BRANCH={branch}");
 
-    // Re-run when CI env vars change. We deliberately do NOT
-    // `rerun-if-env-changed=ARBORIST_BUILD_BRANCH` — that variable is no
-    // longer an input (see `detect_branch` doc comment).
+    // Bake the branch into a generated file under OUT_DIR; lib.rs reads it via
+    // `include_str!`. We deliberately avoid `cargo:rustc-env=` (which would
+    // require an `env!()` read at compile time) so the entire codebase is free
+    // of project-specific environment variables.
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo provides OUT_DIR"));
+    let branch_file = out_dir.join("build_branch.txt");
+    std::fs::write(&branch_file, &branch).expect("write build_branch.txt");
+
+    // Re-run when CI env vars change.
     println!("cargo:rerun-if-env-changed=GITHUB_HEAD_REF");
     println!("cargo:rerun-if-env-changed=GITHUB_REF_NAME");
 
