@@ -99,7 +99,7 @@ function resetStores(): void {
     activeId: undefined,
     isHydrated: false,
   });
-  useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
+  useWorktreeTabStore.setState({ tabs: [], activeId: null, pendingClose: undefined, isHydrated: false });
 }
 
 // `window.location` is replaced by the reload-button test below; capture

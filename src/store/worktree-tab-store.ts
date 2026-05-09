@@ -112,7 +112,7 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
       // otherwise leave `useActiveWorktreeTab()` returning `undefined` even though tabs are present.
       const persistedId = cfg.activeWorktreeTabId ?? null;
       const activeId = persistedId !== null && reconciled.some((t) => t.id === persistedId) ? persistedId : (reconciled[0]?.id ?? null);
-      set({ tabs: reconciled, isHydrated: true, activeId });
+      set({ tabs: reconciled, isHydrated: true, activeId, pendingClose: undefined });
     },
 
     async open(path: string) {
