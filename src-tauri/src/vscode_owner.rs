@@ -1,25 +1,41 @@
-//! Windows-only VS Code owner re-discovery.
+//! Cross-platform VS Code owner re-discovery.
 //!
 //! See `dev/ai/CONTEXT_MENU_PLAN.md` (post-PR-29 follow-up). When the user opens a `vscode` application sub-tab, the actual command that runs is
-//! `code .`. On Windows this resolves to `code.cmd`, which launches a Node.js helper that EITHER:
+//! `code .` (or `code.cmd` on Windows). The launcher EITHER:
 //!
-//!   * **No VS Code already running** — spawns the long-lived `Code.exe` (the
-//!     editor) and exits ~1 s later.
+//!   * **No VS Code already running** — spawns the long-lived editor process
+//!     (`Code.exe` on Windows, `Electron`/`code` on Linux, the `Code.app`
+//!     bundle on macOS) and exits ~1 s later.
 //!   * **VS Code already running** — sends an IPC message to the existing
-//!     `Code.exe`, which opens the folder in a new window; the launcher exits
-//!     ~1 s later. The new window's `Code.exe` is **not** a descendant of our
+//!     editor, which opens the folder in a new window; the launcher exits
+//!     ~1 s later. The new window's process is **not** a descendant of our
 //!     launcher PID.
 //!
 //! Either way, the PID Arborist captured is dead within seconds and `focus_pid` returns [`Error::NotFound`]. This module re-discovers the long-lived
-//! `Code.exe` whose window owns the workspace and retargets the [`AppRuntime`] so subsequent focus/kill calls hit the correct process.
+//! editor process whose window owns the workspace and retargets the [`AppRuntime`] so subsequent focus/kill calls hit the correct process.
 //!
 //! ## Identification strategy
 //!
 //! VS Code formats top-level window titles as `<filename> - <workspace folder> - Visual Studio Code`. We enumerate top-level visible windows and pick
 //! the first whose title ends with ` - Visual Studio Code` (case-sensitive — that's how VS Code formats it) and contains the workspace folder's
-//! basename (case-insensitive, since NTFS is case-insensitive).
+//! basename as a discrete segment (case-insensitive, since NTFS is case-insensitive and so is "Visual Studio Code"'s default title behaviour).
 //!
-//! No `OpenProcess`, no PEB / NT internals — same Win32 surface area as [`crate::window_focus`].
+//! ## Per-platform window enumeration
+//!
+//! * **Windows** — `EnumWindows` + `GetWindowTextW` (no `OpenProcess`, no PEB / NT
+//!   internals — same Win32 surface area as [`crate::window_focus`]).
+//! * **macOS** — `osascript` + System Events to query VS Code's window list. Requires
+//!   Accessibility permission for Arborist (or, equivalently, for `osascript`); without
+//!   it `find_vscode_window` returns `None` and the sub-tab keeps the launcher PID.
+//! * **Linux / BSD** — shells out to `wmctrl -lp` (X11 / XWayland). Pure-Wayland windows
+//!   that don't surface through XWayland aren't enumerable; if `wmctrl` is missing or the
+//!   compositor doesn't expose the workspace window, `find_vscode_window` returns `None`
+//!   and the sub-tab keeps the launcher PID.
+//!
+//! On macOS and Linux the `hwnd` field of [`WindowTarget`] is reported as `0` — those
+//! platforms don't expose an `hwnd`-style focus API ([`crate::window_focus`]'s
+//! `focus_hwnd`/`post_close_message` are Windows-only), so the [`AppPool`] always falls
+//! back to PID-based focus. The PID itself is the meaningful re-discovery output.
 //!
 //! ## Polling
 //!
@@ -35,8 +51,6 @@ use crate::cmd_resolver::ShellTokens;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const POLL_DEADLINE: Duration = Duration::from_secs(8);
-// Used by the Windows platform module today; macOS/Linux support planned (see follow-up issue).
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const TITLE_SUFFIX: &str = " - Visual Studio Code";
 
 /// First-token program names recognised as launching VS Code. Matched case-insensitively against the first whitespace-delimited token of
@@ -129,7 +143,8 @@ impl OwnerResolver for VsCodeOwnerResolver {
 /// [`WindowFinder`] that re-runs the VS Code title heuristic, used as
 /// the stale-handle escape hatch for [`crate::app_launcher::AppPool::focus`] and [`crate::app_launcher::AppPool::request_window_close`].
 ///
-/// On non-Windows platforms `find_window` returns `None` (the platform module's `find_vscode_window` is a stub).
+/// On macOS and Linux the returned `hwnd` is `0` — those platforms don't expose an `hwnd`-style focus API, so the result is only meaningful on
+/// Windows. Re-finding the window still has value as a liveness/ownership probe, but `AppPool` will fall through to PID-based focus on Unix.
 pub struct VsCodeWindowFinder {
     basename: String,
 }
@@ -140,12 +155,38 @@ impl WindowFinder for VsCodeWindowFinder {
     }
 }
 
+/// Title-matching heuristic shared by every platform module. Returns `true` when `title` is plausibly a VS Code window for the workspace folder
+/// whose lowercased basename equals `needle_lower`.
+///
+/// Logic:
+/// 1. Title must end with the literal suffix ` - Visual Studio Code` (case-sensitive — that's how VS Code emits it).
+/// 2. The remainder is split on ` - ` segments (`<filename> - <folder> [- <variants>]`); we match the workspace folder against an explicit segment,
+///    not a substring of the whole title. This is the difference between "find the workspace named `code`" and "steal any window whose open file
+///    contains the word `code`" (e.g. `code.js - other-project - Visual Studio Code`).
+/// 3. Trailing decorations VS Code appends when title-related settings are non-default — ` [Workspace]`, ` [Folder]`, ` (Restricted Mode)` etc. — are
+///    stripped from each segment before comparison.
+fn title_matches_workspace(title: &str, needle_lower: &str) -> bool {
+    let Some(remainder) = title.strip_suffix(TITLE_SUFFIX) else {
+        return false;
+    };
+    let remainder_lower = remainder.to_lowercase();
+    remainder_lower.split(" - ").any(|seg| {
+        let mut cleaned = seg;
+        if let Some(idx) = cleaned.find(" [") {
+            cleaned = &cleaned[..idx];
+        }
+        if let Some(idx) = cleaned.find(" (") {
+            cleaned = &cleaned[..idx];
+        }
+        cleaned.trim() == needle_lower
+    })
+}
+
 // --------------------------------------------------------------------------- Platform: Windows
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::TITLE_SUFFIX;
     use crate::app_launcher::LivenessProbe;
     use std::ffi::c_void;
     use std::time::Duration;
@@ -214,31 +255,7 @@ mod platform {
                 return 1;
             }
             let title = String::from_utf16_lossy(&buf[..n as usize]);
-            if !title.ends_with(TITLE_SUFFIX) {
-                return 1;
-            }
-            // Match the workspace folder against an explicit segment of the VS Code title (`<file> - <folder> - Visual Studio Code`), not a substring
-            // of the whole title. The previous `title.contains(needle)` check matched any title where the basename appeared as a substring — a
-            // workspace named "code" would steal the wrong window from any other VS Code workspace whose open file happened to contain the word
-            // "code" (`code.js - other-project - Visual Studio Code`).
-            let remainder_lower = match title.strip_suffix(TITLE_SUFFIX) {
-                Some(r) => r.to_lowercase(),
-                None => return 1,
-            };
-            let needle = state.needle.as_str();
-            let segment_match = remainder_lower.split(" - ").any(|seg| {
-                // Strip trailing " [Workspace]" / " [Folder]" / " (Restricted Mode)" markers VS Code appends when window.title-related settings are
-                // non-default.
-                let mut cleaned = seg;
-                if let Some(idx) = cleaned.find(" [") {
-                    cleaned = &cleaned[..idx];
-                }
-                if let Some(idx) = cleaned.find(" (") {
-                    cleaned = &cleaned[..idx];
-                }
-                cleaned.trim() == needle
-            });
-            if !segment_match {
+            if !super::title_matches_workspace(&title, &state.needle) {
                 return 1;
             }
             let mut pid: DWORD = 0;
@@ -326,10 +343,230 @@ mod platform {
     }
 }
 
-// --------------------------------------------------------------------------- Platform: non-Windows — VS Code re-discovery is a no-op.
+// --------------------------------------------------------------------------- Platform: macOS
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::title_matches_workspace;
+    use crate::app_launcher::LivenessProbe;
+    use std::process::Command;
+
+    /// AppleScript that enumerates VS Code windows. Output: one line per window, `<pid>\t<title>`. Errors (e.g. missing Accessibility permission)
+    /// surface as a non-zero exit; we treat that as "no match" without surfacing the failure to the user.
+    ///
+    /// We deliberately match `process whose name starts with "Code"` so both the stable VS Code build (`Code`) and the Insiders build
+    /// (`Code - Insiders`) are picked up. The repeat is wrapped in `try` blocks so a transient AppleScript error on one process doesn't abort the
+    /// whole enumeration.
+    const ENUMERATE_SCRIPT: &str = r#"set output to ""
+try
+    tell application "System Events"
+        repeat with p in (every process whose background only is false)
+            try
+                set procName to name of p
+                if procName starts with "Code" then
+                    set procPid to unix id of p
+                    repeat with w in (windows of p)
+                        try
+                            set output to output & procPid & (ASCII character 9) & (name of w) & linefeed
+                        end try
+                    end repeat
+                end if
+            end try
+        end repeat
+    end tell
+end try
+return output
+"#;
+
+    pub(super) fn find_vscode_window(basename: &str) -> Option<(u32, usize)> {
+        let needle = basename.to_lowercase();
+        let output = Command::new("osascript").arg("-e").arg(ENUMERATE_SCRIPT).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let Some((pid_str, title)) = line.split_once('\t') else {
+                continue;
+            };
+            let Ok(pid) = pid_str.trim().parse::<u32>() else {
+                continue;
+            };
+            if title_matches_workspace(title, &needle) {
+                // hwnd is unused on macOS — `WindowFocuser::focus_hwnd` is Windows-only and the AppPool falls back to PID-based focus.
+                return Some((pid, 0));
+            }
+        }
+        None
+    }
+
+    pub(super) fn liveness_probe(pid: u32, basename: String) -> Box<dyn LivenessProbe> {
+        Box::new(super::unix_liveness::UnixLivenessProbe { pid, basename })
+    }
+}
+
+// --------------------------------------------------------------------------- Platform: Linux / BSD (X11 / XWayland)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(unix, not(target_os = "macos")))]
+mod platform {
+    use super::title_matches_workspace;
+    use crate::app_launcher::LivenessProbe;
+    use std::process::Command;
+
+    /// Parses a single line of `wmctrl -lp` output.
+    ///
+    /// The wmctrl format is `<window-id-hex> <desktop> <pid> <hostname> <title>` where the title is the remainder of the line and may contain
+    /// spaces. We skip 4 whitespace-delimited fields and treat what's left (minus leading whitespace) as the title.
+    fn parse_wmctrl_line(line: &str) -> Option<(u32, usize, &str)> {
+        let mut rest = line;
+        let mut win_id_str = "";
+        let mut pid_str = "";
+        for field_idx in 0..4u32 {
+            let trimmed = rest.trim_start();
+            let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+            if end == 0 {
+                return None;
+            }
+            let field = &trimmed[..end];
+            match field_idx {
+                0 => win_id_str = field,
+                2 => pid_str = field,
+                _ => {}
+            }
+            rest = &trimmed[end..];
+        }
+        let title = rest.trim_start();
+        if title.is_empty() {
+            return None;
+        }
+        let win_id = usize::from_str_radix(win_id_str.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()?;
+        let pid: u32 = pid_str.parse().ok()?;
+        Some((pid, win_id, title))
+    }
+
+    pub(super) fn find_vscode_window(basename: &str) -> Option<(u32, usize)> {
+        let needle = basename.to_lowercase();
+        // wmctrl missing → spawn fails → output() returns Err → we return None silently. Same for any other I/O failure: best-effort, never panic.
+        let output = Command::new("wmctrl").arg("-lp").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let Some((pid, win_id, title)) = parse_wmctrl_line(line) else {
+                continue;
+            };
+            if pid == 0 {
+                // wmctrl reports `0` for windows whose pid couldn't be resolved (e.g. windows from remote X clients). Skip — we have no useful PID.
+                continue;
+            }
+            if title_matches_workspace(title, &needle) {
+                return Some((pid, win_id));
+            }
+        }
+        None
+    }
+
+    pub(super) fn liveness_probe(pid: u32, basename: String) -> Box<dyn LivenessProbe> {
+        Box::new(super::unix_liveness::UnixLivenessProbe { pid, basename })
+    }
+
+    #[cfg(test)]
+    mod wmctrl_tests {
+        use super::parse_wmctrl_line;
+
+        #[test]
+        fn parses_canonical_line() {
+            let line = "0x05000007  0 24356  hostname.local file.rs - my-feature - Visual Studio Code";
+            let (pid, win_id, title) = parse_wmctrl_line(line).expect("should parse");
+            assert_eq!(pid, 24356);
+            assert_eq!(win_id, 0x0500_0007);
+            assert_eq!(title, "file.rs - my-feature - Visual Studio Code");
+        }
+
+        #[test]
+        fn parses_line_with_na_hostname() {
+            // wmctrl substitutes "N/A" when it can't resolve a hostname — still a valid 5th field.
+            let line = "0x01234567  0 4242 N/A workspace - Visual Studio Code";
+            let (pid, _win, title) = parse_wmctrl_line(line).expect("should parse");
+            assert_eq!(pid, 4242);
+            assert_eq!(title, "workspace - Visual Studio Code");
+        }
+
+        #[test]
+        fn rejects_short_lines() {
+            assert!(parse_wmctrl_line("").is_none());
+            assert!(parse_wmctrl_line("0x1 0 1234").is_none());
+            assert!(parse_wmctrl_line("0x1 0 1234 host").is_none());
+        }
+
+        #[test]
+        fn rejects_non_hex_window_id() {
+            let line = "notahex 0 1234 host title";
+            assert!(parse_wmctrl_line(line).is_none());
+        }
+
+        #[test]
+        fn rejects_non_numeric_pid() {
+            let line = "0x1 0 notapid host title";
+            assert!(parse_wmctrl_line(line).is_none());
+        }
+    }
+}
+
+// --------------------------------------------------------------------------- Unix liveness probe (macOS + Linux)
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod unix_liveness {
+    use crate::app_launcher::LivenessProbe;
+    use std::time::Duration;
+
+    /// Window-based liveness probe with PID-death fallback. Mirrors the Windows probe (see `WindowsLivenessProbe`): VS Code is multi-window, so
+    /// closing **the workspace** doesn't necessarily kill the editor process. We poll once per second and return either when the PID dies (fast
+    /// path) or when the workspace window has been gone for two consecutive polls (debounce against transient enumeration misses).
+    pub(super) struct UnixLivenessProbe {
+        pub pid: u32,
+        pub basename: String,
+    }
+
+    impl LivenessProbe for UnixLivenessProbe {
+        fn wait_for_death(self: Box<Self>) {
+            let mut window_gone_polls: u32 = 0;
+            const WINDOW_GONE_THRESHOLD: u32 = 2;
+
+            loop {
+                // (1) Process-death fast path. `kill(pid, 0)` returns 0 iff the process exists and we have permission to signal it; on macOS and
+                // Linux the launcher and the Code process run as the same user, so a non-zero return effectively means "process is gone".
+                // SAFETY: literal signal 0 + numeric pid; no dereferenced pointers.
+                let alive = unsafe { libc::kill(self.pid as libc::pid_t, 0) } == 0;
+                if !alive {
+                    return;
+                }
+
+                // (2) Window-based check. If the workspace window is no longer enumerable for `WINDOW_GONE_THRESHOLD` consecutive polls, treat the
+                // workspace as closed even though the editor process is still alive (other windows / workspaces).
+                if super::platform::find_vscode_window(&self.basename).is_none() {
+                    window_gone_polls = window_gone_polls.saturating_add(1);
+                    if window_gone_polls >= WINDOW_GONE_THRESHOLD {
+                        return;
+                    }
+                } else {
+                    window_gone_polls = 0;
+                }
+
+                std::thread::sleep(Duration::from_millis(1_000));
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------------------- Platform: other (wasm, unknown) — re-discovery is a no-op.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(any(target_os = "windows", unix)))]
 mod platform {
     use crate::app_launcher::LivenessProbe;
 
@@ -338,8 +575,6 @@ mod platform {
     }
 
     pub(super) fn liveness_probe(_pid: u32, _basename: String) -> Box<dyn LivenessProbe> {
-        // Should never be called on non-Windows because find_vscode_window returns None, but provide a dummy in case the resolver is wired up for
-        // tests / future extension.
         struct Never;
         impl LivenessProbe for Never {
             fn wait_for_death(self: Box<Self>) {
@@ -449,5 +684,43 @@ mod tests {
         ] {
             assert!(!looks_like_vscode_command(cmd), "expected non-match for {cmd:?}");
         }
+    }
+
+    #[test]
+    fn title_matches_workspace_accepts_canonical_titles() {
+        // Canonical: `<filename> - <workspace folder> - Visual Studio Code`.
+        assert!(title_matches_workspace("file.rs - my-feature - Visual Studio Code", "my-feature"));
+        // Workspace-only window (no open file) still has the folder as a segment.
+        assert!(title_matches_workspace("my-feature - Visual Studio Code", "my-feature"));
+        // Insiders / variants append decorations VS Code emits when title settings are non-default.
+        assert!(title_matches_workspace(
+            "file.rs - my-feature [Workspace] - Visual Studio Code",
+            "my-feature"
+        ));
+        assert!(title_matches_workspace(
+            "file.rs - my-feature (Restricted Mode) - Visual Studio Code",
+            "my-feature"
+        ));
+        // Case-insensitive folder match (NTFS / macOS HFS+ default).
+        assert!(title_matches_workspace("file.rs - My-Feature - Visual Studio Code", "my-feature"));
+    }
+
+    #[test]
+    fn title_matches_workspace_requires_segment_match_not_substring() {
+        // Substring match would pick up any title where the needle appears inside another word — the previous bug. Segment-match rejects it.
+        assert!(!title_matches_workspace("code.js - other-project - Visual Studio Code", "code"));
+        assert!(!title_matches_workspace("encode-tests.rs - other - Visual Studio Code", "code"));
+    }
+
+    #[test]
+    fn title_matches_workspace_rejects_wrong_suffix() {
+        assert!(!title_matches_workspace("my-feature - Visual Studio Code Insiders", "my-feature"));
+        assert!(!title_matches_workspace("my-feature - notepad", "my-feature"));
+        assert!(!title_matches_workspace("", "my-feature"));
+    }
+
+    #[test]
+    fn title_matches_workspace_handles_other_folder() {
+        assert!(!title_matches_workspace("file.rs - other-project - Visual Studio Code", "my-feature"));
     }
 }
