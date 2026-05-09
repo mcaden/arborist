@@ -445,7 +445,7 @@ export interface WorktreeTabCloseResult {
    * only populated when `WorktreeTabCloseArgs.deleteWorktree` was `true` and
    * the deletion failed. The tab itself is always removed regardless.
    */
-  worktreeDeleteError?: string | null;
+  worktreeDeleteError?: string;
 }
 
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent
