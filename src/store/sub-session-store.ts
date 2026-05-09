@@ -268,17 +268,15 @@ export const useSubSessionStore = create<Store>((set, get) => {
     },
 
     dropForWorktreeTab: (tabId) => {
-      const ownedIds = get()
-        .subSessions.filter((sub) => sub.parentWorktreeTabId === tabId)
-        .map((sub) => sub.id);
-      for (const id of ownedIds) pendingFocus.delete(id);
+      const droppedIds = new Set(
+        get()
+          .subSessions.filter((sub) => sub.parentWorktreeTabId === tabId)
+          .map((sub) => sub.id),
+      );
+      if (droppedIds.size === 0) return;
+      for (const id of droppedIds) pendingFocus.delete(id);
       set((s) => {
-        const next = s.subSessions.filter((sub) => sub.parentWorktreeTabId !== tabId);
-        if (next.length === s.subSessions.length) {
-          return {};
-        }
-        // Drop status messages for the orphaned ids.
-        const droppedIds = new Set(s.subSessions.filter((sub) => sub.parentWorktreeTabId === tabId).map((sub) => sub.id));
+        const next = s.subSessions.filter((sub) => !droppedIds.has(sub.id));
         const nextMsgs: Record<SubSessionId, string> = {};
         for (const [k, v] of Object.entries(s.statusMessages)) {
           if (!droppedIds.has(k as SubSessionId)) nextMsgs[k as SubSessionId] = v;
