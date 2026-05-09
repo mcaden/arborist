@@ -16,6 +16,7 @@ pub mod git;
 pub mod icon_backfill;
 pub mod process_icon;
 pub mod pty_pool;
+pub mod repo_settings;
 pub mod session_metrics;
 pub mod sub_sessions;
 pub mod types;

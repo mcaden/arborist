@@ -379,7 +379,11 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 2. Optionally resolve the instruction set & enforce tool match. Empty-string
     //    IDs from the frontend are treated as "no selection" so an over-eager
     //    wizard can't trigger a NotFound for a `none` sentinel.
-    let cfg = ctx.store().load_config();
+    //
+    //    Repo overlay (issue #71): defaults from `<workspace>/.arborist/settings.json`
+    //    win over user-level `AppConfig` defaults for instruction sets and AI
+    //    launch commands.
+    let cfg = crate::repo_settings::apply_repo_overlay(ctx.store().load_config());
     let id_opt = args.instruction_set_id.as_ref().filter(|id| !id.as_str().is_empty());
     let set_opt = match id_opt {
         Some(id) => Some(lookup_instruction_set(&cfg, id, args.tool)?),
@@ -1781,7 +1785,10 @@ pub async fn workspace_switch_impl_inner(
     })
 }
 
-/// Create a new linked worktree at `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>`.
+/// Create a new linked worktree at `<workspaceRoot>/.arborist/.worktrees/<name>` on a fresh branch named `<name>`.
+///
+/// As a side-effect, ensures `<workspaceRoot>/.arborist/` exists and contains a `.gitignore` listing `.worktrees/` so the linked-worktree directory
+/// stays out of source control. See [`crate::repo_settings`] (issue #71).
 pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types::WorktreeCreateResult, AppError> {
     use crate::types::WorktreeCreateResult;
 
@@ -1799,16 +1806,25 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
         return Err(AppError::from(Error::WorktreeMissing(workspace)));
     }
 
-    let relative = std::path::PathBuf::from(".worktrees").join(&validated);
+    // Materialise `<workspace>/.arborist/` and its `.gitignore` before computing the worktree path so the new layout is committable from a fresh
+    // checkout.
+    crate::repo_settings::ensure_arborist_dir(&workspace).map_err(|e| {
+        AppError::from(Error::Internal(format!(
+            "could not prepare {}: {e}",
+            workspace.join(crate::repo_settings::ARBORIST_DIR).display()
+        )))
+    })?;
+
+    let relative = std::path::PathBuf::from(crate::repo_settings::WORKTREES_REL).join(&validated);
     let absolute = workspace.join(&relative);
     // Use symlink_metadata so dangling symlinks/junctions are still treated as "exists" (Roadmap critique #4).
     if std::fs::symlink_metadata(&absolute).is_ok() {
         return Err(AppError::from(Error::InvalidPath(format!("{} already exists", absolute.display()))));
     }
 
-    // Containment guard (critique #3): ensure `<workspace>/.worktrees` canonicalizes back inside the workspace. Refuses symlink/junction escapes that
+    // Containment guard: ensure `<workspace>/.arborist/.worktrees` canonicalizes back inside the workspace. Refuses symlink/junction escapes that
     // would otherwise place the new worktree outside the declared workspace root.
-    let worktrees_dir = workspace.join(".worktrees");
+    let worktrees_dir = workspace.join(crate::repo_settings::WORKTREES_REL);
     if let Ok(meta) = std::fs::symlink_metadata(&worktrees_dir) {
         if meta.file_type().is_symlink() {
             return Err(AppError::from(Error::InvalidPath(format!(
@@ -1817,7 +1833,7 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
             ))));
         }
     } else {
-        // Create the .worktrees parent ourselves so `git worktree add` does not have to, and so the canonicalize/containment check below has
+        // Create the worktrees parent ourselves so `git worktree add` does not have to, and so the canonicalize/containment check below has
         // something to resolve.
         std::fs::create_dir_all(&worktrees_dir)
             .map_err(|e| AppError::from(Error::Internal(format!("could not create {}: {e}", worktrees_dir.display()))))?;

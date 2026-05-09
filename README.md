@@ -11,7 +11,7 @@ It gives each worktree its own persistent terminal session — Claude CLI or Git
 ## What it does
 
 - **One sidebar, many sessions.** Each session is a vertical tab. Click a tab to bring that terminal to the front; background sessions keep running.
-- **Worktree-native.** Sessions are tied to Git worktrees. Arborist creates and discovers worktrees under `<repo>/.worktrees/` and passes the path to the CLI as `cwd` — never baked into the command.
+- **Worktree-native.** Sessions are tied to Git worktrees. Arborist creates and discovers worktrees under `<repo>/.arborist/.worktrees/` and passes the path to the CLI as `cwd` — never baked into the command.
 - **Instruction sets.** Drop Markdown files into a configured directory; Arborist injects them into Claude sessions at launch as a system prompt. Copilot sessions continue to use their own `.github/copilot-instructions.md` auto-discovery.
 - **Restore on launch.** Every session you had open is re-spawned automatically when you restart the app, in the same tab order.
 - **Error recovery.** If a session's process exits unexpectedly, the tab shows an error indicator and a **Restart** button that re-runs the original invocation verbatim.
@@ -118,7 +118,7 @@ See [dev/docs/CONFIGURATION.md](dev/docs/CONFIGURATION.md) for the full config r
 ```
 New session dialog
   1. Pick tool:        Claude  /  Copilot
-  2. Pick worktree:    quick-pick from <repo>/.worktrees/  or  Browse…
+  2. Pick worktree:    quick-pick from <repo>/.arborist/.worktrees/  or  Browse…
   3. Launch
 ```
 

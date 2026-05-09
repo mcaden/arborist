@@ -5,7 +5,7 @@
 // and uses Launch Claude / Launch Copilot to start a session.
 //
 // The user can choose an existing worktree from the workspace's
-// `.worktrees/` directory, or create a new one by name.
+// `.arborist/.worktrees/` directory, or create a new one by name.
 //
 // Renders via the native `<dialog>` element using `showModal()`/`close()`,
 // matching the pattern set by `WorktreeCloseConfirmDialog` (jsdom shim installed
@@ -292,7 +292,7 @@ export function NewSessionDialog(): JSX.Element | null {
                 <p className="text-sm text-slate-500">Loading...</p>
               ) : worktrees.length === 0 ? (
                 <p className="mb-2 text-sm text-slate-500">
-                  No worktrees found in <span className="font-mono">.worktrees/</span> — create one in the New tab, or use Browse for a path
+                  No worktrees found in <span className="font-mono">.arborist/.worktrees/</span> — create one in the New tab, or use Browse for a path
                   elsewhere.
                 </p>
               ) : (
@@ -365,7 +365,7 @@ export function NewSessionDialog(): JSX.Element | null {
             <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
               Will run{' '}
               <span className="font-mono">
-                git worktree add .worktrees/{newName.trim() || 'NAME'} -b {newName.trim() || 'NAME'}
+                git worktree add .arborist/.worktrees/{newName.trim() || 'NAME'} -b {newName.trim() || 'NAME'}
               </span>
             </p>
           )}

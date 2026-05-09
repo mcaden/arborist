@@ -44,7 +44,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'started',
         prepId: 'p1',
-        worktreePath: '/repo/.worktrees/feature-x',
+        worktreePath: '/repo/.arborist/.worktrees/feature-x',
         logPath: '/data/p1.log',
         command: 'npm install',
         startedAt: 1700000000,
@@ -61,7 +61,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'exited',
         prepId: 'p1',
-        worktreePath: '/repo/.worktrees/feature-x',
+        worktreePath: '/repo/.arborist/.worktrees/feature-x',
         logPath: '/data/p1.log',
         exitCode: 0,
         errorMessage: null,
@@ -84,7 +84,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'exited',
         prepId: 'p1',
-        worktreePath: '/repo/.worktrees/feature-x',
+        worktreePath: '/repo/.arborist/.worktrees/feature-x',
         logPath: '/data/p1.log',
         exitCode: 0,
         errorMessage: null,
@@ -98,7 +98,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'exited',
         prepId: 'p2',
-        worktreePath: '/repo/.worktrees/feature-y',
+        worktreePath: '/repo/.arborist/.worktrees/feature-y',
         logPath: '/data/p2.log',
         exitCode: 0,
         errorMessage: null,
@@ -121,7 +121,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'exited',
         prepId: 'p1',
-        worktreePath: '/repo/.worktrees/feature-x',
+        worktreePath: '/repo/.arborist/.worktrees/feature-x',
         logPath: '/data/p1.log',
         exitCode: 2,
         errorMessage: null,
@@ -155,7 +155,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'exited',
         prepId: 'p1',
-        worktreePath: '/repo/.worktrees/feature-x',
+        worktreePath: '/repo/.arborist/.worktrees/feature-x',
         logPath: '/data/p1.log',
         exitCode: 2,
         errorMessage: null,
@@ -179,7 +179,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'exited',
         prepId: 'p1',
-        worktreePath: '/repo/.worktrees/x',
+        worktreePath: '/repo/.arborist/.worktrees/x',
         logPath: '/data/p1.log',
         exitCode: null,
         errorMessage: null,
@@ -197,7 +197,7 @@ describe('WorktreePrepBanner', () => {
       dispatch!({
         kind: 'exited',
         prepId: 'p1',
-        worktreePath: '/repo/.worktrees/x',
+        worktreePath: '/repo/.arborist/.worktrees/x',
         logPath: '/data/p1.log',
         exitCode: null,
         errorMessage: 'spawn failed: ENOENT',
