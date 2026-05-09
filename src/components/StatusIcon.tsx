@@ -49,7 +49,7 @@ const STATUS_META = {
   starting: { glyph: '\ueb19', testIdSuffix: 'starting' }, // nf-cod-loading — partial-ring spinner (pairs with animate-spin)
   working: { glyph: '\uec10', testIdSuffix: 'working' }, // nf-cod-sparkle — "model is generating"
   awaiting: { glyph: '\uea6b', testIdSuffix: 'awaiting' }, // nf-cod-comment — speech bubble: agent is parked at its prompt
-  attention: { glyph: '\ueaa2', testIdSuffix: 'attention' }, // nf-cod-bell — matches OSC 9 / OSC 777;notify semantics (standalone BEL ignored)
+  attention: { glyph: '\ueaa2', testIdSuffix: 'attention' }, // nf-cod-bell — matches OSC 9 (legacy notify or `9;2;`) / OSC 777;notify semantics; standalone BEL and OSC 9;4 progress are ignored
   awaitingPermission: { glyph: '\uea75', testIdSuffix: 'awaiting-permission' }, // nf-cod-lock — agent is blocked on a permission decision
   runningTool: { glyph: '\ueb6d', testIdSuffix: 'running-tool' }, // nf-cod-tools — agent invoked a tool
   thinking: { glyph: '\uea7c', testIdSuffix: 'thinking' }, // nf-cod-ellipsis — assistant turn in flight (pairs with animate-pulse)
