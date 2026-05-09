@@ -216,6 +216,58 @@ describe('WorktreeDashboard', () => {
     });
   });
 
+  it('clears stale status when switching to a different worktree tab', async () => {
+    const TAB_OTHER = 'tab-feature-y' as WorktreeTabId;
+    useWorktreeTabStore.setState({
+      tabs: [tab(), { id: TAB_OTHER, path: '/repo/feature-y', name: 'feature-y', label: 'feature-y', tabIndex: 1, iconId: 2 }],
+    });
+
+    // First tab returns a structured error.
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      ahead: 0,
+      behind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+      error: 'feature-x: not a git repository',
+    });
+
+    const { rerender } = render(<WorktreeDashboard tabId={TAB_ID} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-git-error')).toHaveTextContent(/feature-x/);
+    });
+
+    // Switch to TAB_OTHER. Hold the new resolution open so we can observe the
+    // intermediate state — the prior tab's error must NOT be visible while the
+    // new tab's call is in flight.
+    let resolveSecond: (v: unknown) => void = () => {};
+    bridgeMock.worktreeGitStatus.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveSecond = res;
+      }),
+    );
+
+    rerender(<WorktreeDashboard tabId={TAB_OTHER} />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('worktree-dashboard-git-error')).toBeNull();
+    });
+
+    resolveSecond({
+      ahead: 0,
+      behind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+  });
+
   it('aggregates input/output tokens across sessions for this worktree only', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     useSessionStore.setState({

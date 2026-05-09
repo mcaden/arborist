@@ -361,8 +361,9 @@ impl PartialWorktree {
 /// * `# branch.<key> <value>` — header lines emitted with `--branch`. We extract `head` (short SHA), `branch` (current branch name; `(detached)`
 ///   indicates detached HEAD), `upstream` (tracking branch, omitted when none), and `ahead/behind` (`+N -M`).
 /// * `1 XY <subN..> <…>` — ordinary changed file. Counts contribute via the X/Y columns: X = staged, Y = unstaged.
-/// * `2 XY <subN..> <…> <orig_path>\0<new_path>` — renamed/copied file. Same XY rules; `-z` splits the original and new path with the inter-record
-///   NUL too, so the orig_path lives in the *next* record. We consume it and surface only the new path.
+/// * `2 XY <subN..> <…> <new_path>\0<orig_path>` — renamed/copied file. Same XY rules; with `-z`, the inter-record separator is also NUL, so the
+///   original path lives in the *next* NUL-terminated record. We surface the new path (the one in the `2 …` record itself) and consume the
+///   following record to keep the parser aligned.
 /// * `u XY <subN..>` — unmerged (conflicted) entry.
 /// * `? <path>` — untracked file.
 /// * `! <path>` — ignored (we do not surface these).
@@ -454,7 +455,7 @@ fn parse_status_branch_header(status: &mut WorktreeGitStatus, rest: &str) {
 fn parse_status_changed_record(status: &mut WorktreeGitStatus, line: &str, is_renamed: bool) {
     // Layout (space-separated):
     //   ordinary:  `1 XY sub mH mI mW hH hI <path>`
-    //   renamed:   `2 XY sub mH mI mW hH hI X<score> <path>` (then NUL-separated orig_path in the next record)
+    //   renamed:   `2 XY sub mH mI mW hH hI X<score> <new_path>` (then NUL-separated orig_path in the next record; we surface new_path only)
     let mut parts = line.splitn(if is_renamed { 10 } else { 9 }, ' ');
     let _ = parts.next(); // record kind
     let xy = parts.next().unwrap_or("..");
@@ -1049,10 +1050,13 @@ locked migrating to slow disk
 
     #[test]
     fn real_runner_git_status_returns_default_for_missing_dir() {
+        // Build a definitely-nonexistent path under a fresh tempdir so this test is
+        // hermetic on Windows too (where a hard-coded `/no/such/path/...` becomes
+        // a drive-rooted Unix-y path that isn't *guaranteed* to be absent).
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("definitely-missing").join("arborist-test-status");
         let runner = RealGitRunner;
-        let s = runner
-            .git_status(Path::new("/no/such/path/arborist-test-status"))
-            .expect("graceful degradation");
+        let s = runner.git_status(&missing).expect("graceful degradation");
         assert!(s.error.as_deref().unwrap_or("").contains("does not exist"));
         assert_eq!(WorktreeGitStatus { error: None, ..s.clone() }, WorktreeGitStatus::default());
     }

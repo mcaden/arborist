@@ -105,6 +105,11 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
 
   useEffect(() => {
     if (!tabPath) return;
+    // Reset stale state from a previous worktree tab so the panel doesn't briefly
+    // show the prior tab's status / error during the cross-tab transition. The
+    // first refresh below repopulates immediately for the new tabPath.
+    setStatus(null);
+    setStatusError(null);
     void refreshStatus();
     const handle = window.setInterval(() => {
       void refreshStatus();
