@@ -50,9 +50,14 @@ export function SidebarResizeHandle({ width, onWidthChange, onCommit }: SidebarR
   // Mirror dragging state into React state so the `data-dragging` attribute and the accent-line opacity update on `pointerdown` without
   // waiting for an unrelated re-render. We still keep the `dragRef` for the start coordinates so move handlers don't re-bind on every render.
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  // Mirror the latest width into a ref so the pointermove handler always sees the freshest value without re-binding on every render.
+  // Mirror the latest *prop-driven* width into a ref so pointermove can read the freshest committed value without re-binding on every render.
   const widthRef = useRef<number>(width);
   widthRef.current = width;
+  // Track the last width we computed during the current gesture. We can't read this from `widthRef` because the parent re-render hasn't necessarily
+  // flushed by the time `pointerup` fires — React 18 batches state updates across pointermove/pointerup in the same task. Committing
+  // `widthRef.current` from `finishDrag` would therefore risk snapping back to the *pre-drag* width on fast releases.
+  const lastComputedRef = useRef<number>(width);
+  lastComputedRef.current = width;
 
   const onPointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -67,6 +72,10 @@ export function SidebarResizeHandle({ width, onWidthChange, onCommit }: SidebarR
       const drag = dragRef.current;
       if (!drag || drag.pointerId !== e.pointerId) return;
       const next = clampSidebarWidth(drag.startWidth + (e.clientX - drag.startX));
+      // Capture the freshly-computed width *before* notifying the parent. `finishDrag` reads this on pointerup; reading `widthRef.current` there
+      // would race React 18's batched re-renders — pointermove + pointerup can land in the same task with no flush in between, leaving the prop
+      // (and therefore `widthRef`) at the pre-drag value.
+      lastComputedRef.current = next;
       if (next !== widthRef.current) onWidthChange(next);
     },
     [onWidthChange],
@@ -80,7 +89,7 @@ export function SidebarResizeHandle({ width, onWidthChange, onCommit }: SidebarR
       setIsDragging(false);
       if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
       // Commit even when width is unchanged from drag start — keeps the contract simple (one commit per gesture) and the no-op write is cheap.
-      onCommit(widthRef.current);
+      onCommit(lastComputedRef.current);
     },
     [onCommit],
   );

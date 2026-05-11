@@ -59,7 +59,7 @@ describe('SidebarResizeHandle', () => {
     expect(handle).toHaveAttribute('tabindex', '0');
   });
 
-  it('drags update width live and commit once on pointer up', () => {
+  it('drags update width live and commit the final dragged value on pointer up', () => {
     const { onWidthChange, onCommit, handle } = renderHandle(220);
     fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 500 });
     fireEvent.pointerMove(handle, { pointerId: 1, clientX: 540 }); // +40 → 260
@@ -69,8 +69,10 @@ describe('SidebarResizeHandle', () => {
     expect(onCommit).not.toHaveBeenCalled();
 
     fireEvent.pointerUp(handle, { pointerId: 1, clientX: 580 });
-    // What we care about: exactly one commit per gesture.
+    // Exactly one commit per gesture, carrying the final dragged value — NOT the pre-drag width. Regression guard for the React-18 batching race
+    // where `pointermove` and `pointerup` can run in the same task without an interleaving re-render, leaving the `width` prop stale.
     expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenLastCalledWith(300);
   });
 
   it('clamps drag delta to the min/max bounds', () => {
