@@ -107,9 +107,21 @@ export function SidebarResizeHandle({ width, onWidthChange, onCommit }: SidebarR
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
+      // Always swallow Enter / Space — a separator has no activation semantics, and letting them bubble would trigger the parent tablist's
+      // Enter/Space handler which focuses the currently-selected session tab. The handle is its own focusable widget; pressing Enter on it
+      // should be a no-op rather than surprise the user with a tab-focus jump.
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       const next = computeKeyboardWidth(e.key, widthRef.current);
       if (next === null) return;
       e.preventDefault();
+      // Stop propagation for handled keys (Arrow*, Home, End) — otherwise the parent tablist's onKeyDown would *also* react to Home/End
+      // and steal focus to the first/last tab while we resize. ArrowLeft/Right don't currently overlap with the parent's handlers, but
+      // stopping them too keeps the contract uniform: "the separator owns its own keys".
+      e.stopPropagation();
       if (next !== widthRef.current) onWidthChange(next);
       onCommit(next);
     },

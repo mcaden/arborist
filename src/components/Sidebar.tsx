@@ -301,6 +301,10 @@ export function Sidebar(): JSX.Element {
             await configSet({ sidebarWidthPx: value });
           } catch (err) {
             console.warn(`[sidebar] failed to persist width ${value}: ${formatError(err)}`);
+            // Clear the cached intent on failure so the user can retry the same value. Otherwise the next `commitWidth(value)` would short-circuit
+            // (`clamped === intendedPersistedRef.current`) and the on-disk width would stay out of sync with `liveWidth` until the user picked
+            // *some other* width first.
+            if (intendedPersistedRef.current === value) intendedPersistedRef.current = null;
           }
         }
         inFlightWriteRef.current = null;

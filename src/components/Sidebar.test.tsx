@@ -88,10 +88,11 @@ beforeEach(() => {
   });
   useWorktreeTabStore.setState({ tabs: [], activeId: null, pendingClose: undefined, isHydrated: false });
   useSubSessionStore.setState({ subSessions: [], statusMessages: {}, pendingClose: undefined, isHydrated: true });
-  // Reset the config store between tests so prior `sidebarWidthPx` writes don't leak into the next test's mount.
-  useConfigStore.setState({
-    config: { ...useConfigStore.getState().config, sidebarWidthPx: undefined },
-  });
+  // Reset the config store between tests so prior `sidebarWidthPx` writes don't leak into the next test's mount. `exactOptionalPropertyTypes`
+  // forbids assigning `sidebarWidthPx: undefined` literally — strip the key by destructuring it out instead.
+  const { sidebarWidthPx: _drop, ...restConfig } = useConfigStore.getState().config;
+  void _drop;
+  useConfigStore.setState({ config: restConfig });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
   // versions; provide minimal shims so the worktree close-confirm dialog
   // (and other native <dialog> consumers) can mount.

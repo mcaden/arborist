@@ -122,11 +122,37 @@ describe('SidebarResizeHandle', () => {
     expect(onCommit).toHaveBeenCalledWith(MIN_WIDTH_PX);
   });
 
-  it('ignores unrelated keys', () => {
+  it('swallows Enter and Space (preventDefault + stopPropagation, no width change)', () => {
+    // Separator has no activation semantics and the parent tablist's onKeyDown reacts to Enter/Space by focusing a tab. Without
+    // explicit swallow here, pressing Enter on a focused handle would jump focus to a session tab — surprising and wrong.
     const { onWidthChange, onCommit, handle } = renderHandle(220);
-    fireEvent.keyDown(handle, { key: 'Enter' });
-    fireEvent.keyDown(handle, { key: ' ' });
-    fireEvent.keyDown(handle, { key: 'a' });
+    for (const key of ['Enter', ' ']) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      const stopPropagation = vi.spyOn(event, 'stopPropagation');
+      handle.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(stopPropagation).toHaveBeenCalled();
+    }
+    expect(onWidthChange).not.toHaveBeenCalled();
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it('stops propagation for handled keys so the parent tablist does not double-handle Home/End', () => {
+    const { handle } = renderHandle(260);
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End']) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      const stopPropagation = vi.spyOn(event, 'stopPropagation');
+      handle.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(stopPropagation).toHaveBeenCalled();
+    }
+  });
+
+  it('ignores unrelated keys without preventDefault', () => {
+    const { onWidthChange, onCommit, handle } = renderHandle(220);
+    const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    handle.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
     expect(onWidthChange).not.toHaveBeenCalled();
     expect(onCommit).not.toHaveBeenCalled();
   });
