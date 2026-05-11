@@ -97,6 +97,8 @@ async fn real_spawner_drives_create_input_close_round_trip() {
             tool: Tool::Claude,
             worktree_path: worktree.path().to_path_buf(),
             instruction_set_id: Some(instruction_id),
+            cols: 80,
+            rows: 24,
         },
     )
     .expect("create");

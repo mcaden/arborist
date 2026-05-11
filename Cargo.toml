@@ -1,3 +1,22 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri"]
+members = ["crates/arborist-types", "src-tauri"]
+
+# Smaller debug info for the local crate, no debug info for deps. Speeds up
+# the link step and shrinks PDB / DWARF output without losing line numbers in
+# stack traces. Override per-package below if you need full debug for a
+# specific dep.
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+
+[profile.dev.package."*"]
+debug = false
+
+# Tests still need backtraces with line numbers; keep the same shape as dev.
+[profile.test]
+debug = "line-tables-only"
+incremental = true
+
+[profile.test.package."*"]
+debug = false

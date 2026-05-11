@@ -1,0 +1,66 @@
+# Build-time optimizations for the Arborist Rust workspace.
+
+# --- Faster linker (LLD) on every platform ----------------------------------
+#
+# Default link.exe / ld.bfd / ld64 are the slowest part of an incremental
+# Tauri rebuild. LLD typically cuts link time 2-5x. CI installs it explicitly
+# (see .github/workflows/rust.yml).
+
+# Windows MSVC: rust-lld ships with rustup, no separate install needed.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+# Linux: requires `lld` + `clang` (apt install lld clang).
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# macOS: requires `brew install llvm` so `lld` is on PATH. Apple Silicon's
+# Xcode 15+ default linker is already fast; lld is mainly a win on Intel /
+# older Xcode. Comment these out locally if they conflict with your toolchain.
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# --- sccache (opt-in) -------------------------------------------------------
+#
+# Caches compiled crates across worktrees and clean builds. Biggest single
+# win for the multi-worktree setup, where every `.worktrees/*/target` rebuilds
+# all 436 dependency crates from scratch today.
+#
+# Dogfooding safety: this repo is dogfooded with several worktree branches
+# possibly running simultaneously. To avoid any chance of one branch's
+# compilation output influencing another's, we scope the cache to *dependency*
+# crates only (the slow-to-build ones we never edit). Our own workspace
+# crates skip the cache entirely and use cargo's per-target/ incremental
+# compilation as before.
+#
+# How: instead of `rustc-wrapper`, we use `rustc-workspace-wrapper`'s inverse
+# pattern via a tiny shim script (`scripts/sccache-deps-only.{sh,cmd}`) that
+# checks `--crate-name`, calls rustc directly for `arborist*` crates, and
+# proxies to sccache for everything else.
+#
+# To enable:
+#   1. Install: `cargo install sccache` (or `winget install sccache`,
+#      `brew install sccache`, `apt install sccache`).
+#   2. Uncomment the [build] section below for your platform.
+#   3. Optional: tune cache size via `SCCACHE_CACHE_SIZE=20G` then
+#      `sccache --stop-server && sccache --start-server`.
+#   4. Verify with `sccache --show-stats` after a build.
+#
+# [build]
+# # Windows:
+# rustc-wrapper = "../scripts/sccache-deps-only.cmd"
+# # macOS / Linux:
+# # rustc-wrapper = "../scripts/sccache-deps-only.sh"

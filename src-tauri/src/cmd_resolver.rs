@@ -498,6 +498,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn unwrap_script_wrapper_finds_referenced_exe() {
         let tmp = tempfile::tempdir().unwrap();
         // Layout mirrors VS Code: bin/code.cmd, ../Code.exe.
@@ -579,6 +580,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn resolve_command_icon_path_filters_interpreter_targets() {
         let dir = tempfile::tempdir().unwrap();
         // A "node" exe and a wrapper script that points to it.
@@ -640,6 +642,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn resolve_command_executable_detailed_reports_unwrap_flag() {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("plain.exe");

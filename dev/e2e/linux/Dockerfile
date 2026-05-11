@@ -21,14 +21,31 @@
 # ---------------------------------------------------------------------------
 FROM ivangabriele/tauri:debian-bookworm-22 AS builder
 
+# clang + lld for the faster linker configured by .cargo/config.toml.
+# Without these the cargo build would fall back to the system linker (since
+# the config specifies `linker = "clang"` + `-fuse-ld=lld`), but cargo
+# refuses to spawn a missing linker.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    lld \
+    && rm -rf /var/lib/apt/lists/*
+
 # ---- Layer-cache trick: copy dependency manifests first, then source ----
 WORKDIR /build
+
+# Workspace `.cargo/config.toml` (pins the linker + opt-in sccache wrapper).
+# Copied before any `cargo` invocation so all subsequent compiles see it.
+COPY .cargo/ ./.cargo/
 
 # Cargo workspace root manifests (Cargo.lock lives at repo root)
 COPY Cargo.toml Cargo.lock ./
 COPY src-tauri/Cargo.toml src-tauri/
 # build.rs is needed for tauri-build to resolve
 COPY src-tauri/build.rs src-tauri/
+# arborist-types workspace crate (pure wire-contract types). Copied alongside
+# the manifests so the workspace `cargo metadata` resolves and the
+# layer-cache step below can prime dependency builds before source changes.
+COPY crates/ crates/
 
 # pnpm + workspace manifests (for dependency caching)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -80,6 +97,15 @@ RUN cd target/release/bundle/appimage \
 # Stage 2: runtime-tools (for cargo test / vitest — source bind-mounted)
 # ---------------------------------------------------------------------------
 FROM ivangabriele/tauri:debian-bookworm-22 AS runtime-tools
+
+# clang + lld for the faster linker configured by .cargo/config.toml. Same
+# rationale as the builder stage. The runtime-tools stage bind-mounts source
+# from the host at /src, so cargo discovers `/src/.cargo/config.toml` and
+# needs these tools at compile time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    lld \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY dev/e2e/linux/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

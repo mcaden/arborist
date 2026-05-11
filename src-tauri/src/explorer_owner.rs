@@ -360,6 +360,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
     fn looks_like_explorer_command_matches_canonical_invocations() {
         for cmd in [
             "explorer .",

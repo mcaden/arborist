@@ -18,7 +18,13 @@ pub mod process_icon;
 pub mod pty_pool;
 pub mod session_metrics;
 pub mod sub_sessions;
-pub mod types;
+/// Wire-contract types for the Rust backend ↔ React frontend boundary.
+///
+/// Re-exported from the standalone `arborist-types` crate so editing those
+/// types only recompiles that small crate, not the whole `arborist_lib` /
+/// `arborist` binary. Internal call sites continue to use `crate::types::*`
+/// and external tests continue to use `arborist_lib::types::*` unchanged.
+pub use arborist_types as types;
 pub mod vscode_owner;
 pub mod window_focus;
 pub mod worktree_icon;
