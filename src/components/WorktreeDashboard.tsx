@@ -241,8 +241,8 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
                   data-testid="worktree-dashboard-git-files"
                   className="max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 font-mono text-[11px] dark:border-slate-700 dark:bg-slate-950"
                 >
-                  {status.files.map((f, i) => (
-                    <li key={`${f.path}-${f.kind}-${i}`} className="flex items-center gap-2 truncate">
+                  {status.files.map((f) => (
+                    <li key={`${f.path}-${f.kind}`} className="flex items-center gap-2 truncate">
                       <span className="w-16 shrink-0 text-slate-500 dark:text-slate-400">{KIND_LABELS[f.kind]}</span>
                       <span className="truncate">{f.path}</span>
                     </li>

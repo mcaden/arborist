@@ -124,3 +124,41 @@ fn empty_runner_response_passes_through() {
     let got = worktrees_list_impl(&ctx, repo_dir.path()).expect("ok");
     assert!(got.is_empty());
 }
+
+#[test]
+fn worktree_git_status_invalid_path_returns_structured_error_without_invoking_runner() {
+    use arborist_lib::commands::session::worktree_git_status_impl;
+
+    // FakeGitRunner panics if git_status is called — this asserts the impl rejects the path before reaching the runner.
+    struct PanicOnStatus;
+    impl GitRunner for PanicOnStatus {
+        fn list_worktrees(&self, _r: &Path) -> Result<Vec<WorktreeInfo>, Error> {
+            unreachable!()
+        }
+        fn git_toplevel(&self, _p: &Path) -> Result<Option<PathBuf>, Error> {
+            unreachable!()
+        }
+        fn create_worktree(&self, _r: &Path, _p: &Path, _b: &str) -> Result<PathBuf, Error> {
+            unreachable!()
+        }
+        fn remove_worktree(&self, _r: &Path, _p: &Path) -> Result<(), Error> {
+            unreachable!()
+        }
+        fn git_status(&self, _p: &Path) -> Result<arborist_lib::types::WorktreeGitStatus, Error> {
+            panic!("git_status must not be called for an invalid path");
+        }
+    }
+
+    let store_dir = TempDir::new().unwrap();
+    let ctx = build_ctx(Arc::new(PanicOnStatus) as Arc<dyn GitRunner>, &store_dir);
+
+    // Derive a guaranteed-nonexistent path so the validator's `path.exists()` gate rejects it.
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("definitely-missing-status-target");
+
+    let got = worktree_git_status_impl(&ctx, &missing).expect("always Ok");
+    assert!(got.error.as_deref().unwrap_or("").contains("invalid worktree path"));
+    assert_eq!(got.staged, 0);
+    assert_eq!(got.unstaged, 0);
+    assert!(got.files.is_empty());
+}
