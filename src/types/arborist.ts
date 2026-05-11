@@ -196,8 +196,8 @@ export interface AppConfig {
   /** Most recently focused worktree tab. Added in `configVersion = 5`. */
   activeWorktreeTabId: WorktreeTabId | null;
   /**
-   * User-chosen width of the left sidebar in CSS pixels (Issue #94). `null` /
-   * absent means "use the frontend default" (224 px). The backend clamps any
+   * User-chosen width of the left sidebar in CSS pixels (Issue #94). Absent means "use
+   * the frontend default" (224 px). The backend clamps any
    * value to `[180, 480]` on write.
    */
   sidebarWidthPx?: number;

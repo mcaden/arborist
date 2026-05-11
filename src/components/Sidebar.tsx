@@ -268,14 +268,33 @@ export function Sidebar(): JSX.Element {
     setLiveWidth(clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
   }, [persistedWidth]);
 
+  // Serialize sidebar-width persistence so rapid commits (e.g. holding ArrowLeft for auto-repeat keyboard nudges) can't issue overlapping
+  // `configSet` calls that resolve out of order and leave a stale value on disk. We coalesce: the latest requested width is queued in
+  // `pendingWidthRef`; while a write is in flight we just update the ref, and the drain loop picks the latest value when the in-flight call
+  // resolves. Pointer-up gestures fire only one commit so the fast path is the no-op-already-equal short-circuit below.
+  const pendingWidthRef = useRef<number | null>(null);
+  const inFlightWriteRef = useRef<Promise<unknown> | null>(null);
+
   const commitWidth = useCallback(
     (next: number) => {
       const clamped = clampSidebarWidth(next);
       // Only persist when the value actually changed from what's on disk. Saves a config write on no-op drags / Home / End at the bound.
       if (clamped === (persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX)) return;
-      void configSet({ sidebarWidthPx: clamped }).catch((err) => {
-        console.warn(`[sidebar] failed to persist width ${clamped}: ${formatError(err)}`);
-      });
+      pendingWidthRef.current = clamped;
+      if (inFlightWriteRef.current) return;
+      const drain = async (): Promise<void> => {
+        while (pendingWidthRef.current !== null) {
+          const value = pendingWidthRef.current;
+          pendingWidthRef.current = null;
+          try {
+            await configSet({ sidebarWidthPx: value });
+          } catch (err) {
+            console.warn(`[sidebar] failed to persist width ${value}: ${formatError(err)}`);
+          }
+        }
+        inFlightWriteRef.current = null;
+      };
+      inFlightWriteRef.current = drain();
     },
     [configSet, persistedWidth],
   );
