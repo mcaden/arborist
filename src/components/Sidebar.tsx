@@ -262,24 +262,35 @@ export function Sidebar(): JSX.Element {
   const configSet = useConfigStore((s) => s.set);
   const [liveWidth, setLiveWidth] = useState<number>(() => clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
 
-  // Adopt backend-truth width whenever the persisted value changes (hydrate, workspace switch). Skipping this when a drag is in progress would be
-  // ideal, but workspace switches replace the whole sidebar tree anyway so there's no in-flight drag to disturb in practice.
-  useEffect(() => {
-    setLiveWidth(clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
-  }, [persistedWidth]);
-
   // Serialize sidebar-width persistence so rapid commits (e.g. holding ArrowLeft for auto-repeat keyboard nudges) can't issue overlapping
   // `configSet` calls that resolve out of order and leave a stale value on disk. We coalesce: the latest requested width is queued in
   // `pendingWidthRef`; while a write is in flight we just update the ref, and the drain loop picks the latest value when the in-flight call
   // resolves. Pointer-up gestures fire only one commit so the fast path is the no-op-already-equal short-circuit below.
   const pendingWidthRef = useRef<number | null>(null);
   const inFlightWriteRef = useRef<Promise<unknown> | null>(null);
+  // Latest *intended* persisted value — what `commitWidth` last asked the backend to store, even if the write hasn't resolved yet. The no-op
+  // short-circuit compares against this rather than the (possibly stale) hydrated `persistedWidth`, so a "drag to 260, drag back to 224 before the
+  // 260 write resolves" sequence still enqueues the revert.
+  const intendedPersistedRef = useRef<number | null>(null);
+
+  // Adopt backend-truth width whenever the persisted value changes (hydrate, workspace switch). Skip while a self-initiated write is in flight or
+  // pending: otherwise the intermediate snapshot from the first write of a serialized drain (e.g. holding ArrowRight) yanks `liveWidth` back to the
+  // previous value, causing visible jitter during keyboard auto-repeat. Once drained, the backend snapshot reflects our intended value (or another
+  // tab / process changed it) and we clear `intendedPersistedRef` so future hydrate snapshots are honored.
+  useEffect(() => {
+    if (inFlightWriteRef.current || pendingWidthRef.current !== null) return;
+    intendedPersistedRef.current = null;
+    setLiveWidth(clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
+  }, [persistedWidth]);
 
   const commitWidth = useCallback(
     (next: number) => {
       const clamped = clampSidebarWidth(next);
-      // Only persist when the value actually changed from what's on disk. Saves a config write on no-op drags / Home / End at the bound.
-      if (clamped === (persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX)) return;
+      // Compare against the latest *intended* persisted value, falling back to the hydrated snapshot when no write is in flight. Comparing against
+      // the stale `persistedWidth` alone would let a "260 in flight, user reverts to 224" sequence early-return without enqueuing the revert.
+      const target = intendedPersistedRef.current ?? persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX;
+      if (clamped === target) return;
+      intendedPersistedRef.current = clamped;
       pendingWidthRef.current = clamped;
       if (inFlightWriteRef.current) return;
       const drain = async (): Promise<void> => {

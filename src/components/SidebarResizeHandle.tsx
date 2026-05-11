@@ -149,7 +149,7 @@ export function SidebarResizeHandle({ width, onWidthChange, onCommit }: SidebarR
         style={accentStyle}
         // `data-dragging` on the parent forces the accent visible during an active drag so the user keeps a clear reference even
         // when the pointer wanders away from the handle.
-        className="h-full bg-slate-300 opacity-0 transition-opacity group-hover:opacity-100 group-[[data-dragging=true]]:opacity-100 dark:bg-slate-700"
+        className="h-full bg-slate-300 opacity-0 transition-opacity group-hover:opacity-100 group-data-[dragging=true]:opacity-100 dark:bg-slate-700"
       />
     </div>
   );
