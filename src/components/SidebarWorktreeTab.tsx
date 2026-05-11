@@ -88,8 +88,12 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         data-testid={`worktree-tab-menu-${tab.id}`}
         onClick={(e) => {
           e.stopPropagation();
-          const rect = e.currentTarget.getBoundingClientRect();
-          onOpenContextMenu(tab.id, { x: rect.left, y: rect.bottom + 2 }, buttonEl);
+          const trigger = e.currentTarget;
+          const rect = trigger.getBoundingClientRect();
+          // Restore focus to the ⋮ button after the menu closes for click-path
+          // openers; the Shift+F10 / ContextMenu-key path on the row button
+          // passes `buttonEl` so keyboard openers return focus to the row.
+          onOpenContextMenu(tab.id, { x: rect.left, y: rect.bottom + 2 }, trigger);
         }}
         className="absolute right-7 top-4 inline-flex h-5 w-5 items-center justify-center rounded leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >

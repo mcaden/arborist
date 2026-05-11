@@ -55,7 +55,7 @@ export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSu
     return s.activeId === sub.parentWorktreeTabId && tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === subSessionId;
   });
   const rowButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [menu, setMenu] = useState<{ anchor: { x: number; y: number } } | null>(null);
+  const [menu, setMenu] = useState<{ anchor: { x: number; y: number }; trigger: HTMLElement | null } | null>(null);
 
   if (!sub) return null;
 
@@ -103,8 +103,9 @@ export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSu
         data-testid={`sub-tab-menu-${subSessionId}`}
         onClick={(e) => {
           e.stopPropagation();
-          const rect = e.currentTarget.getBoundingClientRect();
-          setMenu({ anchor: { x: rect.left, y: rect.bottom + 2 } });
+          const trigger = e.currentTarget;
+          const rect = trigger.getBoundingClientRect();
+          setMenu({ anchor: { x: rect.left, y: rect.bottom + 2 }, trigger });
         }}
         className="absolute right-7 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-xs leading-none text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
@@ -119,7 +120,12 @@ export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSu
         <span aria-hidden="true">×</span>
       </button>
       {menu && (
-        <SubTabContextMenu subSessionId={subSessionId} anchor={menu.anchor} onClose={() => setMenu(null)} restoreFocusTo={rowButtonRef.current} />
+        <SubTabContextMenu
+          subSessionId={subSessionId}
+          anchor={menu.anchor}
+          onClose={() => setMenu(null)}
+          restoreFocusTo={menu.trigger ?? rowButtonRef.current}
+        />
       )}
     </li>
   );
