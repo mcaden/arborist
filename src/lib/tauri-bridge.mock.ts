@@ -23,7 +23,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 // which is the module being mocked, deadlocking Vitest's module resolver.
 import * as tauriError from '@/lib/tauri-error';
 import type * as realBridge from './tauri-bridge';
-import type { AppConfig } from '@/types/arborist';
+import type { AppConfig, WorktreeGitStatus } from '@/types/arborist';
 
 // Pure helpers (no Tauri side effects) — re-export so tests get the same
 // formatting as production. Indirected through `tauriError.*` instead of named
@@ -88,6 +88,19 @@ export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() => Promise.
 export const instructionsList: Mock<typeof realBridge.instructionsList> = vi.fn(() => Promise.resolve([]));
 
 export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() => Promise.resolve([]));
+
+const defaultGitStatus = (): WorktreeGitStatus => ({
+  ahead: 0,
+  behind: 0,
+  staged: 0,
+  unstaged: 0,
+  untracked: 0,
+  conflicted: 0,
+  files: [],
+  filesTruncated: false,
+});
+
+export const worktreeGitStatus: Mock<typeof realBridge.worktreeGitStatus> = vi.fn(() => Promise.resolve(defaultGitStatus()));
 
 export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.fn(() => Promise.resolve({ valid: true }));
 
@@ -163,6 +176,7 @@ export function resetBridgeMocks(): void {
   configSet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
+  worktreeGitStatus.mockReset().mockImplementation(() => Promise.resolve(defaultGitStatus()));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
   worktreeCreate.mockReset().mockImplementation(rejectNotImplemented);
   workspaceSwitch.mockReset().mockImplementation(rejectNotImplemented);
@@ -211,6 +225,7 @@ const _shapeCheck = {
   configSet,
   instructionsList,
   worktreesList,
+  worktreeGitStatus,
   workspaceValidate,
   worktreeCreate,
   workspaceSwitch,

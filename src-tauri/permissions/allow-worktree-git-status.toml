@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-worktree-git-status"
+description = "Allows the frontend to snapshot `git status` for a worktree (Issue #55: worktree dashboard) via the `worktree_git_status` command."
+commands.allow = [
+    "worktree_git_status",
+]

@@ -8,8 +8,11 @@
 // The header is rendered as a plain button inside an `<li role="presentation">`
 // — it is **not** a `role="tab"` participant. The sidebar's tablist scope
 // continues to enumerate session tabs only, matching the pre-#44 keyboard
-// pattern. Right-click opens `WorktreeTabContextMenu` (launch entries,
-// custom processes, and Close pinned to the bottom).
+// pattern. A vertical-ellipsis (⋮) button on the row opens the
+// `WorktreeTabContextMenu` (launch entries, custom processes, and Close
+// pinned to the bottom). Right-click is intentionally not bound — see
+// issue #49 for the rationale (discoverability). Shift+F10 / the
+// ContextMenu key still open the menu for keyboard users.
 //
 // Click activates the worktree tab and clears its `activeChildId` so the
 // MainArea swaps to the dashboard placeholder. Users who want to land on
@@ -36,7 +39,7 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
   if (!tab) return null;
 
   const baseClasses =
-    'flex w-full items-center gap-2 rounded-md py-2 pl-2 pr-7 text-left text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
+    'flex w-full items-center gap-2 rounded-md py-2 pl-2 pr-12 text-left text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
   const stateClasses = isActive
     ? 'bg-slate-200/80 text-slate-900 border-l-[3px] border-sky-500 dark:bg-slate-800/80 dark:text-slate-100'
     : 'text-slate-700 hover:bg-slate-100 border-l-[3px] border-transparent dark:text-slate-300 dark:hover:bg-slate-800';
@@ -58,8 +61,11 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
           });
         }}
         onContextMenu={(e) => {
+          // Right-click is no longer bound (issue #49 — context menu
+          // moved to an explicit ⋮ button). Still preventDefault here
+          // so the browser/WebView native menu doesn't pop up over the
+          // sidebar.
           e.preventDefault();
-          onOpenContextMenu(tab.id, { x: e.clientX, y: e.clientY }, buttonEl);
         }}
         onKeyDown={(e) => {
           if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
@@ -70,10 +76,28 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         }}
         className={`${baseClasses} ${stateClasses}`}
       >
-        <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center">
+        <span aria-hidden="true" className="-ml-1 flex h-5 w-5 shrink-0 items-center justify-center">
           <img src={getTreeIconUrl(tab.iconId)} alt="" draggable={false} className="h-5 w-5 object-contain" />
         </span>
         <span className="min-w-0 flex-1 truncate">{tab.name}</span>
+      </button>
+      <button
+        type="button"
+        aria-label={`More actions for worktree ${tab.name}`}
+        aria-haspopup="menu"
+        data-testid={`worktree-tab-menu-${tab.id}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          const trigger = e.currentTarget;
+          const rect = trigger.getBoundingClientRect();
+          // Restore focus to the ⋮ button after the menu closes for click-path
+          // openers; the Shift+F10 / ContextMenu-key path on the row button
+          // passes `buttonEl` so keyboard openers return focus to the row.
+          onOpenContextMenu(tab.id, { x: rect.left, y: rect.bottom + 2 }, trigger);
+        }}
+        className="absolute right-7 top-4 inline-flex h-5 w-5 items-center justify-center rounded leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+      >
+        <span aria-hidden="true">⋮</span>
       </button>
       <button
         type="button"

@@ -224,6 +224,18 @@ pub async fn worktrees_list(app: tauri::AppHandle, repo_root: String) -> Result<
     session::worktrees_list_impl(&ctx, &path)
 }
 
+/// Snapshot `git status` for a worktree (Issue #55). Always returns `Ok(...)`; on any discovery failure (invalid/missing path, non-repo, `git`
+/// binary missing, non-zero `git` exit) the result is a default-valued [`crate::types::WorktreeGitStatus`] with `error: Some(message)` populated
+/// so the dashboard can distinguish a clean tree from an unreadable one and surface "unable to read git status" rather than blocking.
+#[tauri::command]
+pub async fn worktree_git_status(
+    app: tauri::AppHandle,
+    args: crate::types::WorktreeGitStatusArgs,
+) -> Result<crate::types::WorktreeGitStatus, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::worktree_git_status_impl(&ctx, &args.path)
+}
+
 /// Validate a candidate workspace root (Roadmap §1.1). Never errors for the "invalid path" case — the picker shows inline feedback.
 #[tauri::command]
 pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateArgs) -> Result<WorkspaceValidateResult, AppError> {
@@ -234,9 +246,10 @@ pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateAr
     session::workspace_validate_impl(&ctx, &path, Some(&app_data_dir), crate::BUILD_BRANCH)
 }
 
-/// Create a new linked worktree under `<workspaceRoot>/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2).
+/// Create a new linked worktree under `<workspaceRoot>/.arborist/.worktrees/<name>` on a fresh branch named `<name>` (Roadmap §2.2, issue #71).
 ///
-/// After the worktree is created, kicks off `worktree_prep_commands` (issue #63) in the background.
+/// After the worktree is created, kicks off `worktree_prep_commands` (issue #63) in the background. Repo-stored overrides from
+/// `<workspaceRoot>/.arborist/settings.json` (issue #71) override the user-level prep command list when present.
 ///
 /// The returned `prep` field lets the frontend correlate `worktree://prep` events. The workspace-switch barrier covers both creation and prep spawn,
 /// so the prep is bound to the same active workspace as the creation.
@@ -245,7 +258,7 @@ pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) ->
     let ctx = ctx_of(&app)?;
     let _switch = session::acquire_switch_read(&ctx)?;
     let mut result = session::worktree_create_impl(&ctx, &args.name)?;
-    let cfg = ctx.store().load_config();
+    let cfg = crate::repo_settings::apply_repo_overlay(ctx.store().load_config());
     result.prep = crate::worktree_prep::maybe_spawn(&app, ctx.prep_registry.clone(), &cfg, &result.path);
     Ok(result)
 }

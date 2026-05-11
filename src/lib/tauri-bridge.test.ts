@@ -338,7 +338,7 @@ describe('workspaceSwitch', () => {
   const restoredSession: SessionView = {
     id: 'sid-restored',
     tool: 'claude',
-    worktreePath: '/new/ws/.worktrees/feat',
+    worktreePath: '/new/ws/.arborist/.worktrees/feat',
     worktreeName: 'feat',
     label: 'feat',
     instructionSetId: 'claude-default',
@@ -398,12 +398,12 @@ describe('workspaceSwitch', () => {
 
 describe('worktreeCreate', () => {
   it("calls invoke('worktree_create', { args: { name } }) and forwards the result", async () => {
-    invokeMock.mockResolvedValueOnce({ path: '/ws/.worktrees/feat-x' });
+    invokeMock.mockResolvedValueOnce({ path: '/ws/.arborist/.worktrees/feat-x' });
     const out = await bridge.worktreeCreate('feat-x');
     expect(invokeMock).toHaveBeenCalledWith('worktree_create', {
       args: { name: 'feat-x' },
     });
-    expect(out).toEqual({ path: '/ws/.worktrees/feat-x' });
+    expect(out).toEqual({ path: '/ws/.arborist/.worktrees/feat-x' });
   });
 
   it('propagates a rejected invoke', async () => {

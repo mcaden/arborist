@@ -16,6 +16,7 @@ pub mod git;
 pub mod icon_backfill;
 pub mod process_icon;
 pub mod pty_pool;
+pub mod repo_settings;
 pub mod session_metrics;
 pub mod sub_sessions;
 /// Wire-contract types for the Rust backend ↔ React frontend boundary.
@@ -336,6 +337,7 @@ pub fn run() {
             commands::session_restart,
             commands::frontend_ready,
             commands::worktrees_list,
+            commands::worktree_git_status,
             commands::workspace_validate,
             commands::workspace_switch,
             commands::worktree_create,

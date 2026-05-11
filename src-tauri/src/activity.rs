@@ -13,9 +13,15 @@
 //!
 //! - **`OSC 0;<title>`** / **`OSC 2;<title>`** → [`ActivityEvent::Title`]. Both
 //!   terminate with either BEL (`\x07`) or ST (`\x1b\\`).
-//! - **`OSC 9;<msg>`** (ConEmu notification) → [`ActivityEvent::Attention`].
+//! - **`OSC 9;<msg>`** (legacy ConEmu desktop notification — payload has no `<n>;<...>` numeric-subcommand shape, so a digit-only `<msg>` like
+//!   `OSC 9;42` is still a notification) → [`ActivityEvent::Attention`].
+//! - **`OSC 9;2;<msg>`** (explicit ConEmu notification subcommand) → [`ActivityEvent::Attention`].
 //! - **`OSC 777;notify;...`** (rxvt/Kitty notification) →
 //!   [`ActivityEvent::Attention`].
+//!
+//! Other `OSC 9;<n>;...` subcommands — `9;1` set CWD, `9;3` set tab title, `9;4;<state>;<value>` taskbar progress, `9;9` set CWD — are
+//! intentionally **ignored**. In particular, `claude` emits `OSC 9;4` taskbar-progress sequences continuously while it is thinking; surfacing
+//! those as `Attention` lit the sidebar bell almost the entire time the agent was working.
 //! - **Output byte-rate**: a session that has not produced bytes for
 //!   [`IDLE_THRESHOLD`] is reported as [`ActivityEvent::Idle`]; the next byte
 //!   after an idle window flips it back to [`ActivityEvent::Working`].
@@ -198,7 +204,29 @@ impl ActivityScanner {
         };
         match ps {
             "0" | "2" => out.push(ActivityEvent::Title { value: rest.to_owned() }),
-            "9" => out.push(ActivityEvent::Attention),
+            "9" => {
+                // ConEmu/Windows Terminal `OSC 9` family. The original ConEmu form `OSC 9;<text>` is a desktop notification (Attention).
+                // Later subcommands prefix the payload with a numeric selector *followed by another `;`*:
+                //   9;1;<cwd>             set CWD
+                //   9;2;<msg>             desktop notification (Attention)
+                //   9;3;<title>           set tab title
+                //   9;4;<state>;<value>   taskbar progress (claude emits this continuously while thinking)
+                //   9;9;<cwd>             set CWD
+                // Treat as Attention only when the payload is the legacy notification form (no `<n>;<...>` shape — including digit-only
+                // messages like `OSC 9;42`) *or* the explicit `9;2;...` notification subcommand. Anything else — including the unknown
+                // future numeric subcommand we haven't seen yet — is silently ignored, because a false bell while the agent is mid-thought
+                // is much worse than missing a notification we don't understand.
+                let mut parts = rest.splitn(2, ';');
+                let first = parts.next().unwrap_or("");
+                let has_more_segments = parts.next().is_some();
+                // A numeric subcommand requires the shape `<digits>;<...>` — i.e. digits *followed by another `;`*. A digit-only payload with no
+                // trailing `;` (e.g. `OSC 9;42\a`) is a legacy notification whose message text just happens to be numeric, not a subcommand;
+                // treating it as a subcommand would drop a real notification.
+                let is_numeric_subcommand = has_more_segments && !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit());
+                if !is_numeric_subcommand || first == "2" {
+                    out.push(ActivityEvent::Attention);
+                }
+            }
             "777" if rest.starts_with("notify") => out.push(ActivityEvent::Attention),
             "133" => {
                 // OSC 133;<letter>[;<args>]
@@ -357,10 +385,55 @@ mod tests {
     }
 
     #[test]
-    fn osc_9_is_attention() {
+    fn osc_9_legacy_notification_is_attention() {
+        // ConEmu's original `OSC 9;<text>` form (no numeric subcommand) is a desktop notification.
         let mut s = ActivityScanner::new();
         let evs = s.feed_bytes(b"\x1b]9;done\x07");
         assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::Attention]);
+    }
+
+    #[test]
+    fn osc_9_explicit_notify_subcommand_is_attention() {
+        // `OSC 9;2;<msg>` is the explicit ConEmu notification subcommand.
+        let mut s = ActivityScanner::new();
+        let evs = s.feed_bytes(b"\x1b]9;2;hello\x07");
+        assert_eq!(evs, vec![ActivityEvent::Working, ActivityEvent::Attention]);
+    }
+
+    #[test]
+    fn osc_9_legacy_notification_with_digit_only_message_is_attention() {
+        // Regression for review feedback on PR #88: a legacy `OSC 9;<text>` whose message text happens to be all digits (or starts with digits
+        // and contains no further `;`) must not be misclassified as a numeric subcommand and dropped. The disambiguation rule is "shape
+        // `<n>;<...>` with a *second* `;`", not "first segment is digits".
+        for payload in [b"\x1b]9;42\x07".as_slice(), b"\x1b]9;7thing\x07"] {
+            let mut s = ActivityScanner::new();
+            let evs = s.feed_bytes(payload);
+            assert_eq!(
+                evs,
+                vec![ActivityEvent::Working, ActivityEvent::Attention],
+                "payload {payload:?} should fire Attention"
+            );
+        }
+    }
+
+    #[test]
+    fn osc_9_4_taskbar_progress_is_not_attention() {
+        // `OSC 9;4;<state>;<value>` is the Windows-Terminal/ConEmu taskbar progress protocol. `claude` emits this continuously while thinking;
+        // surfacing it as Attention was the root cause of the bell appearing while the agent was simply working. Pinned here so a future change
+        // to the OSC 9 dispatch can't silently regress it.
+        let mut s = ActivityScanner::new();
+        let evs = s.feed_bytes(b"\x1b]9;4;1;42\x07");
+        assert_eq!(evs, vec![ActivityEvent::Working]);
+    }
+
+    #[test]
+    fn osc_9_other_numeric_subcommands_are_not_attention() {
+        // Spot-check the other documented numeric subcommands (set CWD, set tab title, set CWD again). None of these should fire Attention.
+        for payload in [b"\x1b]9;1;/tmp\x07".as_slice(), b"\x1b]9;3;tab title\x07", b"\x1b]9;9;/home\x07"] {
+            let mut s = ActivityScanner::new();
+            let evs = s.feed_bytes(payload);
+            assert_eq!(evs, vec![ActivityEvent::Working], "payload {payload:?} should not emit Attention");
+        }
     }
 
     #[test]

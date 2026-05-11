@@ -18,7 +18,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PORT_MIN = 1420;
-const PORT_RANGE = 100;
+const PORT_RANGE = 1000;
 
 function pickPort() {
   const hash = createHash('sha1').update(process.cwd()).digest();

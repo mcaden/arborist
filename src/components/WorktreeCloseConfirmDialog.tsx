@@ -98,7 +98,7 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
         e.preventDefault();
         if (!busy) onCancel();
       }}
-      className="rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+      className="fixed inset-0 m-auto rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
     >
       <h2 id="worktree-close-confirm-title" className="mb-3 text-base font-semibold">
         Close worktree tab &ldquo;{tab.name}&rdquo;?

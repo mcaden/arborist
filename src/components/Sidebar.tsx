@@ -107,9 +107,13 @@ export function Sidebar(): JSX.Element {
     else tabButtonRefs.current.delete(id);
   }, []);
 
-  const openContextMenu = useCallback((sessionId: SessionId, anchor: { x: number; y: number }) => {
-    const trigger = tabButtonRefs.current.get(sessionId) ?? null;
-    setContextMenu({ sessionId, anchor, trigger });
+  const openContextMenu = useCallback((sessionId: SessionId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => {
+    // The trigger is whichever element the user activated (the ⋮ button
+    // for mouse / touch users, the tab button itself for Shift+F10 /
+    // ContextMenu key users). Restoring focus to the source preserves
+    // the user's keyboard context when the menu closes.
+    const fallback = tabButtonRefs.current.get(sessionId) ?? null;
+    setContextMenu({ sessionId, anchor, trigger: trigger ?? fallback });
   }, []);
 
   const closeContextMenu = useCallback(() => {
@@ -264,17 +268,18 @@ export function Sidebar(): JSX.Element {
         {groups.map((group) => {
           if (group.tabId === null) {
             // Synthetic orphan group — no header; just render the sessions so they remain reachable. Boot self-heal will open a
-            // proper tab on the next start.
+            // proper tab on the next start. Orphans render flush (no rail) since there's no parent worktree to branch from.
             return group.sessionIds.map((id) => {
               const idx = ids.indexOf(id);
               return (
-                <ParentTabGroup
+                <SidebarTab
                   key={id}
                   id={id}
                   isActive={false}
                   isFocused={idx === clampedFocusedIndex}
                   onFocusableMounted={onFocusableMounted}
                   onOpenContextMenu={openContextMenu}
+                  nested={false}
                 />
               );
             });
@@ -346,7 +351,7 @@ interface SidebarGroupSectionProps {
   ids: SessionId[];
   clampedFocusedIndex: number;
   onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
-  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => void;
   onOpenWorktreeContextMenu: (tabId: WorktreeTabId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => void;
 }
 
@@ -362,42 +367,31 @@ function SidebarGroupSection({
   onOpenWorktreeContextMenu,
 }: SidebarGroupSectionProps): JSX.Element {
   const subSessions = useSubSessionsForWorktreeTab(tabId);
+  // The "last child" of the group is the last sub-session if any are present, otherwise the last AI-session tab. That row gets
+  // the "└" elbow on its branch decoration so the rail visibly terminates before the next worktree header.
+  const lastSessionIndex = sessionIds.length - 1;
+  const lastSubIndex = subSessions.length - 1;
   return (
     <>
       <SidebarWorktreeTab tabId={tabId} isActive={isActiveWorktree} onOpenContextMenu={onOpenWorktreeContextMenu} />
-      {sessionIds.map((id) => {
+      {sessionIds.map((id, i) => {
         const idx = ids.indexOf(id);
+        const isLastInGroup = subSessions.length === 0 && i === lastSessionIndex;
         return (
-          <ParentTabGroup
+          <SidebarTab
             key={id}
             id={id}
             isActive={isActiveWorktree && id === activeChildSessionId}
             isFocused={idx === clampedFocusedIndex}
             onFocusableMounted={onFocusableMounted}
             onOpenContextMenu={onOpenContextMenu}
+            isLastInGroup={isLastInGroup}
           />
         );
       })}
-      {subSessions.map((sub) => (
-        <SidebarSubTab key={sub.id} subSessionId={sub.id} />
+      {subSessions.map((sub, i) => (
+        <SidebarSubTab key={sub.id} subSessionId={sub.id} isLastInGroup={i === lastSubIndex} />
       ))}
     </>
-  );
-}
-
-// ParentTabGroup — renders a parent SidebarTab. Sub-sessions are no
-// longer nested under agent tabs — they render at the worktree-tab
-// level as flat siblings.
-interface ParentTabGroupProps {
-  id: SessionId;
-  isActive: boolean;
-  isFocused: boolean;
-  onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
-  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
-}
-
-function ParentTabGroup({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: ParentTabGroupProps): JSX.Element {
-  return (
-    <SidebarTab id={id} isActive={isActive} isFocused={isFocused} onFocusableMounted={onFocusableMounted} onOpenContextMenu={onOpenContextMenu} />
   );
 }

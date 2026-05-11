@@ -112,7 +112,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('lists worktrees and supports Browse', async () => {
-    bridgeMock.worktreesList.mockResolvedValue([makeWt(REPO_ROOT, 'main', true), makeWt(`${REPO_ROOT}/.worktrees/feature`, 'feature')]);
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(REPO_ROOT, 'main', true), makeWt(`${REPO_ROOT}/.arborist/.worktrees/feature`, 'feature')]);
     bridgeMock.pickDirectory.mockResolvedValue('/somewhere/else');
 
     render(<NewSessionDialog />);
@@ -121,7 +121,7 @@ describe('NewSessionDialog', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
 
-    const featureBtn = await screen.findByRole('button', { name: /\.worktrees\/feature.*feature/i });
+    const featureBtn = await screen.findByRole('button', { name: /\.arborist\/\.worktrees\/feature.*feature/i });
     expect(featureBtn).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(`^${REPO_ROOT}$`))).not.toBeInTheDocument();
 
@@ -154,7 +154,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('New tab validates name and creates worktree on submit', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockResolvedValue(makeTab(path));
 
@@ -180,7 +180,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('validates trimmed name', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockResolvedValue(makeTab(path));
 
@@ -219,7 +219,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('surfaces open-tab failures while preserving the worktree', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockRejectedValue(new Error('open failed'));
     bridgeMock.worktreesList.mockResolvedValueOnce([]).mockResolvedValueOnce([makeWt(path, 'my-feature')]);
@@ -243,7 +243,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('retry button immediately after open failure', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     let resolveRefresh: (value: WorktreeInfo[]) => void = () => {};
 
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
@@ -272,7 +272,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('does not expose retry while open is in flight', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     let resolveOpen: (value: WorktreeTab) => void = () => {};
 
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
@@ -301,7 +301,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('disables Cancel while create is in flight', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     let resolveOpen: (value: WorktreeTab) => void = () => {};
 
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
@@ -329,7 +329,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('disables tabs while create is in flight', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     let resolveOpen: (value: WorktreeTab) => void = () => {};
 
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
@@ -385,10 +385,10 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
 
     await act(async () => {
-      resolveList([makeWt(`${REPO_ROOT}/.worktrees/stale`, 'stale')]);
+      resolveList([makeWt(`${REPO_ROOT}/.arborist/.worktrees/stale`, 'stale')]);
     });
 
-    expect(screen.queryByRole('button', { name: /\.worktrees\/stale/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /\.arborist\/\.worktrees\/stale/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/^loading\.\.\.$/i)).not.toBeInTheDocument();
   });
 
@@ -411,7 +411,7 @@ describe('NewSessionDialog', () => {
       unmount();
 
       await act(async () => {
-        resolveList([makeWt(`${REPO_ROOT}/.worktrees/late`, 'late')]);
+        resolveList([makeWt(`${REPO_ROOT}/.arborist/.worktrees/late`, 'late')]);
       });
 
       const offending = errorSpy.mock.calls.find((args) => {
@@ -425,9 +425,9 @@ describe('NewSessionDialog', () => {
   });
 
   it("stale list doesn't overwrite post-failure refresh", async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
-    const stale = [makeWt(`${REPO_ROOT}/.worktrees/old-feature`, 'old-feature')];
-    const fresh = [makeWt(`${REPO_ROOT}/.worktrees/old-feature`, 'old-feature'), makeWt(path, 'my-feature')];
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
+    const stale = [makeWt(`${REPO_ROOT}/.arborist/.worktrees/old-feature`, 'old-feature')];
+    const fresh = [makeWt(`${REPO_ROOT}/.arborist/.worktrees/old-feature`, 'old-feature'), makeWt(path, 'my-feature')];
     let resolveStaleList: (value: WorktreeInfo[]) => void = () => {};
     let resolveFreshList: (value: WorktreeInfo[]) => void = () => {};
     let listCallCount = 0;
@@ -455,17 +455,17 @@ describe('NewSessionDialog', () => {
     await act(async () => {
       resolveFreshList(fresh);
     });
-    expect(await screen.findByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /\.worktrees\/old-feature.*old-feature/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /\.arborist\/\.worktrees\/my-feature.*my-feature/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /\.arborist\/\.worktrees\/old-feature.*old-feature/i })).toBeInTheDocument();
 
     await act(async () => {
       resolveStaleList(stale);
     });
-    expect(screen.getByRole('button', { name: /\.worktrees\/my-feature.*my-feature/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /\.arborist\/\.worktrees\/my-feature.*my-feature/i })).toBeInTheDocument();
   });
 
   it('Existing tab open calls worktreeTabOpen with selected path', async () => {
-    const path = `${REPO_ROOT}/.worktrees/main`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/main`;
     bridgeMock.worktreesList.mockResolvedValue([makeWt(path, 'main')]);
     bridgeMock.worktreeTabOpen.mockResolvedValue(makeTab(path));
 
@@ -474,7 +474,7 @@ describe('NewSessionDialog', () => {
     await screen.findByRole('heading', { name: /add worktree/i });
 
     fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.arborist\/\.worktrees\/main.*main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^open worktree$/i }));
 
     await waitFor(() => expect(bridgeMock.worktreeTabOpen).toHaveBeenCalledWith({ path }));
@@ -482,7 +482,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('Confirm surfaces backend AppError objects as readable text', async () => {
-    const path = `${REPO_ROOT}/.worktrees/main`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/main`;
     bridgeMock.worktreesList.mockResolvedValue([makeWt(path, 'main')]);
     bridgeMock.worktreeTabOpen.mockRejectedValue({
       code: 'PtySpawnFailed',
@@ -494,7 +494,7 @@ describe('NewSessionDialog', () => {
     await screen.findByRole('heading', { name: /add worktree/i });
 
     fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /\.worktrees\/main.*main/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /\.arborist\/\.worktrees\/main.*main/i }));
     fireEvent.click(screen.getByRole('button', { name: /^open worktree$/i }));
 
     expect(await screen.findByText(/PtySpawnFailed.*program not found/i)).toBeInTheDocument();
@@ -527,7 +527,7 @@ describe('NewSessionDialog', () => {
   });
 
   it('focuses the retry button after create succeeds but open fails', async () => {
-    const path = `${REPO_ROOT}/.worktrees/my-feature`;
+    const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
     bridgeMock.worktreeTabOpen.mockRejectedValue(new Error('open failed'));
     bridgeMock.worktreesList.mockResolvedValue([]);

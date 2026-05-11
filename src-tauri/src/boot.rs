@@ -654,6 +654,9 @@ mod tests {
         fn remove_worktree(&self, _: &Path, _: &Path) -> Result<(), Error> {
             unimplemented!("not used in boot tests")
         }
+        fn git_status(&self, _: &Path) -> Result<crate::types::WorktreeGitStatus, Error> {
+            Ok(crate::types::WorktreeGitStatus::default())
+        }
     }
 
     /// Test fixture: pretends nothing is a git repository. Used for the new "non-repo path" boot rejection tests.
@@ -672,6 +675,9 @@ mod tests {
         }
         fn remove_worktree(&self, _: &Path, _: &Path) -> Result<(), Error> {
             unimplemented!("not used in boot tests")
+        }
+        fn git_status(&self, _: &Path) -> Result<crate::types::WorktreeGitStatus, Error> {
+            Ok(crate::types::WorktreeGitStatus::default())
         }
     }
 

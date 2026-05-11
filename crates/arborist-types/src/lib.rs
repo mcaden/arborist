@@ -353,6 +353,97 @@ pub struct WorktreeInfo {
     pub is_locked: bool,
 }
 
+/// Args for the `worktree_git_status` command (Issue #55).
+///
+/// MIRROR: `src/types/arborist.ts::WorktreeGitStatusArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeGitStatusArgs {
+    pub path: PathBuf,
+}
+
+/// Categorical state of a single file in a worktree's working tree, as parsed from `git status --porcelain=v2 -z` (Issue #55).
+///
+/// `staged` corresponds to a non-`.` X column (changes already in the index), `unstaged` to a non-`.` Y column on a tracked file, and `untracked`
+/// /`conflicted` map to the `?` and `u` porcelain-v2 prefixes respectively. A file with both X and Y dirty (e.g. modified-then-modified-again)
+/// surfaces as both `staged` and `unstaged` — see [`WorktreeGitStatus::files`] for the full list and [`WorktreeGitStatus::staged`] /
+/// [`WorktreeGitStatus::unstaged`] for counts.
+///
+/// MIRROR: `src/types/arborist.ts::GitStatusFileKind`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum GitStatusFileKind {
+    Staged,
+    Unstaged,
+    Untracked,
+    Conflicted,
+}
+
+/// One file entry in [`WorktreeGitStatus::files`] (Issue #55). The dashboard surfaces these as a digestible list rather than reconstructing
+/// `git status --short` on the frontend.
+///
+/// MIRROR: `src/types/arborist.ts::GitStatusFile`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusFile {
+    /// Worktree-relative path. Forward slashes on every platform — porcelain-v2 emits `/` even on Windows.
+    pub path: String,
+    pub kind: GitStatusFileKind,
+    /// The two-character porcelain-v2 XY state code (e.g. `"M."`, `".M"`, `"MM"`, `"??"`, `"UU"`). Preserved verbatim so the UI can render a glyph
+    /// without re-deriving the categorical kind. `"??"` for untracked, `"UU"` (etc.) for conflicted.
+    pub status: String,
+}
+
+/// Snapshot of `git status` for a single worktree (Issue #55). Returned by the `worktree_git_status` command and used by the worktree dashboard.
+/// All "count" fields are `0` and `files` is empty when the working tree is clean. On discovery failure (path missing, not a git repo,
+/// `git` binary missing, non-zero status exit) the implementation returns a default-valued struct with [`Self::error`] populated to a
+/// human-readable message — the dashboard distinguishes "clean tree" from "unreadable" by inspecting `error` (a successful snapshot leaves it
+/// `None`). Output parsing is best-effort: unrecognised porcelain records are silently skipped, so parse anomalies surface as missing entries
+/// rather than a signalled failure.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreeGitStatus`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeGitStatus {
+    /// Current branch, or `None` on detached HEAD.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub branch: Option<String>,
+    /// Short HEAD sha (first 12 chars), or `None` if HEAD could not be resolved (newborn repo with no commits).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub head: Option<String>,
+    /// Configured upstream branch name (e.g. `origin/main`), or `None` when the branch tracks nothing.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub upstream: Option<String>,
+    /// Commits the local branch is ahead of its upstream. `0` when no upstream is configured.
+    pub ahead: u32,
+    /// Commits the local branch is behind its upstream. `0` when no upstream is configured.
+    pub behind: u32,
+    /// Files with staged changes (non-`.` X column).
+    pub staged: u32,
+    /// Files with unstaged working-tree changes (non-`.` Y column on a tracked file).
+    pub unstaged: u32,
+    /// Files Git is not tracking (`?` lines).
+    pub untracked: u32,
+    /// Files in a merge conflict (`u` lines).
+    pub conflicted: u32,
+    /// Per-file detail. Empty for a clean tree. Capped at [`MAX_GIT_STATUS_FILES`] to keep the wire payload bounded; the counts above are always
+    /// authoritative even when the list is truncated. Order is the order `git status --porcelain=v2` emitted (i.e. git's discovery order).
+    pub files: Vec<GitStatusFile>,
+    /// `true` when [`Self::files`] was truncated to fit [`MAX_GIT_STATUS_FILES`].
+    pub files_truncated: bool,
+    /// `Some(message)` when the snapshot could not be produced (e.g. path missing,
+    /// not a git repository, `git` binary unavailable, non-zero status exit). Counts
+    /// and `files` will be empty/zero in that case. `None` indicates a successful
+    /// snapshot — callers should distinguish "clean tree" from "failed to read"
+    /// using this field rather than inferring from zero counts.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+/// Cap on the per-file list returned in [`WorktreeGitStatus::files`]. Counts are unaffected; only the detail list is bounded so a worktree with
+/// thousands of dirty files cannot bloat the IPC payload.
+pub const MAX_GIT_STATUS_FILES: usize = 200;
+
 // --------------------------------------------------------------------------- InstructionSet
 // ---------------------------------------------------------------------------
 
@@ -617,10 +708,13 @@ pub struct SessionOutputEvent {
 pub enum ActivityEvent {
     /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
     Title { value: String },
-    /// Generic "the user should look at this tab" cue: explicit notification escapes only (`OSC 9`, `OSC 777;notify;...`). **Standalone BEL is
-    /// intentionally ignored** — both `claude` and `copilot` ring the bell as part of normal readline-style behavior (autocomplete misses,
-    /// backspace at column 0, scrollback edge), which produced an unacceptable rate of false-positive "attention required" cues while the agent
-    /// was simply thinking. If a CLI wants to demand attention, it must do so via a real notification OSC.
+    /// Generic "the user should look at this tab" cue: explicit notification escapes only — legacy `OSC 9;<text>` (any payload that does not
+    /// match the `<n>;<...>` numeric-subcommand shape, including digit-only messages like `OSC 9;42`), the explicit `OSC 9;2;<text>`
+    /// notification subcommand, and `OSC 777;notify;...`. **Standalone BEL is intentionally ignored** — both `claude` and `copilot` ring the
+    /// bell as part of normal readline-style behavior (autocomplete misses, backspace at column 0, scrollback edge), which produced an
+    /// unacceptable rate of false-positive "attention required" cues while the agent was simply thinking. Numeric `OSC 9` subcommands other
+    /// than `2` — notably `9;4;<state>;<value>` taskbar progress, which `claude` emits continuously while thinking — are also ignored. If a
+    /// CLI wants to demand attention, it must do so via a real notification OSC.
     Attention,
     /// Output is flowing. Emitted on the first byte after an idle window (or the very first byte of the session). Idempotent — only fires on the
     /// idle→working transition.

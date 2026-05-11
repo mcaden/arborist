@@ -105,6 +105,24 @@ fn main_capability_allows_core_default_and_ping() {
         identifiers.contains(&"allow-worktree-tab"),
         "main capability must include allow-worktree-tab so worktree_tab_* commands are callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-worktree-git-status"),
+        "main capability must include allow-worktree-git-status so worktree_git_status is callable; got {identifiers:?}",
+    );
+}
+
+#[test]
+fn allow_worktree_git_status_permission_file_declares_command() {
+    let path = manifest_dir().join("permissions").join("allow-worktree-git-status.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktree-git-status\""),
+        "permission identifier must remain `allow-worktree-git-status`",
+    );
+    assert!(
+        raw.contains("\"worktree_git_status\""),
+        "allow-worktree-git-status must declare worktree_git_status; raw permission file:\n{raw}",
+    );
 }
 
 #[test]

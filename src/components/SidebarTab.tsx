@@ -1,8 +1,15 @@
 // A single vertical tab in the sidebar. Renders the tool icon, the label,
-// an error indicator dot when the session has crashed, and a small close
-// button that immediately closes the AI-agent session (no confirmation —
-// the worktree-deletion confirmation lives on the worktree parent tab,
-// see WorktreeCloseConfirmDialog).
+// an error indicator dot when the session has crashed, a three-dots (⋮)
+// button that opens the session context menu, and a small close button
+// that immediately closes the AI-agent session (no confirmation — the
+// worktree-deletion confirmation lives on the worktree parent tab, see
+// WorktreeCloseConfirmDialog).
+//
+// Issue #49: the context menu trigger moved from right-click to an
+// explicit ⋮ button so the action is discoverable. Shift+F10 / the
+// ContextMenu key still open the menu for keyboard users; right-click
+// is intentionally no longer bound (it falls through to the WebView
+// default, which is harmless inside a Tauri shell).
 //
 // Drag-to-reorder of session tabs was removed in the worktree-tab UI
 // roll-out (issue #44). The grouped layout invalidated the previous flat
@@ -10,6 +17,7 @@
 
 import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
+import { BranchDecoration } from './BranchDecoration';
 import { formatError } from '@/lib/tauri-bridge';
 import { useConfigStore } from '@/store/config-store';
 import {
@@ -39,10 +47,31 @@ interface SidebarTabProps {
    * owns the menu state so only one menu is open at a time across all
    * tabs.
    */
-  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => void;
+  /**
+   * Render the git-branch style "trunk + branch + node" decoration on
+   * the left edge so this tab visually nests under its parent worktree
+   * header. Defaults to `true`; orphan sessions (no matching worktree)
+   * pass `false` so they render flush without a phantom rail.
+   */
+  nested?: boolean;
+  /**
+   * When `nested`, marks the last child of its worktree group so the
+   * rail terminates with an "└" elbow at the node instead of carrying
+   * on into the next group.
+   */
+  isLastInGroup?: boolean;
 }
 
-export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpenContextMenu }: SidebarTabProps): JSX.Element | null {
+export function SidebarTab({
+  id,
+  isActive,
+  isFocused,
+  onFocusableMounted,
+  onOpenContextMenu,
+  nested = true,
+  isLastInGroup = false,
+}: SidebarTabProps): JSX.Element | null {
   const session = useSessionById(id);
   const hasUnread = useHasUnread(id);
   const displayStatus = useDisplayStatus(id);
@@ -68,13 +97,14 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
   if (!session) return null;
 
   const baseClasses =
-    'flex w-full flex-col items-stretch gap-0.5 rounded-md py-2 pl-5 pr-7 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
+    'flex w-full flex-col items-stretch gap-0.5 rounded-md py-2 pl-5 pr-12 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500';
   const stateClasses = isActive
     ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100'
     : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800';
 
   return (
-    <li className="group relative px-2">
+    <li className={`group relative pr-2 ${nested ? 'ml-6' : 'ml-2'}`}>
+      {nested && <BranchDecoration isLastInGroup={isLastInGroup} anchorTop="18px" />}
       <button
         ref={(el) => onFocusableMounted(id, el)}
         type="button"
@@ -88,10 +118,6 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
           // mechanism (actions.focus sets activeChildId to this session).
           void actions.focus(id);
         }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          onOpenContextMenu(id, { x: e.clientX, y: e.clientY });
-        }}
         onKeyDown={(e) => {
           // Shift+F10 and the Apps / ContextMenu key are the standard
           // keyboard shortcuts for the context menu (matches OS menus
@@ -101,8 +127,9 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
           // / Home / End / Delete / Enter / Space.
           if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
             e.preventDefault();
-            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-            onOpenContextMenu(id, { x: rect.left + 8, y: rect.bottom });
+            const tabButton = e.currentTarget as HTMLElement;
+            const rect = tabButton.getBoundingClientRect();
+            onOpenContextMenu(id, { x: rect.left + 8, y: rect.bottom }, tabButton);
           }
         }}
         className={`${baseClasses} ${stateClasses}`}
@@ -126,6 +153,27 @@ export function SidebarTab({ id, isActive, isFocused, onFocusableMounted, onOpen
           />
         </span>
         <MetricsLine metrics={session.status === 'running' ? metrics : undefined} tool={session.tool} isActive={isActive} />
+      </button>
+      <button
+        type="button"
+        aria-label={`More actions for session ${session.label}`}
+        aria-haspopup="menu"
+        data-testid={`sidebar-tab-menu-${id}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          // Anchor the menu to the button's bottom-left corner so it
+          // drops down from the ⋮ trigger. TabContextMenu clamps to the
+          // viewport, so overflow beyond the right edge is handled.
+          // Pass the ⋮ button itself as the focus-restore target so
+          // keyboard users who tabbed to ⋮ get focus back here on close
+          // (rather than jumping to the tab row).
+          const button = e.currentTarget;
+          const rect = button.getBoundingClientRect();
+          onOpenContextMenu(id, { x: rect.left, y: rect.bottom + 2 }, button);
+        }}
+        className="absolute right-7 top-1.5 rounded p-1 leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+      >
+        <span aria-hidden="true">⋮</span>
       </button>
       <button
         type="button"
