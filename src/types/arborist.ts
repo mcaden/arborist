@@ -516,6 +516,56 @@ export interface WorktreeInfo {
   isLocked: boolean;
 }
 
+// MIRROR: src-tauri/src/types.rs::GitStatusFileKind
+// Categorical state of a single file in a worktree's working tree (Issue #55).
+// A file with both X and Y dirty surfaces as both `staged` and `unstaged`
+// entries in `WorktreeGitStatus.files`.
+export type GitStatusFileKind = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
+
+// MIRROR: src-tauri/src/types.rs::WorktreeGitStatusArgs
+// Args for the `worktree_git_status` command (Issue #55).
+export interface WorktreeGitStatusArgs {
+  path: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::GitStatusFile
+// One file entry in `WorktreeGitStatus.files` (Issue #55). `status` is the
+// raw porcelain-v2 XY code (e.g. `"M."`, `"MM"`, `"??"`, `"UU"`); `kind` is
+// the digestible category the dashboard groups by.
+export interface GitStatusFile {
+  path: string;
+  kind: GitStatusFileKind;
+  status: string;
+}
+
+// MIRROR: src-tauri/src/types.rs::WorktreeGitStatus
+// Returned by the `worktree_git_status` command (Issue #55: worktree
+// dashboard). All counts are `0` and `files` is empty when the working tree
+// is clean. On any backend discovery failure the backend returns a
+// default-valued struct *with `error` populated to a human-readable message*
+// — counts stay zero, but the dashboard distinguishes "clean tree" from
+// "unable to read git status" by inspecting `error` rather than the counts.
+export interface WorktreeGitStatus {
+  branch?: string;
+  head?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  files: GitStatusFile[];
+  filesTruncated: boolean;
+  /**
+   * Set to a human-readable message when the snapshot could not be produced
+   * (e.g. path missing, not a git repository, `git` binary unavailable). Counts
+   * are zero in that case. The dashboard distinguishes "clean tree" from
+   * "unreadable" by inspecting this field rather than the counts.
+   */
+  error?: string;
+}
+
 // MIRROR: src-tauri/src/types.rs::WorkspaceValidateResult
 // Returned by the `workspace_validate` command (Roadmap §1.1). `error` is
 // only populated when `valid === false`.

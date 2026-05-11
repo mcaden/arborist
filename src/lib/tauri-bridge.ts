@@ -47,6 +47,7 @@ import type {
   WorkspaceSwitchResult,
   WorkspaceValidateResult,
   WorktreeCreateResult,
+  WorktreeGitStatus,
   WorktreeTab,
   WorktreeTabId,
   WorktreeTabCloseResult,
@@ -264,6 +265,23 @@ export function instructionsList(): Promise<InstructionSet[]> {
  */
 export function worktreesList(repoRoot: string): Promise<WorktreeInfo[]> {
   return invoke<WorktreeInfo[]>('worktrees_list', { repoRoot });
+}
+
+/**
+ * Snapshot `git status` for a worktree (Issue #55: worktree dashboard). Always
+ * resolves. The returned {@link WorktreeGitStatus} carries an optional `error`
+ * field: when set, the snapshot could not be produced (path missing, not a git
+ * repository, `git` binary unavailable, non-zero `git status` exit) and the
+ * counts are zero. The dashboard distinguishes "clean tree" from "unreadable"
+ * by inspecting `error` rather than the counts (a clean tree on a detached
+ * HEAD also has zero counts and `branch === undefined`, but `error` is unset).
+ * A rejected `invoke()` (rare — e.g. capability denied) is surfaced via the
+ * caller's catch handler.
+ */
+export function worktreeGitStatus(path: string): Promise<WorktreeGitStatus> {
+  return invoke<WorktreeGitStatus>('worktree_git_status', {
+    args: { path },
+  });
 }
 
 /**
