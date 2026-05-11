@@ -26,16 +26,20 @@ function normalize(p: string): string {
 }
 
 /**
- * `true` iff `child` is *strictly* inside `<root>/.worktrees/` — i.e.
- * `<root>/.worktrees/<at least one component>`. Both `/` and `\`
- * separators are accepted on either side, and on Windows-style paths
- * the comparison is case-insensitive (to match Windows filesystem
+ * `true` iff `child` is *strictly* inside `<root>/.arborist/.worktrees/` —
+ * i.e. `<root>/.arborist/.worktrees/<at least one component>`. Both `/`
+ * and `\` separators are accepted on either side, and on Windows-style
+ * paths the comparison is case-insensitive (to match Windows filesystem
  * semantics where `C:\Repo` and `c:\repo` refer to the same directory).
+ *
+ * The `.arborist/.worktrees` layout was introduced in issue #71; older
+ * installations placing worktrees directly under `<root>/.worktrees/`
+ * are not auto-discovered (hard cut-over per the issue acceptance).
  */
 export function isInsideWorktreesDir(root: string, child: string): boolean {
   const r = normalize(root);
   const c = normalize(child);
-  const prefix = `${r}/.worktrees/`;
+  const prefix = `${r}/.arborist/.worktrees/`;
   const winLike = isWindowsLikePath(r) || isWindowsLikePath(c);
   if (winLike) {
     const cl = c.toLowerCase();

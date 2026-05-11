@@ -16,7 +16,7 @@ function startedEvent(prepId: string, overrides: Partial<Extract<WorktreePrepEve
   return {
     kind: 'started',
     prepId,
-    worktreePath: '/repo/.worktrees/feature',
+    worktreePath: '/repo/.arborist/.worktrees/feature',
     logPath: '/data/worktree-prep-logs/' + prepId + '.log',
     command: 'npm install',
     startedAt: 1700000000,
@@ -28,7 +28,7 @@ function exitedEvent(prepId: string, overrides: Partial<Extract<WorktreePrepEven
   return {
     kind: 'exited',
     prepId,
-    worktreePath: '/repo/.worktrees/feature',
+    worktreePath: '/repo/.arborist/.worktrees/feature',
     logPath: '/data/worktree-prep-logs/' + prepId + '.log',
     exitCode: 0,
     errorMessage: null,

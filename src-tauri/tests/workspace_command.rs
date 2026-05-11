@@ -282,7 +282,7 @@ fn worktree_create_invokes_runner_with_relative_path() {
     let last = runner.last_create.lock().unwrap().clone().unwrap();
     let canon_ws = dunce::canonicalize(ws.path()).unwrap();
     assert_eq!(last.0, canon_ws);
-    assert_eq!(last.1, PathBuf::from(".worktrees").join("feat-x"));
+    assert_eq!(last.1, PathBuf::from(".arborist").join(".worktrees").join("feat-x"));
     assert_eq!(last.2, "feat-x");
 }
 
@@ -290,7 +290,7 @@ fn worktree_create_invokes_runner_with_relative_path() {
 fn worktree_create_refuses_to_clobber_existing_directory() {
     let store = TempDir::new().unwrap();
     let ws = TempDir::new().unwrap();
-    std::fs::create_dir_all(ws.path().join(".worktrees").join("feat-x")).unwrap();
+    std::fs::create_dir_all(ws.path().join(".arborist").join(".worktrees").join("feat-x")).unwrap();
     let runner = FakeGitRunner::new();
     let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
     set_workspace(&ctx, ws.path());
