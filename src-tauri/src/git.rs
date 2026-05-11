@@ -230,9 +230,10 @@ impl GitRunner for RealGitRunner {
             .arg("-C")
             .arg(worktree_path)
             // `--porcelain=v2` for unambiguous machine-readable output, `--branch` to surface the branch / upstream / ahead-behind header,
-            // `-z` so paths are NUL-separated (no escaping or quoting), `--untracked-files=normal` so we count individual untracked files
-            // instead of just the directory shorthand.
-            .args(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"])
+            // `-z` so paths are NUL-separated (no escaping or quoting), `--untracked-files=all` so each untracked file is enumerated
+            // individually instead of git's default `?? dir/` directory shorthand — the dashboard count must match the file count, not the
+            // top-level-directory count.
+            .args(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"])
             .output()
         {
             Ok(o) => o,
@@ -1035,6 +1036,35 @@ locked migrating to slow disk
         assert_eq!(s.untracked, 1, "new-file.txt is untracked");
         assert!(s.files.iter().any(|f| f.path == "README" && f.kind == GitStatusFileKind::Unstaged));
         assert!(s.files.iter().any(|f| f.path == "new-file.txt" && f.kind == GitStatusFileKind::Untracked));
+    }
+
+    #[test]
+    fn real_runner_git_status_enumerates_each_file_inside_untracked_directory() {
+        // Regression for the `--untracked-files=normal` → `=all` switch (PR #89
+        // review feedback): with `normal`, an entirely untracked directory is
+        // collapsed to a single `?? dir/` record and the dashboard count would
+        // read 1 regardless of how many files live inside. With `all`, every
+        // file is enumerated and the count matches the user's intuition.
+        let dir = tempfile::TempDir::new().unwrap();
+        init_git_repo(dir.path());
+        let sub = dir.path().join("new-dir");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.txt"), b"a").unwrap();
+        std::fs::write(sub.join("b.txt"), b"b").unwrap();
+        std::fs::write(sub.join("c.txt"), b"c").unwrap();
+        let runner = RealGitRunner;
+        let s = runner.git_status(dir.path()).expect("git_status ok");
+        assert_eq!(
+            s.untracked, 3,
+            "each file inside an entirely-untracked directory must be counted individually"
+        );
+        for name in ["new-dir/a.txt", "new-dir/b.txt", "new-dir/c.txt"] {
+            assert!(
+                s.files.iter().any(|f| f.path == name && f.kind == GitStatusFileKind::Untracked),
+                "expected {name} to appear as an untracked file, got {:?}",
+                s.files
+            );
+        }
     }
 
     #[test]
