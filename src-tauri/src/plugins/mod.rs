@@ -150,10 +150,12 @@ impl PluginRegistry {
     }
 
     /// Find the custom-process plugin that claims the supplied [`crate::types::CustomProcessDef`] (by command-shape sniffing). Returns the **first**
-    /// matching plugin in registration order, or `None` if no built-in plugin claims the def (the generic `CustomProcessDef` runtime handles it).
+    /// matching plugin in registration order whose [`custom_process::CustomProcessPlugin::supported_on_platform`] also returns true, or `None` if no
+    /// supported built-in plugin claims the def (the generic `CustomProcessDef` runtime handles it). Filtering by platform here keeps the
+    /// "unsupported plugin wins then fails at spawn time" foot-gun from #97 unreachable.
     #[must_use]
     pub fn custom_process_for_def(&self, def: &crate::types::CustomProcessDef) -> Option<Arc<dyn custom_process::CustomProcessPlugin>> {
-        self.custom_process.iter().find(|p| p.matches(def)).cloned()
+        self.custom_process.iter().find(|p| p.supported_on_platform() && p.matches(def)).cloned()
     }
 
     /// All registered custom-process plugins in registration order. Mostly useful for diagnostics; routine lookups should go through
@@ -168,6 +170,24 @@ impl PluginRegistry {
     pub fn widgets(&self) -> &[Arc<dyn dashboard_widget::DashboardWidgetBackend>] {
         &self.widgets
     }
+}
+
+/// Construct the production plugin registry.
+///
+/// This is the single seam sub-issues #96 / #97 / #98 extend: each migration adds its `reg.register_*(Arc::new(...))?` line here, and `lib.rs`
+/// never has to change again. Today the registry is empty.
+///
+/// Returns a [`RegisterError`] if two built-in plugins of the same kind ever share an id — that would be a programming error caught immediately
+/// at startup rather than papered over with `expect()`.
+pub fn build_registry() -> Result<PluginRegistry, RegisterError> {
+    let reg = PluginRegistry::new();
+    // Sub-issue #96: reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
+    // Sub-issue #96: reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
+    // Sub-issue #97: reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
+    // Sub-issue #97: reg.register_custom_process(Arc::new(custom_process::explorer::ExplorerPlugin))?;
+    // Sub-issue #98: reg.register_widget(Arc::new(dashboard_widget::git_status::GitStatusPlugin))?;
+    // Sub-issue #98: reg.register_widget(Arc::new(dashboard_widget::ai_usage::AiUsagePlugin))?;
+    Ok(reg)
 }
 
 #[cfg(test)]
@@ -317,6 +337,67 @@ mod tests {
             ..def
         };
         assert!(reg.custom_process_for_def(&other).is_none());
+    }
+
+    struct TogglableProc {
+        id: &'static str,
+        matches_id: &'static str,
+        supported: bool,
+    }
+    impl Plugin for TogglableProc {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+        fn display_name(&self) -> &'static str {
+            "Togglable Process"
+        }
+    }
+    impl custom_process::CustomProcessPlugin for TogglableProc {
+        fn matches(&self, def: &crate::types::CustomProcessDef) -> bool {
+            def.id.0 == self.matches_id
+        }
+        fn supported_on_platform(&self) -> bool {
+            self.supported
+        }
+    }
+
+    #[test]
+    fn custom_process_for_def_skips_unsupported_platform() {
+        // Register an unsupported plugin first so it would "win" by registration order if the filter were absent — the supported plugin
+        // registered second is the one we expect back. Mirrors the Windows-Explorer-on-Linux case from #97.
+        let mut reg = PluginRegistry::new();
+        reg.register_custom_process(Arc::new(TogglableProc {
+            id: "explorer",
+            matches_id: "shared",
+            supported: false,
+        }))
+        .unwrap();
+        reg.register_custom_process(Arc::new(TogglableProc {
+            id: "fallback",
+            matches_id: "shared",
+            supported: true,
+        }))
+        .unwrap();
+        let def = crate::types::CustomProcessDef {
+            id: crate::types::CustomProcessDefId("shared".to_owned()),
+            name: "Shared".to_owned(),
+            kind: crate::types::CustomProcessKind::Application,
+            command: "noop".to_owned(),
+            enabled: true,
+            icon: None,
+            icon_data_uri: None,
+        };
+        let picked = reg.custom_process_for_def(&def).expect("expected the supported plugin to claim the def");
+        assert_eq!(picked.id(), "fallback");
+    }
+
+    #[test]
+    fn build_registry_yields_empty_registry_today() {
+        // Sub-issues #96/#97/#98 will populate this; this PR keeps the empty contract explicit.
+        let reg = build_registry().expect("build_registry must not collide on duplicate ids");
+        assert!(reg.ai().is_empty());
+        assert!(reg.custom_processes().is_empty());
+        assert!(reg.widgets().is_empty());
     }
 
     #[test]

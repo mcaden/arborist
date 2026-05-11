@@ -129,14 +129,18 @@ export function createRegistry(): PluginRegistry {
       widgetsIndex.set(plugin.id, widgets.length);
       widgets.push(plugin);
     },
-    ai: () => ai,
+    // Defensive copies: `readonly` is compile-time-only and callers can mutate via casts or runtime access. Returning a fresh array on every call
+    // keeps the registry's internal `*Index` maps in sync with its arrays — the append-only contract is enforced even against misbehaving callers.
+    ai: () => ai.slice(),
     aiById: (id) => {
       const idx = aiIndex.get(id);
       return idx === undefined ? undefined : ai[idx];
     },
-    customProcessForDef: (def) => customProcess.find((p) => p.matches(def)),
-    customProcesses: () => customProcess,
-    widgets: () => widgets,
+    // Filter unsupported plugins before applying `matches(def)` so an unsupported plugin (e.g. Explorer on macOS in #97) cannot "win" the lookup
+    // and then fail later at spawn time. Preserves registration order for tie-breaking.
+    customProcessForDef: (def) => customProcess.find((p) => p.supportedOnPlatform() && p.matches(def)),
+    customProcesses: () => customProcess.slice(),
+    widgets: () => widgets.slice(),
   };
 }
 

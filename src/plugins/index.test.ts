@@ -67,4 +67,40 @@ describe('createRegistry()', () => {
     expect(r.customProcessForDef({ id: 'vscode', command: 'code .' })?.id).toBe('vscode');
     expect(r.customProcessForDef({ id: 'shell', command: 'pwsh' })).toBeUndefined();
   });
+
+  it('customProcessForDef skips plugins that are not supported on the current platform', () => {
+    // Mirrors the Windows-Explorer-on-Linux case from #97: an unsupported plugin must not "win" the lookup, even if it was registered first and
+    // matches the def. The supported plugin registered afterwards should be returned.
+    const r = createRegistry();
+    r.registerCustomProcess({
+      id: 'explorer',
+      displayName: 'Explorer',
+      matches: (def) => def.id === 'shared',
+      supportedOnPlatform: () => false,
+    });
+    r.registerCustomProcess({
+      id: 'fallback',
+      displayName: 'Fallback',
+      matches: (def) => def.id === 'shared',
+      supportedOnPlatform: () => true,
+    });
+    expect(r.customProcessForDef({ id: 'shared', command: 'noop' })?.id).toBe('fallback');
+  });
+
+  it('accessors return defensive copies so external mutation cannot desync the registry', () => {
+    const r = createRegistry();
+    r.registerAi(makeAi('claude'));
+    r.registerCustomProcess(makeProc('vscode', 'vscode'));
+    r.registerWidget(makeWidget('git-status'));
+
+    // Mutating the returned arrays must not affect what the registry surfaces on subsequent calls. `readonly` is compile-time only; this test
+    // pins down the runtime behaviour.
+    (r.ai() as AiPlugin[]).length = 0;
+    (r.customProcesses() as CustomProcessPlugin[]).pop();
+    (r.widgets() as DashboardWidgetPlugin[]).push(makeWidget('rogue'));
+
+    expect(r.ai().map((p) => p.id)).toEqual(['claude']);
+    expect(r.customProcesses().map((p) => p.id)).toEqual(['vscode']);
+    expect(r.widgets().map((p) => p.id)).toEqual(['git-status']);
+  });
 });

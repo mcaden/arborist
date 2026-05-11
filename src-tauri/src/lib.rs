@@ -259,10 +259,11 @@ pub fn run() {
             let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
 
-            // Plugin framework foundation (issue #95). Empty registry today: it is wired into Tauri managed state so issue #96 (AI plugins),
-            // #97 (Custom Process plugins), and #98 (Dashboard Widget plugins) can land their per-plugin registrations as small follow-up PRs
-            // without re-touching `lib.rs`. No commands consume the registry yet.
-            app.manage(std::sync::Arc::new(plugins::PluginRegistry::new()));
+            // Plugin framework foundation (issue #95). Empty registry today. Sub-issues #96 (AI plugins), #97 (Custom Process plugins), and #98
+            // (Dashboard Widget plugins) extend `plugins::build_registry()` with their `register_*` calls; this `lib.rs` site does not need to
+            // change again. No commands consume the registry yet.
+            let plugin_registry = plugins::build_registry().expect("plugin registration must not collide at startup");
+            app.manage(std::sync::Arc::new(plugin_registry));
 
             // Phase 2: parallel sub-session pool + store + sink. Lives alongside the existing AppContext so existing tests don't need to know about
             // it.
