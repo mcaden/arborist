@@ -126,6 +126,40 @@ fn empty_runner_response_passes_through() {
 }
 
 #[test]
+fn worktree_git_status_runner_err_is_swallowed_into_structured_error() {
+    use arborist_lib::commands::session::worktree_git_status_impl;
+
+    struct ErrRunner;
+    impl GitRunner for ErrRunner {
+        fn list_worktrees(&self, _r: &Path) -> Result<Vec<WorktreeInfo>, Error> {
+            unreachable!()
+        }
+        fn git_toplevel(&self, _p: &Path) -> Result<Option<PathBuf>, Error> {
+            unreachable!()
+        }
+        fn create_worktree(&self, _r: &Path, _p: &Path, _b: &str) -> Result<PathBuf, Error> {
+            unreachable!()
+        }
+        fn remove_worktree(&self, _r: &Path, _p: &Path) -> Result<(), Error> {
+            unreachable!()
+        }
+        fn git_status(&self, _p: &Path) -> Result<arborist_lib::types::WorktreeGitStatus, Error> {
+            Err(Error::Internal("simulated runner failure".to_owned()))
+        }
+    }
+
+    let store_dir = TempDir::new().unwrap();
+    let ctx = build_ctx(Arc::new(ErrRunner) as Arc<dyn GitRunner>, &store_dir);
+
+    // Path must validate so we exercise the runner-Err arm; use the store_dir itself (a real existing directory).
+    let got = worktree_git_status_impl(&ctx, store_dir.path()).expect("always Ok");
+    assert!(got.error.as_deref().unwrap_or("").contains("git status failed"));
+    assert!(got.error.as_deref().unwrap_or("").contains("simulated runner failure"));
+    assert_eq!(got.staged, 0);
+    assert!(got.files.is_empty());
+}
+
+#[test]
 fn worktree_git_status_invalid_path_returns_structured_error_without_invoking_runner() {
     use arborist_lib::commands::session::worktree_git_status_impl;
 

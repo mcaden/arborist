@@ -1372,7 +1372,10 @@ pub fn worktrees_list_impl(ctx: &AppContext, repo_root: &std::path::Path) -> Res
 /// depends on.
 pub fn worktree_git_status_impl(ctx: &AppContext, worktree_path: &std::path::Path) -> Result<crate::types::WorktreeGitStatus, AppError> {
     match crate::compose::validate_worktree(worktree_path) {
-        Ok(canonical) => ctx.git_runner.git_status(&canonical).map_err(AppError::from),
+        Ok(canonical) => Ok(ctx.git_runner.git_status(&canonical).unwrap_or_else(|e| crate::types::WorktreeGitStatus {
+            error: Some(format!("git status failed: {e}")),
+            ..Default::default()
+        })),
         Err(e) => Ok(crate::types::WorktreeGitStatus {
             error: Some(format!("invalid worktree path: {e}")),
             ..Default::default()

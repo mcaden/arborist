@@ -266,6 +266,13 @@ describe('WorktreeDashboard', () => {
       files: [],
       filesTruncated: false,
     });
+
+    // Flush the state update from the resolved promise so React doesn't emit an
+    // `act(...)` warning after the test exits — wait until the clean-tree
+    // indicator that depends on the resolved value is on screen.
+    await waitFor(() => {
+      expect(screen.getByText(/Working tree clean/)).toBeInTheDocument();
+    });
   });
 
   it('aggregates input/output tokens across sessions for this worktree only', () => {
