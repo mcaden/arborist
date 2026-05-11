@@ -199,7 +199,7 @@ describe('SubTabContextMenu', () => {
     }
   });
 
-  it('returns null gracefully when sub-session is missing (no crash, still handles Close)', () => {
+  it('handles missing sub-session without crashing and still handles Close', () => {
     // Sub-session not added to the store — `useSubSessionById` returns undefined.
     const onClose = vi.fn();
 
