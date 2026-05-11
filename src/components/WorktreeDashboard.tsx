@@ -110,8 +110,14 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
       if (reqIdRef.current !== reqId) return;
       setStatusError(formatError(err));
     } finally {
-      inFlightRef.current = false;
-      if (reqIdRef.current === reqId) setStatusLoading(false);
+      // Only clear the in-flight guard and loading flag if WE are still the
+      // active request. A tab switch (or another call started by the
+      // tabPath-change reset) bumps `reqIdRef.current`, in which case the
+      // newer request now owns those flags and we must not stomp them.
+      if (reqIdRef.current === reqId) {
+        inFlightRef.current = false;
+        setStatusLoading(false);
+      }
     }
   }, [tabPath]);
 
@@ -119,9 +125,15 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
     if (!tabPath) return;
     // Reset stale state from a previous worktree tab so the panel doesn't briefly
     // show the prior tab's status / error during the cross-tab transition. The
-    // first refresh below repopulates immediately for the new tabPath.
+    // first refresh below repopulates immediately for the new tabPath. Crucially
+    // we also clear `inFlightRef` and `statusLoading` so a slow request still
+    // pending against the *previous* tabPath can't block the new tab's initial
+    // fetch (the in-flight guard would otherwise short-circuit it and the
+    // Refresh button would stay disabled until the prior call resolved).
     setStatus(null);
     setStatusError(null);
+    inFlightRef.current = false;
+    setStatusLoading(false);
     void refreshStatus();
     const handle = window.setInterval(() => {
       void refreshStatus();

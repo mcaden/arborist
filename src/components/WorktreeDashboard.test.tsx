@@ -324,6 +324,51 @@ describe('WorktreeDashboard', () => {
     });
   });
 
+  it("does not block the new tab's initial fetch when the previous tab still has an in-flight request", async () => {
+    const TAB_OTHER = 'tab-feature-y' as WorktreeTabId;
+    useWorktreeTabStore.setState({
+      tabs: [tab(), { id: TAB_OTHER, path: '/repo/feature-y', name: 'feature-y', label: 'feature-y', tabIndex: 1, iconId: 2 }],
+    });
+
+    // First tab's call hangs forever — simulates a slow `git status` on a
+    // huge repo. Without the tab-switch reset of `inFlightRef` /
+    // `statusLoading`, the new tab's first refresh would be short-circuited
+    // by the in-flight guard and its Refresh button would stay disabled.
+    bridgeMock.worktreeGitStatus.mockReturnValueOnce(new Promise(() => {}));
+
+    const { rerender } = render(<WorktreeDashboard tabId={TAB_ID} />);
+    await waitFor(() => {
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenNthCalledWith(1, '/repo/feature-x');
+    });
+
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      ahead: 0,
+      behind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+
+    rerender(<WorktreeDashboard tabId={TAB_OTHER} />);
+
+    // The new tab must immediately dispatch its own fetch — not wait for the
+    // prior tab's still-pending request to resolve.
+    await waitFor(() => {
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(2);
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenNthCalledWith(2, '/repo/feature-y');
+    });
+
+    // Wait for the new tab's resolved state to land so React doesn't emit an
+    // `act(...)` warning when the test exits.
+    await waitFor(() => {
+      expect(screen.getByText(/Working tree clean/)).toBeInTheDocument();
+    });
+  });
+
   it('aggregates input/output tokens across sessions for this worktree only', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     useSessionStore.setState({
