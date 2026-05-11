@@ -146,6 +146,8 @@ export function createRegistry(): PluginRegistry {
     // and then fail later at spawn time. Preserves registration order for tie-breaking.
     customProcessForDef: (def) => customProcess.find((p) => p.supportedOnPlatform() && p.matches(def)),
     customProcesses: () => customProcess.slice(),
-    widgets: () => widgets.slice(),
+    // Sort by `order` (lower first) so the documented contract on `DashboardWidgetPlugin.order` holds.
+    // Array.prototype.sort is stable since ES2019, so equal `order` values retain registration order.
+    widgets: () => widgets.slice().sort((a, b) => a.order - b.order),
   };
 }

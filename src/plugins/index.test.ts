@@ -87,6 +87,18 @@ describe('createRegistry()', () => {
     expect(r.customProcessForDef({ id: 'shared', command: 'noop' })?.id).toBe('fallback');
   });
 
+  it('widgets() sorts by `order` ascending and breaks ties by registration order', () => {
+    // Documented contract on DashboardWidgetPlugin.order: lower value renders first, ties broken by registration order.
+    // Array.prototype.sort is stable since ES2019, so we rely on that for the tie-break rather than a secondary key.
+    const r = createRegistry();
+    const w = (id: string, order: number): DashboardWidgetPlugin => ({ id, displayName: id, order, Component: () => null });
+    r.registerWidget(w('c', 10));
+    r.registerWidget(w('a', 0));
+    r.registerWidget(w('d', 10));
+    r.registerWidget(w('b', 5));
+    expect(r.widgets().map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('accessors return defensive copies so external mutation cannot desync the registry', () => {
     const r = createRegistry();
     r.registerAi(makeAi('claude'));
