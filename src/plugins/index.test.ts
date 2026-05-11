@@ -5,8 +5,8 @@ import { createRegistry, PluginRegisterError, type AiPlugin, type CustomProcessP
 const makeAi = (id: string): AiPlugin => ({
   id,
   displayName: id,
-  toolId: id,
   defaultProgram: id,
+  defaultInstructionSetPath: `${id}-default.md`,
 });
 
 const makeProc = (id: string, matchId: string): CustomProcessPlugin => ({

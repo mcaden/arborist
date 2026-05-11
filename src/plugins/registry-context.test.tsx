@@ -17,7 +17,7 @@ function RegistryProbe(): JSX.Element {
 describe('PluginRegistryProvider / useRegistry', () => {
   it('exposes the registry to child components', () => {
     const r = createRegistry();
-    r.registerAi({ id: 'claude', displayName: 'Claude', toolId: 'claude', defaultProgram: 'claude' });
+    r.registerAi({ id: 'claude', displayName: 'Claude', defaultProgram: 'claude', defaultInstructionSetPath: 'claude-default.md' });
     r.registerWidget({ id: 'git-status', displayName: 'Git', order: 0, Component: () => null });
 
     render(

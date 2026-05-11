@@ -22,14 +22,10 @@ export interface Plugin {
 
 // MIRROR: src-tauri/src/plugins/ai/mod.rs::AiPlugin
 export interface AiPlugin extends Plugin {
-  /**
-   * The Rust-side serde discriminator for `crate::types::Tool` (`"claude"`,
-   * `"copilot"`). Frontend uses this to bridge a registry plugin back to
-   * the persisted `Tool` enum value.
-   */
-  toolId: string;
-  /** Default program token (`"claude"`, `"copilot"`). User-overridable. */
+  /** Bare program token (`"claude"`, `"copilot"`). User-overridable via `AppConfig.ai_launch_commands`. */
   defaultProgram: string;
+  /** Filename of the built-in instruction-set markdown under `instructions/` (e.g. `"claude-default.md"`). */
+  defaultInstructionSetPath: string;
 }
 
 // MIRROR: src-tauri/src/plugins/custom_process/mod.rs::CustomProcessPlugin
@@ -44,6 +40,8 @@ export interface CustomProcessPlugin extends Plugin {
 }
 
 // MIRROR: src-tauri/src/plugins/dashboard_widget/mod.rs::DashboardWidgetBackend
+// (extended with frontend-only `order` and `Component`; the Rust trait is
+// backend plumbing only and intentionally omits these UI fields.)
 export interface DashboardWidgetPlugin extends Plugin {
   /**
    * Lower value renders first. Ties are broken by registration order.
