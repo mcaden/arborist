@@ -95,6 +95,12 @@ export function SidebarResizeHandle({ width, onWidthChange, onCommit }: SidebarR
   );
 
   const onDoubleClick = useCallback(() => {
+    // Defensive: cancel any in-flight gesture so a trailing pointerup can't overwrite the reset with the last dragged width. In normal DOM event
+    // ordering `dblclick` only fires after two completed pointerup cycles, so `dragRef` should already be null — but releasing pointer capture and
+    // resetting the computed-width ref keeps the invariant unconditional.
+    dragRef.current = null;
+    setIsDragging(false);
+    lastComputedRef.current = DEFAULT_WIDTH_PX;
     onWidthChange(DEFAULT_WIDTH_PX);
     onCommit(DEFAULT_WIDTH_PX);
   }, [onCommit, onWidthChange]);
