@@ -542,8 +542,9 @@ export interface GitStatusFile {
 // Returned by the `worktree_git_status` command (Issue #55: worktree
 // dashboard). All counts are `0` and `files` is empty when the working tree
 // is clean. On any backend discovery failure the backend returns a
-// default-valued struct (no branch / counts zero / no files) — the dashboard
-// surfaces "unable to read git status" rather than blocking.
+// default-valued struct *with `error` populated to a human-readable message*
+// — counts stay zero, but the dashboard distinguishes "clean tree" from
+// "unable to read git status" by inspecting `error` rather than the counts.
 export interface WorktreeGitStatus {
   branch?: string;
   head?: string;

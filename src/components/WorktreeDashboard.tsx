@@ -11,9 +11,12 @@
 // "clean tree" from "unable to read git status". A rejected `invoke()` (rare
 // — e.g. capability denied) is treated the same way via the catch handler.
 //
-// The git panel polls every 5s while mounted; a manual "Refresh" button is
-// also exposed. Polling is intentionally simple — a notify-based file
-// watcher is a follow-up.
+// The git panel polls every 15s while mounted; a manual "Refresh" button is
+// also exposed. An in-flight guard ensures only one snapshot is dispatched at
+// a time even if a poll tick arrives before the previous request resolves,
+// so a slow `git status` on a large repo can't pile up concurrent `git`
+// processes. Polling is intentionally simple — a notify-based file
+// watcher is a follow-up (#93 widget refactor will host it).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -28,7 +31,7 @@ interface WorktreeDashboardProps {
   tabId: WorktreeTabId;
 }
 
-const POLL_INTERVAL_MS = 5_000;
+const POLL_INTERVAL_MS = 15_000;
 
 // All four kinds the backend can produce, in the order we display badges.
 const KINDS: GitStatusFileKind[] = ['staged', 'unstaged', 'untracked', 'conflicted'];
@@ -85,9 +88,17 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
   const reqIdRef = useRef(0);
+  // In-flight guard: prevents a poll tick from launching a second
+  // `worktreeGitStatus` call while the previous one is still pending. Without
+  // this, a slow `git status` on a large repo would queue overlapping requests
+  // that each spawn a child `git` process — wasting work and (despite `reqId`
+  // dropping their state writes) still racing each other in flight.
+  const inFlightRef = useRef(false);
 
   const refreshStatus = useCallback(async () => {
     if (!tabPath) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     const reqId = ++reqIdRef.current;
     setStatusLoading(true);
     try {
@@ -99,6 +110,7 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
       if (reqIdRef.current !== reqId) return;
       setStatusError(formatError(err));
     } finally {
+      inFlightRef.current = false;
       if (reqIdRef.current === reqId) setStatusLoading(false);
     }
   }, [tabPath]);

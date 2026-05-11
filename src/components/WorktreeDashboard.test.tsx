@@ -162,9 +162,58 @@ describe('WorktreeDashboard', () => {
     expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledWith('/repo/feature-x');
   });
 
+  it('does not dispatch overlapping requests when a poll tick fires before the previous call resolves', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    // Make the bridge call hang on the first invocation so the in-flight guard
+    // would have to suppress the next poll/click attempt.
+    let resolveFirst: (v: unknown) => void = () => {};
+    bridgeMock.worktreeGitStatus.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveFirst = res;
+      }),
+    );
+
+    render(<WorktreeDashboard tabId={TAB_ID} />);
+
+    // Initial mount fired the (still pending) first call.
+    await waitFor(() => {
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
+    });
+
+    // Click Refresh several times while the first call is still pending —
+    // each click should be suppressed by the in-flight guard.
+    fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
+    fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
+    fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
+
+    // Give microtasks a tick to settle.
+    await Promise.resolve();
+    expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
+
+    // Resolve the first call and confirm a subsequent click *is* allowed to fire.
+    resolveFirst({
+      ahead: 0,
+      behind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Working tree clean/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
+    await waitFor(() => {
+      expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('clicking Refresh re-invokes worktreeGitStatus', async () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
-    // Fake the 5s polling interval so the assertion below is deterministic on
+    // Fake the 15s polling interval so the assertion below is deterministic on
     // slow CI — we only want to count: the initial mount call + the click.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
