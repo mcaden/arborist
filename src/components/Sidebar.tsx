@@ -30,6 +30,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { WorktreeCloseConfirmDialog } from './WorktreeCloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
+import { clampSidebarWidth, DEFAULT_WIDTH_PX as SIDEBAR_DEFAULT_WIDTH_PX } from './sidebar-width';
 import { SidebarSubTab } from './SidebarSubTab';
 import { SidebarTab } from './SidebarTab';
 import { SidebarWorktreeTab } from './SidebarWorktreeTab';
@@ -40,6 +42,7 @@ import { WorktreeTabContextMenu } from './WorktreeTabContextMenu';
 import { useSessionActions, useSessions } from '@/store/session-store';
 import { useSubSessionsForWorktreeTab } from '@/store/sub-session-store';
 import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
+import { useConfigStore, selectSidebarWidthPx } from '@/store/config-store';
 import { formatError } from '@/lib/tauri-bridge';
 import type { SessionId, WorktreeTabId } from '@/types/arborist';
 
@@ -253,6 +256,30 @@ export function Sidebar(): JSX.Element {
 
   const clampedFocusedIndex = Math.min(focusedIndex, Math.max(0, ids.length - 1));
 
+  // Persisted sidebar width (Issue #94). `undefined` until config hydrates or when the user has never resized — fall back to the legacy default.
+  // Live width during a drag is kept in local state so we don't round-trip through `configSet` (and therefore disk) on every pointermove tick.
+  const persistedWidth = useConfigStore(selectSidebarWidthPx);
+  const configSet = useConfigStore((s) => s.set);
+  const [liveWidth, setLiveWidth] = useState<number>(() => clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
+
+  // Adopt backend-truth width whenever the persisted value changes (hydrate, workspace switch). Skipping this when a drag is in progress would be
+  // ideal, but workspace switches replace the whole sidebar tree anyway so there's no in-flight drag to disturb in practice.
+  useEffect(() => {
+    setLiveWidth(clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
+  }, [persistedWidth]);
+
+  const commitWidth = useCallback(
+    (next: number) => {
+      const clamped = clampSidebarWidth(next);
+      // Only persist when the value actually changed from what's on disk. Saves a config write on no-op drags / Home / End at the bound.
+      if (clamped === (persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX)) return;
+      void configSet({ sidebarWidthPx: clamped }).catch((err) => {
+        console.warn(`[sidebar] failed to persist width ${clamped}: ${formatError(err)}`);
+      });
+    },
+    [configSet, persistedWidth],
+  );
+
   return (
     <aside
       aria-label="Sessions"
@@ -260,7 +287,8 @@ export function Sidebar(): JSX.Element {
       aria-orientation="vertical"
       data-testid="sidebar"
       onKeyDown={onKeyDown}
-      className="flex h-full w-56 shrink-0 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900"
+      style={{ width: `${liveWidth}px` }}
+      className="relative flex h-full shrink-0 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900"
     >
       <WorkspaceIndicator />
       <NewSessionButton buttonRef={newSessionButtonRef} />
@@ -339,6 +367,7 @@ export function Sidebar(): JSX.Element {
         />
       )}
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} initialTab={settingsInitialTab} /> : null}
+      <SidebarResizeHandle width={liveWidth} onWidthChange={setLiveWidth} onCommit={commitWidth} />
     </aside>
   );
 }

@@ -126,6 +126,7 @@ export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.
 export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] => s.config.lastOpenSessions;
 export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] => s.config.customProcesses;
 export const selectLastOpenSubSessions = (s: ConfigStoreState): readonly SubSessionRecord[] => s.config.lastOpenSubSessions;
+export const selectSidebarWidthPx = (s: ConfigStoreState): number | undefined => s.config.sidebarWidthPx;
 export const selectStatus = (s: ConfigStoreState): HydrationStatus => s.status;
 export const selectError = (s: ConfigStoreState): string | null => s.error;
 

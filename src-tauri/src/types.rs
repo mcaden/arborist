@@ -566,7 +566,17 @@ pub struct AppConfig {
     /// is highlighted on launch. Added in `configVersion = 5`.
     #[serde(default)]
     pub active_worktree_tab_id: Option<WorktreeTabId>,
+    /// User-chosen width of the left sidebar in CSS pixels (Issue #94). `None` means "use the frontend default" (224 px today).
+    /// Clamped to `[SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX]` on write so a hand-edited config can't shove the column off-screen.
+    /// Backwards-compatible add: pre-#94 configs lack the field and serde fills it with `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_width_px: Option<u32>,
 }
+
+/// Lower bound for the resizable sidebar width (CSS px). Narrow enough to still show ~12 chars of label.
+pub const SIDEBAR_WIDTH_MIN_PX: u32 = 180;
+/// Upper bound for the resizable sidebar width (CSS px). Wide enough for full branch names without consuming half the window.
+pub const SIDEBAR_WIDTH_MAX_PX: u32 = 480;
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -586,6 +596,7 @@ impl Default for AppConfig {
             worktree_tabs: Vec::new(),
             worktree_tab_order: Vec::new(),
             active_worktree_tab_id: None,
+            sidebar_width_px: None,
         }
     }
 }
@@ -654,6 +665,10 @@ pub struct PartialAppConfig {
     /// Tri-state: absent → leave alone; `null` → clear; `"<uuid>"` → set.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
     pub active_worktree_tab_id: Option<Option<WorktreeTabId>>,
+    /// Sidebar width (CSS px). `None` → leave alone; `Some(n)` → set (clamped to [`SIDEBAR_WIDTH_MIN_PX`, `SIDEBAR_WIDTH_MAX_PX`]).
+    /// We don't expose a tri-state "clear" since the frontend always sends a concrete width; reverting to the default just sends `224`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_width_px: Option<u32>,
 }
 
 /// serde adapter for `Option<Option<T>>`: distinguishes "absent" from "present-but-null". JSON has no native `Some(None)`, so we serialise
@@ -1629,6 +1644,7 @@ mod tests {
             worktree_tabs: vec![],
             worktree_tab_order: vec![],
             active_worktree_tab_id: None,
+            sidebar_width_px: None,
         };
         let fixture = json!({
             "configVersion": 5,
@@ -1761,6 +1777,7 @@ mod tests {
             worktree_tabs: None,
             worktree_tab_order: None,
             active_worktree_tab_id: None,
+            sidebar_width_px: None,
         };
         let fixture = json!({
             "defaultInstructionSets": { "claude": "claude-default" },

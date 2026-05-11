@@ -673,6 +673,11 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(active) = patch.active_worktree_tab_id {
         cfg.active_worktree_tab_id = active;
     }
+    if let Some(width) = patch.sidebar_width_px {
+        // Clamp here so a hand-edited config / racing frontend cannot land us on an off-screen sidebar. We never reject — `min/max` is a soft policy
+        // that should self-heal, not a fatal validation error like a non-existent path.
+        cfg.sidebar_width_px = Some(width.clamp(crate::types::SIDEBAR_WIDTH_MIN_PX, crate::types::SIDEBAR_WIDTH_MAX_PX));
+    }
     Ok(())
 }
 
