@@ -107,7 +107,7 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
           e.stopPropagation();
           wttActions.requestClose(tab.id);
         }}
-        className="absolute right-3 top-4 rounded p-0.5 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+        className="absolute right-3 top-4 inline-flex h-5 w-5 items-center justify-center rounded leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
         <span aria-hidden="true">×</span>
       </button>

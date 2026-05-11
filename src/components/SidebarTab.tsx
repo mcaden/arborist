@@ -171,7 +171,7 @@ export function SidebarTab({
           const rect = button.getBoundingClientRect();
           onOpenContextMenu(id, { x: rect.left, y: rect.bottom + 2 }, button);
         }}
-        className="absolute right-7 top-1.5 rounded p-1 leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+        className="absolute right-7 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
         <span aria-hidden="true">⋮</span>
       </button>
@@ -184,7 +184,7 @@ export function SidebarTab({
             console.warn(`[sidebar-tab] close failed for session ${id}: ${formatError(err)}`);
           });
         }}
-        className="absolute right-3 top-1.5 rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+        className="absolute right-3 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded leading-none text-slate-500 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-900 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 group-hover:opacity-100 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
       >
         <span aria-hidden="true">×</span>
       </button>
