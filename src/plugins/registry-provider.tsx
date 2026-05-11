@@ -7,7 +7,7 @@
 
 import { useMemo, type ReactNode } from 'react';
 
-import { createRegistry, type PluginRegistry } from './index';
+import { createRegistry, type PluginRegistry } from './registry';
 import { PluginRegistryContext } from './registry-context';
 
 export interface PluginRegistryProviderProps {

@@ -180,7 +180,9 @@ impl PluginRegistry {
 /// Returns a [`RegisterError`] if two built-in plugins of the same kind ever share an id — that would be a programming error caught immediately
 /// at startup rather than papered over with `expect()`.
 pub fn build_registry() -> Result<PluginRegistry, RegisterError> {
-    let reg = PluginRegistry::new();
+    // `mut` is what sub-issues #96/#97/#98 need to uncomment the lines below; allow it now so the empty body doesn't trip `unused_mut`.
+    #[allow(unused_mut)]
+    let mut reg = PluginRegistry::new();
     // Sub-issue #96: reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
     // Sub-issue #96: reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
     // Sub-issue #97: reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
