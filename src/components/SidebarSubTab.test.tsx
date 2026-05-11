@@ -232,4 +232,66 @@ describe('SidebarSubTab', () => {
     expect(bridgeMock.subSessionRelaunch).not.toHaveBeenCalled();
     expect(bridgeMock.subSessionFocus).toHaveBeenCalledWith(sub.id);
   });
+
+  it('renders a ⋮ menu trigger button (issue #49)', () => {
+    const sub = makeSub({ id: id('0c') });
+    useSubSessionStore.setState({ subSessions: [sub] });
+
+    render(<SidebarSubTab subSessionId={sub.id} />);
+
+    expect(screen.getByTestId(`sub-tab-menu-${sub.id}`)).toBeInTheDocument();
+  });
+
+  it('clicking the ⋮ button opens the sub-tab context menu', () => {
+    const sub = makeSub({ id: id('0d') });
+    useSubSessionStore.setState({ subSessions: [sub] });
+
+    render(<SidebarSubTab subSessionId={sub.id} />);
+    expect(screen.queryByTestId('sub-tab-context-menu')).toBeNull();
+
+    fireEvent.click(screen.getByTestId(`sub-tab-menu-${sub.id}`));
+
+    expect(screen.getByTestId('sub-tab-context-menu')).toBeInTheDocument();
+  });
+
+  it('Restart item invokes subSessionRelaunch and dismisses the menu', () => {
+    const sub = makeSub({ id: id('0e') });
+    useSubSessionStore.setState({ subSessions: [sub] });
+    bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
+
+    render(<SidebarSubTab subSessionId={sub.id} />);
+    fireEvent.click(screen.getByTestId(`sub-tab-menu-${sub.id}`));
+    fireEvent.click(screen.getByRole('menuitem', { name: /restart/i }));
+
+    expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
+    expect(screen.queryByTestId('sub-tab-context-menu')).toBeNull();
+  });
+
+  it('Close item on a running application sub-tab opens the confirm dialog (requestClose, not close)', () => {
+    const sub = makeSub({
+      id: id('0f'),
+      kind: 'application',
+      status: 'running',
+      pid: 42,
+    });
+    useSubSessionStore.setState({ subSessions: [sub] });
+
+    render(<SidebarSubTab subSessionId={sub.id} />);
+    fireEvent.click(screen.getByTestId(`sub-tab-menu-${sub.id}`));
+    fireEvent.click(screen.getByRole('menuitem', { name: /close/i }));
+
+    expect(bridgeMock.subSessionClose).not.toHaveBeenCalled();
+    expect(useSubSessionStore.getState().pendingClose).toBe(sub.id);
+  });
+
+  it('Close item on a terminal sub-tab closes immediately', () => {
+    const sub = makeSub({ id: id('10') });
+    useSubSessionStore.setState({ subSessions: [sub] });
+
+    render(<SidebarSubTab subSessionId={sub.id} />);
+    fireEvent.click(screen.getByTestId(`sub-tab-menu-${sub.id}`));
+    fireEvent.click(screen.getByRole('menuitem', { name: /close/i }));
+
+    expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
+  });
 });

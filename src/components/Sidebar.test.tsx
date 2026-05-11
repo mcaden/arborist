@@ -323,8 +323,7 @@ describe('Sidebar', () => {
   it('session context menu exposes only Restart and Close actions', async () => {
     seed([makeView('a')], 'a');
     render(<Sidebar />);
-    const tab = tabByLabel('claude session a');
-    fireEvent.contextMenu(tab, { clientX: 10, clientY: 10 });
+    fireEvent.click(screen.getByTestId('sidebar-tab-menu-a'));
     expect(screen.getByRole('menuitem', { name: /restart/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /close/i })).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: /launch/i })).toBeNull();

@@ -107,9 +107,13 @@ export function Sidebar(): JSX.Element {
     else tabButtonRefs.current.delete(id);
   }, []);
 
-  const openContextMenu = useCallback((sessionId: SessionId, anchor: { x: number; y: number }) => {
-    const trigger = tabButtonRefs.current.get(sessionId) ?? null;
-    setContextMenu({ sessionId, anchor, trigger });
+  const openContextMenu = useCallback((sessionId: SessionId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => {
+    // The trigger is whichever element the user activated (the ⋮ button
+    // for mouse / touch users, the tab button itself for Shift+F10 /
+    // ContextMenu key users). Restoring focus to the source preserves
+    // the user's keyboard context when the menu closes.
+    const fallback = tabButtonRefs.current.get(sessionId) ?? null;
+    setContextMenu({ sessionId, anchor, trigger: trigger ?? fallback });
   }, []);
 
   const closeContextMenu = useCallback(() => {
@@ -347,7 +351,7 @@ interface SidebarGroupSectionProps {
   ids: SessionId[];
   clampedFocusedIndex: number;
   onFocusableMounted: (id: SessionId, el: HTMLButtonElement | null) => void;
-  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }) => void;
+  onOpenContextMenu: (sessionId: SessionId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => void;
   onOpenWorktreeContextMenu: (tabId: WorktreeTabId, anchor: { x: number; y: number }, trigger: HTMLElement | null) => void;
 }
 
