@@ -14,6 +14,7 @@ pub mod copilot_events;
 pub mod explorer_owner;
 pub mod git;
 pub mod icon_backfill;
+pub mod plugins;
 pub mod process_icon;
 pub mod pty_pool;
 pub mod repo_settings;
@@ -257,6 +258,11 @@ pub fn run() {
             // calls will use.
             let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
+
+            // Plugin framework foundation (issue #95). Empty registry today: it is wired into Tauri managed state so issue #96 (AI plugins),
+            // #97 (Custom Process plugins), and #98 (Dashboard Widget plugins) can land their per-plugin registrations as small follow-up PRs
+            // without re-touching `lib.rs`. No commands consume the registry yet.
+            app.manage(std::sync::Arc::new(plugins::PluginRegistry::new()));
 
             // Phase 2: parallel sub-session pool + store + sink. Lives alongside the existing AppContext so existing tests don't need to know about
             // it.

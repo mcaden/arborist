@@ -32,6 +32,7 @@ import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
 import { subscribeToSubExited, subscribeToSubRestored, subscribeToSubStatus } from '@/lib/sub-session-events';
 import { formatError, frontendReady } from '@/lib/tauri-bridge';
+import { PluginRegistryProvider } from '@/plugins';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
@@ -102,6 +103,14 @@ function ErrorOverlay({ message }: { message: string }): JSX.Element {
 }
 
 export function App(): JSX.Element {
+  return (
+    <PluginRegistryProvider>
+      <AppInner />
+    </PluginRegistryProvider>
+  );
+}
+
+function AppInner(): JSX.Element {
   const [status, setStatus] = useState<BootStatus>('booting');
   const [error, setError] = useState<string | null>(null);
 

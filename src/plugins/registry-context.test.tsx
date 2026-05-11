@@ -1,0 +1,52 @@
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+
+import { createRegistry } from './index';
+import { PluginRegistryProvider } from './registry-provider';
+import { useRegistry } from './use-registry';
+
+function RegistryProbe(): JSX.Element {
+  const r = useRegistry();
+  return (
+    <div data-testid="probe">
+      ai={r.ai().length};widgets={r.widgets().length}
+    </div>
+  );
+}
+
+describe('PluginRegistryProvider / useRegistry', () => {
+  it('exposes the registry to child components', () => {
+    const r = createRegistry();
+    r.registerAi({ id: 'claude', displayName: 'Claude', toolId: 'claude', defaultProgram: 'claude' });
+    r.registerWidget({ id: 'git-status', displayName: 'Git', order: 0, Component: () => null });
+
+    render(
+      <PluginRegistryProvider registry={r}>
+        <RegistryProbe />
+      </PluginRegistryProvider>,
+    );
+
+    expect(screen.getByTestId('probe')).toHaveTextContent('ai=1;widgets=1');
+  });
+
+  it('falls back to an empty registry when no prop is supplied', () => {
+    render(
+      <PluginRegistryProvider>
+        <RegistryProbe />
+      </PluginRegistryProvider>,
+    );
+    expect(screen.getByTestId('probe')).toHaveTextContent('ai=0;widgets=0');
+  });
+
+  it('throws a helpful error when useRegistry() is called outside a provider', () => {
+    // Silence React's expected-error console.error so the test output stays
+    // clean. The error itself is what we are asserting on.
+    const original = console.error;
+    console.error = () => {};
+    try {
+      expect(() => render(<RegistryProbe />)).toThrow(/useRegistry\(\) called outside <PluginRegistryProvider>/);
+    } finally {
+      console.error = original;
+    }
+  });
+});
