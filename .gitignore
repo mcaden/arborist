@@ -2,6 +2,7 @@ dev/ai/
 
 # Node
 node_modules/
+.pnpm-store/
 dist/
 dist-ssr/
 .vite/
