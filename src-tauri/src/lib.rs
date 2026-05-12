@@ -14,6 +14,7 @@ pub mod copilot_events;
 pub mod explorer_owner;
 pub mod git;
 pub mod icon_backfill;
+pub mod plugins;
 pub mod process_icon;
 pub mod pty_pool;
 pub mod repo_settings;
@@ -257,6 +258,22 @@ pub fn run() {
             // calls will use.
             let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
+
+            // Plugin framework foundation (issue #95). Empty registry today. Sub-issues #96 (AI plugins), #97 (Custom Process plugins), and #98
+            // (Dashboard Widget plugins) extend `plugins::build_registry()` with their `register_*` calls; this `lib.rs` site does not need to
+            // change again. No commands consume the registry yet.
+            //
+            // A `RegisterError` here means a developer added two plugins with the same id — log + structured exit instead of an `expect()` panic
+            // so the user sees a single clear line and the process exits cleanly (matches the boot-failure pattern earlier in this block).
+            let plugin_registry = match plugins::build_registry() {
+                Ok(reg) => reg,
+                Err(err) => {
+                    tracing::error!(error = %err, "plugin registry build failed");
+                    eprintln!("Arborist failed to build plugin registry: {err}");
+                    std::process::exit(1);
+                }
+            };
+            app.manage(std::sync::Arc::new(plugin_registry));
 
             // Phase 2: parallel sub-session pool + store + sink. Lives alongside the existing AppContext so existing tests don't need to know about
             // it.
