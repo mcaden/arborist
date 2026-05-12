@@ -30,6 +30,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { WorktreeCloseConfirmDialog } from './WorktreeCloseConfirmDialog';
 import { NewSessionButton } from './NewSessionButton';
 import { SettingsDialog } from './SettingsDialog';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
+import { clampSidebarWidth, DEFAULT_WIDTH_PX as SIDEBAR_DEFAULT_WIDTH_PX } from './sidebar-width';
 import { SidebarSubTab } from './SidebarSubTab';
 import { SidebarTab } from './SidebarTab';
 import { SidebarWorktreeTab } from './SidebarWorktreeTab';
@@ -40,6 +42,7 @@ import { WorktreeTabContextMenu } from './WorktreeTabContextMenu';
 import { useSessionActions, useSessions } from '@/store/session-store';
 import { useSubSessionsForWorktreeTab } from '@/store/sub-session-store';
 import { useActiveWorktreeTabId, useWorktreeTabs } from '@/store/worktree-tab-store';
+import { useConfigStore, selectSidebarWidthPx } from '@/store/config-store';
 import { formatError } from '@/lib/tauri-bridge';
 import type { SessionId, WorktreeTabId } from '@/types/arborist';
 
@@ -253,6 +256,64 @@ export function Sidebar(): JSX.Element {
 
   const clampedFocusedIndex = Math.min(focusedIndex, Math.max(0, ids.length - 1));
 
+  // Persisted sidebar width (Issue #94). `undefined` until config hydrates or when the user has never resized — fall back to the legacy default.
+  // Live width during a drag is kept in local state so we don't round-trip through `configSet` (and therefore disk) on every pointermove tick.
+  const persistedWidth = useConfigStore(selectSidebarWidthPx);
+  const configSet = useConfigStore((s) => s.set);
+  const [liveWidth, setLiveWidth] = useState<number>(() => clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
+
+  // Serialize sidebar-width persistence so rapid commits (e.g. holding ArrowLeft for auto-repeat keyboard nudges) can't issue overlapping
+  // `configSet` calls that resolve out of order and leave a stale value on disk. We coalesce: the latest requested width is queued in
+  // `pendingWidthRef`; while a write is in flight we just update the ref, and the drain loop picks the latest value when the in-flight call
+  // resolves. Pointer-up gestures fire only one commit so the fast path is the no-op-already-equal short-circuit below.
+  const pendingWidthRef = useRef<number | null>(null);
+  const inFlightWriteRef = useRef<Promise<unknown> | null>(null);
+  // Latest *intended* persisted value — what `commitWidth` last asked the backend to store, even if the write hasn't resolved yet. The no-op
+  // short-circuit compares against this rather than the (possibly stale) hydrated `persistedWidth`, so a "drag to 260, drag back to 224 before the
+  // 260 write resolves" sequence still enqueues the revert.
+  const intendedPersistedRef = useRef<number | null>(null);
+
+  // Adopt backend-truth width whenever the persisted value changes (hydrate, workspace switch). Skip while a self-initiated write is in flight or
+  // pending: otherwise the intermediate snapshot from the first write of a serialized drain (e.g. holding ArrowRight) yanks `liveWidth` back to the
+  // previous value, causing visible jitter during keyboard auto-repeat. Once drained, the backend snapshot reflects our intended value (or another
+  // tab / process changed it) and we clear `intendedPersistedRef` so future hydrate snapshots are honored.
+  useEffect(() => {
+    if (inFlightWriteRef.current || pendingWidthRef.current !== null) return;
+    intendedPersistedRef.current = null;
+    setLiveWidth(clampSidebarWidth(persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX));
+  }, [persistedWidth]);
+
+  const commitWidth = useCallback(
+    (next: number) => {
+      const clamped = clampSidebarWidth(next);
+      // Compare against the latest *intended* persisted value, falling back to the hydrated snapshot when no write is in flight. Comparing against
+      // the stale `persistedWidth` alone would let a "260 in flight, user reverts to 224" sequence early-return without enqueuing the revert.
+      const target = intendedPersistedRef.current ?? persistedWidth ?? SIDEBAR_DEFAULT_WIDTH_PX;
+      if (clamped === target) return;
+      intendedPersistedRef.current = clamped;
+      pendingWidthRef.current = clamped;
+      if (inFlightWriteRef.current) return;
+      const drain = async (): Promise<void> => {
+        while (pendingWidthRef.current !== null) {
+          const value = pendingWidthRef.current;
+          pendingWidthRef.current = null;
+          try {
+            await configSet({ sidebarWidthPx: value });
+          } catch (err) {
+            console.warn(`[sidebar] failed to persist width ${value}: ${formatError(err)}`);
+            // Clear the cached intent on failure so the user can retry the same value. Otherwise the next `commitWidth(value)` would short-circuit
+            // (`clamped === intendedPersistedRef.current`) and the on-disk width would stay out of sync with `liveWidth` until the user picked
+            // *some other* width first.
+            if (intendedPersistedRef.current === value) intendedPersistedRef.current = null;
+          }
+        }
+        inFlightWriteRef.current = null;
+      };
+      inFlightWriteRef.current = drain();
+    },
+    [configSet, persistedWidth],
+  );
+
   return (
     <aside
       aria-label="Sessions"
@@ -260,7 +321,8 @@ export function Sidebar(): JSX.Element {
       aria-orientation="vertical"
       data-testid="sidebar"
       onKeyDown={onKeyDown}
-      className="flex h-full w-56 shrink-0 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900"
+      style={{ width: `${liveWidth}px` }}
+      className="relative flex h-full shrink-0 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900"
     >
       <WorkspaceIndicator />
       <NewSessionButton buttonRef={newSessionButtonRef} />
@@ -339,6 +401,7 @@ export function Sidebar(): JSX.Element {
         />
       )}
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} initialTab={settingsInitialTab} /> : null}
+      <SidebarResizeHandle width={liveWidth} onWidthChange={setLiveWidth} onCommit={commitWidth} />
     </aside>
   );
 }

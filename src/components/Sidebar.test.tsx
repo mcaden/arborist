@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
+import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -87,6 +88,11 @@ beforeEach(() => {
   });
   useWorktreeTabStore.setState({ tabs: [], activeId: null, pendingClose: undefined, isHydrated: false });
   useSubSessionStore.setState({ subSessions: [], statusMessages: {}, pendingClose: undefined, isHydrated: true });
+  // Reset the config store between tests so prior `sidebarWidthPx` writes don't leak into the next test's mount. `exactOptionalPropertyTypes`
+  // forbids assigning `sidebarWidthPx: undefined` literally — strip the key by destructuring it out instead.
+  const { sidebarWidthPx: _drop, ...restConfig } = useConfigStore.getState().config;
+  void _drop;
+  useConfigStore.setState({ config: restConfig });
   // jsdom doesn't implement HTMLDialogElement.showModal/close in older
   // versions; provide minimal shims so the worktree close-confirm dialog
   // (and other native <dialog> consumers) can mount.
@@ -480,5 +486,52 @@ describe('Sidebar metrics indicator (Issue #3)', () => {
     // Claude gets its own parallel caveat so users know what 'limit' means.
     expect(title).toMatch(/model nominal max/i);
     expect(title).toMatch(/includes harness overhead/i);
+  });
+
+  // ---------------------------------------------------------------------
+  // Issue #94 — resizable sidebar
+  // ---------------------------------------------------------------------
+
+  describe('sidebar width (Issue #94)', () => {
+    it('falls back to the 224 px default when no persisted width is set', () => {
+      seed([makeView('a')], 'a');
+      render(<Sidebar />);
+      expect(screen.getByTestId('sidebar')).toHaveStyle({ width: '224px' });
+    });
+
+    it('renders the persisted width from config-store on mount', () => {
+      useConfigStore.setState({
+        config: { ...useConfigStore.getState().config, sidebarWidthPx: 320 },
+      });
+      seed([makeView('a')], 'a');
+      render(<Sidebar />);
+      expect(screen.getByTestId('sidebar')).toHaveStyle({ width: '320px' });
+    });
+
+    it('persists a new width via configSet when the user nudges via keyboard', async () => {
+      bridgeMock.configSet.mockResolvedValue({
+        ...useConfigStore.getState().config,
+        sidebarWidthPx: 240,
+      });
+      seed([makeView('a')], 'a');
+      render(<Sidebar />);
+      const handle = screen.getByTestId('sidebar-resize-handle');
+      await act(async () => {
+        fireEvent.keyDown(handle, { key: 'ArrowRight' });
+      });
+      expect(bridgeMock.configSet).toHaveBeenCalledWith({ sidebarWidthPx: 240 });
+    });
+
+    it('skips persistence when the width is already at the persisted value', () => {
+      useConfigStore.setState({
+        config: { ...useConfigStore.getState().config, sidebarWidthPx: 224 },
+      });
+      seed([makeView('a')], 'a');
+      render(<Sidebar />);
+      const handle = screen.getByTestId('sidebar-resize-handle');
+      // Double-click "reset" should be a no-op write because we're already at the default.
+      fireEvent.doubleClick(handle);
+      expect(bridgeMock.configSet).not.toHaveBeenCalled();
+    });
   });
 });

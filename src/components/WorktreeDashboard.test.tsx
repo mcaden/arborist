@@ -6,7 +6,7 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
-import type { SessionView, WorktreeTab, WorktreeTabId } from '@/types/arborist';
+import type { SessionView, WorktreeGitStatus, WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
 import { WorktreeDashboard } from './WorktreeDashboard';
 
@@ -166,7 +166,7 @@ describe('WorktreeDashboard', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     // Make the bridge call hang on the first invocation so the in-flight guard
     // would have to suppress the next poll/click attempt.
-    let resolveFirst: (v: unknown) => void = () => {};
+    let resolveFirst: (v: WorktreeGitStatus) => void = () => {};
     bridgeMock.worktreeGitStatus.mockReturnValueOnce(
       new Promise((res) => {
         resolveFirst = res;
@@ -292,7 +292,7 @@ describe('WorktreeDashboard', () => {
     // Switch to TAB_OTHER. Hold the new resolution open so we can observe the
     // intermediate state — the prior tab's error must NOT be visible while the
     // new tab's call is in flight.
-    let resolveSecond: (v: unknown) => void = () => {};
+    let resolveSecond: (v: WorktreeGitStatus) => void = () => {};
     bridgeMock.worktreeGitStatus.mockReturnValueOnce(
       new Promise((res) => {
         resolveSecond = res;

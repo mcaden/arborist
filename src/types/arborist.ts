@@ -195,6 +195,12 @@ export interface AppConfig {
   worktreeTabOrder: WorktreeTabId[];
   /** Most recently focused worktree tab. Added in `configVersion = 5`. */
   activeWorktreeTabId: WorktreeTabId | null;
+  /**
+   * User-chosen width of the left sidebar in CSS pixels (Issue #94). Absent means "use
+   * the frontend default" (224 px). The backend clamps any
+   * value to `[180, 480]` on write.
+   */
+  sidebarWidthPx?: number;
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
@@ -240,6 +246,11 @@ export interface PartialAppConfig {
   worktreeTabOrder?: WorktreeTabId[];
   /** Tri-state: omit to leave alone; `null` to clear; string to set. */
   activeWorktreeTabId?: WorktreeTabId | null;
+  /**
+   * Set the persisted sidebar width (CSS px). Backend clamps to `[180, 480]`.
+   * Omit to leave the persisted value alone. Issue #94.
+   */
+  sidebarWidthPx?: number;
 }
 
 // MIRROR: src-tauri/src/types.rs::CustomProcessDef

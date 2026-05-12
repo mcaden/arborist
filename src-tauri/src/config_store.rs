@@ -477,6 +477,23 @@ fn migrate_copilot_composed_commands(sessions: &mut BTreeMap<SessionId, Session>
 // ---------------------------------------------------------------------------
 
 fn validate_loaded_config(cfg: &mut AppConfig) {
+    // Clamp a hand-edited `sidebar_width_px` into [180, 480]. The patch path in `merge_partial` already clamps frontend-driven writes; this load-time
+    // pass is the self-heal for a user who hand-edited `config.json` directly (the existing custom_processes / instruction-set validation a few lines
+    // down follow the same "normalize on load" pattern).
+    if let Some(width) = cfg.sidebar_width_px {
+        let clamped = width.clamp(crate::types::SIDEBAR_WIDTH_MIN_PX, crate::types::SIDEBAR_WIDTH_MAX_PX);
+        if clamped != width {
+            warn!(
+                code = "InvalidValue",
+                field = "sidebarWidthPx",
+                found = width,
+                clamped = clamped,
+                "sidebarWidthPx was outside [180, 480]; clamped on load",
+            );
+            cfg.sidebar_width_px = Some(clamped);
+        }
+    }
+
     // Canonicalize instructionSetsDir. An empty path = "no directory yet configured" and is left as-is.
     if !cfg.instruction_sets_dir.as_os_str().is_empty() {
         match dunce::canonicalize(&cfg.instruction_sets_dir) {
@@ -672,6 +689,11 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     }
     if let Some(active) = patch.active_worktree_tab_id {
         cfg.active_worktree_tab_id = active;
+    }
+    if let Some(width) = patch.sidebar_width_px {
+        // Clamp here so a hand-edited config / racing frontend cannot land us on an off-screen sidebar. We never reject — `min/max` is a soft policy
+        // that should self-heal, not a fatal validation error like a non-existent path.
+        cfg.sidebar_width_px = Some(width.clamp(crate::types::SIDEBAR_WIDTH_MIN_PX, crate::types::SIDEBAR_WIDTH_MAX_PX));
     }
     Ok(())
 }
@@ -2851,6 +2873,41 @@ mod tests {
             ids.contains(&BUILTIN_DEF_ID_VSCODE),
             "fresh install must include {BUILTIN_DEF_ID_VSCODE}, got {ids:?}"
         );
+    }
+
+    #[test]
+    fn load_config_clamps_out_of_range_sidebar_width_px() {
+        // A user hand-edits config.json to set sidebarWidthPx outside [180, 480]. Load should clamp into range rather than preserve the bad value
+        // (and rather than waiting for the next frontend resize to trigger the patch-path clamp in merge_partial).
+        let td = TempDir::new().expect("td");
+        let path = td.path().join("config.json");
+        let raw = serde_json::json!({
+            "configVersion": CONFIG_VERSION_CURRENT,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "sidebarWidthPx": 9000,
+        });
+        fs::write(&path, serde_json::to_string(&raw).expect("ser")).expect("write");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let cfg = store.load_config();
+        assert_eq!(cfg.sidebar_width_px, Some(crate::types::SIDEBAR_WIDTH_MAX_PX));
+
+        // And the under-bound direction.
+        let raw_low = serde_json::json!({
+            "configVersion": CONFIG_VERSION_CURRENT,
+            "defaultInstructionSets": { "claude": "", "copilot": "" },
+            "instructionSetsDir": "",
+            "worktreeRoots": [],
+            "lastOpenSessions": [],
+            "tabOrder": [],
+            "sidebarWidthPx": 1,
+        });
+        fs::write(&path, serde_json::to_string(&raw_low).expect("ser")).expect("write");
+        let cfg_low = store.load_config();
+        assert_eq!(cfg_low.sidebar_width_px, Some(crate::types::SIDEBAR_WIDTH_MIN_PX));
     }
 
     #[test]
