@@ -22,7 +22,7 @@ import {
   configGet,
   formatError,
 } from '@/lib/tauri-bridge';
-import type { ChildId, WorktreeTab, WorktreeTabCloseResult, WorktreeTabId } from '@/types/arborist';
+import type { ChildId, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabCloseResult, WorktreeTabId } from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
 // State shape
@@ -56,7 +56,7 @@ export interface WorktreeTabStoreActions {
    * `git worktree remove --force` on the tab's worktree path; the failure of that step is surfaced as `worktreeDeleteError` on the result instead
    * of as a thrown error so the UI can always converge on a "tab gone" state.
    */
-  close: (id: WorktreeTabId, deleteWorktree?: boolean) => Promise<WorktreeTabCloseResult>;
+  close: (id: WorktreeTabId, deleteWorktree?: boolean, appClosePolicy?: WorktreeTabAppClosePolicy) => Promise<WorktreeTabCloseResult>;
   focus: (id: WorktreeTabId) => Promise<void>;
   reorder: (ids: WorktreeTabId[]) => Promise<void>;
   setActiveChild: (id: WorktreeTabId, childId: ChildId | null) => Promise<void>;
@@ -127,12 +127,16 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
       return tab;
     },
 
-    async close(id: WorktreeTabId, deleteWorktree?: boolean) {
+    async close(id: WorktreeTabId, deleteWorktree?: boolean, appClosePolicy?: WorktreeTabAppClosePolicy) {
       // Capture the path BEFORE the backend call so we can converge frontend caches even if the result payload were missing it. Backend
       // cascade closes child sessions/sub-sessions but we don't get per-child UI events for that — the session-store would otherwise leave
       // zombie rows. Lazy-import session-store to avoid a circular import (session-store already imports this module).
       const closingTab = get().tabs.find((t) => t.id === id);
-      const result = await worktreeTabClose({ id, deleteWorktree: deleteWorktree ?? false });
+      const result = await worktreeTabClose({
+        id,
+        deleteWorktree: deleteWorktree ?? false,
+        appClosePolicy: appClosePolicy ?? 'detach',
+      });
       if (result.childErrors && result.childErrors.length > 0) {
         console.warn('[worktree-tab-store] close had child errors:', result.childErrors);
       }

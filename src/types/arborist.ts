@@ -418,6 +418,12 @@ export interface WorktreeTabOpenArgs {
   path: string;
 }
 
+// MIRROR: src-tauri/src/types.rs::WorktreeTabAppClosePolicy
+//
+// Policy for application-kind sub-sessions during worktree-tab cascade close.
+// Terminal sub-sessions and AI sessions are always terminated by their own paths.
+export type WorktreeTabAppClosePolicy = 'detach' | 'terminate';
+
 // MIRROR: src-tauri/src/types.rs::WorktreeTabCloseArgs
 export interface WorktreeTabCloseArgs {
   id: WorktreeTabId;
@@ -430,6 +436,11 @@ export interface WorktreeTabCloseArgs {
    * thrown error.
    */
   deleteWorktree?: boolean;
+  /**
+   * Close policy for application-kind sub-sessions under the worktree tab.
+   * Omitted means `'detach'` for backwards-compatible behavior.
+   */
+  appClosePolicy?: WorktreeTabAppClosePolicy;
 }
 
 // MIRROR: src-tauri/src/types.rs::WorktreeTabFocusArgs

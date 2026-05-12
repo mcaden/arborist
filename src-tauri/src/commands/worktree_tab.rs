@@ -11,8 +11,8 @@ use tracing::{info, warn};
 use crate::compose;
 use crate::config_store::ConfigStore;
 use crate::types::{
-    AppConfig, AppError, ChildId, PartialAppConfig, SessionId, WorktreeTab, WorktreeTabCloseResult, WorktreeTabId, WorktreeTabOpenArgs,
-    WorktreeTabSetActiveChildArgs,
+    AppConfig, AppError, ChildId, PartialAppConfig, SessionId, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabCloseResult, WorktreeTabId,
+    WorktreeTabOpenArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::worktree_icon::pick_least_used_icon;
 
@@ -150,6 +150,7 @@ pub async fn worktree_tab_close_impl(
     sub_ctx: std::sync::Arc<crate::sub_sessions::SubAppContext>,
     id: WorktreeTabId,
     delete_worktree: bool,
+    app_close_policy: WorktreeTabAppClosePolicy,
 ) -> Result<WorktreeTabCloseResult, AppError> {
     let _switch = session::acquire_switch_read(ctx)?;
 
@@ -168,13 +169,11 @@ pub async fn worktree_tab_close_impl(
     let sessions = ctx.store().load_sessions();
     let child_session_ids: Vec<SessionId> = sessions.values().filter(|s| s.worktree_path == tab_path).map(|s| s.id).collect();
 
-    let mut child_errors: Vec<String> = Vec::new();
-
     // Mark worktree tab as closing (RAII guard). This prevents new sub-sessions being created under this tab during the cascade.
     let _tab_guard = ctx.mark_worktree_tab_closing(id);
 
     // Cascade-close sub-sessions directly (they belong to the worktree tab, not to any agent session).
-    super::subsession::close_for_worktree_tab_impl(ctx, &sub_ctx, id).await;
+    let mut child_errors = super::subsession::close_for_worktree_tab_impl(ctx, &sub_ctx, id, app_close_policy).await;
 
     // Close each child agent session. Sub-sessions are already torn down above; session_close no longer cascades subs.
     for sid in &child_session_ids {
