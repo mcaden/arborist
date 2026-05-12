@@ -200,9 +200,9 @@ mod platform {
 
     extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         // Win32 callback panic safety: this body has no allocations today, but the same defensive guard as
-        // `plugins::custom_process::vscode::owner::enum_proc` applies — any future refactor that introduces a fallible Rust operation would risk
-        // unwinding across the EnumWindows FFI boundary, which Rust converts to a process abort and crashes the host (the user's editor under our
-        // dogfooding rules).
+        // `plugins::custom_process::vscode::owner::platform::enum_proc` applies — any future refactor that introduces a fallible Rust operation
+        // would risk unwinding across the EnumWindows FFI boundary, which Rust converts to a process abort and crashes the host (the user's editor
+        // under our dogfooding rules).
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> BOOL {
             // SAFETY: lparam was set by us to a `&mut EnumState`.
             let state = unsafe { &mut *(lparam as *mut EnumState) };
