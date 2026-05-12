@@ -18,6 +18,8 @@
 
 import type { ComponentType } from 'react';
 
+import type { CustomProcessDef } from '@/types/arborist';
+
 // MIRROR: src-tauri/src/plugins/mod.rs::Plugin
 export interface Plugin {
   /** Stable identifier used as a serde key on the Rust side. */
@@ -38,9 +40,11 @@ export interface AiPlugin extends Plugin {
 export interface CustomProcessPlugin extends Plugin {
   /**
    * Returns true if this plugin should be applied to a custom-process
-   * definition. The first plugin to claim a def wins.
+   * definition. The first plugin to claim a def wins. Receives the full
+   * `CustomProcessDef` so plugins can inspect any field (e.g. `kind`) —
+   * mirrors the Rust signature `fn matches(&self, def: &CustomProcessDef)`.
    */
-  matches: (def: { id: string; command: string }) => boolean;
+  matches: (def: CustomProcessDef) => boolean;
   /** True if the current platform supports this plugin. */
   supportedOnPlatform: () => boolean;
 }
@@ -91,7 +95,7 @@ export interface PluginRegistry {
 
   ai: () => readonly AiPlugin[];
   aiById: (id: string) => AiPlugin | undefined;
-  customProcessForDef: (def: { id: string; command: string }) => CustomProcessPlugin | undefined;
+  customProcessForDef: (def: CustomProcessDef) => CustomProcessPlugin | undefined;
   customProcesses: () => readonly CustomProcessPlugin[];
   widgets: () => readonly DashboardWidgetPlugin[];
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { CustomProcessDef } from '@/types/arborist';
+
 import { createRegistry, PluginRegisterError, type AiPlugin, type CustomProcessPlugin, type DashboardWidgetPlugin } from './index';
 
 const makeAi = (id: string): AiPlugin => ({
@@ -7,6 +9,14 @@ const makeAi = (id: string): AiPlugin => ({
   displayName: id,
   defaultProgram: id,
   defaultInstructionSetPath: `${id}-default.md`,
+});
+
+const makeDef = (id: string, command = 'noop'): CustomProcessDef => ({
+  id,
+  name: id,
+  kind: 'application',
+  command,
+  enabled: true,
 });
 
 const makeProc = (id: string, matchId: string): CustomProcessPlugin => ({
@@ -64,8 +74,8 @@ describe('createRegistry()', () => {
   it('customProcessForDef returns first matching plugin or undefined', () => {
     const r = createRegistry();
     r.registerCustomProcess(makeProc('vscode', 'vscode'));
-    expect(r.customProcessForDef({ id: 'vscode', command: 'code .' })?.id).toBe('vscode');
-    expect(r.customProcessForDef({ id: 'shell', command: 'pwsh' })).toBeUndefined();
+    expect(r.customProcessForDef(makeDef('vscode', 'code .'))?.id).toBe('vscode');
+    expect(r.customProcessForDef(makeDef('shell', 'pwsh'))).toBeUndefined();
   });
 
   it('customProcessForDef skips plugins that are not supported on the current platform', () => {
@@ -84,7 +94,7 @@ describe('createRegistry()', () => {
       matches: (def) => def.id === 'shared',
       supportedOnPlatform: () => true,
     });
-    expect(r.customProcessForDef({ id: 'shared', command: 'noop' })?.id).toBe('fallback');
+    expect(r.customProcessForDef(makeDef('shared'))?.id).toBe('fallback');
   });
 
   it('widgets() sorts by `order` ascending and breaks ties by registration order', () => {
