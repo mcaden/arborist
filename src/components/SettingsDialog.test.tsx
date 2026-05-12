@@ -182,11 +182,18 @@ describe('SettingsDialog', () => {
     render(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
+    expect(screen.queryByTestId('settings-panel-about')).toBeNull();
     expect(screen.getByTestId('settings-tab-general')).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(screen.getByTestId('settings-tab-custom-processes'));
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+    expect(screen.queryByTestId('settings-panel-about')).toBeNull();
     expect(screen.getByTestId('settings-tab-custom-processes')).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByTestId('settings-tab-about'));
+    expect(screen.getByTestId('settings-panel-about')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+    expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
+    expect(screen.getByTestId('settings-tab-about')).toHaveAttribute('aria-selected', 'true');
   });
 
   it('honours initialTab="customProcesses" so the empty-launch handoff lands on the right tab', () => {
@@ -201,13 +208,29 @@ describe('SettingsDialog', () => {
     render(<SettingsDialog onClose={() => {}} />);
     const generalTab = screen.getByTestId('settings-tab-general');
     const customTab = screen.getByTestId('settings-tab-custom-processes');
+    const aboutTab = screen.getByTestId('settings-tab-about');
     generalTab.focus();
     fireEvent.keyDown(generalTab, { key: 'ArrowRight' });
+    expect(customTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
+    fireEvent.keyDown(customTab, { key: 'ArrowRight' });
+    expect(aboutTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-about')).toBeInTheDocument();
+    fireEvent.keyDown(aboutTab, { key: 'ArrowLeft' });
     expect(customTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     fireEvent.keyDown(customTab, { key: 'ArrowLeft' });
     expect(generalTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
+  });
+
+  it('shows attribution and project description in the About tab', () => {
+    seedConfig();
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId('settings-tab-about'));
+    expect(screen.getByTestId('settings-about-attribution')).toHaveTextContent('mcaden');
+    expect(screen.getByText(/cross-platform desktop app/i)).toBeInTheDocument();
+    expect(screen.getByText(/terminal persistent in the background/i)).toBeInTheDocument();
   });
 
   it('shows the configured AI agent launch commands and persists edits', async () => {

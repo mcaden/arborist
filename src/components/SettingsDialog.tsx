@@ -2,7 +2,7 @@
 //
 // Reachable from the sidebar footer (and from the tab context menu's
 // empty Launch submenu, which jumps straight to the Custom Processes
-// tab). Two tabs:
+// tab). Three tabs:
 //
 //   General           — workspace root (delegates to the existing
 //                       WorkspacePicker so the park-old-sessions
@@ -13,6 +13,7 @@
 //                       launch overrides (claude / copilot).
 //   Custom Processes  — CRUD over `AppConfig.customProcesses` (lives in
 //                       a dedicated `CustomProcessesTab` component).
+//   About             — lightweight project attribution and context.
 
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
@@ -29,7 +30,7 @@ import {
   useConfigStore,
 } from '@/store/config-store';
 
-export type SettingsTab = 'general' | 'customProcesses';
+export type SettingsTab = 'general' | 'customProcesses' | 'about';
 
 export interface SettingsDialogProps {
   onClose: () => void;
@@ -80,11 +81,14 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const headingId = useId();
   const generalTabId = useId();
   const customProcessesTabId = useId();
+  const aboutTabId = useId();
   const generalPanelId = useId();
   const customProcessesPanelId = useId();
+  const aboutPanelId = useId();
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const generalTabRef = useRef<HTMLButtonElement | null>(null);
   const customProcessesTabRef = useRef<HTMLButtonElement | null>(null);
+  const aboutTabRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     closeBtnRef.current?.focus();
@@ -95,10 +99,11 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   // would mean two keypresses to reach a tab the user clearly wants).
   const handleTablistKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>): void => {
-      const order: SettingsTab[] = ['general', 'customProcesses'];
+      const order: SettingsTab[] = ['general', 'customProcesses', 'about'];
       const refs: Record<SettingsTab, RefObject<HTMLButtonElement | null>> = {
         general: generalTabRef,
         customProcesses: customProcessesTabRef,
+        about: aboutTabRef,
       };
       const idx = order.indexOf(activeTab);
       let next: SettingsTab | null = null;
@@ -269,6 +274,24 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
             >
               Custom Processes
             </button>
+            <button
+              ref={aboutTabRef}
+              type="button"
+              role="tab"
+              id={aboutTabId}
+              aria-selected={activeTab === 'about'}
+              aria-controls={aboutPanelId}
+              tabIndex={activeTab === 'about' ? 0 : -1}
+              onClick={() => setActiveTab('about')}
+              data-testid="settings-tab-about"
+              className={`-mb-px rounded-t border-b-2 px-3 py-1 text-xs ${
+                activeTab === 'about'
+                  ? 'border-blue-600 font-medium text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
+            >
+              About
+            </button>
           </div>
 
           {activeTab === 'general' ? (
@@ -426,7 +449,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                 </button>
               </div>
             </div>
-          ) : (
+          ) : activeTab === 'customProcesses' ? (
             <div
               role="tabpanel"
               id={customProcessesPanelId}
@@ -435,6 +458,28 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
             >
               <CustomProcessesTab onClose={onClose} />
+            </div>
+          ) : (
+            <div
+              role="tabpanel"
+              id={aboutPanelId}
+              aria-labelledby={aboutTabId}
+              data-testid="settings-panel-about"
+              className="min-h-0 flex-1 overflow-y-auto pr-2"
+            >
+              <section className="space-y-3 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                <p data-testid="settings-about-attribution">
+                  Arborist is created by <strong>mcaden</strong>.
+                </p>
+                <p>
+                  Arborist is a cross-platform desktop app for managing multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git
+                  worktree.
+                </p>
+                <p>
+                  It keeps each session&apos;s terminal persistent in the background so you can switch tabs quickly without interrupting running tasks
+                  or losing output.
+                </p>
+              </section>
             </div>
           )}
         </div>
