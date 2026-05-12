@@ -1,16 +1,17 @@
 //! Phase 7 sub-session lifecycle integration tests: parent-close cascade, closing-parent tombstone, restore-on-launch second pass, and relaunch.
 //!
 //! Mirrors the FakeSpawner pattern from `tests/session_lifecycle_fake.rs` (each Rust integration test file is its own crate, so helpers must be
-//! duplicated). Application-kind paths are exercised by the `app_launcher` unit tests + the frontend `SidebarSubTab.test.tsx`; this file focuses on
-//! terminal-kind cascade/tombstone/restore/relaunch behaviour, which is the part with non-trivial cross-module coordination.
+//! duplicated). Includes both terminal and application cascade behaviour (detach vs terminate policy), while finer-grained app-runtime semantics are
+//! still covered in `app_launcher` unit tests.
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arborist_lib::app_launcher::{AppPool, AppSpawner, RealAppSpawner};
+use arborist_lib::app_launcher::{AppKiller, AppPool, AppSpawner, AppWaiter, SpawnedApp};
 use arborist_lib::commands::session::{session_create_impl, AppContext};
 use arborist_lib::commands::subsession::{
     close_for_worktree_tab_impl, restore_all_sub_sessions_impl, subsession_close_impl, subsession_create_impl, subsession_relaunch_impl,
@@ -20,7 +21,8 @@ use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySin
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
     ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets,
-    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeTab, WorktreeTabId,
+    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeTab,
+    WorktreeTabAppClosePolicy, WorktreeTabId,
 };
 use arborist_lib::window_focus::RecordingFocuser;
 use portable_pty::{ExitStatus, PtySize};
@@ -144,6 +146,89 @@ impl PtyWaiter for BlockingWaiter {
     }
 }
 
+// --------------------------------------------------------------------------- Fake app spawner
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct FakeAppState {
+    next_pid: u32,
+    kill_calls: BTreeMap<u32, usize>,
+}
+
+#[derive(Clone)]
+struct FakeAppSpawner {
+    state: Arc<Mutex<FakeAppState>>,
+}
+
+impl FakeAppSpawner {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(FakeAppState {
+                next_pid: 40_000,
+                kill_calls: BTreeMap::new(),
+            })),
+        }
+    }
+
+    fn kill_calls_for_pid(&self, pid: u32) -> usize {
+        self.state.lock().ok().and_then(|s| s.kill_calls.get(&pid).copied()).unwrap_or(0)
+    }
+}
+
+impl AppSpawner for FakeAppSpawner {
+    fn spawn(&self, _cmd: &str, _cwd: &Path) -> Result<SpawnedApp, arborist_lib::types::Error> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| arborist_lib::types::Error::Internal("fake app state mutex poisoned".into()))?;
+        let pid = state.next_pid;
+        state.next_pid += 1;
+        state.kill_calls.entry(pid).or_insert(0);
+        drop(state);
+
+        let done = Arc::new(AtomicBool::new(false));
+        Ok(SpawnedApp {
+            pid,
+            waiter: Box::new(FakeAppWaiter { done: Arc::clone(&done) }),
+            killer: Arc::new(FakeAppKiller {
+                pid,
+                done,
+                state: Arc::clone(&self.state),
+            }),
+        })
+    }
+}
+
+struct FakeAppWaiter {
+    done: Arc<AtomicBool>,
+}
+
+impl AppWaiter for FakeAppWaiter {
+    fn wait(self: Box<Self>) -> Result<bool, arborist_lib::types::Error> {
+        let start = std::time::Instant::now();
+        while !self.done.load(Ordering::Relaxed) && start.elapsed() < Duration::from_millis(250) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(true)
+    }
+}
+
+struct FakeAppKiller {
+    pid: u32,
+    done: Arc<AtomicBool>,
+    state: Arc<Mutex<FakeAppState>>,
+}
+
+impl AppKiller for FakeAppKiller {
+    fn kill(&self) -> Result<(), arborist_lib::types::Error> {
+        self.done.store(true, Ordering::Relaxed);
+        if let Ok(mut s) = self.state.lock() {
+            *s.kill_calls.entry(self.pid).or_insert(0) += 1;
+        }
+        Ok(())
+    }
+}
+
 // --------------------------------------------------------------------------- Capturing sinks
 // ---------------------------------------------------------------------------
 
@@ -189,12 +274,14 @@ struct Harness {
     sub_ctx: Arc<arborist_lib::sub_sessions::SubAppContext>,
     sub_pool: Arc<SubPtyPool>,
     sub_spawner_flags: SpawnerFlags,
+    app_spawner: FakeAppSpawner,
     sub_events: Arc<CapturedSubEvents>,
     config_dir: TempDir,
     _instructions_dir: TempDir,
     worktree: TempDir,
     instruction_id: InstructionSetId,
     shell_def_id: CustomProcessDefId,
+    app_def_id: CustomProcessDefId,
     worktree_tab_id: WorktreeTabId,
 }
 
@@ -216,6 +303,16 @@ fn build_harness() -> Harness {
         icon: None,
         icon_data_uri: None,
     };
+    let app_def_id = CustomProcessDefId("app".into());
+    let app_def = CustomProcessDef {
+        id: app_def_id.clone(),
+        name: "App".into(),
+        kind: CustomProcessKind::Application,
+        command: "app-launch".into(),
+        enabled: true,
+        icon: None,
+        icon_data_uri: None,
+    };
 
     let store = ConfigStore::open(config_dir.path()).unwrap();
     store
@@ -225,7 +322,7 @@ fn build_harness() -> Harness {
                 claude: Some(instruction_id.clone()),
                 copilot: None,
             }),
-            custom_processes: Some(vec![shell_def]),
+            custom_processes: Some(vec![shell_def, app_def]),
             ..Default::default()
         })
         .unwrap();
@@ -269,9 +366,8 @@ fn build_harness() -> Harness {
     let sub_store = Arc::new(SubSessionStore::new());
     let sub_events = Arc::new(CapturedSubEvents::default());
     let sub_sink = make_sub_sink(Arc::clone(&sub_events));
-    // App pool with the real spawner: cascade for terminal kind only touches the SubPtyPool, so we never call AppPool::spawn in these tests; passing
-    // RealAppSpawner is harmless.
-    let app_pool = Arc::new(AppPool::new(Arc::new(RealAppSpawner) as Arc<dyn AppSpawner>));
+    let app_spawner = FakeAppSpawner::new();
+    let app_pool = Arc::new(AppPool::new(Arc::new(app_spawner.clone()) as Arc<dyn AppSpawner>));
     let focuser = Arc::new(RecordingFocuser::new());
     let icon_cache = Arc::new(arborist_lib::process_icon::IconCache::new(Arc::new(
         arborist_lib::process_icon::RealIconExtractor,
@@ -292,12 +388,14 @@ fn build_harness() -> Harness {
         sub_ctx,
         sub_pool,
         sub_spawner_flags,
+        app_spawner,
         sub_events,
         config_dir,
         _instructions_dir: instructions_dir,
         worktree,
         instruction_id,
         shell_def_id,
+        app_def_id,
         worktree_tab_id,
     }
 }
@@ -323,6 +421,17 @@ fn create_sub(h: &Harness, tab_id: WorktreeTabId) -> Result<arborist_lib::types:
         SubSessionCreateArgs {
             parent_worktree_tab_id: tab_id,
             def_id: h.shell_def_id.clone(),
+        },
+    )
+}
+
+fn create_app_sub(h: &Harness, tab_id: WorktreeTabId) -> Result<arborist_lib::types::SubSession, arborist_lib::types::AppError> {
+    subsession_create_impl(
+        &h.ctx,
+        &h.sub_ctx,
+        SubSessionCreateArgs {
+            parent_worktree_tab_id: tab_id,
+            def_id: h.app_def_id.clone(),
         },
     )
 }
@@ -354,12 +463,69 @@ async fn cascade_kills_terminal_subs_and_prunes_persistence() {
     assert_eq!(h.ctx.store().load_config().last_open_sub_sessions.len(), 2);
 
     // Cascade and verify both sub-sessions are gone everywhere.
-    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+    let _ = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
 
     assert!(!h.sub_pool.contains(&sub_a.id), "sub_a still in pool");
     assert!(!h.sub_pool.contains(&sub_b.id), "sub_b still in pool");
     assert!(h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).is_empty(), "store not pruned");
     assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty(), "persistence not pruned");
+}
+
+#[tokio::test]
+async fn cascade_terminate_policy_still_kills_terminal_subs() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
+    assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
+
+    let child_errors = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Terminate).await;
+
+    assert!(child_errors.is_empty(), "unexpected child errors: {child_errors:?}");
+    assert!(!h.sub_pool.contains(&sub.id), "terminal sub should be killed regardless of app policy");
+    assert!(h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).is_empty(), "store not pruned");
+    assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty(), "persistence not pruned");
+}
+
+#[tokio::test]
+async fn cascade_detach_policy_keeps_application_process_running() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let app_sub = create_app_sub(&h, h.worktree_tab_id).expect("app sub created");
+    let app_pid = app_sub.pid.expect("app pid");
+    assert!(wait_until(|| h.sub_ctx.app_pool.contains(&app_sub.id), Duration::from_secs(1)));
+
+    let child_errors = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
+
+    assert!(child_errors.is_empty(), "unexpected child errors: {child_errors:?}");
+    assert_eq!(h.app_spawner.kill_calls_for_pid(app_pid), 0, "detach policy must not kill app runtimes");
+    assert!(!h.sub_ctx.app_pool.contains(&app_sub.id), "app runtime should be detached from pool");
+    assert!(
+        h.sub_ctx.store.get(&app_sub.id).is_none(),
+        "app sub should be removed from in-memory store"
+    );
+}
+
+#[tokio::test]
+async fn cascade_terminate_policy_kills_non_retargeted_application_runtime() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let app_sub = create_app_sub(&h, h.worktree_tab_id).expect("app sub created");
+    let app_pid = app_sub.pid.expect("app pid");
+    assert!(wait_until(|| h.sub_ctx.app_pool.contains(&app_sub.id), Duration::from_secs(1)));
+
+    let child_errors = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Terminate).await;
+
+    assert!(child_errors.is_empty(), "unexpected child errors: {child_errors:?}");
+    assert_eq!(
+        h.app_spawner.kill_calls_for_pid(app_pid),
+        1,
+        "terminate policy should kill non-re-targeted app runtimes"
+    );
+    assert!(!h.sub_ctx.app_pool.contains(&app_sub.id), "app runtime should be gone after terminate");
+    assert!(
+        h.sub_ctx.store.get(&app_sub.id).is_none(),
+        "app sub should be removed from in-memory store"
+    );
 }
 
 #[tokio::test]
@@ -379,7 +545,7 @@ async fn worktree_tab_closing_tombstone_rejects_new_subs_and_cascades() {
         let err = blocked.err().unwrap();
         assert_eq!(err.code, "InvalidArgument");
 
-        close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+        let _ = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
     }
 
     // Guard dropped: tombstone clears, sub gone.
@@ -396,7 +562,7 @@ async fn restore_drops_orphan_records_when_worktree_tab_is_gone() {
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
     // Tear down existing subs.
-    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+    let _ = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
 
     // Remove the worktree tab from config so the orphan record references a non-existent tab.
     h.ctx
@@ -587,7 +753,7 @@ async fn cascade_kill_failure_leaves_orphan_visible() {
     // Flip the killer to fail. Cascade hits this branch on the next pool.kill call.
     h.sub_spawner_flags.kill_fails.store(true, Ordering::SeqCst);
 
-    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+    let _ = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
 
     // Orphan record kept in the in-memory store and on disk so the user can see the runaway PID.
     assert_eq!(
@@ -863,7 +1029,7 @@ async fn cascade_with_no_matching_active_child_skips_config_write() {
     let cfg_path = h.config_dir.path().join("config.json");
     let (bytes_before, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
 
-    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+    let _ = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
 
     let (bytes_after, mtime_after) = snapshot_file(&cfg_path);
     assert_eq!(
@@ -887,7 +1053,7 @@ async fn cascade_with_matching_active_child_rewrites_config_and_clears_pointer()
     let cfg_path = h.config_dir.path().join("config.json");
     let (_, mtime_before) = snapshot_with_rolled_back_mtime(&cfg_path);
 
-    close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id).await;
+    let _ = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
 
     let (_, mtime_after) = snapshot_file(&cfg_path);
     assert!(

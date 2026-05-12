@@ -14,7 +14,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use tokio::time::{sleep, Instant};
 use tracing::{info, warn};
 
 use crate::commands::session::acquire_switch_read;
@@ -23,7 +25,7 @@ use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
     AppError, ChildId, CustomProcessKind, Error, PartialAppConfig, SubSession, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionId,
-    SubSessionRecord, SubSessionStatus, WorktreeTabId,
+    SubSessionRecord, SubSessionStatus, WorktreeTabAppClosePolicy, WorktreeTabId,
 };
 
 /// Create a new sub-session under `parent_worktree_tab_id` using the `CustomProcessDef` identified by `def_id`. Validates:
@@ -305,6 +307,9 @@ pub fn subsession_resize_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: c
 // --------------------------------------------------------------------------- Worktree-tab-close cascade
 // ---------------------------------------------------------------------------
 
+const APP_CLOSE_GRACE: Duration = Duration::from_millis(600);
+const APP_CLOSE_POLL: Duration = Duration::from_millis(25);
+
 /// Tear down every sub-session belonging to `tab_id`. Called from the `worktree_tab_close` wrapper BEFORE closing child agent sessions so the
 /// sidebar can converge on "tab and all its children gone" in a single round trip.
 ///
@@ -314,15 +319,19 @@ pub fn subsession_resize_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: c
 ///   keep the in-memory record + persistence + flip status to `Error` — better
 ///   a visible orphan than a silently-leaked PTY child. `NotFound` from the
 ///   pool (sub-session already exited on its own) counts as success.
-/// * **Application**: `app_pool.detach()` — never kill. The user's editor /
-///   file browser must survive its worktree tab being closed; same rule as
-///   the explicit `subsession_close` path.
+/// * **Application**: obey `app_close_policy` (`Detach` vs `Terminate`).
 ///
-/// Returns `()` — cascade is best-effort and never blocks the tab close. Failures are logged via `tracing::warn`.
-pub async fn close_for_worktree_tab_impl(ctx: &AppContext, sub_ctx: &SubAppContext, tab_id: crate::types::WorktreeTabId) {
+/// Returns a best-effort list of per-child failures to surface via
+/// `WorktreeTabCloseResult.childErrors`. The cascade always continues.
+pub async fn close_for_worktree_tab_impl(
+    ctx: &AppContext,
+    sub_ctx: &SubAppContext,
+    tab_id: crate::types::WorktreeTabId,
+    app_close_policy: WorktreeTabAppClosePolicy,
+) -> Vec<String> {
     let subs = sub_ctx.store.list_for_worktree_tab(&tab_id);
     if subs.is_empty() {
-        return;
+        return Vec::new();
     }
     info!(
         worktree_tab_id = %tab_id,
@@ -356,6 +365,7 @@ pub async fn close_for_worktree_tab_impl(ctx: &AppContext, sub_ctx: &SubAppConte
         }
     }
 
+    let mut child_errors: Vec<String> = Vec::new();
     for sub in subs {
         match sub.kind {
             CustomProcessKind::Terminal => {
@@ -379,6 +389,7 @@ pub async fn close_for_worktree_tab_impl(ctx: &AppContext, sub_ctx: &SubAppConte
                                 Some(pid),
                                 Some(format!("PTY kill unconfirmed during worktree tab close (pid {pid} may still be alive)")),
                             );
+                            child_errors.push(format!("sub-session {}: PTY kill unconfirmed (pid {pid} may still be alive)", sub.id));
                             continue;
                         }
                         Err(e) => {
@@ -394,14 +405,60 @@ pub async fn close_for_worktree_tab_impl(ctx: &AppContext, sub_ctx: &SubAppConte
                                 None,
                                 Some(format!("PTY kill failed during worktree tab close: {e}")),
                             );
+                            child_errors.push(format!("sub-session {}: PTY kill failed: {e}", sub.id));
                             continue;
                         }
                     }
                 }
             }
             CustomProcessKind::Application => {
-                // Detach only — never kill. Closing the tab must NOT terminate the user's editor / file manager.
-                sub_ctx.app_pool.detach(&sub.id);
+                match app_close_policy {
+                    WorktreeTabAppClosePolicy::Detach => {
+                        sub_ctx.app_pool.detach(&sub.id);
+                    }
+                    WorktreeTabAppClosePolicy::Terminate => {
+                        if sub_ctx.app_pool.contains(&sub.id) {
+                            match sub_ctx.app_pool.request_window_close(&sub.id, &*sub_ctx.focuser) {
+                                Ok(()) => {
+                                    let deadline = Instant::now() + APP_CLOSE_GRACE;
+                                    while sub_ctx.app_pool.contains(&sub.id) && Instant::now() < deadline {
+                                        sleep(APP_CLOSE_POLL).await;
+                                    }
+                                }
+                                Err(Error::NotFound(_)) | Err(Error::Unsupported(_)) => {
+                                    // No close-capable window target on this runtime/platform; may still be killable below.
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        worktree_tab_id = %tab_id,
+                                        sub_session_id = %sub.id,
+                                        error = ?e,
+                                        "cascade: request_window_close failed for app sub-session"
+                                    );
+                                    child_errors.push(format!("sub-session {}: graceful app-close request failed: {e}", sub.id));
+                                }
+                            }
+                        }
+
+                        if sub_ctx.app_pool.contains(&sub.id) {
+                            if matches!(sub_ctx.app_pool.is_retargeted(&sub.id), Some(true)) {
+                                sub_ctx.app_pool.detach(&sub.id);
+                                child_errors.push(format!(
+                                    "sub-session {}: detached instead of force-killing a re-targeted/shared app owner",
+                                    sub.id
+                                ));
+                            } else if let Err(e) = sub_ctx.app_pool.kill(&sub.id) {
+                                warn!(
+                                    worktree_tab_id = %tab_id,
+                                    sub_session_id = %sub.id,
+                                    error = ?e,
+                                    "cascade: app terminate failed"
+                                );
+                                child_errors.push(format!("sub-session {}: app terminate failed: {e}", sub.id));
+                            }
+                        }
+                    }
+                }
             }
         }
         sub_ctx.store.remove(&sub.id);
@@ -414,6 +471,7 @@ pub async fn close_for_worktree_tab_impl(ctx: &AppContext, sub_ctx: &SubAppConte
             );
         }
     }
+    child_errors
 }
 
 // --------------------------------------------------------------------------- Phase 7: restore-on-launch second pass

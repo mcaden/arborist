@@ -204,6 +204,32 @@ describe('useWorktreeTabStore', () => {
   });
 
   describe('close', () => {
+    it('forwards default appClosePolicy=detach to the backend when omitted', async () => {
+      const a = makeTab(TAB_A);
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().actions.close(TAB_A);
+
+      expect(bridgeMock.worktreeTabClose).toHaveBeenCalledWith({
+        id: TAB_A,
+        deleteWorktree: false,
+        appClosePolicy: 'detach',
+      });
+    });
+
+    it('forwards explicit appClosePolicy to the backend', async () => {
+      const a = makeTab(TAB_A);
+      useWorktreeTabStore.setState({ tabs: [a], activeId: TAB_A });
+
+      await useWorktreeTabStore.getState().actions.close(TAB_A, true, 'terminate');
+
+      expect(bridgeMock.worktreeTabClose).toHaveBeenCalledWith({
+        id: TAB_A,
+        deleteWorktree: true,
+        appClosePolicy: 'terminate',
+      });
+    });
+
     it('removes the tab and picks the first remaining as active when the closed one was active', async () => {
       const a = makeTab(TAB_A, { tabIndex: 0 });
       const b = makeTab(TAB_B, { tabIndex: 1 });
