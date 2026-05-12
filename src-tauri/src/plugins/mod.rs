@@ -1,4 +1,4 @@
-//! Plugin framework — foundation scaffolding (issue #95, tracking #93).
+//! Plugin framework (issue #95, tracking #93).
 //!
 //! This module defines the trait surface, registry, and typed context used by Arborist's three plugin kinds:
 //!
@@ -6,8 +6,8 @@
 //! * **Custom-Process plugins** ([`custom_process::CustomProcessPlugin`]) — VS Code / Windows Explorer today; future browser launchers, ssh helpers, etc.
 //! * **Dashboard-widget plugins** ([`dashboard_widget::DashboardWidgetBackend`]) — Git Status / AI Usage today.
 //!
-//! This issue lands the **scaffolding only**: the registry is wired into the host but is populated with **zero plugins**. The migrations of existing
-//! code into per-plugin modules are deferred to sub-issues #96 (AI), #97 (Custom Process), and #98 (Dashboard Widget).
+//! The registry is populated at startup with built-in custom-process plugins (issue #97: VS Code + Windows Explorer). AI and dashboard-widget
+//! migrations remain deferred to sub-issues #96 and #98.
 //!
 //! ## Design constraints (kept open for out-of-tree plugins later — see #93)
 //!
@@ -174,19 +174,17 @@ impl PluginRegistry {
 
 /// Construct the production plugin registry.
 ///
-/// This is the single seam sub-issues #96 / #97 / #98 extend: each migration adds its `reg.register_*(Arc::new(...))?` line here, and `lib.rs`
-/// never has to change again. Today the registry is empty.
+/// This is the single seam sub-issues #96 / #98 extend for future plugin additions. Issue #97 registers built-in custom-process plugins here so
+/// subsession spawn can delegate owner-resolver selection to the plugin registry.
 ///
 /// Returns a [`RegisterError`] if two built-in plugins of the same kind ever share an id — that would be a programming error caught immediately
 /// at startup rather than papered over with `expect()`.
 pub fn build_registry() -> Result<PluginRegistry, RegisterError> {
-    // `mut` is what sub-issues #96/#97/#98 need to uncomment the lines below; allow it now so the empty body doesn't trip `unused_mut`.
-    #[allow(unused_mut)]
     let mut reg = PluginRegistry::new();
     // Sub-issue #96: reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
     // Sub-issue #96: reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
-    // Sub-issue #97: reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
-    // Sub-issue #97: reg.register_custom_process(Arc::new(custom_process::explorer::ExplorerPlugin))?;
+    reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
+    reg.register_custom_process(Arc::new(custom_process::explorer::ExplorerPlugin))?;
     // Sub-issue #98: reg.register_widget(Arc::new(dashboard_widget::git_status::GitStatusPlugin))?;
     // Sub-issue #98: reg.register_widget(Arc::new(dashboard_widget::ai_usage::AiUsagePlugin))?;
     Ok(reg)
@@ -249,6 +247,18 @@ mod tests {
         }
     }
     impl dashboard_widget::DashboardWidgetBackend for TestWidget {}
+
+    fn make_custom_process_def(id: &str, command: &str) -> crate::types::CustomProcessDef {
+        crate::types::CustomProcessDef {
+            id: crate::types::CustomProcessDefId(id.to_owned()),
+            name: id.to_owned(),
+            kind: crate::types::CustomProcessKind::Application,
+            command: command.to_owned(),
+            enabled: true,
+            icon: None,
+            icon_data_uri: None,
+        }
+    }
 
     #[test]
     fn registers_and_lists_each_kind() {
@@ -394,12 +404,55 @@ mod tests {
     }
 
     #[test]
-    fn build_registry_yields_empty_registry_today() {
-        // Sub-issues #96/#97/#98 will populate this; this PR keeps the empty contract explicit.
+    fn build_registry_registers_builtin_custom_process_plugins() {
         let reg = build_registry().expect("build_registry must not collide on duplicate ids");
         assert!(reg.ai().is_empty());
-        assert!(reg.custom_processes().is_empty());
         assert!(reg.widgets().is_empty());
+        let ids: Vec<&str> = reg.custom_processes().iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["vscode", "explorer"]);
+    }
+
+    #[test]
+    fn build_registry_selects_vscode_for_code_command() {
+        let reg = build_registry().expect("build_registry must not collide on duplicate ids");
+        let picked = reg
+            .custom_process_for_def(&make_custom_process_def("vscode", "code ."))
+            .expect("expected vscode plugin for `code` command");
+        assert_eq!(picked.id(), "vscode");
+    }
+
+    #[test]
+    fn build_registry_applies_platform_gate_for_explorer_command() {
+        let reg = build_registry().expect("build_registry must not collide on duplicate ids");
+        let picked = reg.custom_process_for_def(&make_custom_process_def("explorer", "explorer ."));
+        #[cfg(target_os = "windows")]
+        assert_eq!(picked.map(|p| p.id()), Some("explorer"));
+        #[cfg(not(target_os = "windows"))]
+        assert!(picked.is_none(), "explorer plugin must be skipped on non-Windows");
+    }
+
+    #[test]
+    fn build_registry_builtin_custom_process_matches_are_disjoint() {
+        // The first-match-wins registry rule is only deterministic if built-ins do not overlap on command shape.
+        let reg = build_registry().expect("build_registry must not collide on duplicate ids");
+        let commands = [
+            "code .",
+            "code-insiders .",
+            "env FOO=bar code .",
+            "explorer .",
+            "explorer.exe .",
+            "notepad.exe",
+            "pwsh -c code",
+        ];
+        for (idx, cmd) in commands.into_iter().enumerate() {
+            let def = make_custom_process_def(&format!("case-{idx}"), cmd);
+            let claiming_plugins: Vec<&str> = reg.custom_processes().iter().filter(|p| p.matches(&def)).map(|p| p.id()).collect();
+            assert!(
+                claiming_plugins.len() <= 1,
+                "expected disjoint built-in matchers for command {cmd:?}, but got {:?}",
+                claiming_plugins
+            );
+        }
     }
 
     #[test]

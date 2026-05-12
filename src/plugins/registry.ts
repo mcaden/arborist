@@ -13,8 +13,10 @@
 // than this file, but the internal provider/hook files import directly from
 // here to avoid an `index ↔ provider` circular module dependency.
 //
-// This issue lands scaffolding only — the production registry is empty
-// at boot. Sub-issues #96 / #97 / #98 populate it.
+// Frontend plugin capabilities are kind-driven. Custom-process plugins expose
+// matching/platform predicates only (no UI contract), while dashboard widgets
+// carry a React `Component`. The production frontend registry may therefore be
+// empty for kinds that have no UI surface yet.
 
 import type { ComponentType } from 'react';
 
@@ -37,6 +39,7 @@ export interface AiPlugin extends Plugin {
 }
 
 // MIRROR: src-tauri/src/plugins/custom_process/mod.rs::CustomProcessPlugin
+// (frontend-facing subset; backend-only owner_resolver(cwd) is intentionally omitted)
 export interface CustomProcessPlugin extends Plugin {
   /**
    * Returns true if this plugin should be applied to a custom-process

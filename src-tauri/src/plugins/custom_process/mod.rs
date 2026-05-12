@@ -1,22 +1,24 @@
 //! Custom-process plugin trait.
 //!
-//! Generalises the special-case wiring that the runtime currently applies to VS Code and Windows Explorer (`vscode_owner.rs`, `explorer_owner.rs`,
-//! `subsession::owner_resolver_for`). The generic [`crate::types::CustomProcessDef`] runtime keeps working unchanged for user-defined processes; a
-//! built-in plugin is matched **by command-shape sniffing** ([`Self::matches`]) and provides the per-target owner-resolver, killer choice, and
-//! platform-support gating.
+//! Generalises the special-case wiring that the runtime currently applies to VS Code and Windows Explorer
+//! (`plugins/custom_process/*/owner.rs`, `subsession::owner_resolver_for`). The generic [`crate::types::CustomProcessDef`] runtime keeps working
+//! unchanged for user-defined processes; a built-in plugin is matched **by command-shape sniffing** ([`Self::matches`]) and can provide a per-target
+//! owner resolver.
 //!
 //! **Implementor contract** (v1):
 //!
 //! * [`Plugin::id`](crate::plugins::Plugin::id) returns a stable kebab-case identifier (`"vscode"`, `"explorer"`).
 //! * [`Self::matches`] returns `true` exactly when this plugin should claim a given `CustomProcessDef`. Implementations sniff `def.command` (and
-//!   `def.id` if a built-in user has been seeded). The first plugin to return `true` wins; later migration code in #97 enforces a single match
-//!   invariant in tests.
+//!   `def.id` if a built-in user has been seeded). The first plugin to return `true` wins; issue #97 enforces a single-match invariant in registry
+//!   tests.
 //! * [`Self::supported_on_platform`] gates the plugin on the current OS (e.g. the Explorer plugin returns `false` on macOS / Linux).
-//!
-//! Sub-issue #97 will extend this trait with `owner_resolver(&self, cwd: &Path) -> Option<Arc<dyn OwnerResolver>>` and `killer(&self) ->
-//! Arc<dyn AppKiller>` once those types stabilise; they are intentionally **omitted from v1** to avoid pre-committing to the shape of the
-//! owner-resolver / killer abstractions before the migration informs them.
+//! * [`Self::owner_resolver`] returns an [`crate::app_launcher::OwnerResolver`] for the supplied working directory when this plugin needs one (VS Code,
+//!   Explorer), or `None` when launcher PID ownership is sufficient.
 
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::app_launcher::OwnerResolver;
 use crate::plugins::Plugin;
 use crate::types::CustomProcessDef;
 
@@ -33,4 +35,10 @@ pub trait CustomProcessPlugin: Plugin {
     /// Returns `true` if the current platform supports this plugin. The host uses this to hide the plugin from the UI on unsupported OSes (e.g. the
     /// Explorer plugin is Windows-only).
     fn supported_on_platform(&self) -> bool;
+
+    /// Returns an owner resolver for `cwd` when this plugin needs owner re-discovery. Default is `None` so plugins that don't need re-targeting don't
+    /// have to implement this method.
+    fn owner_resolver(&self, _cwd: &Path) -> Option<Arc<dyn OwnerResolver>> {
+        None
+    }
 }
