@@ -687,6 +687,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn looks_like_vscode_command_matches_canonical_invocations() {
         for cmd in [
             "code .",

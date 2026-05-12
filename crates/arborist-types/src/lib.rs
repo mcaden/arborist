@@ -711,9 +711,71 @@ pub struct SessionOutputEvent {
     pub data: String,
 }
 
+/// Streaming activity report emitted by the per-session activity scanner.
+/// Forwarded to the frontend as the inner payload of [`SessionActivityEvent`].
+//
+// `rename_all` controls only variant names. `rename_all_fields` controls the named fields *inside* each variant — without it, a field like
+// `tool_call_id` would serialize as `tool_call_id` on the wire while the TS mirror in `src/types/arborist.ts` expects `toolCallId`. The frontend
+// reducer (`session-store.ts::applyActivity`) reads camelCase keys, so missing this rename silently zeroes every multi-word field. Pinned by the
+// `activity_event_serde_uses_camelcase_field_keys` regression test in `activity.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ActivityEvent {
+    /// Window title set via `OSC 0;<title>` or `OSC 2;<title>`.
+    Title { value: String },
+    /// Generic "the user should look at this tab" cue: explicit notification escapes only — legacy `OSC 9;<text>` (any payload that does not
+    /// match the `<n>;<...>` numeric-subcommand shape, including digit-only messages like `OSC 9;42`), the explicit `OSC 9;2;<text>`
+    /// notification subcommand, and `OSC 777;notify;...`. **Standalone BEL is intentionally ignored** — both `claude` and `copilot` ring the
+    /// bell as part of normal readline-style behavior (autocomplete misses, backspace at column 0, scrollback edge), which produced an
+    /// unacceptable rate of false-positive "attention required" cues while the agent was simply thinking. Numeric `OSC 9` subcommands other
+    /// than `2` — notably `9;4;<state>;<value>` taskbar progress, which `claude` emits continuously while thinking — are also ignored. If a
+    /// CLI wants to demand attention, it must do so via a real notification OSC.
+    Attention,
+    /// Output is flowing. Emitted on the first byte after an idle window (or the very first byte of the session). Idempotent — only fires on the
+    /// idle→working transition.
+    Working,
+    /// No output for the idle threshold. Emitted once per working→idle transition.
+    Idle,
+    /// `OSC 133;A` — start of prompt. Future-proofed; not currently emitted by `claude` or `copilot`.
+    PromptStart,
+    /// `OSC 133;C` — start of command (user submitted prompt). Future-proofed.
+    CommandStart,
+    /// `OSC 133;D[;<exit>]` — command ended with optional exit code. Future-proofed.
+    CommandEnd { exit: Option<i32> },
+    /// An agent turn just completed. Emitted by the per-tool metrics watcher (Copilot OTel `invoke_agent` span close; Claude transcript
+    /// `assistant`-line arrival), not by the PTY-stream scanner. Carries the wall-clock duration of the turn when the source provides it.
+    TurnEnd { duration_ms: Option<u64> },
+
+    /// Agent invoked a tool; user is not yet blocked on input. Emitted by the Copilot events.jsonl tailer on `tool.execution_start`. Tracked by
+    /// frontend in a per-session open-tool map; the icon flips to `runningTool` while the count > 0 and no permission is pending.
+    ToolStart { tool_call_id: String, tool_name: String },
+    /// Tool finished. Pairs with [`Self::ToolStart`] by `tool_call_id`. Emitted on `tool.execution_complete`.
+    ToolEnd { tool_call_id: String, success: bool },
+    /// Agent requested a permission (most commonly: shell-command approval); user is **blocked**. Emitted on `permission.requested` from the Copilot
+    /// events.jsonl tailer. The frontend promotes this to the highest non-error display priority — this is the single most actionable cue we can give
+    /// the user about a sidebar tab.
+    AwaitingPermission {
+        request_id: String,
+        /// Short human-readable identifier for what's being approved (e.g. tool name, or `"shell"`). Surfaced in tooltips. Field is `permission_kind`
+        /// (not `kind`) to avoid colliding with the serde tag on the parent enum.
+        #[serde(rename = "permissionKind")]
+        permission_kind: String,
+        /// Optional one-line summary (e.g. the shell command). Best- effort — may be empty if the source didn't include enough detail to render
+        /// meaningfully.
+        summary: Option<String>,
+    },
+    /// Permission resolved (approved or denied). Pairs with
+    /// [`Self::AwaitingPermission`] by `request_id`. Emitted on
+    /// `permission.completed`.
+    PermissionResolved { request_id: String, approved: bool },
+    /// An assistant turn began. Emitted on `assistant.turn_start` from the Copilot events.jsonl tailer. The frontend uses this together with the
+    /// open-tool/open-permission counts to derive the `thinking` display state (in-turn AND nothing else open).
+    TurnStart,
+}
+
 /// Payload of the `session://activity` event (DESIGN §6).
 ///
-/// `event` is a tagged enum (see [`crate::activity::ActivityEvent`]): `{ kind: "title", value: "..." }`, `{ kind: "attention" }`, `{ kind: "working"
+/// `event` is a tagged enum (see [`ActivityEvent`]): `{ kind: "title", value: "..." }`, `{ kind: "attention" }`, `{ kind: "working"
 /// }`, `{ kind: "idle" }`, etc.
 ///
 /// Mirrored on the frontend by `SessionActivityEvent` in `src/types/arborist.ts`.
@@ -722,7 +784,7 @@ pub struct SessionOutputEvent {
 pub struct SessionActivityEvent {
     pub session_id: SessionId,
     #[serde(flatten)]
-    pub event: crate::activity::ActivityEvent,
+    pub event: ActivityEvent,
 }
 
 /// Snapshot of the latest token / context-window observation for a session, used both as the payload for the `session://metrics` event and as the

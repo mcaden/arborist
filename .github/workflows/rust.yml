@@ -40,12 +40,16 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       # Tauri's Linux build needs system libraries even for `cargo check`/test
-      # because the `tauri` crate links against webkit2gtk + friends.
+      # because the `tauri` crate links against webkit2gtk + friends. `lld` +
+      # `clang` are required by the workspace `.cargo/config.toml` for the
+      # faster linker.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            clang \
+            lld \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev \
@@ -53,6 +57,14 @@ jobs:
             libxdo-dev \
             libssl-dev \
             build-essential
+      # macOS: `brew install llvm` provides a recent `lld` that the workspace
+      # `.cargo/config.toml` invokes via `clang -fuse-ld=lld`. Add llvm's bin
+      # dir to PATH so cargo finds it.
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
       # `tauri::generate_context!()` validates that `frontendDist` exists at
       # compile time, so the frontend bundle must be built before any cargo
       # command that compiles the `tauri` crate (clippy, test, build). We run

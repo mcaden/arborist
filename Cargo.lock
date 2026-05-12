@@ -51,6 +51,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 name = "arborist"
 version = "0.1.0"
 dependencies = [
+ "arborist-types",
  "base64 0.22.1",
  "dunce",
  "fs2",
@@ -75,6 +76,17 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "arborist-types"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "uuid",
 ]
 
@@ -2646,6 +2658,9 @@ checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
 dependencies = [
  "block2",
  "dispatch2",
+ "glib-sys",
+ "gobject-sys",
+ "gtk-sys",
  "js-sys",
  "libc",
  "log",
