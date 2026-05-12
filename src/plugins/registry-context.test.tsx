@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createRegistry } from './index';
 import { PluginRegistryProvider } from './registry-provider';
@@ -39,14 +39,13 @@ describe('PluginRegistryProvider / useRegistry', () => {
   });
 
   it('throws a helpful error when useRegistry() is called outside a provider', () => {
-    // Silence React's expected-error console.error so the test output stays
-    // clean. The error itself is what we are asserting on.
-    const original = console.error;
-    console.error = () => {};
+    // Silence React's expected-error console.error so the test output stays clean. The error itself is what we are asserting on. Use vi.spyOn so the
+    // original implementation is restored automatically and we don't leak global console state across tests under parallel execution.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       expect(() => render(<RegistryProbe />)).toThrow(/useRegistry\(\) called outside <PluginRegistryProvider>/);
     } finally {
-      console.error = original;
+      spy.mockRestore();
     }
   });
 });

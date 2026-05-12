@@ -109,6 +109,20 @@ describe('createRegistry()', () => {
     expect(r.widgets().map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('freezes registered plugin records so callers cannot mutate `id` after registration and desync index maps', () => {
+    // The defensive copies on accessors protect the *arrays*, but without freezing the plugin records themselves a caller could mutate the
+    // returned object's `id` and break `aiById` lookups (the *Index map still points at the old id). Object.freeze on store prevents that.
+    const r = createRegistry();
+    r.registerAi(makeAi('claude'));
+    const stored = r.ai()[0]!;
+    // Strict-mode TS test files run under ES modules which is implicit strict — assigning to a frozen property throws synchronously.
+    expect(() => {
+      (stored as { id: string }).id = 'attacker';
+    }).toThrow(TypeError);
+    expect(r.aiById('claude')?.id).toBe('claude');
+    expect(r.aiById('attacker')).toBeUndefined();
+  });
+
   it('accessors return defensive copies so external mutation cannot desync the registry', () => {
     const r = createRegistry();
     r.registerAi(makeAi('claude'));
