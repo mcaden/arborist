@@ -18,7 +18,7 @@
 
 import type { ComponentType } from 'react';
 
-import type { CustomProcessDef } from '@/types/arborist';
+import type { CustomProcessDef, WorktreeTabId } from '@/types/arborist';
 
 // MIRROR: src-tauri/src/plugins/mod.rs::Plugin
 export interface Plugin {
@@ -68,7 +68,7 @@ export interface DashboardWidgetPlugin extends Plugin {
 }
 
 export interface DashboardWidgetProps {
-  tabId: string;
+  tabId: WorktreeTabId;
   tabPath: string;
 }
 

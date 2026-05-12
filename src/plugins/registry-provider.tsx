@@ -1,9 +1,10 @@
 // Provider component for the plugin registry context.
 //
 // Split from `registry-context.ts` so the context constant and the
-// hook live in their own files; this file exports only a component,
-// which keeps React Fast Refresh happy
-// (`react-refresh/only-export-components` lint rule).
+// hook live in their own files; this file exports only runtime
+// components (the `PluginRegistryProviderProps` interface is
+// type-only and is erased at build time), which keeps React Fast
+// Refresh happy (`react-refresh/only-export-components` lint rule).
 
 import { useMemo, type ReactNode } from 'react';
 
