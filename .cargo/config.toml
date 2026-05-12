@@ -22,9 +22,10 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
-# macOS: requires `brew install llvm` so `lld` is on PATH. Apple Silicon's
-# Xcode 15+ default linker is already fast; lld is mainly a win on Intel /
-# older Xcode. Comment these out locally if they conflict with your toolchain.
+# macOS: requires `brew install llvm` and adding `$(brew --prefix llvm)/bin`
+# to PATH so `lld` is discoverable. Apple Silicon's Xcode 15+ default linker
+# is already fast; lld is mainly a win on Intel / older Xcode. Comment these
+# out locally if they conflict with your toolchain.
 [target.aarch64-apple-darwin]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
@@ -46,10 +47,10 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 # crates skip the cache entirely and use cargo's per-target/ incremental
 # compilation as before.
 #
-# How: instead of `rustc-wrapper`, we use `rustc-workspace-wrapper`'s inverse
-# pattern via a tiny shim script (`scripts/sccache-deps-only.{sh,cmd}`) that
-# checks `--crate-name`, calls rustc directly for `arborist*` crates, and
-# proxies to sccache for everything else.
+# How: Cargo has no built-in "deps-only wrapper", so we use `rustc-wrapper`
+# with a tiny shim script (`scripts/sccache-deps-only.{sh,cmd}`) that checks
+# `--crate-name`, calls rustc directly for `arborist*` crates, and proxies to
+# sccache for everything else.
 #
 # To enable:
 #   1. Install: `cargo install sccache` (or `winget install sccache`,

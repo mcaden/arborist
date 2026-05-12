@@ -20,7 +20,9 @@ Everything you need to get a working dev environment, understand the inner loop,
 Platform build tools:
 
 - **Windows** — Visual Studio 2022 "Desktop development with C++" workload + Windows 10/11 SDK. WebView2 ships with modern Windows; install the [Evergreen Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/) if missing.
-- **macOS** — `xcode-select --install` plus `brew install llvm` so `lld` is available for the default linker flags in `.cargo/config.toml`
+- **macOS** — `xcode-select --install` plus `brew install llvm`, then add
+  `export PATH="$(brew --prefix llvm)/bin:$PATH"` so `lld` is discoverable for
+  the default linker flags in `.cargo/config.toml`
 - **Linux** — `sudo apt install clang lld libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev`
 
 The `claude` and `gh copilot` CLIs are **not** required to build, lint, or test. PTY integration tests use the in-tree `arborist-test-child` binary instead.
