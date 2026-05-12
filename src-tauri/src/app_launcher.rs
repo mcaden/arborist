@@ -37,7 +37,8 @@ use std::time::{Duration, Instant};
 /// falling through to its existing pool-state check.
 ///
 /// Rationale: VS Code's resolver polls 500 ms × 16 = 8 s; this gives it the full window plus 1 s of slack so a slow paint doesn't race the wait
-/// thread into emitting `Exited` for a sub-tab whose `Code.exe` is in the middle of warming up. See `vscode_owner.rs::POLL_DEADLINE`.
+/// thread into emitting `Exited` for a sub-tab whose `Code.exe` is in the middle of warming up.
+/// See `plugins/custom_process/vscode/owner.rs::POLL_DEADLINE`.
 const RESOLVER_GRACE_DEADLINE: Duration = Duration::from_secs(9);
 
 /// Poll tick inside the grace window. Tight enough that `kill` / `detach` mid-grace returns control to the wait thread quickly.

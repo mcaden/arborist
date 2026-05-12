@@ -100,11 +100,13 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
     // Branch on kind: terminal → SubPtyPool, application → AppPool.
     let spawn_result = match def.kind {
         CustomProcessKind::Terminal => sub_ctx.pool.spawn_terminal(sub.id, composed_command, cwd, sub_ctx.sink.clone()),
-        CustomProcessKind::Application => {
-            sub_ctx
-                .app_pool
-                .spawn(sub.id, composed_command, cwd.clone(), sub_ctx.sink.clone(), owner_resolver_for(def, &cwd))
-        }
+        CustomProcessKind::Application => sub_ctx.app_pool.spawn(
+            sub.id,
+            composed_command,
+            cwd.clone(),
+            sub_ctx.sink.clone(),
+            owner_resolver_for(sub_ctx.registry.as_ref(), def, &cwd),
+        ),
     };
 
     match spawn_result {
@@ -680,11 +682,13 @@ pub async fn subsession_relaunch_impl(ctx: &AppContext, sub_ctx: &SubAppContext,
     let cwd = sub_session_cwd(&tab.path).to_path_buf();
     let spawn_result = match def.kind {
         CustomProcessKind::Terminal => sub_ctx.pool.spawn_terminal(id, composed_command, cwd, sub_ctx.sink.clone()),
-        CustomProcessKind::Application => {
-            sub_ctx
-                .app_pool
-                .spawn(id, composed_command, cwd.clone(), sub_ctx.sink.clone(), owner_resolver_for(&def, &cwd))
-        }
+        CustomProcessKind::Application => sub_ctx.app_pool.spawn(
+            id,
+            composed_command,
+            cwd.clone(),
+            sub_ctx.sink.clone(),
+            owner_resolver_for(sub_ctx.registry.as_ref(), &def, &cwd),
+        ),
     };
 
     match spawn_result {
@@ -714,19 +718,11 @@ fn now_unix_seconds() -> i64 {
         })
 }
 
-/// Build the [`crate::app_launcher::OwnerResolver`] (if any) appropriate for the given def. Detection is by **command shape**, not def id — a
-/// user-defined "VSCode" entry with command `code .` gets the same re-discovery treatment as the built-in `vscode` def. See
-/// [`crate::vscode_owner::looks_like_vscode_command`] / [`crate::explorer_owner::looks_like_explorer_command`] for the matching rules and the
-/// respective owner modules for the re-discovery strategies.
-///
-/// Returns `None` for every other def: most app launchers spawn a child the user identifies with directly (`open`, `gimp`, etc.) so the launcher PID
-/// IS the long-lived process.
-fn owner_resolver_for(def: &crate::types::CustomProcessDef, cwd: &std::path::Path) -> Option<Arc<dyn crate::app_launcher::OwnerResolver>> {
-    if crate::vscode_owner::looks_like_vscode_command(&def.command) {
-        return Some(Arc::new(crate::vscode_owner::VsCodeOwnerResolver::new(cwd.to_path_buf())));
-    }
-    if crate::explorer_owner::looks_like_explorer_command(&def.command) {
-        return Some(Arc::new(crate::explorer_owner::ExplorerOwnerResolver::new(cwd.to_path_buf())));
-    }
-    None
+/// Build the [`crate::app_launcher::OwnerResolver`] (if any) by delegating to the first matching custom-process plugin in the registry.
+fn owner_resolver_for(
+    registry: &crate::plugins::PluginRegistry,
+    def: &crate::types::CustomProcessDef,
+    cwd: &std::path::Path,
+) -> Option<Arc<dyn crate::app_launcher::OwnerResolver>> {
+    registry.custom_process_for_def(def).and_then(|plugin| plugin.owner_resolver(cwd))
 }

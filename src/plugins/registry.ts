@@ -37,6 +37,7 @@ export interface AiPlugin extends Plugin {
 }
 
 // MIRROR: src-tauri/src/plugins/custom_process/mod.rs::CustomProcessPlugin
+// (frontend-facing subset; backend-only owner_resolver(cwd) is intentionally omitted)
 export interface CustomProcessPlugin extends Plugin {
   /**
    * Returns true if this plugin should be applied to a custom-process

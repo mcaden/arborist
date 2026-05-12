@@ -553,7 +553,7 @@ impl SubSessionStore {
     }
 }
 
-// --------------------------------------------------------------------------- SubAppContext — managed Tauri state combining pool + store + sink
+// --------------------------------------------------------------------------- SubAppContext — managed Tauri state combining pool + store + sink + plugin registry
 // ---------------------------------------------------------------------------
 
 /// Wiring shared by every Phase 2+ sub-session command handler. Held in Tauri managed state alongside the existing [`crate::commands::AppContext`].
@@ -561,6 +561,8 @@ pub struct SubAppContext {
     pub pool: Arc<SubPtyPool>,
     pub store: Arc<SubSessionStore>,
     pub sink: SubPtySink,
+    /// Shared plugin registry used for custom-process plugin lookup (e.g. owner resolver selection at spawn time).
+    pub registry: Arc<crate::plugins::PluginRegistry>,
     /// Phase 3: pool for application-kind sub-sessions (no PTY).
     pub app_pool: Arc<crate::app_launcher::AppPool>,
     /// Phase 3: window focuser used by `subsession_focus` for application-kind sub-sessions.
@@ -576,6 +578,7 @@ impl SubAppContext {
         pool: Arc<SubPtyPool>,
         store: Arc<SubSessionStore>,
         sink: SubPtySink,
+        registry: Arc<crate::plugins::PluginRegistry>,
         app_pool: Arc<crate::app_launcher::AppPool>,
         focuser: Arc<dyn crate::window_focus::WindowFocuser>,
         icon_cache: Arc<crate::process_icon::IconCache>,
@@ -584,6 +587,7 @@ impl SubAppContext {
             pool,
             store,
             sink,
+            registry,
             app_pool,
             focuser,
             icon_cache,

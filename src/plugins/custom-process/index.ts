@@ -1,6 +1,6 @@
-// Custom-process plugin TS interface re-exports — scaffold only.
+// Custom-process plugin TS interface re-exports.
 //
-// Issue #95 lands only the directory layout. Issue #97 will populate the
-// per-process subdirectories with VS Code / Explorer frontend hooks.
+// Issue #97 intentionally leaves frontend custom-process hooks empty; these files
+// mirror backend plugin layout so per-process UI hooks can be added later.
 
 export type { CustomProcessPlugin } from '../index';

@@ -11,7 +11,6 @@ pub mod commands;
 pub mod compose;
 pub mod config_store;
 pub mod copilot_events;
-pub mod explorer_owner;
 pub mod git;
 pub mod icon_backfill;
 pub mod plugins;
@@ -27,7 +26,6 @@ pub mod sub_sessions;
 /// `arborist` binary. Internal call sites continue to use `crate::types::*`
 /// and external tests continue to use `arborist_lib::types::*` unchanged.
 pub use arborist_types as types;
-pub mod vscode_owner;
 pub mod window_focus;
 pub mod worktree_icon;
 pub mod worktree_prep;
@@ -265,9 +263,8 @@ pub fn run() {
             let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
 
-            // Plugin framework foundation (issue #95). Empty registry today. Sub-issues #96 (AI plugins), #97 (Custom Process plugins), and #98
-            // (Dashboard Widget plugins) extend `plugins::build_registry()` with their `register_*` calls; this `lib.rs` site does not need to
-            // change again. No commands consume the registry yet.
+            // Plugin registry wiring. Issue #97 registers built-in custom-process plugins here; #96 (AI plugins) and #98 (dashboard widgets)
+            // extend the same `plugins::build_registry()` seam.
             //
             // A `RegisterError` here means a developer added two plugins with the same id — log + structured exit instead of an `expect()` panic
             // so the user sees a single clear line and the process exits cleanly (matches the boot-failure pattern earlier in this block).
@@ -279,7 +276,8 @@ pub fn run() {
                     std::process::exit(1);
                 }
             };
-            app.manage(std::sync::Arc::new(plugin_registry));
+            let plugin_registry = std::sync::Arc::new(plugin_registry);
+            app.manage(plugin_registry.clone());
 
             // Phase 2: parallel sub-session pool + store + sink. Lives alongside the existing AppContext so existing tests don't need to know about
             // it.
@@ -292,7 +290,13 @@ pub fn run() {
             let focuser: std::sync::Arc<dyn window_focus::WindowFocuser> = std::sync::Arc::new(window_focus::RealFocuser);
             let icon_cache = std::sync::Arc::new(process_icon::IconCache::new(std::sync::Arc::new(process_icon::RealIconExtractor)));
             let sub_ctx = std::sync::Arc::new(sub_sessions::SubAppContext::new(
-                sub_pool, sub_store, sub_sink, app_pool, focuser, icon_cache,
+                sub_pool,
+                sub_store,
+                sub_sink,
+                plugin_registry,
+                app_pool,
+                focuser,
+                icon_cache,
             ));
             app.manage(sub_ctx.clone());
 
