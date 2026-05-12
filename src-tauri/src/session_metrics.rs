@@ -66,7 +66,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::compose;
 use crate::pty_pool::ActivityCb;
 use crate::types::{SessionId, SessionMetricsEvent, Tool};
 
@@ -143,30 +142,20 @@ impl MetricsRegistry {
         // Stop any existing watcher first so the per-tool worker starts from a clean slate (used by session restart).
         self.stop(&session_id);
 
+        let Some(watcher_kind) = crate::plugins::ai::metrics_watcher_kind(tool, session_id, &cwd) else {
+            tracing::debug!(session_id = %session_id, "no home dir; AI metrics watcher not started");
+            return false;
+        };
+
         let running = Arc::new(AtomicBool::new(true));
         let running_for_thread = Arc::clone(&running);
-        let join = match tool {
-            Tool::Claude => {
-                let Some(home) = home_dir() else {
-                    tracing::debug!(session_id = %session_id, "no home dir; Claude metrics watcher not started");
-                    return false;
-                };
-                let cwd_for_thread = cwd.clone();
+        let join = match watcher_kind {
+            crate::plugins::ai::MetricsWatcherKind::Claude { home, cwd } => {
                 thread::Builder::new().name(format!("arborist-metrics-{}", session_id)).spawn(move || {
-                    run_claude_watcher(
-                        session_id,
-                        home,
-                        cwd_for_thread,
-                        spawn_instant,
-                        emit,
-                        emit_turn,
-                        discover,
-                        running_for_thread,
-                    );
+                    run_claude_watcher(session_id, home, cwd, spawn_instant, emit, emit_turn, discover, running_for_thread);
                 })
             }
-            Tool::Copilot => {
-                let otel_path = compose::copilot_otel_path(&session_id);
+            crate::plugins::ai::MetricsWatcherKind::Copilot { otel_path } => {
                 thread::Builder::new().name(format!("arborist-metrics-{}", session_id)).spawn(move || {
                     run_copilot_watcher(session_id, otel_path, emit, emit_turn, discover, running_for_thread);
                 })
@@ -176,7 +165,7 @@ impl MetricsRegistry {
             Ok(handle) => {
                 // For Copilot with a known ai_session_id, also spawn the events.jsonl tailer (sibling — same `running` flag).
                 let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
-                if matches!(tool, Tool::Copilot) {
+                if crate::plugins::ai::starts_activity_events_watcher(tool) {
                     if let (Some(home), Some(aid)) = (home_dir(), ai_session_id) {
                         let events_path = crate::copilot_events::events_path(&home, &aid);
                         let events_running = Arc::clone(&running);

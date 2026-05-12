@@ -1,9 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
+import { PluginRegistryProvider } from '@/plugins';
 import { useSessionStore } from '@/store/session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { SessionView, WorktreeGitStatus, WorktreeTab, WorktreeTabId } from '@/types/arborist';
@@ -38,6 +40,14 @@ function session(id: string, worktreePath: string): SessionView {
   };
 }
 
+function renderWithPlugins(ui: ReactNode) {
+  const rendered = render(<PluginRegistryProvider>{ui}</PluginRegistryProvider>);
+  return {
+    ...rendered,
+    rerender: (nextUi: ReactNode) => rendered.rerender(<PluginRegistryProvider>{nextUi}</PluginRegistryProvider>),
+  };
+}
+
 beforeEach(() => {
   bridgeMock.resetBridgeMocks();
   useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
@@ -56,7 +66,7 @@ describe('WorktreeDashboard', () => {
       isHydrated: true,
     });
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     expect(screen.getByRole('heading', { name: 'feature-x' })).toBeInTheDocument();
     expect(screen.getByText('/repo/feature-x')).toBeInTheDocument();
@@ -68,7 +78,7 @@ describe('WorktreeDashboard', () => {
   it('shows the empty-state hint when no children exist', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     expect(screen.getByText(/no agents yet/i)).toBeInTheDocument();
   });
@@ -87,7 +97,7 @@ describe('WorktreeDashboard', () => {
       tabIndex: 0,
     });
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-claude'));
 
@@ -113,7 +123,7 @@ describe('WorktreeDashboard', () => {
       tabIndex: 0,
     });
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-copilot'));
 
@@ -127,7 +137,7 @@ describe('WorktreeDashboard', () => {
 
   it('renders nothing when the tab has been removed underneath us', () => {
     // No tab in the store with this id.
-    const { container } = render(<WorktreeDashboard tabId={TAB_ID} />);
+    const { container } = renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
     expect(container.firstChild).toBeNull();
   });
 
@@ -150,7 +160,7 @@ describe('WorktreeDashboard', () => {
       filesTruncated: false,
     });
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('worktree-dashboard-count-staged')).toHaveTextContent('1');
@@ -173,7 +183,7 @@ describe('WorktreeDashboard', () => {
       }),
     );
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     // Initial mount fired the (still pending) first call.
     await waitFor(() => {
@@ -217,7 +227,7 @@ describe('WorktreeDashboard', () => {
     // slow CI — we only want to count: the initial mount call + the click.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      render(<WorktreeDashboard tabId={TAB_ID} />);
+      renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
       await waitFor(() => {
         expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
@@ -237,7 +247,7 @@ describe('WorktreeDashboard', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     bridgeMock.worktreeGitStatus.mockRejectedValueOnce(new Error('git not found'));
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('worktree-dashboard-git-error')).toHaveTextContent(/git not found/);
@@ -258,7 +268,7 @@ describe('WorktreeDashboard', () => {
       error: 'not a git repository',
     });
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('worktree-dashboard-git-error')).toHaveTextContent(/not a git repository/);
@@ -284,7 +294,7 @@ describe('WorktreeDashboard', () => {
       error: 'feature-x: not a git repository',
     });
 
-    const { rerender } = render(<WorktreeDashboard tabId={TAB_ID} />);
+    const { rerender } = renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
     await waitFor(() => {
       expect(screen.getByTestId('worktree-dashboard-git-error')).toHaveTextContent(/feature-x/);
     });
@@ -336,7 +346,7 @@ describe('WorktreeDashboard', () => {
     // by the in-flight guard and its Refresh button would stay disabled.
     bridgeMock.worktreeGitStatus.mockReturnValueOnce(new Promise(() => {}));
 
-    const { rerender } = render(<WorktreeDashboard tabId={TAB_ID} />);
+    const { rerender } = renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
     await waitFor(() => {
       expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledTimes(1);
       expect(bridgeMock.worktreeGitStatus).toHaveBeenNthCalledWith(1, '/repo/feature-x');
@@ -382,7 +392,7 @@ describe('WorktreeDashboard', () => {
       isHydrated: true,
     });
 
-    render(<WorktreeDashboard tabId={TAB_ID} />);
+    renderWithPlugins(<WorktreeDashboard tabId={TAB_ID} />);
 
     expect(screen.getByTestId('worktree-dashboard-input-tokens')).toHaveTextContent('300');
     expect(screen.getByTestId('worktree-dashboard-output-tokens')).toHaveTextContent('125');

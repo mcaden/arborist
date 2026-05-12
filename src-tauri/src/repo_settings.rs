@@ -18,6 +18,7 @@
 //! commands) — so the user's machine-level config (paths, custom processes,
 //! tab order, …) is never silently shadowed by a checked-in file.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -67,13 +68,40 @@ pub struct RepoSettings {
 /// Repo-level subset of [`AiLaunchCommands`] — only the user-editable command
 /// strings; icon caches are always machine-local and never read from
 /// `settings.json`.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepoAiLaunchCommands {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub copilot: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub commands: BTreeMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for RepoAiLaunchCommands {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            #[serde(default)]
+            commands: BTreeMap<String, String>,
+            // Legacy fixed fields kept for backwards compatibility.
+            #[serde(default)]
+            claude: Option<String>,
+            #[serde(default)]
+            copilot: Option<String>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let mut commands = wire.commands;
+        if let Some(v) = wire.claude {
+            commands.entry(crate::types::Tool::Claude.as_id().to_owned()).or_insert(v);
+        }
+        if let Some(v) = wire.copilot {
+            commands.entry(crate::types::Tool::Copilot.as_id().to_owned()).or_insert(v);
+        }
+        Ok(Self { commands })
+    }
 }
 
 impl RepoSettings {
@@ -159,26 +187,19 @@ impl RepoSettings {
     /// Apply `self` on top of `cfg`. Fields present in `self` overwrite the
     /// corresponding fields on `cfg`; unset fields leave `cfg` untouched.
     ///
-    /// `aiLaunchCommands.{claude|copilot}` cached icon URIs are preserved on
+    /// `aiLaunchCommands.commands[pluginId]` cached icon URIs are preserved on
     /// the user-level `cfg` whenever the repo override does not change the
-    /// command string — keeping the icon resolution work-cache valid across
-    /// repo overlays.
+    /// command string — keeping the icon resolution work-cache valid across repo overlays.
     pub fn apply_to(&self, cfg: &mut AppConfig) {
         if let Some(defaults) = &self.default_instruction_sets {
             cfg.default_instruction_sets = defaults.clone();
         }
         if let Some(ai) = &self.ai_launch_commands {
-            if let Some(claude) = &ai.claude {
-                if cfg.ai_launch_commands.claude != *claude {
-                    cfg.ai_launch_commands.claude_icon_data_uri = None;
+            for (plugin_id, command) in &ai.commands {
+                if cfg.ai_launch_commands.commands.get(plugin_id) != Some(command) {
+                    cfg.ai_launch_commands.icon_data_uris.remove(plugin_id);
                 }
-                cfg.ai_launch_commands.claude = claude.clone();
-            }
-            if let Some(copilot) = &ai.copilot {
-                if cfg.ai_launch_commands.copilot != *copilot {
-                    cfg.ai_launch_commands.copilot_icon_data_uri = None;
-                }
-                cfg.ai_launch_commands.copilot = copilot.clone();
+                cfg.ai_launch_commands.commands.insert(plugin_id.clone(), command.clone());
             }
         }
         if let Some(prep) = &self.worktree_prep_commands {
@@ -323,7 +344,7 @@ mod tests {
             dir.path(),
             r#"{
                 "defaultInstructionSets": { "claude": "claude-default", "copilot": "copilot-default" },
-                "aiLaunchCommands": { "claude": "npx claude --model sonnet" },
+                "aiLaunchCommands": { "commands": { "claude": "npx claude --model sonnet" } },
                 "worktreePrepCommands": ["pnpm install", "pnpm run build"]
             }"#,
         );
@@ -334,10 +355,10 @@ mod tests {
         );
         assert_eq!(out.default_instruction_sets.as_ref().unwrap().claude.as_str(), "claude-default");
         assert_eq!(
-            out.ai_launch_commands.as_ref().unwrap().claude.as_deref(),
+            out.ai_launch_commands.as_ref().unwrap().commands.get("claude").map(String::as_str),
             Some("npx claude --model sonnet")
         );
-        assert!(out.ai_launch_commands.as_ref().unwrap().copilot.is_none());
+        assert!(!out.ai_launch_commands.as_ref().unwrap().commands.contains_key("copilot"));
     }
 
     #[test]
@@ -346,43 +367,48 @@ mod tests {
             worktree_prep_commands: vec!["user-cmd".to_owned()],
             ..AppConfig::default()
         };
-        cfg.ai_launch_commands.claude = "user-claude".to_owned();
-        cfg.ai_launch_commands.claude_icon_data_uri = Some("data:image/png;base64,USER".to_owned());
-        cfg.ai_launch_commands.copilot = "user-copilot".to_owned();
+        cfg.ai_launch_commands.commands.insert("claude".to_owned(), "user-claude".to_owned());
+        cfg.ai_launch_commands
+            .icon_data_uris
+            .insert("claude".to_owned(), Some("data:image/png;base64,USER".to_owned()));
+        cfg.ai_launch_commands.commands.insert("copilot".to_owned(), "user-copilot".to_owned());
 
         let repo = RepoSettings {
             default_instruction_sets: None,
             ai_launch_commands: Some(RepoAiLaunchCommands {
-                claude: Some("repo-claude".to_owned()),
-                copilot: None,
+                commands: BTreeMap::from([("claude".to_owned(), "repo-claude".to_owned())]),
             }),
             worktree_prep_commands: Some(vec!["repo-cmd".to_owned()]),
         };
         repo.apply_to(&mut cfg);
 
         assert_eq!(cfg.worktree_prep_commands, vec!["repo-cmd".to_owned()]);
-        assert_eq!(cfg.ai_launch_commands.claude, "repo-claude");
+        assert_eq!(cfg.ai_launch_commands.commands.get("claude").map(String::as_str), Some("repo-claude"));
         // Icon cache was invalidated because the command changed.
-        assert!(cfg.ai_launch_commands.claude_icon_data_uri.is_none());
+        assert!(!cfg.ai_launch_commands.icon_data_uris.contains_key("claude"));
         // Copilot left alone (override didn't set it).
-        assert_eq!(cfg.ai_launch_commands.copilot, "user-copilot");
+        assert_eq!(cfg.ai_launch_commands.commands.get("copilot").map(String::as_str), Some("user-copilot"));
     }
 
     #[test]
     fn apply_to_keeps_icon_cache_when_command_unchanged() {
         let mut cfg = AppConfig::default();
-        cfg.ai_launch_commands.claude = "same".to_owned();
-        cfg.ai_launch_commands.claude_icon_data_uri = Some("data:image/png;base64,KEEP".to_owned());
+        cfg.ai_launch_commands.commands.insert("claude".to_owned(), "same".to_owned());
+        cfg.ai_launch_commands
+            .icon_data_uris
+            .insert("claude".to_owned(), Some("data:image/png;base64,KEEP".to_owned()));
 
         let repo = RepoSettings {
             ai_launch_commands: Some(RepoAiLaunchCommands {
-                claude: Some("same".to_owned()),
-                copilot: None,
+                commands: BTreeMap::from([("claude".to_owned(), "same".to_owned())]),
             }),
             ..RepoSettings::default()
         };
         repo.apply_to(&mut cfg);
-        assert_eq!(cfg.ai_launch_commands.claude_icon_data_uri.as_deref(), Some("data:image/png;base64,KEEP"));
+        assert_eq!(
+            cfg.ai_launch_commands.icon_data_uris.get("claude").and_then(Option::as_deref),
+            Some("data:image/png;base64,KEEP")
+        );
     }
 
     #[test]

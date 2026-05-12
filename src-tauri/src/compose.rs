@@ -76,11 +76,7 @@ pub struct ComposeInputs<'a> {
 /// separately by the PTY pool; we never emit `cd "<path>" && …` (DESIGN §8).
 pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation, Error> {
     let quoter = platform_shell().quoter;
-
-    let (composed_command, temp_files) = match inputs.tool {
-        Tool::Claude => build_claude(inputs, quoter),
-        Tool::Copilot => build_copilot(inputs, quoter),
-    };
+    let (composed_command, temp_files) = crate::plugins::ai::compose(inputs.tool, inputs, quoter);
 
     Ok(ComposedInvocation {
         composed_command,
@@ -239,17 +235,7 @@ pub fn copilot_otel_path(session_id: &SessionId) -> PathBuf {
 ///   transcript-tailing watcher.
 #[must_use]
 pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi::OsString)> {
-    match tool {
-        Tool::Copilot => {
-            let path = copilot_otel_path(session_id);
-            vec![
-                ("COPILOT_OTEL_FILE_EXPORTER_PATH".to_owned(), path.into_os_string()),
-                ("COPILOT_OTEL_ENABLED".to_owned(), "true".into()),
-                ("OTEL_BSP_SCHEDULE_DELAY".to_owned(), "1000".into()),
-            ]
-        }
-        Tool::Claude => Vec::new(),
-    }
+    crate::plugins::ai::env(tool, session_id)
 }
 
 /// Augment a stored `composed_command` with `--resume <ai_session_id>` so the AI conversation continues across an app restart, a user-initiated
@@ -433,7 +419,7 @@ fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
     )
 }
 
-fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+pub(crate) fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command);
 
     // No user instruction set: launch plain `claude`. The agent still auto-discovers `CLAUDE.md` from its `cwd` (the worktree). Skipping
@@ -464,7 +450,7 @@ fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<Temp
     )
 }
 
-fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+pub(crate) fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     // Modern `copilot` (the standalone GitHub Copilot CLI) starts in interactive mode by default. The legacy `--interactive <string>` flag was
     // removed and now triggers a "too many arguments" usage error from the CLI itself. We therefore spawn `copilot` with no arguments and rely on its
     // `cwd`-based discovery of `.github/copilot-instructions.md` for repository guidance — the PTY pool already passes the worktree as `cwd`. The
@@ -488,10 +474,7 @@ fn cli_program_for_tool(tool: Tool, config_override: Option<&str>) -> String {
             return trimmed.to_owned();
         }
     }
-    match tool {
-        Tool::Claude => "claude".to_owned(),
-        Tool::Copilot => "copilot".to_owned(),
-    }
+    crate::plugins::ai::plugin_for_tool(tool).default_program().to_owned()
 }
 
 // --------------------------------------------------------------------------- Tests

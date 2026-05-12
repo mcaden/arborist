@@ -9,6 +9,7 @@ const makeAi = (id: string): AiPlugin => ({
   displayName: id,
   defaultProgram: id,
   defaultInstructionSetPath: `${id}-default.md`,
+  Icon: () => null,
 });
 
 const makeDef = (id: string, command = 'noop'): CustomProcessDef => ({
@@ -122,6 +123,7 @@ describe('createRegistry()', () => {
       displayName: 'Counter AI',
       defaultProgram: 'noop',
       defaultInstructionSetPath: 'noop.md',
+      Icon: () => null,
     };
     const r = createRegistry();
     r.registerAi(plugin);

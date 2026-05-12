@@ -8,7 +8,7 @@
 
 import { useMemo, type ReactNode } from 'react';
 
-import { createRegistry, type PluginRegistry } from './registry';
+import { createBuiltinRegistry, type PluginRegistry } from './registry';
 import { PluginRegistryContext } from './registry-context';
 
 export interface PluginRegistryProviderProps {
@@ -24,9 +24,9 @@ export interface PluginRegistryProviderProps {
 
 export function PluginRegistryProvider({ registry, children }: PluginRegistryProviderProps): JSX.Element {
   // `useMemo` with an empty dep list gives us a per-provider-instance
-  // empty registry that survives re-renders without leaking across
+  // built-in registry that survives re-renders without leaking across
   // tests (each test renders a fresh provider).
-  const fallback = useMemo(() => createRegistry(), []);
+  const fallback = useMemo(() => createBuiltinRegistry(), []);
   const value = registry ?? fallback;
   return <PluginRegistryContext.Provider value={value}>{children}</PluginRegistryContext.Provider>;
 }

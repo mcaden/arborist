@@ -20,7 +20,7 @@ export const workspaceSwitchResultFixture = {
     workspaceRoot: '/tmp/repo',
     worktreeRoots: ['/tmp/repo'],
     worktreePrepCommands: [],
-    aiLaunchCommands: { claude: '', copilot: '' },
+    aiLaunchCommands: { commands: {}, iconDataUris: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

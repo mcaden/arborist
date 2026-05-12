@@ -174,15 +174,14 @@ impl PluginRegistry {
 
 /// Construct the production plugin registry.
 ///
-/// This is the single seam sub-issues #96 / #98 extend for future plugin additions. Issue #97 registers built-in custom-process plugins here so
-/// subsession spawn can delegate owner-resolver selection to the plugin registry.
+/// This is the single seam sub-issues #96 / #97 / #98 extend for future plugin additions: add a `reg.register_*(Arc::new(...))?` line here.
 ///
 /// Returns a [`RegisterError`] if two built-in plugins of the same kind ever share an id — that would be a programming error caught immediately
 /// at startup rather than papered over with `expect()`.
 pub fn build_registry() -> Result<PluginRegistry, RegisterError> {
     let mut reg = PluginRegistry::new();
-    // Sub-issue #96: reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
-    // Sub-issue #96: reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
+    reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
+    reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
     reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
     reg.register_custom_process(Arc::new(custom_process::explorer::ExplorerPlugin))?;
     // Sub-issue #98: reg.register_widget(Arc::new(dashboard_widget::git_status::GitStatusPlugin))?;
@@ -404,9 +403,10 @@ mod tests {
     }
 
     #[test]
-    fn build_registry_registers_builtin_custom_process_plugins() {
+    fn build_registry_registers_builtin_plugins() {
         let reg = build_registry().expect("build_registry must not collide on duplicate ids");
-        assert!(reg.ai().is_empty());
+        let ai_ids: Vec<&str> = reg.ai().iter().map(|p| p.id()).collect();
+        assert_eq!(ai_ids, vec!["claude", "copilot"]);
         assert!(reg.widgets().is_empty());
         let ids: Vec<&str> = reg.custom_processes().iter().map(|p| p.id()).collect();
         assert_eq!(ids, vec!["vscode", "explorer"]);
@@ -453,6 +453,16 @@ mod tests {
                 claiming_plugins
             );
         }
+    }
+
+    #[test]
+    fn registry_ai_ids_match_tool_discriminators() {
+        let reg = build_registry().expect("build_registry must not collide on duplicate ids");
+        let mut expected: Vec<&str> = crate::types::Tool::ALL.iter().map(|t| t.as_id()).collect();
+        expected.sort_unstable();
+        let mut actual: Vec<&str> = reg.ai().iter().map(|p| p.id()).collect();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
     }
 
     #[test]

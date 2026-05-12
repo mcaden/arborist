@@ -635,19 +635,13 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         cfg.worktree_prep_commands = cmds;
     }
     if let Some(launch) = patch.ai_launch_commands {
-        let crate::types::PartialAiLaunchCommands { claude, copilot } = launch;
-        if let Some(c) = claude {
-            // Clear cached icon when the command changes — re-resolution will re-populate it from a post-save backfill pass.
-            if c != cfg.ai_launch_commands.claude {
-                cfg.ai_launch_commands.claude_icon_data_uri = None;
+        for (plugin_id, command) in launch.commands {
+            // Clear cached icon when the command changes — re-resolution will
+            // re-populate it from a post-save backfill pass.
+            if cfg.ai_launch_commands.commands.get(&plugin_id) != Some(&command) {
+                cfg.ai_launch_commands.icon_data_uris.remove(&plugin_id);
             }
-            cfg.ai_launch_commands.claude = c;
-        }
-        if let Some(c) = copilot {
-            if c != cfg.ai_launch_commands.copilot {
-                cfg.ai_launch_commands.copilot_icon_data_uri = None;
-            }
-            cfg.ai_launch_commands.copilot = c;
+            cfg.ai_launch_commands.commands.insert(plugin_id, command);
         }
     }
     if let Some(s) = patch.last_open_sessions {
@@ -791,11 +785,6 @@ fn quarantine(path: &Path) -> Option<PathBuf> {
 // --------------------------------------------------------------------------- Instruction discovery
 // ---------------------------------------------------------------------------
 
-const CLAUDE_PREFIX: &str = "claude-";
-const COPILOT_PREFIX: &str = "copilot-";
-const CLAUDE_DEFAULT_FILENAME: &str = "claude-default.md";
-const COPILOT_DEFAULT_FILENAME: &str = "copilot-default.md";
-
 /// Scan `dir` for `*.md` files and return the discovered [`InstructionSet`] list. Returns `Err` only if `dir` itself can't be read; per-file errors
 /// are logged and the offending file is skipped.
 ///
@@ -878,12 +867,13 @@ pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
             continue;
         }
 
-        let tool = if stem.starts_with(CLAUDE_PREFIX) {
-            Tool::Claude
-        } else if stem.starts_with(COPILOT_PREFIX) {
-            Tool::Copilot
-        } else {
-            // Files not matching either prefix are ignored — the prefix convention is documented in CONFIGURATION.md.
+        let Some(tool) = Tool::ALL
+            .iter()
+            .copied()
+            .find(|t| stem.starts_with(crate::plugins::ai::instruction_stem_prefix(*t)))
+        else {
+            // Files not matching a registered AI plugin prefix are ignored —
+            // the prefix convention is documented in CONFIGURATION.md.
             continue;
         };
 
@@ -899,8 +889,10 @@ pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
 
     sets.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
-    mark_defaults(&mut sets, Tool::Claude, CLAUDE_DEFAULT_FILENAME);
-    mark_defaults(&mut sets, Tool::Copilot, COPILOT_DEFAULT_FILENAME);
+    for tool in Tool::ALL {
+        let preferred = crate::plugins::ai::plugin_for_tool(tool).default_instruction_set_path();
+        mark_defaults(&mut sets, tool, preferred);
+    }
 
     Ok(sets)
 }

@@ -1,4 +1,4 @@
-//! Resolve and cache icon data URIs for `CustomProcessDef`s and the Claude / Copilot AI-launch commands.
+//! Resolve and cache icon data URIs for `CustomProcessDef`s and AI-launch commands.
 //!
 //! Strategy: at config-save time and at app startup, walk every command string that maps to a sidebar tab, run it through
 //! [`crate::cmd_resolver::resolve_command_icon_path`], extract a PNG
@@ -32,15 +32,14 @@ pub fn backfill_icons(cfg: &mut AppConfig, cache: &IconCache, fallback_cwd: &Pat
         }
     }
 
-    if cfg.ai_launch_commands.claude_icon_data_uri.is_none() {
-        if let Some(uri) = resolve_ai_icon("claude", &cfg.ai_launch_commands.claude, fallback_cwd, cache) {
-            cfg.ai_launch_commands.claude_icon_data_uri = Some(uri);
-            changed = true;
+    for builtin in crate::plugins::ai::BUILTIN_AI {
+        let plugin_id = builtin.plugin.id();
+        if cfg.ai_launch_commands.icon_data_uri_for_id(plugin_id).is_some() {
+            continue;
         }
-    }
-    if cfg.ai_launch_commands.copilot_icon_data_uri.is_none() {
-        if let Some(uri) = resolve_ai_icon("copilot", &cfg.ai_launch_commands.copilot, fallback_cwd, cache) {
-            cfg.ai_launch_commands.copilot_icon_data_uri = Some(uri);
+        let launch_command = cfg.ai_launch_commands.command_for_id(plugin_id);
+        if let Some(uri) = resolve_ai_icon(builtin.plugin.default_program(), launch_command, fallback_cwd, cache) {
+            cfg.ai_launch_commands.icon_data_uris.insert(plugin_id.to_owned(), Some(uri));
             changed = true;
         }
     }
@@ -133,11 +132,12 @@ mod tests {
         let mut cfg = AppConfig {
             custom_processes: vec![def_with("x", "pwsh", Some("data:image/png;base64,AAAA".into()))],
             ai_launch_commands: AiLaunchCommands {
-                claude: String::new(),
-                copilot: String::new(),
                 // Pre-populate AI fields so they don't trigger best-effort default-name resolution and confuse the `changed` flag we're asserting on.
-                claude_icon_data_uri: Some("data:image/png;base64,BBBB".into()),
-                copilot_icon_data_uri: Some("data:image/png;base64,CCCC".into()),
+                icon_data_uris: std::collections::BTreeMap::from([
+                    ("claude".to_owned(), Some("data:image/png;base64,BBBB".into())),
+                    ("copilot".to_owned(), Some("data:image/png;base64,CCCC".into())),
+                ]),
+                ..Default::default()
             },
             ..Default::default()
         };

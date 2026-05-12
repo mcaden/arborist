@@ -1,4 +1,5 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render as rtlRender, screen } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -43,10 +44,19 @@ vi.mock('@xterm/addon-fit', () => ({
 import { MainArea } from './MainArea';
 import { __resetTerminalRegistryForTests } from '@/hooks/use-terminal';
 import { resetBridgeMocks } from '@/lib/tauri-bridge.mock';
+import { PluginRegistryProvider } from '@/plugins';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { ChildId, SessionView, SubSession, SubSessionId, WorktreeTab, WorktreeTabId } from '@/types/arborist';
+
+function render(ui: ReactNode) {
+  const rendered = rtlRender(<PluginRegistryProvider>{ui}</PluginRegistryProvider>);
+  return {
+    ...rendered,
+    rerender: (nextUi: ReactNode) => rendered.rerender(<PluginRegistryProvider>{nextUi}</PluginRegistryProvider>),
+  };
+}
 
 function makeSession(id: string, label = id): SessionView {
   return {

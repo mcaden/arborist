@@ -5,6 +5,7 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import { SettingsDialog } from './SettingsDialog';
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
+import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 
@@ -13,7 +14,7 @@ function seedConfig(
     workspaceRoot: string | null;
     instructionSetsDir: string;
     worktreePrepCommands: string[];
-    aiLaunchCommands: { claude: string; copilot: string };
+    aiLaunchCommands: { commands: Record<string, string>; iconDataUris: Record<string, string | null> };
   }> = {},
 ): void {
   useConfigStore.setState({
@@ -24,7 +25,7 @@ function seedConfig(
       workspaceRoot: overrides.workspaceRoot ?? '/work',
       worktreeRoots: [],
       worktreePrepCommands: overrides.worktreePrepCommands ?? [],
-      aiLaunchCommands: overrides.aiLaunchCommands ?? { claude: '', copilot: '' },
+      aiLaunchCommands: overrides.aiLaunchCommands ?? { commands: {}, iconDataUris: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -37,6 +38,10 @@ function seedConfig(
     status: 'ready',
     error: null,
   });
+}
+
+function renderWithPlugins(ui: JSX.Element): ReturnType<typeof render> {
+  return render(<PluginRegistryProvider>{ui}</PluginRegistryProvider>);
 }
 
 beforeEach(() => {
@@ -59,7 +64,7 @@ afterEach(() => {
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
-      aiLaunchCommands: { claude: '', copilot: '' },
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -81,7 +86,7 @@ describe('SettingsDialog', () => {
       instructionSetsDir: '/cfg/instr',
       worktreePrepCommands: ['source ~/.zshenv', 'nvm use 20'],
     });
-    render(<SettingsDialog onClose={() => {}} />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-workspace-path')).toHaveTextContent('/repos/grove');
     expect(screen.getByLabelText(/instruction sets directory/i)).toHaveValue('/cfg/instr');
     expect(screen.getByLabelText(/worktree prep commands/i)).toHaveValue('source ~/.zshenv\nnvm use 20');
@@ -89,7 +94,7 @@ describe('SettingsDialog', () => {
 
   it('Save button is disabled until something changes', () => {
     seedConfig();
-    render(<SettingsDialog onClose={() => {}} />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     const save = screen.getByRole('button', { name: /^save$/i });
     expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
@@ -104,7 +109,7 @@ describe('SettingsDialog', () => {
       worktreePrepCommands: ['echo a'],
     });
     const onClose = vi.fn();
-    render(<SettingsDialog onClose={onClose} />);
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
     fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
       target: { value: 'echo a\necho b\n' },
     });
@@ -120,7 +125,7 @@ describe('SettingsDialog', () => {
 
   it('parses the worktree prep textarea by trimming and dropping blank lines', async () => {
     seedConfig({ worktreePrepCommands: [] });
-    render(<SettingsDialog onClose={() => {}} />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
       target: { value: '  source ~/.zshenv  \n\n  nvm use 20\n' },
     });
@@ -136,7 +141,7 @@ describe('SettingsDialog', () => {
     seedConfig({ instructionSetsDir: '/old' });
     bridgeMock.configSet.mockRejectedValueOnce(new Error('bad path'));
     const onClose = vi.fn();
-    render(<SettingsDialog onClose={onClose} />);
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
     fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
       target: { value: 'rel/path' },
     });
@@ -150,7 +155,7 @@ describe('SettingsDialog', () => {
   it('Browse… button populates the instructions input from the directory picker', async () => {
     seedConfig({ instructionSetsDir: '' });
     bridgeMock.pickDirectory.mockResolvedValueOnce('/picked/dir');
-    render(<SettingsDialog onClose={() => {}} />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     await act(async () => {
       screen.getByRole('button', { name: /browse/i }).click();
     });
@@ -160,7 +165,7 @@ describe('SettingsDialog', () => {
   it('clicking the backdrop closes the dialog', () => {
     seedConfig();
     const onClose = vi.fn();
-    render(<SettingsDialog onClose={onClose} />);
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
     fireEvent.click(screen.getByTestId('settings-dialog'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -168,7 +173,7 @@ describe('SettingsDialog', () => {
   it('Cancel button closes the dialog without saving', () => {
     seedConfig();
     const onClose = vi.fn();
-    render(<SettingsDialog onClose={onClose} />);
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
     fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
       target: { value: '/something/new' },
     });
@@ -179,7 +184,7 @@ describe('SettingsDialog', () => {
 
   it('shows General tab by default and switches panels when the tab is clicked', () => {
     seedConfig();
-    render(<SettingsDialog onClose={() => {}} />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
     expect(screen.queryByTestId('settings-panel-about')).toBeNull();
@@ -198,14 +203,14 @@ describe('SettingsDialog', () => {
 
   it('honours initialTab="customProcesses" so the empty-launch handoff lands on the right tab', () => {
     seedConfig();
-    render(<SettingsDialog onClose={() => {}} initialTab="customProcesses" />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} initialTab="customProcesses" />);
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-panel-general')).toBeNull();
   });
 
   it('Arrow keys move between tabs (WAI-ARIA tab keyboard model)', () => {
     seedConfig();
-    render(<SettingsDialog onClose={() => {}} />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     const generalTab = screen.getByTestId('settings-tab-general');
     const customTab = screen.getByTestId('settings-tab-custom-processes');
     const aboutTab = screen.getByTestId('settings-tab-about');
@@ -226,7 +231,7 @@ describe('SettingsDialog', () => {
 
   it('shows attribution and project description in the About tab', () => {
     seedConfig();
-    render(<SettingsDialog onClose={() => {}} />);
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     fireEvent.click(screen.getByTestId('settings-tab-about'));
     expect(screen.getByTestId('settings-about-attribution')).toHaveTextContent('mcaden');
     expect(screen.getByText(/cross-platform desktop app/i)).toBeInTheDocument();
@@ -234,9 +239,9 @@ describe('SettingsDialog', () => {
   });
 
   it('shows the configured AI agent launch commands and persists edits', async () => {
-    seedConfig({ aiLaunchCommands: { claude: 'npx claude', copilot: '' } });
+    seedConfig({ aiLaunchCommands: { commands: { claude: 'npx claude', copilot: '' }, iconDataUris: {} } });
     const onClose = vi.fn();
-    render(<SettingsDialog onClose={onClose} />);
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
 
     const claudeInput = screen.getByTestId('settings-launch-claude') as HTMLInputElement;
     const copilotInput = screen.getByTestId('settings-launch-copilot') as HTMLInputElement;
@@ -252,21 +257,21 @@ describe('SettingsDialog', () => {
 
     expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      aiLaunchCommands: { claude: 'claude --model sonnet', copilot: 'gh copilot' },
+      aiLaunchCommands: { commands: { claude: 'claude --model sonnet', copilot: 'gh copilot' } },
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('clearing an AI launch command persists empty string (revert to default)', async () => {
-    seedConfig({ aiLaunchCommands: { claude: 'npx claude', copilot: '' } });
-    render(<SettingsDialog onClose={() => {}} />);
+    seedConfig({ aiLaunchCommands: { commands: { claude: 'npx claude', copilot: '' }, iconDataUris: {} } });
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     const claudeInput = screen.getByTestId('settings-launch-claude') as HTMLInputElement;
     fireEvent.change(claudeInput, { target: { value: '   ' } });
     await act(async () => {
       screen.getByRole('button', { name: /^save$/i }).click();
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      aiLaunchCommands: { claude: '' },
+      aiLaunchCommands: { commands: { claude: '' } },
     });
   });
 });

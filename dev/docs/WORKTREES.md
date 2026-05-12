@@ -113,12 +113,12 @@ overridden — those whose meaning is genuinely repo-specific:
 | Field                  | Source-of-truth on disk                     | Meaning when set                                   |
 | ---------------------- | ------------------------------------------- | -------------------------------------------------- |
 | `defaultInstructionSets` | `.arborist/settings.json`                 | Default Claude / Copilot instruction set IDs.      |
-| `aiLaunchCommands`     | `.arborist/settings.json` (commands only)   | Per-tool CLI launch override (e.g. `npx claude …`).|
+| `aiLaunchCommands`     | `.arborist/settings.json` (commands map only)| Per-plugin CLI launch override (e.g. `npx claude …`).|
 | `worktreePrepCommands` | `.arborist/settings.json`                   | Commands run once after a worktree is created.     |
 
 Override semantics: present fields win; absent fields fall back to the
-user's machine-level config. Cached icon URIs (`claudeIconDataUri`,
-`copilotIconDataUri`) are never read from `settings.json` — they remain
+user's machine-level config. Cached icon URIs (`aiLaunchCommands.iconDataUris`)
+are never read from `settings.json` — they remain
 machine-local, and are invalidated automatically when a repo override
 changes the matching command string.
 

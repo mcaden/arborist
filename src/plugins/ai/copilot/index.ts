@@ -1,4 +1,11 @@
-// Copilot AI plugin module — scaffold only. Sub-issue #96 will register
-// `CopilotPlugin` here and move `ToolIcon` Copilot branches into
-// `./icon.tsx`.
-export {};
+import type { AiPlugin } from '../../registry';
+
+import { CopilotIcon } from './icon';
+
+export const CopilotAiPlugin: AiPlugin = {
+  id: 'copilot',
+  displayName: 'Copilot',
+  defaultProgram: 'copilot',
+  defaultInstructionSetPath: 'copilot-default.md',
+  Icon: CopilotIcon,
+};

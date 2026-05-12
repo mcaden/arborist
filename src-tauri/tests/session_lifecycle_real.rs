@@ -1,6 +1,8 @@
 //! Phase 7 happy-path integration test against the **real** PortablePtySpawner.
 //!
-//! We override the `claude` program token by populating `AppConfig.ai_launch_commands.claude` with the path to `arborist-test-child` (the
+//! We override the `claude` program token by populating
+//! `AppConfig.ai_launch_commands.commands["claude"]` with the path to
+//! `arborist-test-child` (the
 //! deterministic child shipped alongside the PTY-pool tests). This proves the end-to-end flow — compose → temp file → portable-pty spawn → output
 //! drain → status persistence — works with no fakes anywhere except the CLI itself.
 //!
@@ -75,10 +77,9 @@ async fn real_spawner_drives_create_input_close_round_trip() {
                 copilot: None,
             }),
             // Replace the bare `claude` program token with the deterministic test child via the user-config override path
-            // (`AppConfig.ai_launch_commands.claude`). This is the same plumbing real users get via the Settings dialog.
+            // (`AppConfig.ai_launch_commands.commands["claude"]`). This is the same plumbing real users get via the Settings dialog.
             ai_launch_commands: Some(PartialAiLaunchCommands {
-                claude: Some(TEST_CHILD.to_owned()),
-                copilot: None,
+                commands: std::collections::BTreeMap::from([("claude".to_owned(), TEST_CHILD.to_owned())]),
             }),
             ..Default::default()
         })

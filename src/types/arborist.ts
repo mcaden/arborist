@@ -131,23 +131,12 @@ export interface DefaultInstructionSets {
 }
 
 // MIRROR: src-tauri/src/types.rs::AiLaunchCommands
-// Per-agent CLI launch override. Each field is a verbatim shell snippet
-// (e.g. `"npx claude --model sonnet"`) interpolated into the composed
-// command in place of the bare program token. Empty string = use default
-// (`claude` / `copilot`). Added in `configVersion = 4`.
+// Per-AI-plugin CLI launch overrides + backend-managed icon cache.
 export interface AiLaunchCommands {
-  claude: string;
-  copilot: string;
-  /**
-   * Cached `data:image/png;base64,…` for Claude's launcher executable,
-   * resolved from `claude` (preferring the canonical CLI name even
-   * when `claude` above is a custom wrapper). Backend-managed —
-   * frontend patches don't carry it; the merge layer preserves it
-   * across `aiLaunchCommands` patches that don't change the command,
-   * and clears it when the command does change.
-   */
-  claudeIconDataUri?: string;
-  copilotIconDataUri?: string;
+  /** plugin id -> command override (empty string = plugin default program) */
+  commands: Record<string, string>;
+  /** plugin id -> cached launcher icon data URI (or null when unresolved) */
+  iconDataUris: Record<string, string | null>;
 }
 
 // MIRROR: src-tauri/src/types.rs::AppConfig
@@ -170,8 +159,7 @@ export interface AppConfig {
    * removed in the same migration.
    */
   worktreePrepCommands: string[];
-  /** Per-agent CLI launch override. Empty string fields fall back to the
-   * hardcoded defaults. Added in `configVersion = 4`. */
+  /** Per-plugin CLI launch overrides + icon cache. Added in `configVersion = 4` and map-shaped in v9. */
   aiLaunchCommands: AiLaunchCommands;
   lastOpenSessions: SessionId[];
   tabOrder: SessionId[];
@@ -211,8 +199,7 @@ export interface PartialDefaultInstructionSets {
 
 // MIRROR: src-tauri/src/types.rs::PartialAiLaunchCommands
 export interface PartialAiLaunchCommands {
-  claude?: string;
-  copilot?: string;
+  commands?: Record<string, string>;
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialAppConfig

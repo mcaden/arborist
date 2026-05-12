@@ -137,7 +137,7 @@ interface InstructionSet {
 
 ```typescript
 interface AppConfig {
-  configVersion: number; // On-disk schema version (currently 5; bumped on breaking changes)
+  configVersion: number; // On-disk schema version (currently 9; bumped on breaking changes)
   defaultInstructionSets: {
     claude: string; // InstructionSet ID
     copilot: string; // InstructionSet ID
@@ -146,7 +146,10 @@ interface AppConfig {
   workspaceRoot: string | null; // Single anchor repo (Roadmap §1); takes precedence over worktreeRoots
   worktreeRoots: string[]; // Legacy: additional repo roots to scan (kept for forward compatibility)
   worktreePrepCommands: string[]; // One-shot prep commands run once when a worktree is created (issue #63)
-  aiLaunchCommands: { claude: string; copilot: string }; // Per-tool CLI override; empty string = default
+  aiLaunchCommands: {
+    commands: Record<string, string>; // Per-plugin CLI override; empty string = plugin default
+    iconDataUris: Record<string, string | null>; // Cached launcher icons (machine-local)
+  };
   lastOpenSessions: string[]; // Session IDs to restore on next launch
   tabOrder: string[]; // Session IDs in sidebar display order
   activeSessionId: string | null; // Focused session at last shutdown (restored on launch)
@@ -171,6 +174,8 @@ Schema version history (`configVersion`):
   Migration is destructive: both legacy keys are silently dropped — no
   value is preserved, since the old prelaunch model and the new
   worktree-prep model run in different contexts and at different times.
+- `9` — reshaped `aiLaunchCommands` from fixed Claude/Copilot fields to
+  plugin-keyed maps (`commands` + `iconDataUris`) for the AI-plugin model.
 
 Future versions (`> CONFIG_VERSION_CURRENT`) are quarantined
 on load and replaced with defaults to protect downgrade scenarios.

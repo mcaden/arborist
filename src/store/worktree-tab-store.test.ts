@@ -38,7 +38,7 @@ function configWith(activeWorktreeTabId: WorktreeTabId | null = null): AppConfig
     workspaceRoot: null,
     worktreeRoots: [],
     worktreePrepCommands: [],
-    aiLaunchCommands: { claude: '', copilot: '' },
+    aiLaunchCommands: { commands: {}, iconDataUris: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

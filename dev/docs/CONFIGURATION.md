@@ -2,7 +2,7 @@
 
 Arborist keeps all persistent state in JSON files inside the OS-specific
 **app data directory** that Tauri provides. Most workspace-level knobs
-(workspace root, instruction-sets directory, worktree prep commands, per-agent
+(workspace root, instruction-sets directory, worktree prep commands, per-plugin
 CLI launch overrides) are editable in the in-app **Settings** dialog
 (reachable from the sidebar footer), and the active workspace can be
 swapped at runtime from the same dialog without restarting. This document
@@ -83,7 +83,7 @@ to other pairs can keep running.
 
 ```json
 {
-  "configVersion": 5,
+  "configVersion": 9,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -92,7 +92,10 @@ to other pairs can keep running.
   "workspaceRoot": "/absolute/path/to/repo",
   "worktreeRoots": ["/absolute/path/to/repo"],
   "worktreePrepCommands": [],
-  "aiLaunchCommands": { "claude": "", "copilot": "" },
+  "aiLaunchCommands": {
+    "commands": { "claude": "", "copilot": "" },
+    "iconDataUris": {}
+  },
   "lastOpenSessions": [],
   "tabOrder": []
 }
@@ -100,7 +103,7 @@ to other pairs can keep running.
 
 Field notes:
 
-- `configVersion` — schema version of the file. Currently `5` (see
+- `configVersion` — schema version of the file. Currently `9` (see
   `CONFIG_VERSION_CURRENT` in `src-tauri/src/types.rs`). Bumped only when
   the on-disk shape changes; older versions are quarantined (see below).
 - `instructionSetsDir` — must be an **absolute** path that points at an
@@ -131,11 +134,14 @@ Field notes:
   set per tool. The ID is the filename (without the `.md` extension) of the
   file inside `instructionSetsDir`. If the configured ID isn't present, the
   loader falls back to the discovered default for that tool (see below).
-- `aiLaunchCommands.{claude,copilot}` — per-tool CLI launcher override.
-  Empty string (the default) means "use the bare tool name" (`claude` /
-  `copilot` resolved via `PATH`). A non-empty value replaces the program
-  token at compose time and is **not** shell-quoted, so use a quoted
-  absolute path if the value contains spaces. Added in `configVersion = 4`.
+- `aiLaunchCommands.commands` — map of `plugin-id -> CLI launcher override`.
+  Empty string (the default) means "use the plugin default program" (`claude` /
+  `copilot` for built-ins, resolved via `PATH`). A non-empty value replaces the
+  program token at compose time and is **not** shell-quoted, so use a quoted
+  absolute path if the value contains spaces.
+- `aiLaunchCommands.iconDataUris` — backend-managed cache of executable icons
+  (`plugin-id -> data URI | null`). This field is machine-local and updated by
+  backend icon backfill when launch commands change.
 - `lastOpenSessions` / `tabOrder` — managed by Arborist; you can leave them
   empty when bootstrapping.
 

@@ -31,7 +31,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     workspaceRoot: '/new',
     worktreeRoots: [],
     worktreePrepCommands: [],
-    aiLaunchCommands: { claude: '', copilot: '' },
+    aiLaunchCommands: { commands: {}, iconDataUris: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

@@ -23,7 +23,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     workspaceRoot: REPO_ROOT,
     worktreeRoots: [REPO_ROOT],
     worktreePrepCommands: ['nvm use 20'],
-    aiLaunchCommands: { claude: '', copilot: '' },
+    aiLaunchCommands: { commands: {}, iconDataUris: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
