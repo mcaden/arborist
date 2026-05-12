@@ -22,6 +22,8 @@ const workspaceCrates = new Set([
   'arborist_lib',
   'arborist_types',
   'arborist-types',
+  'arborist_test_child',
+  'arborist_test_locker',
   'arborist-test-child',
   'arborist-test-locker',
   'build_script_build',
