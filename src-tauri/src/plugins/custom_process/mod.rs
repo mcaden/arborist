@@ -9,8 +9,8 @@
 //!
 //! * [`Plugin::id`](crate::plugins::Plugin::id) returns a stable kebab-case identifier (`"vscode"`, `"explorer"`).
 //! * [`Self::matches`] returns `true` exactly when this plugin should claim a given `CustomProcessDef`. Implementations sniff `def.command` (and
-//!   `def.id` if a built-in user has been seeded). The first plugin to return `true` wins; later migration code in #97 enforces a single match
-//!   invariant in tests.
+//!   `def.id` if a built-in user has been seeded). The first plugin to return `true` wins; issue #97 enforces a single-match invariant in registry
+//!   tests.
 //! * [`Self::supported_on_platform`] gates the plugin on the current OS (e.g. the Explorer plugin returns `false` on macOS / Linux).
 //! * [`Self::owner_resolver`] returns an [`crate::app_launcher::OwnerResolver`] for the supplied working directory when this plugin needs one (VS Code,
 //!   Explorer), or `None` when launcher PID ownership is sufficient.
