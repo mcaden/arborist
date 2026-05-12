@@ -36,7 +36,13 @@ const cmdArgs = isWorkspaceCrate ? rustArgs : [rustc, ...rustArgs];
 const child = spawn(cmd, cmdArgs, { stdio: 'inherit', shell: false });
 child.on('exit', (code, signal) => {
   if (signal) {
-    process.kill(process.pid, signal);
+    try {
+      process.kill(process.pid, signal);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`sccache-deps-only: child terminated by signal ${signal}; unable to forward signal (${message})\n`);
+      process.exit(1);
+    }
     return;
   }
   process.exit(code ?? 1);

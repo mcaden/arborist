@@ -25,9 +25,9 @@ Platform build deps in detail:
   modern Windows; install the
   [Evergreen Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/)
   if missing.
-- **macOS** — `xcode-select --install` for the command-line tools.
-- **Linux** — GTK 3, WebKit2GTK 4.1, libsoup, librsvg. On Debian/Ubuntu:
-  `sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev`.
+- **macOS** — `xcode-select --install` for the command-line tools, plus `brew install llvm` so `lld` is available for default linker flags in `.cargo/config.toml`.
+- **Linux** — GTK 3, WebKit2GTK 4.1, libsoup, librsvg, and linker deps (`clang` + `lld`) used by `.cargo/config.toml`. On Debian/Ubuntu:
+  `sudo apt install clang lld libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev`.
 
 The `claude` and/or `copilot` CLIs are **not** required to build, lint, or
 test Arborist. They're only needed at runtime for the sessions Arborist spawns —
