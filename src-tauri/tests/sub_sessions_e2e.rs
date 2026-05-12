@@ -276,10 +276,12 @@ fn build_harness() -> Harness {
     let icon_cache = Arc::new(arborist_lib::process_icon::IconCache::new(Arc::new(
         arborist_lib::process_icon::RealIconExtractor,
     )));
+    let plugin_registry = Arc::new(arborist_lib::plugins::build_registry().expect("plugin registry build"));
     let sub_ctx = Arc::new(arborist_lib::sub_sessions::SubAppContext::new(
         Arc::clone(&sub_pool),
         Arc::clone(&sub_store),
         sub_sink,
+        plugin_registry,
         app_pool,
         focuser,
         icon_cache,

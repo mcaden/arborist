@@ -8,7 +8,7 @@
 //! owned by the dead launcher PID, and a `ForceKill` close intent would (catastrophically) call `TerminateProcess` on the long-lived shell, taking
 //! down the user's taskbar / desktop.
 //!
-//! This module mirrors [`crate::vscode_owner`]:
+//! This module mirrors [`crate::plugins::custom_process::vscode::owner`]:
 //!
 //! * [`looks_like_explorer_command`] — command-shape detection.
 //! * [`ExplorerOwnerResolver`] — re-discovers the explorer.exe window owning

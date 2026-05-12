@@ -13,8 +13,10 @@
 // than this file, but the internal provider/hook files import directly from
 // here to avoid an `index ↔ provider` circular module dependency.
 //
-// The production app builds a registry via `createBuiltinsRegistry()`
-// (`src/plugins/builtins.ts`).
+// Frontend plugin capabilities are kind-driven. Custom-process plugins expose
+// matching/platform predicates only (no UI contract), while dashboard widgets
+// carry a React `Component`. The production app builds its registry via
+// `createBuiltinsRegistry()` (`src/plugins/builtins.ts`).
 
 import type { ComponentType } from 'react';
 
@@ -37,6 +39,7 @@ export interface AiPlugin extends Plugin {
 }
 
 // MIRROR: src-tauri/src/plugins/custom_process/mod.rs::CustomProcessPlugin
+// (frontend-facing subset; backend-only owner_resolver(cwd) is intentionally omitted)
 export interface CustomProcessPlugin extends Plugin {
   /**
    * Returns true if this plugin should be applied to a custom-process
