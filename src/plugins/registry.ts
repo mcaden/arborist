@@ -13,8 +13,8 @@
 // than this file, but the internal provider/hook files import directly from
 // here to avoid an `index ↔ provider` circular module dependency.
 //
-// This issue lands scaffolding only — the production registry is empty
-// at boot. Sub-issues #96 / #97 / #98 populate it.
+// The production app builds a registry via `createBuiltinsRegistry()`
+// (`src/plugins/builtins.ts`).
 
 import type { ComponentType } from 'react';
 
@@ -55,14 +55,12 @@ export interface CustomProcessPlugin extends Plugin {
 export interface DashboardWidgetPlugin extends Plugin {
   /**
    * Lower value renders first. Ties are broken by registration order.
-   * Issue #98 populates this with the seed widgets (`git-status`,
-   * `ai-usage`).
+   * Built-ins currently use this for `git-status` and `ai-usage`.
    */
   order: number;
   /**
    * React component rendered inside `WorktreeDashboard`. Receives the
-   * worktree tab's id and path. v1 declares the prop shape only; #98
-   * supplies the actual components.
+   * worktree tab's id and path.
    */
   Component: ComponentType<DashboardWidgetProps>;
 }

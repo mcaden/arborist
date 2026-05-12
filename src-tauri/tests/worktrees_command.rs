@@ -127,7 +127,7 @@ fn empty_runner_response_passes_through() {
 
 #[test]
 fn worktree_git_status_runner_err_is_swallowed_into_structured_error() {
-    use arborist_lib::commands::session::worktree_git_status_impl;
+    use arborist_lib::plugins::dashboard_widget::git_status::worktree_git_status_impl;
 
     struct ErrRunner;
     impl GitRunner for ErrRunner {
@@ -161,7 +161,7 @@ fn worktree_git_status_runner_err_is_swallowed_into_structured_error() {
 
 #[test]
 fn worktree_git_status_invalid_path_returns_structured_error_without_invoking_runner() {
-    use arborist_lib::commands::session::worktree_git_status_impl;
+    use arborist_lib::plugins::dashboard_widget::git_status::worktree_git_status_impl;
 
     // FakeGitRunner panics if git_status is called — this asserts the impl rejects the path before reaching the runner.
     struct PanicOnStatus;

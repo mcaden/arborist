@@ -233,7 +233,7 @@ pub async fn worktree_git_status(
     args: crate::types::WorktreeGitStatusArgs,
 ) -> Result<crate::types::WorktreeGitStatus, AppError> {
     let ctx = ctx_of(&app)?;
-    session::worktree_git_status_impl(&ctx, &args.path)
+    crate::plugins::dashboard_widget::git_status::worktree_git_status_impl(&ctx, &args.path)
 }
 
 /// Validate a candidate workspace root (Roadmap §1.1). Never errors for the "invalid path" case — the picker shows inline feedback.

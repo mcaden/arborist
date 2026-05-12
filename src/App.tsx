@@ -22,7 +22,7 @@
 // error from the hydrate steps, an error overlay with a Reload button is
 // shown instead.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
@@ -32,7 +32,7 @@ import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
 import { subscribeToSubExited, subscribeToSubRestored, subscribeToSubStatus } from '@/lib/sub-session-events';
 import { formatError, frontendReady } from '@/lib/tauri-bridge';
-import { PluginRegistryProvider } from '@/plugins';
+import { createBuiltinsRegistry, PluginRegistryProvider } from '@/plugins';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
@@ -103,8 +103,10 @@ function ErrorOverlay({ message }: { message: string }): JSX.Element {
 }
 
 export function App(): JSX.Element {
+  const registry = useMemo(() => createBuiltinsRegistry(), []);
+
   return (
-    <PluginRegistryProvider>
+    <PluginRegistryProvider registry={registry}>
       <AppInner />
     </PluginRegistryProvider>
   );
