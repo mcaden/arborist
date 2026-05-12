@@ -119,30 +119,35 @@ export function createRegistry(): PluginRegistry {
 
   return {
     registerAi(plugin) {
-      if (aiIndex.has(plugin.id)) {
-        throw new PluginRegisterError('ai', plugin.id);
+      // Capture `id` once: a class-based plugin may implement `id` as a getter, and re-reading it across the duplicate check, error construction,
+      // and index insert could (for a misbehaving getter) produce inconsistent values that desync the `*Index` map from the backing array.
+      const id = plugin.id;
+      if (aiIndex.has(id)) {
+        throw new PluginRegisterError('ai', id);
       }
       // Freeze the caller's object directly (don't spread): a class-based plugin would otherwise lose prototype methods/getters (e.g. `Component`
       // implemented as a getter, or `matches` defined on a prototype). Freezing in-place preserves the prototype chain while still preventing
       // post-registration mutation of `id` (or other top-level fields) that would desync the *Index maps from the backing arrays.
       Object.freeze(plugin);
-      aiIndex.set(plugin.id, ai.length);
+      aiIndex.set(id, ai.length);
       ai.push(plugin);
     },
     registerCustomProcess(plugin) {
-      if (customProcessIndex.has(plugin.id)) {
-        throw new PluginRegisterError('custom_process', plugin.id);
+      const id = plugin.id;
+      if (customProcessIndex.has(id)) {
+        throw new PluginRegisterError('custom_process', id);
       }
       Object.freeze(plugin);
-      customProcessIndex.set(plugin.id, customProcess.length);
+      customProcessIndex.set(id, customProcess.length);
       customProcess.push(plugin);
     },
     registerWidget(plugin) {
-      if (widgetsIndex.has(plugin.id)) {
-        throw new PluginRegisterError('dashboard_widget', plugin.id);
+      const id = plugin.id;
+      if (widgetsIndex.has(id)) {
+        throw new PluginRegisterError('dashboard_widget', id);
       }
       Object.freeze(plugin);
-      widgetsIndex.set(plugin.id, widgets.length);
+      widgetsIndex.set(id, widgets.length);
       widgets.push(plugin);
     },
     // Defensive copies: `readonly` is compile-time-only and callers can mutate via casts or runtime access. Returning a fresh array on every call

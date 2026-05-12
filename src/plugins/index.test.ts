@@ -109,6 +109,28 @@ describe('createRegistry()', () => {
     expect(r.widgets().map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('captures `id` once so a getter that returns different values across reads cannot desync the index', () => {
+    // Without the local capture, registerAi would have read `plugin.id` separately for the duplicate check, the error path, and the
+    // `aiIndex.set(...)` call. A getter that returns a different value on each read would then leave the index pointing at one id while a
+    // later `aiById(...)` lookup with the "current" id misses entirely. Capturing once locks in a single value for the whole method.
+    let counter = 0;
+    const plugin: AiPlugin = {
+      get id(): string {
+        counter += 1;
+        return `ai-${counter}`;
+      },
+      displayName: 'Counter AI',
+      defaultProgram: 'noop',
+      defaultInstructionSetPath: 'noop.md',
+    };
+    const r = createRegistry();
+    r.registerAi(plugin);
+    const idAtRegister = counter; // value of the counter at the moment register* captured the id
+    // The id captured at register-time is the canonical id used by the index. Lookups under that exact value must succeed even though the
+    // getter has advanced past it on subsequent reads.
+    expect(r.aiById(`ai-${idAtRegister}`)?.displayName).toBe('Counter AI');
+  });
+
   it('preserves prototype methods/getters when freezing class-based plugin instances', () => {
     // Critical for class-based plugins (the design supports them and Rust uses Arc<dyn>): freezing must not strip prototype-backed members. Prior
     // implementation used `Object.freeze({ ...plugin })` which would have dropped class methods and broken `matches`/`Component`/etc. at runtime.
