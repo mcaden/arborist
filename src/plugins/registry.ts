@@ -80,7 +80,7 @@ export interface DashboardWidgetProps {
  */
 export class PluginRegisterError extends Error {
   constructor(
-    public readonly kind: 'ai' | 'customProcess' | 'widget',
+    public readonly kind: 'ai' | 'custom_process' | 'dashboard_widget',
     public readonly pluginId: string,
   ) {
     super(`plugin id collision: a ${kind} plugin with id "${pluginId}" is already registered`);
@@ -122,27 +122,28 @@ export function createRegistry(): PluginRegistry {
       if (aiIndex.has(plugin.id)) {
         throw new PluginRegisterError('ai', plugin.id);
       }
-      // Shallow-freeze on store so a caller can't later mutate `id` (or other top-level fields) and desync the *Index maps from the backing arrays.
-      // `Component` is a function reference and is unaffected by Object.freeze on the wrapping record.
-      const frozen = Object.freeze({ ...plugin }) as AiPlugin;
-      aiIndex.set(frozen.id, ai.length);
-      ai.push(frozen);
+      // Freeze the caller's object directly (don't spread): a class-based plugin would otherwise lose prototype methods/getters (e.g. `Component`
+      // implemented as a getter, or `matches` defined on a prototype). Freezing in-place preserves the prototype chain while still preventing
+      // post-registration mutation of `id` (or other top-level fields) that would desync the *Index maps from the backing arrays.
+      Object.freeze(plugin);
+      aiIndex.set(plugin.id, ai.length);
+      ai.push(plugin);
     },
     registerCustomProcess(plugin) {
       if (customProcessIndex.has(plugin.id)) {
-        throw new PluginRegisterError('customProcess', plugin.id);
+        throw new PluginRegisterError('custom_process', plugin.id);
       }
-      const frozen = Object.freeze({ ...plugin }) as CustomProcessPlugin;
-      customProcessIndex.set(frozen.id, customProcess.length);
-      customProcess.push(frozen);
+      Object.freeze(plugin);
+      customProcessIndex.set(plugin.id, customProcess.length);
+      customProcess.push(plugin);
     },
     registerWidget(plugin) {
       if (widgetsIndex.has(plugin.id)) {
-        throw new PluginRegisterError('widget', plugin.id);
+        throw new PluginRegisterError('dashboard_widget', plugin.id);
       }
-      const frozen = Object.freeze({ ...plugin }) as DashboardWidgetPlugin;
-      widgetsIndex.set(frozen.id, widgets.length);
-      widgets.push(frozen);
+      Object.freeze(plugin);
+      widgetsIndex.set(plugin.id, widgets.length);
+      widgets.push(plugin);
     },
     // Defensive copies: `readonly` is compile-time-only and callers can mutate via casts or runtime access. Returning a fresh array on every call
     // keeps the registry's internal `*Index` maps in sync with its arrays — the append-only contract is enforced even against misbehaving callers.

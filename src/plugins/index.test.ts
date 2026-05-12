@@ -109,6 +109,29 @@ describe('createRegistry()', () => {
     expect(r.widgets().map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('preserves prototype methods/getters when freezing class-based plugin instances', () => {
+    // Critical for class-based plugins (the design supports them and Rust uses Arc<dyn>): freezing must not strip prototype-backed members. Prior
+    // implementation used `Object.freeze({ ...plugin })` which would have dropped class methods and broken `matches`/`Component`/etc. at runtime.
+    class ClassWidget implements DashboardWidgetPlugin {
+      readonly id = 'class-widget';
+      readonly displayName = 'Class Widget';
+      readonly order = 0;
+      get Component(): DashboardWidgetPlugin['Component'] {
+        return () => null;
+      }
+    }
+    const r = createRegistry();
+    const instance = new ClassWidget();
+    r.registerWidget(instance);
+    const stored = r.widgets()[0]!;
+    expect(stored.id).toBe('class-widget');
+    expect(typeof stored.Component).toBe('function');
+    // Mutation of the stored (frozen) plugin still throws — freeze-in-place doesn't weaken the post-registration immutability guarantee.
+    expect(() => {
+      (stored as { id: string }).id = 'attacker';
+    }).toThrow(TypeError);
+  });
+
   it('freezes registered plugin records so callers cannot mutate `id` after registration and desync index maps', () => {
     // The defensive copies on accessors protect the *arrays*, but without freezing the plugin records themselves a caller could mutate the
     // returned object's `id` and break `aiById` lookups (the *Index map still points at the old id). Object.freeze on store prevents that.
