@@ -114,7 +114,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: . -> target
 
       # Tauri's Linux build needs system libraries (must match ci.yml). `lld`
       # + `clang` are required by the workspace `.cargo/config.toml` for the
