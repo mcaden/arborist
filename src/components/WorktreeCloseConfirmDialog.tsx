@@ -14,6 +14,7 @@ import { formatError } from '@/lib/tauri-bridge';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { usePendingWorktreeTabClose, useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
+import type { WorktreeTabAppClosePolicy } from '@/types/arborist';
 
 export function WorktreeCloseConfirmDialog(): JSX.Element | null {
   const pendingId = usePendingWorktreeTabClose();
@@ -22,10 +23,14 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
 
   const sessionCount = useSessionStore((s) => (tab ? s.sessions.filter((sess) => sess.worktreePath === tab.path).length : 0));
   const subSessionCount = useSubSessionStore((s) => (tab ? s.subSessions.filter((sub) => sub.parentWorktreeTabId === tab.id).length : 0));
+  const appSubSessionCount = useSubSessionStore((s) =>
+    tab ? s.subSessions.filter((sub) => sub.parentWorktreeTabId === tab.id && sub.kind === 'application').length : 0,
+  );
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const [deleteWorktree, setDeleteWorktree] = useState<boolean>(false);
+  const [appClosePolicy, setAppClosePolicy] = useState<WorktreeTabAppClosePolicy>('detach');
   const [busy, setBusy] = useState<boolean>(false);
 
   useEffect(() => {
@@ -35,6 +40,7 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
       // Reset transient state every time the dialog opens — deletion
       // is destructive and should never be sticky across tabs.
       setDeleteWorktree(false);
+      setAppClosePolicy('detach');
       setBusy(false);
       if (!dialog.open) {
         if (typeof dialog.showModal === 'function') {
@@ -72,7 +78,7 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
     setBusy(true);
     let alertMessage: string | null = null;
     try {
-      const result = await actions.close(pendingId, deleteWorktree);
+      const result = await actions.close(pendingId, deleteWorktree, appClosePolicy);
       if (result.worktreeDeleteError) {
         alertMessage = `Worktree tab closed, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`;
       }
@@ -105,8 +111,50 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
       </h2>
       {childSummary.length > 0 ? (
         <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">
-          This will terminate <span className="font-medium">{childSummary}</span> running under this worktree.
+          This will close <span className="font-medium">{childSummary}</span> running under this worktree.
         </p>
+      ) : null}
+      {appSubSessionCount > 0 ? (
+        <fieldset className="mb-3 rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
+          <legend className="px-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Application sub-processes ({appSubSessionCount})
+          </legend>
+          <p className="mb-2 text-xs text-slate-600 dark:text-slate-300">
+            Choose whether application sub-processes are left running or terminated when possible.
+          </p>
+          <label className="flex items-start gap-2">
+            <input
+              type="radio"
+              name="worktree-app-close-policy"
+              value="detach"
+              checked={appClosePolicy === 'detach'}
+              disabled={busy}
+              onChange={() => setAppClosePolicy('detach')}
+              className="mt-0.5 h-4 w-4 cursor-pointer accent-sky-600 disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <span>
+              <span className="font-medium">Detach and keep running</span>
+              <span className="block text-xs text-slate-500 dark:text-slate-400">Default and safest for shared app processes.</span>
+            </span>
+          </label>
+          <label className="mt-2 flex items-start gap-2">
+            <input
+              type="radio"
+              name="worktree-app-close-policy"
+              value="terminate"
+              checked={appClosePolicy === 'terminate'}
+              disabled={busy}
+              onChange={() => setAppClosePolicy('terminate')}
+              className="mt-0.5 h-4 w-4 cursor-pointer accent-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <span>
+              <span className="font-medium">Terminate</span>
+              <span className="block text-xs text-slate-500 dark:text-slate-400">
+                Requests a graceful close first, then terminates only when Arborist can do so safely.
+              </span>
+            </span>
+          </label>
+        </fieldset>
       ) : null}
       <label className="mb-4 flex items-start gap-2 text-sm">
         <input

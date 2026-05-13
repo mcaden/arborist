@@ -1210,6 +1210,23 @@ pub struct WorktreeTabOpenArgs {
     pub path: String,
 }
 
+/// How `worktree_tab_close` should handle application-kind sub-sessions when
+/// cascading under a closing worktree tab.
+///
+/// Terminal sub-sessions and AI sessions are unaffected by this setting; they
+/// are always terminated by their existing close paths.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreeTabAppClosePolicy`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum WorktreeTabAppClosePolicy {
+    /// Remove Arborist tracking only; keep external app processes running.
+    #[default]
+    Detach,
+    /// Attempt to terminate app sub-sessions (graceful first, then safe fallback where allowed).
+    Terminate,
+}
+
 /// Arguments for `worktree_tab_close`. Cascades close to all child
 /// sessions and sub-sessions under the tab. The optional `delete_worktree`
 /// flag asks the backend to run `git worktree remove --force` on the
@@ -1224,6 +1241,8 @@ pub struct WorktreeTabCloseArgs {
     pub id: WorktreeTabId,
     #[serde(default)]
     pub delete_worktree: bool,
+    #[serde(default)]
+    pub app_close_policy: WorktreeTabAppClosePolicy,
 }
 
 /// Arguments for `worktree_tab_focus`.
@@ -2031,6 +2050,30 @@ mod tests {
     fn custom_process_kind_serializes_lowercase() {
         assert_eq!(serde_json::to_value(CustomProcessKind::Terminal).expect("v"), json!("terminal"));
         assert_eq!(serde_json::to_value(CustomProcessKind::Application).expect("v"), json!("application"));
+    }
+
+    #[test]
+    fn worktree_tab_app_close_policy_serializes_lowercase() {
+        assert_eq!(serde_json::to_value(WorktreeTabAppClosePolicy::Detach).expect("v"), json!("detach"));
+        assert_eq!(serde_json::to_value(WorktreeTabAppClosePolicy::Terminate).expect("v"), json!("terminate"));
+    }
+
+    #[test]
+    fn worktree_tab_close_args_default_app_policy_is_detach() {
+        let parsed: WorktreeTabCloseArgs = serde_json::from_value(json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "deleteWorktree": true
+        }))
+        .expect("deserialize");
+        assert_eq!(parsed.app_close_policy, WorktreeTabAppClosePolicy::Detach);
+        assert!(parsed.delete_worktree);
+
+        let explicit: WorktreeTabCloseArgs = serde_json::from_value(json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "appClosePolicy": "terminate"
+        }))
+        .expect("deserialize explicit terminate");
+        assert_eq!(explicit.app_close_policy, WorktreeTabAppClosePolicy::Terminate);
     }
 
     #[test]

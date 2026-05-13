@@ -574,6 +574,15 @@ impl AppPool {
         self.inner.lock().ok()?.get(id).map(|r| r.pid)
     }
 
+    /// Whether `id` has been re-targeted to a rediscovered owner process
+    /// (e.g. VS Code's long-lived owner) after launcher handoff.
+    #[must_use]
+    pub fn is_retargeted(&self, id: &SubSessionId) -> Option<bool> {
+        let g = self.inner.lock().ok()?;
+        let rt = g.get(id)?;
+        Some(rt.re_targeted.load(Ordering::SeqCst))
+    }
+
     /// Explicit close. Sets the `killed` guard so the wait thread will suppress its status emission, calls `killer.kill()`, and removes the runtime
     /// from the pool. Idempotent (`Ok` if the id is unknown).
     pub fn kill(&self, id: &SubSessionId) -> Result<(), Error> {
@@ -1208,6 +1217,7 @@ mod tests {
                 Some(resolver.clone() as Arc<dyn OwnerResolver>),
             )
             .expect("spawn");
+        assert_eq!(pool.is_retargeted(&id), Some(false));
 
         // Resolver returns a NEW pid + a fresh killer + a probe we hold the death-signal for.
         let new_pid = 99_001;
@@ -1228,6 +1238,11 @@ mod tests {
             || pool.pid(&id) == Some(new_pid),
             Duration::from_secs(2),
             "pool.pid should flip to rediscovered owner",
+        );
+        wait_until(
+            || pool.is_retargeted(&id) == Some(true),
+            Duration::from_secs(2),
+            "runtime should be marked re-targeted",
         );
 
         // Status events: Running(initial_pid) then Running(new_pid).

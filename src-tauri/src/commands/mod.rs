@@ -233,7 +233,7 @@ pub async fn worktree_git_status(
     args: crate::types::WorktreeGitStatusArgs,
 ) -> Result<crate::types::WorktreeGitStatus, AppError> {
     let ctx = ctx_of(&app)?;
-    session::worktree_git_status_impl(&ctx, &args.path)
+    crate::plugins::dashboard_widget::git_status::worktree_git_status_impl(&ctx, &args.path)
 }
 
 /// Validate a candidate workspace root (Roadmap §1.1). Never errors for the "invalid path" case — the picker shows inline feedback.
@@ -655,7 +655,7 @@ pub async fn worktree_tab_open(app: tauri::AppHandle, args: WorktreeTabOpenArgs)
 pub async fn worktree_tab_close(app: tauri::AppHandle, args: WorktreeTabCloseArgs) -> Result<WorktreeTabCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
-    worktree_tab::worktree_tab_close_impl(&ctx, sub_ctx, args.id, args.delete_worktree).await
+    worktree_tab::worktree_tab_close_impl(&ctx, sub_ctx, args.id, args.delete_worktree, args.app_close_policy).await
 }
 
 #[tauri::command]

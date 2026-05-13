@@ -1,4 +1,10 @@
-// AI Usage dashboard-widget module — scaffold only. Sub-issue #98 will
-// move the AI Usage panel out of `WorktreeDashboard.tsx` into this
-// directory.
-export {};
+import type { DashboardWidgetPlugin } from '@/plugins/registry';
+
+import { AiUsageWidget } from './widget';
+
+export const aiUsageWidget: DashboardWidgetPlugin = {
+  id: 'ai-usage',
+  displayName: 'AI Usage',
+  order: 200,
+  Component: AiUsageWidget,
+};
