@@ -61,10 +61,10 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
               key={plugin.id}
               type="button"
               data-testid={`worktree-dashboard-launch-${plugin.id}`}
-              onClick={() => launch(plugin.id as Tool)}
+              onClick={() => launch(plugin.id)}
               className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
             >
-              <ToolIcon tool={plugin.id as Tool} className="h-4 w-4" {...(iconDataUri ? { iconDataUri } : {})} />
+              <ToolIcon tool={plugin.id} className="h-4 w-4" {...(iconDataUri ? { iconDataUri } : {})} />
               <span>{`Launch ${plugin.displayName}`}</span>
             </button>
           );

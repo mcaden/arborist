@@ -31,7 +31,7 @@ export interface WorktreeTabContextMenuProps {
   onOpenSettings?: () => void;
 }
 
-type Item = 'close' | 'settings' | `launch:${string}` | `cp:${string}`;
+type Item = 'close' | 'settings' | `launch:${Tool}` | `cp:${string}`;
 
 export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo, onOpenSettings }: WorktreeTabContextMenuProps): JSX.Element | null {
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
@@ -153,7 +153,8 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   const activateItem = (item: Item): void => {
     if (item === 'close') handleClose();
-    else if (item.startsWith('launch:')) handleLaunch(item.slice('launch:'.length) as Tool);
+    else if (item === 'launch:claude') handleLaunch('claude');
+    else if (item === 'launch:copilot') handleLaunch('copilot');
     else if (item === 'settings') handleSettings();
     else if (item.startsWith('cp:')) handleCustomProcess(item.slice(3));
   };
@@ -220,7 +221,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
             type="button"
             role="menuitem"
             data-testid={`worktree-tab-context-menu-launch-${plugin.id}`}
-            onClick={() => handleLaunch(plugin.id as Tool)}
+            onClick={() => handleLaunch(plugin.id)}
             onMouseEnter={() => setFocusedItem(key)}
             className={itemBase}
           >

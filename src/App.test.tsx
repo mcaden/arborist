@@ -139,7 +139,7 @@ describe('App boot sequence', () => {
         new Promise((resolve) => {
           resolveCfg = () =>
             resolve({
-              configVersion: 3,
+              configVersion: 9,
               defaultInstructionSets: { claude: '', copilot: '' },
               instructionSetsDir: '',
               workspaceRoot: '/mock/workspace',
@@ -257,7 +257,7 @@ describe('App boot sequence', () => {
 
   it('shows the WorkspacePicker on first boot when workspaceRoot is null', async () => {
     configGet.mockResolvedValueOnce({
-      configVersion: 3,
+      configVersion: 9,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
