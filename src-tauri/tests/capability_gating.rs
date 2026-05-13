@@ -90,8 +90,12 @@ fn main_capability_allows_core_default_and_ping() {
         "main capability must include allow-worktree-prep-open-log so worktree_prep_open_log is callable; got {identifiers:?}",
     );
     assert!(
+        identifiers.contains(&"allow-dialog-pick-directory"),
+        "main capability must include allow-dialog-pick-directory so pickDirectory is callable; got {identifiers:?}",
+    );
+    assert!(
         identifiers.contains(&"dialog:allow-open"),
-        "main capability must include dialog:allow-open so the file picker is callable; got {identifiers:?}",
+        "main capability must include dialog:allow-open so plugin dialog open is callable; got {identifiers:?}",
     );
     assert!(
         identifiers.contains(&"allow-subsession-icon"),
@@ -228,6 +232,20 @@ fn allow_frontend_ready_permission_file_declares_frontend_ready_command() {
         "permission identifier must remain `allow-frontend-ready`",
     );
     assert!(raw.contains("\"frontend_ready\""), "permission must allow the `frontend_ready` command",);
+}
+
+#[test]
+fn allow_dialog_pick_directory_permission_file_declares_command() {
+    let path = manifest_dir().join("permissions").join("allow-dialog-pick-directory.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-dialog-pick-directory\""),
+        "permission identifier must remain `allow-dialog-pick-directory`",
+    );
+    assert!(
+        raw.contains("\"dialog_pick_directory\""),
+        "permission must allow the `dialog_pick_directory` command",
+    );
 }
 
 #[test]

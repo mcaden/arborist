@@ -19,6 +19,7 @@
     "allow-subsession",
     "allow-subsession-icon",
     "allow-worktree-tab",
+    "allow-dialog-pick-directory",
     "dialog:allow-open"
   ]
 }

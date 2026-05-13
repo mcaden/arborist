@@ -24,12 +24,12 @@
 //! holds it), we surface a synchronous native message dialog ([`rfd::MessageDialog`]) naming the branch + workspace and exit with a non-zero status.
 //! The dialog is the user's signal that this isn't an Arborist crash but a deliberate single-writer refusal.
 //!
-//! ## Why `rfd` instead of `tauri-plugin-dialog`
+//! ## Why `rfd` for boot-time dialogs
 //!
-//! `tauri-plugin-dialog` requires an `AppHandle`, which by the time we're inside `setup` is half-built. Routing the failure path through the
-//! half-built Tauri app introduces ordering hazards (the main webview window may or may not exist yet). `rfd` is a standalone synchronous OS-dialog
-//! crate (already a transitive dep via `tauri-plugin-dialog`), so we use it directly for boot-time UX. No `AppHandle` needed; works before any Tauri
-//! lifecycle.
+//! Boot-time workspace selection runs before the full Tauri runtime is ready, so
+//! we need a standalone synchronous OS-dialog path that does not depend on any
+//! WebView/plugin lifecycle. `rfd` gives us that for the first-launch picker and
+//! lock/contention error dialogs.
 
 use std::path::{Path, PathBuf};
 use std::{ffi::OsString, fs};

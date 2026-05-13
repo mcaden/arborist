@@ -71,11 +71,11 @@ program's OS window when you click the sub-tab.
 
 ## Built with
 
-| Layer         | Technology                                                           |
-| ------------- | -------------------------------------------------------------------- |
-| Desktop shell | [Tauri v2](https://v2.tauri.app/) (Rust + OS WebView — not Electron) |
-| Frontend      | React 18 + TypeScript, Vite, Tailwind CSS, Zustand, xterm.js         |
-| Backend       | Rust, `portable-pty` (ConPTY on Windows), `tauri-plugin-store`       |
+| Layer         | Technology                                                                                   |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| Desktop shell | [Tauri v2](https://v2.tauri.app/) (Rust + OS WebView — not Electron)                         |
+| Frontend      | React 18 + TypeScript, Vite, Tailwind CSS, Zustand, xterm.js                                 |
+| Backend       | Rust, `portable-pty` (ConPTY on Windows), custom atomic JSON persistence (`config_store.rs`) |
 
 ## Getting started
 

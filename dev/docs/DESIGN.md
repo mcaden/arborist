@@ -12,8 +12,8 @@ _Version 0.6_
 | State management | **Zustand** | Lightweight, minimal boilerplate, good for session state. |
 | Styling | **Tailwind CSS** | Utility-first; fast iteration for layout-heavy UI. |
 | Build / bundle | **Vite + Tauri CLI** | Fast HMR for the frontend; Cargo for the Rust backend. |
-| Persistence | **tauri-plugin-store** | JSON file-backed store exposed to the frontend via Tauri commands. |
-| OS dialogs | **tauri-plugin-dialog** | Native file/directory picker; gated by the `dialog:allow-open` capability. Used by the New-Session flow's manual "Browse…" fallback (Phase 10). |
+| Persistence | **Custom JSON store (`config_store.rs`)** | Atomic JSON persistence (`config.json` / `sessions.json`) in Rust, exposed to the frontend via typed Tauri commands. |
+| OS dialogs | **`rfd` via Tauri command** | Native file/directory picker dispatched from Rust (`dialog_pick_directory`) and capability-gated like other app commands. |
 
 ## 2. Architecture Overview
 
@@ -23,7 +23,7 @@ _Version 0.6_
 │  ┌───────────┐  ┌──────────────┐  ┌──────────────┐  │
 │  │ PTY Pool  │  │ Config Store │  │   Commands   │  │
 │  └───────────┘  └──────────────┘  └──────────────┘  │
-│        │           (tauri-plugin-store)      │        │
+│        │       (custom ConfigStore in Rust)  │        │
 │        │            Tauri Commands / Events  │        │
 ├────────┼──────────────────────────────────────┼──────┤
 │        ▼            OS WebView               ▼       │
@@ -42,7 +42,7 @@ _Version 0.6_
 - **PTY Pool**: Manages `portable-pty` instances. One PTY per session. Responsible for composing the session's CLI launch
   command, spawning the PTY with that composed invocation in the worktree directory, handling resize and data relay, restarting
   on demand, and kill. PTY output is streamed to the frontend via Tauri events.
-- **Config Store**: Reads/writes settings and session state to disk via `tauri-plugin-store`.
+- **Config Store**: Reads/writes settings and session state to disk via the Rust `ConfigStore` (atomic JSON writes).
 - **Commands**: Exposes a typed, capability-gated API to the frontend via Tauri `#[command]` handlers. Replaces the Electron `contextBridge` / `ipcMain` pattern.
 
 ### 2.2 Frontend Responsibilities
@@ -350,7 +350,7 @@ User clicks [+]
           to `git worktree list --porcelain`, parsed in
           `src-tauri/src/git.rs`). Discovery failures degrade to an empty
           list, so the manual "Browse…" button (powered by
-          `tauri-plugin-dialog`) is always available.
+          `dialog_pick_directory`) is always available.
   → User optionally selects instruction set (default pre-selected)
   → Frontend invokes Tauri command: session_create { tool, worktreePath, cols, rows } (instructionSetId is optional and currently never sent by the new-session wizard; cols/rows are measured from the host before invocation, see §5.5b)
   → Rust backend:
@@ -1008,6 +1008,7 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 | `session_input` | `{ sessionId, data }` | — | Send keystrokes to PTY |
 | `session_restart` | `{ sessionId, cols, rows }` | — | Re-spawn a session using its stored `composedCommand` (DESIGN §5.4). `cols`/`rows` are the frontend-measured current PTY dimensions so the new child paints at the right size from the first byte (see §5.5b). The conversation id is rotated (Copilot: a freshly-allocated uuid is spliced via `--resume` on the spawn-time copy; Claude: cleared) so the new spawn is a fresh AI conversation by user contract. The persisted `Session.composedCommand` is never mutated. |
 | `frontend_ready` | — | — | One-shot signal from the frontend after first paint; **awaits** restore-on-launch completion so the frontend's first `session_resize` is guaranteed to find the pending session entry registered (see §5.5/§5.5b). Idempotent — subsequent calls are no-ops. |
+| `dialog_pick_directory` | — | `string \| null` | Open the native OS directory picker and return the chosen absolute path, or `null` when cancelled. Implemented in Rust (`commands::dialog_pick_directory`) and dispatched on Tauri's main thread so Linux/GTK stays thread-safe. Powers the New-Session flow's manual "Browse…" fallback (SPEC W-03). |
 | `config_get` | — | `AppConfig` | Retrieve AppConfig |
 | `config_set` | `Partial<AppConfig>` | — | Update AppConfig (`activeSessionId` is tri-state: omit to leave alone, `null` to clear, value to set) |
 | `instructions_list` | — | `InstructionSet[]` | List available instruction sets from `instructionSetsDir` |
@@ -1053,20 +1054,19 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 > on the `workspace_switch` reply (`{ config, sessions }`); see the
 > `workspace_switch` row above and §5.5c.
 
-### Plugin commands routed via the bridge
+### Bridge-only helper command
 
-`src/lib/tauri-bridge.ts` also wraps one third-party plugin command so
-that callers stay on the single bridge surface (no direct
-`@tauri-apps/plugin-*` imports from components):
+`src/lib/tauri-bridge.ts` exposes one helper that maps directly to a first-party
+Tauri command so callers stay on the single bridge surface:
 
-| Bridge function | Underlying plugin call | Capability | Purpose |
-|-----------------|------------------------|------------|---------|
-| `pickDirectory()` | `tauri-plugin-dialog`'s `open({ directory: true, multiple: false })` | `dialog:allow-open` | Native OS directory picker; powers the New-Session dialog's manual "Browse…" fallback when `worktrees_list` returns nothing useful (SPEC W-03). |
+| Bridge function | Underlying command | Capability | Purpose |
+|-----------------|--------------------|------------|---------|
+| `pickDirectory()` | `dialog_pick_directory` | `allow-dialog-pick-directory` | Native OS directory picker; powers the New-Session dialog's manual "Browse…" fallback when `worktrees_list` returns nothing useful (SPEC W-03). |
 
-The `dialog:allow-open` permission is declared in
-`src-tauri/capabilities/main.json`; the plugin itself is initialised in
-`arborist_lib::run`. Adding any further plugin command must follow the same
-capability + bridge-wrapper + mock-stub discipline (see
+The command is declared in `src-tauri/src/commands/mod.rs` and gated via
+`src-tauri/permissions/allow-dialog-pick-directory.toml` +
+`src-tauri/capabilities/main.json`. Any future bridge helper must follow the
+same capability + bridge-wrapper + mock-stub discipline (see
 [`TESTING.md`](./TESTING.md) §6).
 
 ## 7. Directory Structure (Proposed)
@@ -1103,7 +1103,7 @@ arborist/
 │   │   ├── sub_sessions.rs       # SubPtyPool + SubSessionStore (terminal sub-tabs)
 │   │   ├── app_launcher.rs       # AppPool + AppSpawner (application sub-tabs)
 │   │   ├── window_focus.rs       # Platform-gated WindowFocuser (Win32/osascript/wmctrl)
-│   │   ├── config_store.rs       # tauri-plugin-store wrapper
+│   │   ├── config_store.rs       # custom JSON config/session store (atomic writes)
 │   │   ├── activity.rs           # PTY-byte scanner (OSC + byte-rate)
 │   │   ├── session_metrics.rs    # Token/context-window watcher (Claude JSONL + Copilot OTel)
 │   │   ├── copilot_events.rs     # Copilot ~/.copilot/session-state/<aid>/events.jsonl tailer

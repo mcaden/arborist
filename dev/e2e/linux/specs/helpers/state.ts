@@ -10,7 +10,7 @@ import os from "os";
 import path from "path";
 
 /**
- * Returns the path where tauri-plugin-store persists data on Linux.
+ * Returns the path where Arborist persists data on Linux.
  * XDG_CONFIG_HOME defaults to ~/.config; Tauri uses the app identifier.
  */
 export function getConfigDir(): string {
