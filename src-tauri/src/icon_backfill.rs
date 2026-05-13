@@ -34,7 +34,7 @@ pub fn backfill_icons(cfg: &mut AppConfig, cache: &IconCache, fallback_cwd: &Pat
 
     for builtin in crate::plugins::ai::BUILTIN_AI {
         let plugin_id = builtin.plugin.id();
-        if cfg.ai_launch_commands.icon_data_uri_for_id(plugin_id).is_some() {
+        if cfg.ai_launch_commands.has_icon_cache_entry_for_id(plugin_id) {
             continue;
         }
         let launch_command = cfg.ai_launch_commands.command_for_id(plugin_id);
@@ -147,6 +147,30 @@ mod tests {
             cfg.custom_processes[0].icon_data_uri.as_deref(),
             Some("data:image/png;base64,AAAA"),
             "existing cache must be preserved verbatim",
+        );
+    }
+
+    #[test]
+    fn backfill_skips_ai_plugins_with_explicit_null_cache_entry() {
+        let extractor = Arc::new(CountingExtractor::new());
+        let cache = IconCache::new(extractor.clone());
+        let mut cfg = AppConfig {
+            ai_launch_commands: AiLaunchCommands {
+                icon_data_uris: std::collections::BTreeMap::from([("claude".to_owned(), None), ("copilot".to_owned(), None)]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let changed = backfill_icons(&mut cfg, &cache, std::env::temp_dir().as_path());
+
+        assert!(!changed, "explicit null entries represent cached misses and should suppress retries");
+        assert_eq!(cfg.ai_launch_commands.icon_data_uris.get("claude"), Some(&None));
+        assert_eq!(cfg.ai_launch_commands.icon_data_uris.get("copilot"), Some(&None));
+        assert_eq!(
+            extractor.calls.lock().unwrap().len(),
+            0,
+            "no executable resolution should run for explicit null cache entries"
         );
     }
 

@@ -542,6 +542,12 @@ impl AiLaunchCommands {
         self.icon_data_uris.get(plugin_id).and_then(Option::as_deref)
     }
 
+    /// Returns true when an icon cache entry exists for `plugin_id`, including explicit cached misses (`null` / `None`).
+    #[must_use]
+    pub fn has_icon_cache_entry_for_id(&self, plugin_id: &str) -> bool {
+        self.icon_data_uris.contains_key(plugin_id)
+    }
+
     /// Cached icon data URI for a persisted [`Tool`], if present.
     #[must_use]
     pub fn icon_data_uri_for_tool(&self, tool: Tool) -> Option<&str> {
@@ -2010,6 +2016,23 @@ mod tests {
     fn app_config_roundtrip() {
         let (value, fixture) = app_config_fixture();
         assert_roundtrip(&value, fixture);
+    }
+
+    #[test]
+    fn ai_launch_commands_distinguishes_absent_from_explicit_null_icon_cache_entry() {
+        let cmds = AiLaunchCommands {
+            commands: BTreeMap::new(),
+            icon_data_uris: BTreeMap::from([
+                ("claude".to_owned(), None),
+                ("copilot".to_owned(), Some("data:image/png;base64,AAAA".to_owned())),
+            ]),
+        };
+
+        assert!(cmds.has_icon_cache_entry_for_id("claude"));
+        assert!(cmds.has_icon_cache_entry_for_id("copilot"));
+        assert!(!cmds.has_icon_cache_entry_for_id("cursor"));
+        assert_eq!(cmds.icon_data_uri_for_id("claude"), None);
+        assert_eq!(cmds.icon_data_uri_for_id("copilot"), Some("data:image/png;base64,AAAA"));
     }
 
     #[test]
