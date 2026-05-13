@@ -638,7 +638,7 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         for (plugin_id, command) in launch.commands {
             // Clear cached icon when the command changes — re-resolution will
             // re-populate it from a post-save backfill pass.
-            if cfg.ai_launch_commands.commands.get(&plugin_id) != Some(&command) {
+            if cfg.ai_launch_commands.command_for_id(&plugin_id) != command.as_str() {
                 cfg.ai_launch_commands.icon_data_uris.remove(&plugin_id);
             }
             cfg.ai_launch_commands.commands.insert(plugin_id, command);
@@ -1673,6 +1673,68 @@ mod tests {
             .expect("ok");
         assert_eq!(second.worktree_prep_commands, vec!["echo hi".to_owned()]);
         assert_eq!(second.tab_order, vec![id]);
+    }
+
+    #[test]
+    fn save_config_ai_launch_empty_string_patch_keeps_cached_icon_for_default_command() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let plugin_id = "claude".to_owned();
+        let cached = "data:image/png;base64,KEEP".to_owned();
+
+        store
+            .save_config_with(PartialAppConfig::default(), |cfg| {
+                cfg.ai_launch_commands.icon_data_uris.insert(plugin_id.clone(), Some(cached.clone()));
+                true
+            })
+            .expect("seed icon cache");
+
+        let after = store
+            .save_config(PartialAppConfig {
+                ai_launch_commands: Some(crate::types::PartialAiLaunchCommands {
+                    commands: BTreeMap::from([(plugin_id.clone(), String::new())]),
+                }),
+                ..Default::default()
+            })
+            .expect("patch");
+
+        assert_eq!(
+            after.ai_launch_commands.icon_data_uris.get(&plugin_id).and_then(Option::as_deref),
+            Some("data:image/png;base64,KEEP"),
+            "missing-key and empty-string command are both default; cache should stay warm",
+        );
+    }
+
+    #[test]
+    fn save_config_ai_launch_command_change_clears_cached_icon() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let plugin_id = "claude".to_owned();
+
+        store
+            .save_config_with(PartialAppConfig::default(), |cfg| {
+                cfg.ai_launch_commands.commands.insert(plugin_id.clone(), "old-cmd".to_owned());
+                cfg.ai_launch_commands
+                    .icon_data_uris
+                    .insert(plugin_id.clone(), Some("data:image/png;base64,OLD".to_owned()));
+                true
+            })
+            .expect("seed prior command+icon");
+
+        let after = store
+            .save_config(PartialAppConfig {
+                ai_launch_commands: Some(crate::types::PartialAiLaunchCommands {
+                    commands: BTreeMap::from([(plugin_id.clone(), "new-cmd".to_owned())]),
+                }),
+                ..Default::default()
+            })
+            .expect("patch");
+
+        assert_eq!(after.ai_launch_commands.commands.get(&plugin_id).map(String::as_str), Some("new-cmd"));
+        assert!(
+            !after.ai_launch_commands.icon_data_uris.contains_key(&plugin_id),
+            "changed command must invalidate cached icon for re-resolution",
+        );
     }
 
     #[test]
