@@ -41,7 +41,7 @@ describe('PluginRegistryProvider / useRegistry', () => {
         <RegistryProbe />
       </PluginRegistryProvider>,
     );
-    expect(screen.getByTestId('probe')).toHaveTextContent('ai=2;widgets=0');
+    expect(screen.getByTestId('probe')).toHaveTextContent('ai=2;widgets=2');
   });
 
   it('throws a helpful error when useRegistry() is called outside a provider', () => {
