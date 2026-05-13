@@ -352,8 +352,10 @@ describe('App workspace-switch overlay', () => {
     act(() => {
       useWorkspaceSwitchUiStore.setState({ isSwitching: true });
     });
-    const overlay = screen.getByTestId('workspace-switch-overlay');
-    expect(document.activeElement).toBe(overlay);
+    const overlay = await screen.findByTestId('workspace-switch-overlay');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(overlay);
+    });
 
     // Simulate focus escaping to an outside element (the underlying
     // root being `inert` should normally prevent this; this asserts
@@ -365,7 +367,9 @@ describe('App workspace-switch overlay', () => {
       escapee.focus();
     });
 
-    expect(document.activeElement).toBe(overlay);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(overlay);
+    });
     document.body.removeChild(escapee);
   });
 
