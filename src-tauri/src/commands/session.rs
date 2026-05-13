@@ -1298,20 +1298,15 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         // pre-allocated by Arborist at create/restart time.
         let mut session_to_spawn = session.clone();
         if let Some(aid) = session.ai_session_id.as_deref() {
-            let should_splice = if crate::plugins::ai::resume_requires_preflight(session.tool) {
-                let exists = ai_session_transcript_exists(session.tool, &session.worktree_path, aid);
-                if !exists {
-                    warn!(
-                        session_id = %id,
-                        ai_session_id = %aid,
-                        "restore: AI session transcript missing on disk; starting fresh conversation",
-                    );
-                    let _ = store.update_session_ai_session_id(&id, None);
-                }
-                exists
-            } else {
-                true
-            };
+            let should_splice = ai_session_transcript_exists(session.tool, &session.worktree_path, aid);
+            if !should_splice {
+                warn!(
+                    session_id = %id,
+                    ai_session_id = %aid,
+                    "restore: AI session transcript missing on disk; starting fresh conversation",
+                );
+                let _ = store.update_session_ai_session_id(&id, None);
+            }
             if should_splice {
                 session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, aid);
             }

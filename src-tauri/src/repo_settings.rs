@@ -196,7 +196,8 @@ impl RepoSettings {
         }
         if let Some(ai) = &self.ai_launch_commands {
             for (plugin_id, command) in &ai.commands {
-                if cfg.ai_launch_commands.commands.get(plugin_id) != Some(command) {
+                let command_changed = cfg.ai_launch_commands.command_for_id(plugin_id) != command;
+                if command_changed {
                     cfg.ai_launch_commands.icon_data_uris.remove(plugin_id);
                 }
                 cfg.ai_launch_commands.commands.insert(plugin_id.clone(), command.clone());
@@ -401,6 +402,26 @@ mod tests {
         let repo = RepoSettings {
             ai_launch_commands: Some(RepoAiLaunchCommands {
                 commands: BTreeMap::from([("claude".to_owned(), "same".to_owned())]),
+            }),
+            ..RepoSettings::default()
+        };
+        repo.apply_to(&mut cfg);
+        assert_eq!(
+            cfg.ai_launch_commands.icon_data_uris.get("claude").and_then(Option::as_deref),
+            Some("data:image/png;base64,KEEP")
+        );
+    }
+
+    #[test]
+    fn apply_to_keeps_icon_cache_when_repo_command_is_explicit_default() {
+        let mut cfg = AppConfig::default();
+        cfg.ai_launch_commands
+            .icon_data_uris
+            .insert("claude".to_owned(), Some("data:image/png;base64,KEEP".to_owned()));
+
+        let repo = RepoSettings {
+            ai_launch_commands: Some(RepoAiLaunchCommands {
+                commands: BTreeMap::from([("claude".to_owned(), String::new())]),
             }),
             ..RepoSettings::default()
         };
