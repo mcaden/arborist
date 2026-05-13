@@ -15,8 +15,8 @@
 //
 // Frontend plugin capabilities are kind-driven. Custom-process plugins expose
 // matching/platform predicates only (no UI contract), while dashboard widgets
-// carry a React `Component`. The production frontend registry may therefore be
-// empty for kinds that have no UI surface yet.
+// carry a React `Component`. The production app builds its registry via
+// `createBuiltinsRegistry()` (`src/plugins/builtins.ts`).
 
 import type { ComponentType } from 'react';
 
@@ -58,14 +58,12 @@ export interface CustomProcessPlugin extends Plugin {
 export interface DashboardWidgetPlugin extends Plugin {
   /**
    * Lower value renders first. Ties are broken by registration order.
-   * Issue #98 populates this with the seed widgets (`git-status`,
-   * `ai-usage`).
+   * Built-ins currently use this for `git-status` and `ai-usage`.
    */
   order: number;
   /**
    * React component rendered inside `WorktreeDashboard`. Receives the
-   * worktree tab's id and path. v1 declares the prop shape only; #98
-   * supplies the actual components.
+   * worktree tab's id and path.
    */
   Component: ComponentType<DashboardWidgetProps>;
 }

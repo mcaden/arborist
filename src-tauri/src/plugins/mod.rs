@@ -6,8 +6,9 @@
 //! * **Custom-Process plugins** ([`custom_process::CustomProcessPlugin`]) — VS Code / Windows Explorer today; future browser launchers, ssh helpers, etc.
 //! * **Dashboard-widget plugins** ([`dashboard_widget::DashboardWidgetBackend`]) — Git Status / AI Usage today.
 //!
-//! The registry is populated at startup with built-in custom-process plugins (issue #97: VS Code + Windows Explorer). AI and dashboard-widget
-//! migrations remain deferred to sub-issues #96 and #98.
+//! The registry is append-only and populated with built-ins in [`build_registry`].
+//! Today that includes custom-process plugins (issue #97: VS Code + Windows Explorer) and dashboard widgets (issue #98: Git Status + AI Usage).
+//! AI plugin migrations remain deferred to sub-issue #96.
 //!
 //! ## Design constraints (kept open for out-of-tree plugins later — see #93)
 //!
@@ -174,19 +175,19 @@ impl PluginRegistry {
 
 /// Construct the production plugin registry.
 ///
-/// This is the single seam sub-issues #96 / #98 extend for future plugin additions. Issue #97 registers built-in custom-process plugins here so
-/// subsession spawn can delegate owner-resolver selection to the plugin registry.
+/// This is the single seam sub-issue #96 extends for future plugin additions. Issue #97 custom-process plugins and issue #98 dashboard widgets are
+/// both wired here so spawn routing and dashboard backend capability checks stay centralized.
 ///
 /// Returns a [`RegisterError`] if two built-in plugins of the same kind ever share an id — that would be a programming error caught immediately
 /// at startup rather than papered over with `expect()`.
 pub fn build_registry() -> Result<PluginRegistry, RegisterError> {
     let mut reg = PluginRegistry::new();
-    // Sub-issue #96: reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
-    // Sub-issue #96: reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
     reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
     reg.register_custom_process(Arc::new(custom_process::explorer::ExplorerPlugin))?;
-    // Sub-issue #98: reg.register_widget(Arc::new(dashboard_widget::git_status::GitStatusPlugin))?;
-    // Sub-issue #98: reg.register_widget(Arc::new(dashboard_widget::ai_usage::AiUsagePlugin))?;
+    reg.register_widget(Arc::new(dashboard_widget::git_status::GitStatusBackend))?;
+    reg.register_widget(Arc::new(dashboard_widget::ai_usage::AiUsageBackend))?;
+    // Sub-issue #96: reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
+    // Sub-issue #96: reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
     Ok(reg)
 }
 
@@ -404,12 +405,25 @@ mod tests {
     }
 
     #[test]
-    fn build_registry_registers_builtin_custom_process_plugins() {
+    fn build_registry_registers_builtin_plugins() {
         let reg = build_registry().expect("build_registry must not collide on duplicate ids");
         assert!(reg.ai().is_empty());
-        assert!(reg.widgets().is_empty());
-        let ids: Vec<&str> = reg.custom_processes().iter().map(|p| p.id()).collect();
-        assert_eq!(ids, vec!["vscode", "explorer"]);
+        let custom_process_ids: Vec<&str> = reg.custom_processes().iter().map(|p| p.id()).collect();
+        assert_eq!(custom_process_ids, vec!["vscode", "explorer"]);
+        let widget_ids: Vec<&str> = reg.widgets().iter().map(|w| w.id()).collect();
+        assert_eq!(widget_ids, vec!["git-status", "ai-usage"]);
+        let git_status = reg
+            .widgets()
+            .iter()
+            .find(|w| w.id() == "git-status")
+            .expect("git-status backend must be registered");
+        assert_eq!(git_status.required_commands(), &["worktree_git_status"]);
+        let ai_usage = reg
+            .widgets()
+            .iter()
+            .find(|w| w.id() == "ai-usage")
+            .expect("ai-usage backend must be registered");
+        assert!(ai_usage.required_commands().is_empty());
     }
 
     #[test]

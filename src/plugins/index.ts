@@ -9,3 +9,4 @@
 export * from './registry';
 export { PluginRegistryProvider } from './registry-provider';
 export { useRegistry } from './use-registry';
+export { createBuiltinsRegistry } from './builtins';

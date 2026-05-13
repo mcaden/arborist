@@ -39,10 +39,14 @@ vi.mock('@xterm/addon-fit', () => ({
     Object.assign(this, { fit: vi.fn(), dispose: vi.fn() });
   }),
 }));
+vi.mock('./WorktreeDashboard', () => ({
+  WorktreeDashboard: (): JSX.Element => <div data-testid="worktree-dashboard" />,
+}));
 
 import { MainArea } from './MainArea';
 import { __resetTerminalRegistryForTests } from '@/hooks/use-terminal';
 import { resetBridgeMocks } from '@/lib/tauri-bridge.mock';
+import { createBuiltinsRegistry, PluginRegistryProvider } from '@/plugins';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -85,6 +89,14 @@ function seedWorktreeTabs(sessions: SessionView[], activeId: string | undefined)
   });
 }
 
+function renderMainArea(registry = createBuiltinsRegistry()): ReturnType<typeof render> {
+  return render(
+    <PluginRegistryProvider registry={registry}>
+      <MainArea />
+    </PluginRegistryProvider>,
+  );
+}
+
 beforeEach(() => {
   resetBridgeMocks();
   mockTerminals.length = 0;
@@ -107,7 +119,7 @@ afterEach(() => {
 
 describe('MainArea', () => {
   it('renders empty state when no sessions exist', () => {
-    render(<MainArea />);
+    renderMainArea();
     expect(screen.getByText(/no session selected/i)).toBeInTheDocument();
   });
 
@@ -116,7 +128,7 @@ describe('MainArea', () => {
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
     seedWorktreeTabs(sessions, 's1');
 
-    render(<MainArea />);
+    renderMainArea();
 
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels).toHaveLength(2);
@@ -132,7 +144,8 @@ describe('MainArea', () => {
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
     seedWorktreeTabs(sessions, 's1');
 
-    const { rerender } = render(<MainArea />);
+    const registry = createBuiltinsRegistry();
+    const { rerender } = renderMainArea(registry);
     expect(mockTerminals).toHaveLength(2);
     const initialDisposeCalls = mockTerminals.map((t) => t.dispose.mock.calls.length);
 
@@ -140,7 +153,11 @@ describe('MainArea', () => {
       useSessionStore.setState({ activeId: 's2' });
       seedWorktreeTabs(sessions, 's2');
     });
-    rerender(<MainArea />);
+    rerender(
+      <PluginRegistryProvider registry={registry}>
+        <MainArea />
+      </PluginRegistryProvider>,
+    );
 
     expect(mockTerminals).toHaveLength(2);
     expect(mockTerminals[0]!.dispose.mock.calls.length).toBe(initialDisposeCalls[0]);
@@ -152,7 +169,7 @@ describe('MainArea', () => {
     useSessionStore.setState({ sessions, activeId: 's1', isHydrated: true });
     seedWorktreeTabs(sessions, 's1');
 
-    render(<MainArea />);
+    renderMainArea();
     expect(mockTerminals).toHaveLength(2);
 
     act(() => {
@@ -189,7 +206,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     expect(mockTerminals).toHaveLength(3);
   });
@@ -208,7 +225,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels).toHaveLength(2);
@@ -232,7 +249,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels).toHaveLength(1);
@@ -248,7 +265,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
@@ -269,7 +286,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
@@ -285,7 +302,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
@@ -301,7 +318,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     expect(screen.getByTestId('worktree-dashboard')).toBeInTheDocument();
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
@@ -313,7 +330,7 @@ describe('MainArea', () => {
     useSessionStore.setState({ sessions, activeId: 's2', isHydrated: true });
     useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
 
-    render(<MainArea />);
+    renderMainArea();
 
     expect(screen.queryByTestId('worktree-dashboard')).not.toBeInTheDocument();
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
@@ -337,7 +354,7 @@ describe('MainArea', () => {
       isHydrated: true,
     });
 
-    render(<MainArea />);
+    renderMainArea();
 
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels).toHaveLength(3);
