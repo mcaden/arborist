@@ -11,7 +11,7 @@ export const workspaceSwitchResultFixture = {
   workspaceRoot: '/tmp/repo',
   noOp: false,
   config: {
-    configVersion: 4,
+    configVersion: 9,
     defaultInstructionSets: {
       claude: 'claude-default',
       copilot: 'copilot-default',

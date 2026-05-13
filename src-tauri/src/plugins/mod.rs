@@ -181,8 +181,9 @@ impl PluginRegistry {
 /// at startup rather than papered over with `expect()`.
 pub fn build_registry() -> Result<PluginRegistry, RegisterError> {
     let mut reg = PluginRegistry::new();
-    reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
-    reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
+    for builtin in ai::BUILTIN_AI {
+        reg.register_ai((builtin.factory)())?;
+    }
     reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
     reg.register_custom_process(Arc::new(custom_process::explorer::ExplorerPlugin))?;
     reg.register_widget(Arc::new(dashboard_widget::git_status::GitStatusBackend))?;

@@ -21,8 +21,6 @@
 import type { ComponentType } from 'react';
 
 import type { CustomProcessDef, WorktreeTabId } from '@/types/arborist';
-import { ClaudeAiPlugin } from './ai/claude';
-import { CopilotAiPlugin } from './ai/copilot';
 
 // MIRROR: src-tauri/src/plugins/mod.rs::Plugin
 export interface Plugin {
@@ -170,12 +168,4 @@ export function createRegistry(): PluginRegistry {
     // Array.prototype.sort is stable since ES2019, so equal `order` values retain registration order.
     widgets: () => widgets.slice().sort((a, b) => a.order - b.order),
   };
-}
-
-/** Construct the production registry with built-in plugins registered. */
-export function createBuiltinRegistry(): PluginRegistry {
-  const registry = createRegistry();
-  registry.registerAi(ClaudeAiPlugin);
-  registry.registerAi(CopilotAiPlugin);
-  return registry;
 }

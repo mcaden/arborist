@@ -187,7 +187,7 @@ impl RepoSettings {
     /// Apply `self` on top of `cfg`. Fields present in `self` overwrite the
     /// corresponding fields on `cfg`; unset fields leave `cfg` untouched.
     ///
-    /// `aiLaunchCommands.commands[pluginId]` cached icon URIs are preserved on
+    /// `aiLaunchCommands.icon_data_uris[pluginId]` cached icon URIs are preserved on
     /// the user-level `cfg` whenever the repo override does not change the
     /// command string — keeping the icon resolution work-cache valid across repo overlays.
     pub fn apply_to(&self, cfg: &mut AppConfig) {

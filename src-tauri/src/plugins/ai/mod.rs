@@ -5,6 +5,7 @@
 //! `plugins/ai/*` do not branch on `Tool::{Claude,Copilot}` directly.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -55,9 +56,19 @@ pub struct SpawnPrep {
 
 /// Built-in AI plugin descriptor used by dispatch sites that need both the
 /// persisted [`Tool`] discriminator and its plugin metadata.
+#[derive(Clone, Copy)]
 pub struct BuiltinAi {
     pub tool: Tool,
     pub plugin: &'static dyn AiPlugin,
+    pub factory: fn() -> Arc<dyn AiPlugin>,
+}
+
+fn claude_factory() -> Arc<dyn AiPlugin> {
+    Arc::new(claude::ClaudePlugin)
+}
+
+fn copilot_factory() -> Arc<dyn AiPlugin> {
+    Arc::new(copilot::CopilotPlugin)
 }
 
 /// Built-in AI plugins in stable registration order.
@@ -65,10 +76,12 @@ pub const BUILTIN_AI: [BuiltinAi; 2] = [
     BuiltinAi {
         tool: Tool::Claude,
         plugin: &claude::PLUGIN,
+        factory: claude_factory,
     },
     BuiltinAi {
         tool: Tool::Copilot,
         plugin: &copilot::PLUGIN,
+        factory: copilot_factory,
     },
 ];
 
