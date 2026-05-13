@@ -2,12 +2,17 @@
 
 ## Repository status
 
-This repo currently contains **only design documents** — no source code, build, lint, or test tooling exists yet. The authoritative specs live in:
+This repo contains the full Arborist Tauri + React codebase. The active docs live under `docs/`:
 
-- `dev/docs/SPEC.md` — product requirements (functional + non-functional)
-- `dev/docs/DESIGN.md` — architecture, data model, command/event API, directory layout
+- `docs/product.md` — product requirements, scope, and non-functional expectations.
+- `docs/architecture.md` — architecture, data model, command/event API, module map, and invariants.
+- `docs/runtime-flows.md` — boot, restore, workspace switch, session, worktree, prep, and sub-session flows.
+- `docs/configuration.md` — config/store layout and migration/quarantine behavior.
+- `docs/worktrees.md` — workspace root and `.arborist/.worktrees/` rules.
+- `docs/development.md` and `docs/testing.md` — development workflows.
+- `CONTRIBUTING.md` — public contributor workflow.
 
-Read both before proposing implementation work. When the codebase is scaffolded, update this file with real build/test/lint commands.
+Read the relevant docs before proposing structural changes. If code behavior changes, update the matching docs in the same PR.
 
 This repo has a remote at `origin` -> `https://github.com/mcaden/arborist.git`. Agents may commit, push feature branches, and open pull requests. Do not push directly to `main` and do not force-push shared branches; land changes through PRs.
 
@@ -31,23 +36,23 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 
 A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git worktree, in a sidebar of vertical tabs with a single visible PTY terminal in the main area.
 
-## Stack (per DESIGN.md §1)
+## Stack (see `docs/architecture.md`)
 
 - **Shell**: Tauri v2 (Rust backend, OS WebView frontend) — *not* Electron
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS, Zustand, xterm.js
 - **Backend**: Rust, `portable-pty` for cross-platform PTY (ConPTY on Windows), custom JSON persistence via `config_store.rs`
-- **Layout**: `src/` (frontend), `src-tauri/` (Rust), `instructions/` (default instruction set files), `dev/docs/` (specs)
+- **Layout**: `src/` (frontend), `src-tauri/` (Rust), `crates/arborist-types/` (wire types), `instructions/` (default instruction templates), `docs/` (project docs)
 
-## Architectural conventions (read DESIGN.md before changing)
+## Architectural conventions (read `docs/architecture.md` and `docs/runtime-flows.md` before changing)
 
-- **One PTY per session, lives in Rust.** xterm.js Terminal instances live in the frontend; only the active session's terminal is attached to the DOM, but all PTYs keep running in the backend (SPEC T-03).
-- **Frontend ↔ backend = Tauri commands + events only.** No direct Rust access from the WebView. Every command must be declared in `src-tauri/capabilities/main.json`. Canonical command/event list is in DESIGN.md §6 — keep it in sync if you add or rename one.
-- **Session shell invocation is composed once and stored.** `Session.composedCommand = [...prelaunchCmds, cliCmd].join(' && ')`. It is reused verbatim for restart (SPEC L-03, DESIGN §5.4) and restore-on-launch (DESIGN §5.5). Don't recompose at restart time.
-- **Worktree path is passed as `cwd` to `portable-pty`, never interpolated into the command string** (DESIGN §8 — injection prevention). Same rule for any user-supplied path.
-- **Platform shell selection**: macOS/Linux → `$SHELL -c <cmd>`; Windows → `%COMSPEC% /c <cmd>` (DESIGN §5.1 step 2).
-- **Duplicate session labels get a numeric suffix** (`"my-feature 2"`, `"my-feature 3"`) — see SPEC C-05 / DESIGN §5.1 step 1.
+- **One PTY per session, lives in Rust.** xterm.js Terminal instances live in the frontend; only the active session's terminal is attached to the DOM, but all PTYs keep running in the backend.
+- **Frontend to backend = Tauri commands + events only.** No direct Rust access from the WebView. Every command must be declared in `src-tauri/capabilities/main.json`. Keep the canonical command/event table in `docs/architecture.md#command-and-event-contract` in sync when you add or rename one.
+- **Session shell invocation is composed once and stored.** `Session.composedCommand` is reused verbatim for restart and restore. Don't recompose at restart time.
+- **Worktree path is passed as `cwd` to `portable-pty`, never interpolated into the command string.** Same rule for any user-supplied path.
+- **Platform shell selection**: macOS/Linux -> `$SHELL -c <cmd>`; Windows -> `%COMSPEC% /c <cmd>`.
+- **Duplicate session labels get a numeric suffix** (`"my-feature 2"`, `"my-feature 3"`).
 
-## Tool-specific CLI launch rules (DESIGN §5.6 — easy to get wrong)
+## Tool-specific CLI launch rules (see `docs/architecture.md` and `docs/runtime-flows.md`)
 
 | | Claude | Copilot |
 |---|---|---|
@@ -58,17 +63,17 @@ A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude 
 
 ## Data model
 
-Defined in Rust with `serde`, mirrored as TypeScript types in the frontend. Three records: `Session`, `InstructionSet`, `AppConfig` — exact shapes in DESIGN.md §3. Keep Rust and TS definitions in lockstep when modifying.
+Defined in Rust with `serde` in `crates/arborist-types/src/lib.rs`, mirrored as TypeScript types in `src/types/arborist.ts`. Keep Rust and TS definitions in lockstep when modifying.
 
 ## Persistence rules
 
 - All persistent state goes through the Rust `ConfigStore` (`AppConfig` + session records).
 - `lastOpenSessions` and `tabOrder` drive restore-on-launch — update them on session create/close/reorder/focus.
-- The app **must not** store credentials (SPEC NF-05). Auth is delegated to the CLI tools.
+- The app **must not** store credentials. Auth is delegated to the CLI tools.
 
 ## Out of scope for v1 (don't implement)
 
-Built-in chat UI, remote/SSH worktrees, plugin system, multi-window, in-app instruction-file editor (SPEC §7).
+Built-in chat UI, remote/SSH worktrees, public plugin marketplace, multi-window, and in-app instruction-file editing are out of scope for v1.
 
 ---
 
@@ -78,8 +83,8 @@ These are the patterns to follow when writing code in this repo. They are opinio
 
 ## Cross-cutting
 
-- **Spec is the source of truth.** SPEC/DESIGN trump folklore. If code disagrees with the spec, fix the code or update the spec in the same change — never let them silently drift.
-- **Single source of truth for the API surface.** The command/event tables in DESIGN.md §6 are authoritative. When you add, rename, or change a command/event: (1) update DESIGN.md §6, (2) update the Rust `#[tauri::command]` handler, (3) update `src-tauri/capabilities/main.json`, (4) update the typed wrapper in `src/lib/tauri-bridge.ts`, (5) update mirrored TS types. All five in the same PR.
+- **Product and architecture docs are the source of truth.** If code disagrees with `docs/product.md` or `docs/architecture.md`, fix the code or update the docs in the same change — never let them silently drift.
+- **Single source of truth for the API surface.** The command/event table in `docs/architecture.md#command-and-event-contract` is authoritative. When you add, rename, or change a command/event: update the docs, Rust `#[tauri::command]` handler, `tauri::generate_handler![...]`, `src-tauri/capabilities/main.json`, permission file, typed bridge wrapper, bridge mock, and mirrored TS types in the same PR.
 - **No `any`, no `unwrap()` on the happy path.** TS `any` and Rust `.unwrap()`/`.expect()` are code smells outside of tests and truly-infallible invariants. Prefer `Result`/typed errors and exhaustive matching.
 - **Fail loud at boundaries, recover gracefully inside.** Validate inputs at the Tauri command boundary; once past it, types should make invalid states unrepresentable.
 
@@ -98,7 +103,7 @@ These are the patterns to follow when writing code in this repo. They are opinio
 ## Rust (src-tauri/)
 
 ### Module layout
-Match DESIGN.md §7. One concern per file (`pty_pool.rs`, `config_store.rs`, `commands.rs`, `types.rs`). `commands.rs` is a *thin* layer — it deserializes args, calls into the relevant module, maps errors. No business logic in command handlers.
+Match `docs/architecture.md#backend-modules`. One concern per file. `commands/mod.rs` is a thin layer — it deserializes args, calls into the relevant module, maps errors. No business logic in command handlers.
 
 ### Error handling
 - Define a crate-wide `Error` enum with `thiserror`; convert to a `serde`-friendly shape at the Tauri boundary (commands return `Result<T, AppError>` where `AppError: serde::Serialize`).
@@ -113,7 +118,7 @@ Match DESIGN.md §7. One concern per file (`pty_pool.rs`, `config_store.rs`, `co
 
 ### Tauri commands
 - Always `async fn` even if the body is sync — keeps the signature uniform and lets you add `.await`s later without churn.
-- Payload structs live in `types.rs`, `#[derive(Deserialize)]`, `#[serde(rename_all = "camelCase")]` to match the TS side.
+- Payload structs live in `crates/arborist-types/src/lib.rs`, `#[derive(Deserialize)]`, `#[serde(rename_all = "camelCase")]` to match the TS side.
 - Return types are owned (`Session`, not `&Session`) — Tauri serializes them.
 - Every new command requires a corresponding entry in `capabilities/main.json`. Missing capability = silent failure in production builds.
 
@@ -122,7 +127,7 @@ Match DESIGN.md §7. One concern per file (`pty_pool.rs`, `config_store.rs`, `co
 - Payloads are always structs with named fields, never bare strings/tuples — gives us forward compatibility.
 
 ### Types & serde
-- One canonical definition per type in `types.rs`. Use `#[serde(rename_all = "camelCase")]` so Rust uses snake_case and the wire/TS uses camelCase.
+- One canonical Rust definition per wire type in `crates/arborist-types/src/lib.rs`. Use `#[serde(rename_all = "camelCase")]` so Rust uses snake_case and the wire/TS uses camelCase.
 - Newtype wrappers for IDs (`SessionId(Uuid)`, `InstructionSetId(String)`) — prevents passing the wrong ID into the wrong function.
 
 ### Testing
@@ -158,7 +163,7 @@ Rust-specific principles (procedural detail — test layout, fixtures, virtual-t
 - Event listeners return the unlisten function — callers must call it on cleanup. Hooks that subscribe MUST unsubscribe in their effect cleanup.
 
 ### xterm.js lifecycle (`use-terminal` hook)
-- Terminal instances are created once per session and **persist for the session's lifetime** — do not recreate on tab switch (SPEC T-03).
+- Terminal instances are created once per session and **persist for the session's lifetime** — do not recreate on tab switch.
 - Attach/detach via `term.open(el)` / removing the parent node; the `Terminal` object survives detachment.
 - Use a `ResizeObserver` on the container, debounce to ~50ms, then call `fitAddon.fit()` and emit `session_resize`.
 - Bind PTY data with `onData` → `session_input`; subscribe to `session://output` → `term.write`. Filter events by `sessionId` in the listener.
@@ -182,7 +187,7 @@ Frontend-specific principles (procedural detail in the `quality-workflow-gate` s
 
 ## Cross-boundary contracts
 
-- **Type parity is enforced manually until we automate it.** Whenever you change a Rust struct in `types.rs`, update the matching TS interface in the same commit. Add a comment `// MIRROR: src-tauri/src/types.rs::Session` on the TS side.
+- **Type parity is enforced manually until we automate it.** Whenever you change a Rust struct in `crates/arborist-types/src/lib.rs`, update the matching TS interface in the same commit. Add a `// MIRROR:` comment on the TS side.
 - **Async cancellation:** if the frontend navigates away from an in-flight operation, it must still tolerate the eventual response. Never assume the component is still mounted in a `.then()`.
 - **Event ordering is not guaranteed across event names.** Within a single event name (e.g., `session://output`), Tauri preserves order per emitter. Don't rely on cross-stream ordering (status vs. output) — design state machines that are robust to either arriving first.
 
@@ -215,15 +220,15 @@ A change is mergeable when **all** of these hold:
 3. No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()`, `console.log`, or `dbg!()` added without justification in a code comment.
 4. If a Rust struct in `types.rs` changed, its TS mirror changed in the same commit.
 
-## Common pitfalls (learned from the spec — don't repeat)
+## Common pitfalls (don't repeat)
 
-- Recomposing the shell command at restart instead of reusing `Session.composedCommand`. **Don't.** (DESIGN §5.4)
-- Interpolating `worktreePath` into the command string. **Don't** — pass as `cwd`. (DESIGN §8)
-- Passing `--instructions` to `copilot`. **Don't** — it disables auto-discovery of `.github/copilot-instructions.md`. (DESIGN §5.6)
-- Destroying the xterm Terminal on tab switch. **Don't** — detach from DOM, keep the instance. (SPEC T-03)
+- Recomposing the shell command at restart instead of reusing `Session.composedCommand`. **Don't.**
+- Interpolating `worktreePath` into the command string. **Don't** — pass as `cwd`.
+- Passing `--instructions` to `copilot`. **Don't** — it disables auto-discovery of `.github/copilot-instructions.md`.
+- Destroying the xterm Terminal on tab switch. **Don't** — detach from DOM, keep the instance.
 - Forgetting to add a new command to `capabilities/main.json` — the call will be rejected at runtime with no compile-time warning.
 - Holding a `Mutex` guard across `.await` — deadlocks under load.
-- Storing credentials anywhere — auth is the CLI tool's job. (SPEC NF-05)
-- Accepting a linked git worktree as a workspace root. **Don't** — a workspace root must be a primary clone (`<root>/.git` is a *directory*). Linked worktrees have `.git` as a *file* containing `gitdir: …` and cannot host their own worktrees, so binding one breaks every session-creation flow downstream. Both `crate::boot::validate_repo_root` and `crate::commands::workspace_validate_impl` enforce this — keep the two in sync. (See `WORKTREES.md` and DESIGN §6 `workspace_validate`.)
+- Storing credentials anywhere — auth is the CLI tool's job.
+- Accepting a linked git worktree as a workspace root. **Don't** — a workspace root must be a primary clone (`<root>/.git` is a *directory*). Linked worktrees have `.git` as a *file* containing `gitdir: ...` and cannot host their own worktrees, so binding one breaks every session-creation flow downstream. Both `crate::boot::validate_repo_root` and `crate::commands::workspace_validate_impl` enforce this — keep the two in sync. See `docs/worktrees.md` and `workspace_validate` in `docs/architecture.md#command-and-event-contract`.
 - Killing the host `arborist` process or its dev-server parents to "clean up" or break a target lock — see "Dogfooding safety". A previous agent crashed the user's editor doing this.
 - Putting test-only `[[bin]]` source files in `src-tauri/src/bin/`. **Don't** — Tauri's CLI does an unconditional `read_dir` of `src/bin/` and adds every file there to the bundle binary list using the file basename as the name, ignoring the matching `[[bin]]`'s `required-features = ["test-helpers"]` filter. The result is a `tauri build` that tries to copy a binary that wasn't built (the underscore-named file basename, not the hyphen-named `[[bin]] name`) and fails. Keep test-helper sources under `src-tauri/src/test_bin/` and point the `[[bin]] path` there. See the comment block on the test-helper `[[bin]]` entries in `src-tauri/Cargo.toml`.

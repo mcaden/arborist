@@ -1420,7 +1420,7 @@ describe('wake/visibility/DPI refit', () => {
   it('survives a workspace-switch orphan window: parked active session, then new active', () => {
     // Pins the workspace-switch-safety contract for wake-refit.
     //
-    // During `workspace_switch` (DESIGN.md §5.5c) the backend parks every
+    // During `workspace_switch` (see docs/runtime-flows.md#workspace-switch) the backend parks every
     // session in the outgoing workspace (kills the PTY, preserves the
     // record), and the frontend's session-store subscription disposes
     // each terminal entry as its session id leaves the store.

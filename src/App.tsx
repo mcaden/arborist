@@ -9,7 +9,7 @@
 //   3. `initTerminalRouter()` — attach the global `session://output` router.
 //   4. `subscribeToStatus()` — attach the global `session://status` router.
 //   5. `frontendReady()` — tell the backend listeners are live; backend then
-//      kicks off `restore_all_sessions` asynchronously (DESIGN §5.5).
+//      kicks off `restore_all_sessions` asynchronously (see docs/runtime-flows.md#boot-and-restore).
 //
 // In-app workspace switches are handled entirely by
 // `lib/workspace-switch.ts::changeWorkspace`: the backend now runs the
@@ -263,7 +263,7 @@ function ReadyApp(): JSX.Element {
 // Split out so the focus-management `useEffect` only mounts under the
 // `workspaceRoot` branch (the picker branch returns early above and
 // must not register the trap). Two layers gate input while a
-// transactional workspace switch is in flight (see DESIGN §5.5c —
+// transactional workspace switch is in flight (see docs/runtime-flows.md#workspace-switch -
 // inputs received mid-switch would land against ambiguous state):
 //
 // 1. The underlying app root gets `aria-busy` and `inert`. `inert`

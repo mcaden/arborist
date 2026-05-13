@@ -51,7 +51,7 @@ import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
  * "no workspace" flash. While `isSwitching` is true, `App.tsx`
  * overlays the UI with a "Switching workspace…" panel and sets
  * `aria-busy` + `inert` on the root so click / keyboard input can't
- * reach stale tabs (see DESIGN §5.5c — switches are transactional and
+ * reach stale tabs (see docs/runtime-flows.md#workspace-switch — switches are transactional and
  * inputs received during the switch would be against ambiguous
  * state).
  *
@@ -70,7 +70,7 @@ import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
  * settings dialog) keeps the user on the previous workspace because
  * the backend is fully transactional: on failure no swap occurs, so
  * the in-memory state is already consistent. (Park itself is
- * best-effort and never aborts the switch — see DESIGN §5.5c
+ * best-effort and never aborts the switch — see docs/runtime-flows.md#workspace-switch
  * step 7.)
  */
 export async function changeWorkspace(path: string): Promise<void> {

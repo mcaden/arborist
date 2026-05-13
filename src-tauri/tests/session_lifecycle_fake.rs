@@ -582,7 +582,7 @@ async fn lifecycle_handlers_refuse_while_switch_write_held() {
 
 /// `session_resize_impl` is the one gated handler that does **not** surface `WorkspaceSwitchInProgress` to the UI — it returns `Ok(())` silently and
 /// lets the next `ResizeObserver` event correct dimensions after the switch completes. Without this contract a flurry of resizes during a switch
-/// would spam error toasts (see PR4 design note in DESIGN §5.5c).
+/// would spam error toasts (see docs/runtime-flows.md#workspace-switch).
 #[tokio::test]
 async fn resize_silently_skips_while_switch_write_held() {
     let h = build_harness();
@@ -1260,7 +1260,7 @@ async fn restore_does_not_rewrite_config_when_no_orphans_present() {
 
 fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
     // The shared harness seeds a Claude-only instruction set on disk, so for Copilot we pass None — Copilot doesn't accept --instructions anyway
-    // (DESIGN §5.6: it auto-discovers `.github/copilot-instructions.md` from cwd).
+    // (Copilot auto-discovers `.github/copilot-instructions.md` from cwd).
     let instruction_set_id = match tool {
         Tool::Claude => Some(h.instruction_id.clone()),
         Tool::Copilot => None,
@@ -1294,7 +1294,7 @@ async fn session_create_preallocates_ai_session_id_for_copilot() {
         .expect("Copilot create must pre-allocate ai_session_id");
     assert!(uuid::Uuid::parse_str(aid).is_ok(), "pre-allocated id should be a uuid; got {aid:?}",);
 
-    // composed_command itself stays bare (DESIGN §5.4 — persisted record is immutable). The splice happens on a clone at spawn time only.
+    // composed_command itself stays bare; the persisted record is immutable. The splice happens on a clone at spawn time only.
     assert!(
         !persisted.composed_command.contains("--resume"),
         "persisted composed_command must stay bare; got {:?}",
