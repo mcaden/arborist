@@ -135,7 +135,7 @@ export interface DefaultInstructionSets {
 export interface AiLaunchCommands {
   /** plugin id -> command override (empty string = plugin default program) */
   commands: Record<string, string>;
-  /** plugin id -> cached launcher icon data URI (or null when unresolved) */
+  /** plugin id -> cached launcher icon data URI; unresolved plugins may be missing, and present entries may be null. */
   iconDataUris: Record<string, string | null>;
 }
 

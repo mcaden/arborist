@@ -148,7 +148,7 @@ interface AppConfig {
   worktreePrepCommands: string[]; // One-shot prep commands run once when a worktree is created (issue #63)
   aiLaunchCommands: {
     commands: Record<string, string>; // Per-plugin CLI override; empty string = plugin default
-    iconDataUris: Record<string, string | null>; // Cached launcher icons (machine-local)
+    iconDataUris: Record<string, string | null>; // Sparse cache: unresolved plugins may be absent; present values are data URI or null
   };
   lastOpenSessions: string[]; // Session IDs to restore on next launch
   tabOrder: string[]; // Session IDs in sidebar display order

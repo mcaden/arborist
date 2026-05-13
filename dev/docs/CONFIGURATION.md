@@ -139,9 +139,11 @@ Field notes:
   `copilot` for built-ins, resolved via `PATH`). A non-empty value replaces the
   program token at compose time and is **not** shell-quoted, so use a quoted
   absolute path if the value contains spaces.
-- `aiLaunchCommands.iconDataUris` — backend-managed cache of executable icons
-  (`plugin-id -> data URI | null`). This field is machine-local and updated by
-  backend icon backfill when launch commands change.
+- `aiLaunchCommands.iconDataUris` — backend-managed cache of executable icons.
+  This map is sparse: unresolved plugins may be absent entirely; present values
+  are `data URI | null` (`null` is reserved for explicit cached misses). This
+  field is machine-local and updated by backend icon backfill when launch
+  commands change.
 - `lastOpenSessions` / `tabOrder` — managed by Arborist; you can leave them
   empty when bootstrapping.
 
