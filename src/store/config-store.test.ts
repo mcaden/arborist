@@ -11,7 +11,7 @@ import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 import { useConfigStore } from './config-store';
 
 const SAMPLE: AppConfig = {
-  configVersion: 4,
+  configVersion: 9,
   defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
   instructionSetsDir: '/cfg/instr',
   workspaceRoot: null,
@@ -31,7 +31,7 @@ const SAMPLE: AppConfig = {
 function resetStore(): void {
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 9,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,

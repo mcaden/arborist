@@ -19,7 +19,7 @@ function seedConfig(
 ): void {
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 9,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: overrides.instructionSetsDir ?? '/cfg/instr',
       workspaceRoot: overrides.workspaceRoot ?? '/work',
@@ -58,7 +58,7 @@ afterEach(() => {
   // Reset config store between tests by re-seeding the empty default.
   useConfigStore.setState({
     config: {
-      configVersion: 4,
+      configVersion: 9,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
