@@ -153,9 +153,10 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   const activateItem = (item: Item): void => {
     if (item === 'close') handleClose();
-    else if (item === 'launch:claude') handleLaunch('claude');
-    else if (item === 'launch:copilot') handleLaunch('copilot');
-    else if (item === 'settings') handleSettings();
+    else if (item.startsWith('launch:')) {
+      const plugin = aiPlugins.find((candidate) => `launch:${candidate.id}` === item);
+      if (plugin) handleLaunch(plugin.id);
+    } else if (item === 'settings') handleSettings();
     else if (item.startsWith('cp:')) handleCustomProcess(item.slice(3));
   };
 

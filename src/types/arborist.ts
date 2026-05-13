@@ -130,7 +130,7 @@ export interface DefaultInstructionSets {
   copilot: InstructionSetId;
 }
 
-// MIRROR: src-tauri/src/types.rs::AiLaunchCommands
+// MIRROR: crates/arborist-types/src/lib.rs::AiLaunchCommands
 // Per-AI-plugin CLI launch overrides + backend-managed icon cache.
 export interface AiLaunchCommands {
   /** plugin id -> command override (empty string = plugin default program) */
@@ -197,7 +197,7 @@ export interface PartialDefaultInstructionSets {
   copilot?: InstructionSetId;
 }
 
-// MIRROR: src-tauri/src/types.rs::PartialAiLaunchCommands
+// MIRROR: crates/arborist-types/src/lib.rs::PartialAiLaunchCommands
 export interface PartialAiLaunchCommands {
   commands?: Record<string, string>;
 }
