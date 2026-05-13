@@ -82,7 +82,7 @@ arborist/
 │   │   ├── main.rs, lib.rs
 │   │   ├── commands/            # #[tauri::command] handlers (mod.rs + session.rs)
 │   │   ├── compose.rs           # pure command composition + label dedup
-│   │   ├── config_store.rs      # tauri-plugin-store wrapper, atomic writes, quarantine
+│   │   ├── config_store.rs      # custom JSON store, atomic writes, quarantine
 │   │   ├── git.rs               # GitRunner trait + git worktree list parser
 │   │   ├── pty_pool.rs          # PTY pool, PtySpawner trait, backpressure
 │   │   ├── types.rs             # serde types (Session, AppConfig, errors, events)

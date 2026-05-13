@@ -349,6 +349,7 @@ pub fn run() {
             commands::config_get,
             commands::config_set,
             commands::instructions_list,
+            commands::dialog_pick_directory,
             commands::session_create,
             commands::session_list,
             commands::session_close,

@@ -25,7 +25,7 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 ## Stack
 
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS (class dark-mode strategy), Zustand, xterm.js
-- **Backend**: Rust, Tauri v2, `portable-pty` (ConPTY on Windows), `tauri-plugin-store` for JSON persistence
+- **Backend**: Rust, Tauri v2, `portable-pty` (ConPTY on Windows), custom JSON persistence via `config_store.rs`
 - **Layout**: `src/` (frontend), `src-tauri/src/` (Rust), `instructions/` (default instruction-set files), `dev/docs/` (specs)
 
 ## Commands
@@ -88,7 +88,7 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 | `lib.rs`              | App entry: init tracing, build `AppContext`, register commands, run event loop                                                                                   |
 | `types.rs`            | All serde types: `Session`, `AppConfig`, errors, event payloads. **Canonical** — TS mirrors must stay in lockstep                                                |
 | `compose.rs`          | Pure functions: `compose_command`, `dedupe_label`, shell quoting, worktree validation                                                                            |
-| `config_store.rs`     | `tauri-plugin-store` wrapper; atomic writes via `NamedTempFile::persist`; config quarantine on parse failure                                                     |
+| `config_store.rs`     | Custom JSON store; atomic writes via `NamedTempFile::persist`; config quarantine on parse failure                                                                |
 | `pty_pool.rs`         | PTY lifecycle, `PtySpawner` trait (injectable for tests), bounded mpsc backpressure (`OUTPUT_CHANNEL_CAPACITY = 512`), `ESC c` reset on overflow, orphan cleanup |
 | `commands/session.rs` | All real handler logic (thin wrappers in `commands/mod.rs` delegate here)                                                                                        |
 | `git.rs`              | `GitRunner` trait + `RealGitRunner`; parses `git worktree list --porcelain`                                                                                      |

@@ -11,7 +11,7 @@ Arborist is one process with a clean Rust ↔ WebView split:
 ```
 ┌──────────── Rust backend (Tauri v2) ────────────┐
 │  PTY pool (portable-pty)                         │
-│  Config store (tauri-plugin-store, atomic write) │
+│  Config store (custom JSON store, atomic write) │
 │  Compose / git / commands                        │
 │  ▲                                               │
 │  │  Tauri commands  (invoke)                     │
@@ -37,7 +37,7 @@ DESIGN §6. Both sides go through a single bridge module
 | `lib.rs`                      | `init_tracing`, builds the `AppContext` (PtyPool + ConfigStore + GitRunner + production PtySink), registers commands, runs the Tauri event loop. | DESIGN §2.1                       |
 | `types.rs`                    | All serde types: `Session`, `SessionView`, `AppConfig`, `PartialAppConfig`, `InstructionSet`, `WorktreeInfo`, `SessionStatus`, `Tool`, errors, event payloads, command arg structs. | DESIGN §3                  |
 | `compose.rs`                  | Pure functions: `compose_command`, `dedupe_label`, `validate_worktree`, POSIX/`cmd.exe` shell quoting, `cli_program_for_tool` (test override seam). | DESIGN §5.1, §5.6, §8.1, §8.2     |
-| `config_store.rs`             | `tauri-plugin-store` wrapper: load/save `config.json` + `sessions.json`, atomic write via `NamedTempFile::persist`, deep-merge `PartialAppConfig`, quarantine on parse failure, instruction-set discovery. | DESIGN §3.3, [`CONFIGURATION.md`](./CONFIGURATION.md) |
+| `config_store.rs`             | Custom JSON store: load/save `config.json` + `sessions.json`, atomic write via `NamedTempFile::persist`, deep-merge `PartialAppConfig`, quarantine on parse failure, instruction-set discovery. | DESIGN §3.3, [`CONFIGURATION.md`](./CONFIGURATION.md) |
 | `git.rs`                      | `GitRunner` trait + `RealGitRunner`; parses `git worktree list --porcelain`. Returns `Ok(vec![])` on every error path so the UI's manual "Browse…" fallback isn't blocked. | DESIGN §6 (`worktrees_list`)      |
 | `pty_pool.rs`                 | `PtySpawner` / `ChildPty` traits, `PortablePtySpawner`, `PtyPool` (per-session runtime entry: child handle, drain task, cancel token), bounded mpsc with drop-newest backpressure (`OUTPUT_CHANNEL_CAPACITY = 512`), `ESC c` reset after a drop, streaming UTF-8 decoder, wait thread that persists final status, `cleanup_orphans` (`ORPHAN_AGE_THRESHOLD = 1h`, ignores UUIDs still in `sessions.json`). | DESIGN §2.1, §5.4, §8.3 |
 | `commands/mod.rs`             | Thin `#[tauri::command]` wrappers. Each one resolves the `AppContext` from Tauri managed state and delegates to `commands::session`. Also contains `build_production_sink` which wires the PTY status / output callbacks to `app.emit` and `ConfigStore::update_session_status`. | DESIGN §6 |
@@ -144,7 +144,7 @@ in `src-tauri/capabilities/main.json` referencing a permission file in
 | `allow-session`         | `session_create`, `session_list`, `session_close`, `session_focus`, `session_resize`, `session_input`, `session_restart`. |
 | `allow-frontend-ready`  | `frontend_ready`.                                                       |
 | `allow-worktrees-list`  | `worktrees_list`.                                                       |
-| `dialog:allow-open`     | `tauri-plugin-dialog`'s `open` (used by `pickDirectory` for the New-Session "Browse…" fallback). |
+| `allow-dialog-pick-directory` | `dialog_pick_directory` (used by `pickDirectory` for the New-Session "Browse…" fallback). |
 
 The structural test in `src-tauri/tests/capability_gating.rs` keeps the
 capability JSON, the `permissions/*.toml` files, and the registered

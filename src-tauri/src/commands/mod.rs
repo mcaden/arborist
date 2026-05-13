@@ -102,6 +102,23 @@ pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionS
     list_instructions_for(&cfg)
 }
 
+fn pick_directory_native() -> Option<String> {
+    rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Open the native OS directory picker and return the selected path (or `None`
+/// on cancel). The picker is dispatched to Tauri's main thread because GTK's
+/// sync dialog APIs must run there on Linux.
+#[tauri::command]
+pub async fn dialog_pick_directory(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(pick_directory_native());
+    })
+    .map_err(|e| AppError::new("Internal", format!("dispatch directory picker: {e}")))?;
+    rx.await.map_err(|_| AppError::new("Internal", "directory picker channel closed"))
+}
+
 // --------------------------------------------------------------------------- Phase 7: session commands. Each wrapper resolves the managed
 // `Arc<AppContext>`, hands the typed args to the matching `*_impl`, and returns the result. *No* business logic in this layer.
 // ---------------------------------------------------------------------------

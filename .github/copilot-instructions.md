@@ -35,7 +35,7 @@ A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude 
 
 - **Shell**: Tauri v2 (Rust backend, OS WebView frontend) — *not* Electron
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS, Zustand, xterm.js
-- **Backend**: Rust, `portable-pty` for cross-platform PTY (ConPTY on Windows), `tauri-plugin-store` for JSON persistence
+- **Backend**: Rust, `portable-pty` for cross-platform PTY (ConPTY on Windows), custom JSON persistence via `config_store.rs`
 - **Layout**: `src/` (frontend), `src-tauri/` (Rust), `instructions/` (default instruction set files), `dev/docs/` (specs)
 
 ## Architectural conventions (read DESIGN.md before changing)
@@ -62,7 +62,7 @@ Defined in Rust with `serde`, mirrored as TypeScript types in the frontend. Thre
 
 ## Persistence rules
 
-- All persistent state goes through `tauri-plugin-store` (`AppConfig` + session records).
+- All persistent state goes through the Rust `ConfigStore` (`AppConfig` + session records).
 - `lastOpenSessions` and `tabOrder` drive restore-on-launch — update them on session create/close/reorder/focus.
 - The app **must not** store credentials (SPEC NF-05). Auth is delegated to the CLI tools.
 

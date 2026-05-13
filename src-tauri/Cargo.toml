@@ -60,11 +60,9 @@ tempfile = "3"
 dunce = "1"
 sha2 = "0.10"
 fs2 = "0.4"
-# default-features disabled to avoid xdg-portal + gtk3 conflict on Linux
-# (tauri-plugin-dialog already enables rfd/gtk3; rfd panics if both are active).
-# `gtk3` is explicitly listed so the test-helpers-only build path (which does
-# not pull in tauri-plugin-dialog transitively) still picks a backend — rfd
-# 0.17 panics in build.rs when neither backend is enabled on Linux.
+# `rfd` is used directly for boot-time dialogs and the runtime `dialog_pick_directory`
+# command. Keep `default-features = false` and explicitly enable `gtk3` to avoid
+# backend auto-selection surprises on Linux.
 rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 tracing = "0.1"
 tracing-appender = "0.2"
