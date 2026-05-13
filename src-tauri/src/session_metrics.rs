@@ -143,7 +143,7 @@ impl MetricsRegistry {
         self.stop(&session_id);
 
         let Some(watcher_kind) = crate::plugins::ai::metrics_watcher_kind(tool, session_id, &cwd) else {
-            tracing::debug!(session_id = %session_id, "no home dir; AI metrics watcher not started");
+            tracing::debug!(session_id = %session_id, tool = ?tool, "AI metrics watcher not started; no watcher kind available");
             return false;
         };
 
