@@ -213,6 +213,36 @@ mod tests {
         fn default_instruction_set_path(&self) -> &'static str {
             "test-default.md"
         }
+        fn compose(&self, _inputs: &crate::compose::ComposeInputs<'_>, _quoter: crate::compose::Quoter) -> (String, Vec<crate::types::TempFileSpec>) {
+            ("test".to_owned(), Vec::new())
+        }
+        fn env(&self, _session_id: &crate::types::SessionId) -> Vec<(String, std::ffi::OsString)> {
+            Vec::new()
+        }
+        fn spawn_prep(&self, _session_id: &crate::types::SessionId) -> ai::SpawnPrep {
+            ai::SpawnPrep::default()
+        }
+        fn metrics_watcher_kind(&self, _session_id: crate::types::SessionId, _cwd: &std::path::Path) -> Option<ai::MetricsWatcherKind> {
+            None
+        }
+        fn starts_activity_events_watcher(&self) -> bool {
+            false
+        }
+        fn create_ai_session_id(&self) -> Option<String> {
+            None
+        }
+        fn restart_ai_session_policy(&self) -> ai::RestartAiSessionPolicy {
+            ai::RestartAiSessionPolicy::Preserve
+        }
+        fn resume_requires_preflight(&self) -> bool {
+            false
+        }
+        fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
+            home.join(ai_session_id)
+        }
+        fn instruction_stem_prefix(&self) -> &'static str {
+            "test-"
+        }
     }
 
     struct TestProc {
