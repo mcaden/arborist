@@ -175,19 +175,19 @@ impl PluginRegistry {
 
 /// Construct the production plugin registry.
 ///
-/// This is the single seam sub-issue #96 extends for future plugin additions. Issue #97 custom-process plugins and issue #98 dashboard widgets are
-/// both wired here so spawn routing and dashboard backend capability checks stay centralized.
+/// This is the single seam sub-issues #96 / #97 / #98 extend for future plugin additions: add a `reg.register_*(Arc::new(...))?` line here.
 ///
 /// Returns a [`RegisterError`] if two built-in plugins of the same kind ever share an id — that would be a programming error caught immediately
 /// at startup rather than papered over with `expect()`.
 pub fn build_registry() -> Result<PluginRegistry, RegisterError> {
     let mut reg = PluginRegistry::new();
+    for builtin in ai::BUILTIN_AI {
+        reg.register_ai((builtin.factory)())?;
+    }
     reg.register_custom_process(Arc::new(custom_process::vscode::VsCodePlugin))?;
     reg.register_custom_process(Arc::new(custom_process::explorer::ExplorerPlugin))?;
     reg.register_widget(Arc::new(dashboard_widget::git_status::GitStatusBackend))?;
     reg.register_widget(Arc::new(dashboard_widget::ai_usage::AiUsageBackend))?;
-    // Sub-issue #96: reg.register_ai(Arc::new(ai::claude::ClaudePlugin))?;
-    // Sub-issue #96: reg.register_ai(Arc::new(ai::copilot::CopilotPlugin))?;
     Ok(reg)
 }
 
@@ -212,6 +212,36 @@ mod tests {
         }
         fn default_instruction_set_path(&self) -> &'static str {
             "test-default.md"
+        }
+        fn compose(&self, _inputs: &crate::compose::ComposeInputs<'_>, _quoter: crate::compose::Quoter) -> (String, Vec<crate::types::TempFileSpec>) {
+            ("test".to_owned(), Vec::new())
+        }
+        fn env(&self, _session_id: &crate::types::SessionId) -> Vec<(String, std::ffi::OsString)> {
+            Vec::new()
+        }
+        fn spawn_prep(&self, _session_id: &crate::types::SessionId) -> ai::SpawnPrep {
+            ai::SpawnPrep::default()
+        }
+        fn metrics_watcher_kind(&self, _session_id: crate::types::SessionId, _cwd: &std::path::Path) -> Option<ai::MetricsWatcherKind> {
+            None
+        }
+        fn starts_activity_events_watcher(&self) -> bool {
+            false
+        }
+        fn create_ai_session_id(&self) -> Option<String> {
+            None
+        }
+        fn restart_ai_session_policy(&self) -> ai::RestartAiSessionPolicy {
+            ai::RestartAiSessionPolicy::Preserve
+        }
+        fn resume_requires_preflight(&self) -> bool {
+            false
+        }
+        fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
+            home.join(ai_session_id)
+        }
+        fn instruction_stem_prefix(&self) -> &'static str {
+            "test-"
         }
     }
 
@@ -407,7 +437,8 @@ mod tests {
     #[test]
     fn build_registry_registers_builtin_plugins() {
         let reg = build_registry().expect("build_registry must not collide on duplicate ids");
-        assert!(reg.ai().is_empty());
+        let ai_ids: Vec<&str> = reg.ai().iter().map(|p| p.id()).collect();
+        assert_eq!(ai_ids, vec!["claude", "copilot"]);
         let custom_process_ids: Vec<&str> = reg.custom_processes().iter().map(|p| p.id()).collect();
         assert_eq!(custom_process_ids, vec!["vscode", "explorer"]);
         let widget_ids: Vec<&str> = reg.widgets().iter().map(|w| w.id()).collect();
@@ -467,6 +498,16 @@ mod tests {
                 claiming_plugins
             );
         }
+    }
+
+    #[test]
+    fn registry_ai_ids_match_tool_discriminators() {
+        let reg = build_registry().expect("build_registry must not collide on duplicate ids");
+        let mut expected: Vec<&str> = crate::types::Tool::ALL.iter().map(|t| t.as_id()).collect();
+        expected.sort_unstable();
+        let mut actual: Vec<&str> = reg.ai().iter().map(|p| p.id()).collect();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
     }
 
     #[test]

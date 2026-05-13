@@ -25,13 +25,13 @@ let sessionAdopt: ReturnType<typeof vi.fn<(sessions: SessionView[], activeSessio
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
-    configVersion: 4,
+    configVersion: 9,
     defaultInstructionSets: { claude: '', copilot: '' },
     instructionSetsDir: '',
     workspaceRoot: '/new',
     worktreeRoots: [],
     worktreePrepCommands: [],
-    aiLaunchCommands: { claude: '', copilot: '' },
+    aiLaunchCommands: { commands: {}, iconDataUris: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

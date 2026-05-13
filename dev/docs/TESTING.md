@@ -111,12 +111,12 @@ cargo run -p arborist --features test-helpers --bin arborist-test-child
 
 `compose::cli_program_for_tool` honours the user-facing
 `AppConfig.ai_launch_commands` field as a verbatim shell-snippet override of
-the bare `claude` / `copilot` program token. Tests use the same plumbing real
+the plugin default program token (e.g. `claude` / `copilot` for built-ins). Tests use the same plumbing real
 users get via the Settings dialog — there is no environment-variable seam.
 
 | Surface                                             | Mechanism                                                                                |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `session_lifecycle_real.rs` (Rust integration test) | `store.save_config({ ai_launch_commands: { claude: <test-child path> } })` before create |
+| `session_lifecycle_real.rs` (Rust integration test) | `store.save_config({ ai_launch_commands: { commands: { claude: <test-child path> } } })` before create |
 | Linux e2e (`AppImage` under tauri-driver)           | `--ai-launch-claude=<path>` / `--ai-launch-copilot=<path>` CLI flags (see `boot.rs`)     |
 
 The override path is encoded verbatim into the persisted `composedCommand`;

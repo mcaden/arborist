@@ -139,13 +139,13 @@ describe('App boot sequence', () => {
         new Promise((resolve) => {
           resolveCfg = () =>
             resolve({
-              configVersion: 3,
+              configVersion: 9,
               defaultInstructionSets: { claude: '', copilot: '' },
               instructionSetsDir: '',
               workspaceRoot: '/mock/workspace',
               worktreeRoots: [],
               worktreePrepCommands: [],
-              aiLaunchCommands: { claude: '', copilot: '' },
+              aiLaunchCommands: { commands: {}, iconDataUris: {} },
               lastOpenSessions: [],
               tabOrder: [],
               activeSessionId: null,
@@ -257,13 +257,13 @@ describe('App boot sequence', () => {
 
   it('shows the WorkspacePicker on first boot when workspaceRoot is null', async () => {
     configGet.mockResolvedValueOnce({
-      configVersion: 3,
+      configVersion: 9,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
-      aiLaunchCommands: { claude: '', copilot: '' },
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -352,8 +352,10 @@ describe('App workspace-switch overlay', () => {
     act(() => {
       useWorkspaceSwitchUiStore.setState({ isSwitching: true });
     });
-    const overlay = screen.getByTestId('workspace-switch-overlay');
-    expect(document.activeElement).toBe(overlay);
+    const overlay = await screen.findByTestId('workspace-switch-overlay');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(overlay);
+    });
 
     // Simulate focus escaping to an outside element (the underlying
     // root being `inert` should normally prevent this; this asserts
@@ -365,7 +367,9 @@ describe('App workspace-switch overlay', () => {
       escapee.focus();
     });
 
-    expect(document.activeElement).toBe(overlay);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(overlay);
+    });
     document.body.removeChild(escapee);
   });
 

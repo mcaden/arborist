@@ -20,7 +20,7 @@
 
 import type { ComponentType } from 'react';
 
-import type { CustomProcessDef, WorktreeTabId } from '@/types/arborist';
+import type { CustomProcessDef, Tool, WorktreeTabId } from '@/types/arborist';
 
 // MIRROR: src-tauri/src/plugins/mod.rs::Plugin
 export interface Plugin {
@@ -32,10 +32,14 @@ export interface Plugin {
 
 // MIRROR: src-tauri/src/plugins/ai/mod.rs::AiPlugin
 export interface AiPlugin extends Plugin {
+  /** Stable AI tool discriminator mirrored from persisted `Tool` (`"claude" | "copilot"`). */
+  id: Tool;
   /** Bare program token (`"claude"`, `"copilot"`). User-overridable via `AppConfig.ai_launch_commands`. */
   defaultProgram: string;
   /** Filename of the built-in instruction-set markdown under `instructions/` (e.g. `"claude-default.md"`). */
   defaultInstructionSetPath: string;
+  /** SVG icon component for the plugin's launcher / tab chrome. */
+  Icon: ComponentType<{ className?: string }>;
 }
 
 // MIRROR: src-tauri/src/plugins/custom_process/mod.rs::CustomProcessPlugin
@@ -95,7 +99,7 @@ export interface PluginRegistry {
   registerWidget: (plugin: DashboardWidgetPlugin) => void;
 
   ai: () => readonly AiPlugin[];
-  aiById: (id: string) => AiPlugin | undefined;
+  aiById: (id: Tool) => AiPlugin | undefined;
   customProcessForDef: (def: CustomProcessDef) => CustomProcessPlugin | undefined;
   customProcesses: () => readonly CustomProcessPlugin[];
   widgets: () => readonly DashboardWidgetPlugin[];
@@ -112,7 +116,7 @@ export interface PluginRegistry {
  */
 export function createRegistry(): PluginRegistry {
   const ai: AiPlugin[] = [];
-  const aiIndex = new Map<string, number>();
+  const aiIndex = new Map<Tool, number>();
   const customProcess: CustomProcessPlugin[] = [];
   const customProcessIndex = new Map<string, number>();
   const widgets: DashboardWidgetPlugin[] = [];

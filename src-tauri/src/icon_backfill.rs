@@ -1,4 +1,4 @@
-//! Resolve and cache icon data URIs for `CustomProcessDef`s and the Claude / Copilot AI-launch commands.
+//! Resolve and cache icon data URIs for `CustomProcessDef`s and AI-launch commands.
 //!
 //! Strategy: at config-save time and at app startup, walk every command string that maps to a sidebar tab, run it through
 //! [`crate::cmd_resolver::resolve_command_icon_path`], extract a PNG
@@ -32,15 +32,14 @@ pub fn backfill_icons(cfg: &mut AppConfig, cache: &IconCache, fallback_cwd: &Pat
         }
     }
 
-    if cfg.ai_launch_commands.claude_icon_data_uri.is_none() {
-        if let Some(uri) = resolve_ai_icon("claude", &cfg.ai_launch_commands.claude, fallback_cwd, cache) {
-            cfg.ai_launch_commands.claude_icon_data_uri = Some(uri);
-            changed = true;
+    for builtin in crate::plugins::ai::BUILTIN_AI {
+        let plugin_id = builtin.plugin.id();
+        if cfg.ai_launch_commands.has_icon_cache_entry_for_id(plugin_id) {
+            continue;
         }
-    }
-    if cfg.ai_launch_commands.copilot_icon_data_uri.is_none() {
-        if let Some(uri) = resolve_ai_icon("copilot", &cfg.ai_launch_commands.copilot, fallback_cwd, cache) {
-            cfg.ai_launch_commands.copilot_icon_data_uri = Some(uri);
+        let launch_command = cfg.ai_launch_commands.command_for_id(plugin_id);
+        if let Some(uri) = resolve_ai_icon(builtin.plugin.default_program(), launch_command, fallback_cwd, cache) {
+            cfg.ai_launch_commands.icon_data_uris.insert(plugin_id.to_owned(), Some(uri));
             changed = true;
         }
     }
@@ -133,11 +132,12 @@ mod tests {
         let mut cfg = AppConfig {
             custom_processes: vec![def_with("x", "pwsh", Some("data:image/png;base64,AAAA".into()))],
             ai_launch_commands: AiLaunchCommands {
-                claude: String::new(),
-                copilot: String::new(),
                 // Pre-populate AI fields so they don't trigger best-effort default-name resolution and confuse the `changed` flag we're asserting on.
-                claude_icon_data_uri: Some("data:image/png;base64,BBBB".into()),
-                copilot_icon_data_uri: Some("data:image/png;base64,CCCC".into()),
+                icon_data_uris: std::collections::BTreeMap::from([
+                    ("claude".to_owned(), Some("data:image/png;base64,BBBB".into())),
+                    ("copilot".to_owned(), Some("data:image/png;base64,CCCC".into())),
+                ]),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -147,6 +147,30 @@ mod tests {
             cfg.custom_processes[0].icon_data_uri.as_deref(),
             Some("data:image/png;base64,AAAA"),
             "existing cache must be preserved verbatim",
+        );
+    }
+
+    #[test]
+    fn backfill_skips_ai_plugins_with_explicit_null_cache_entry() {
+        let extractor = Arc::new(CountingExtractor::new());
+        let cache = IconCache::new(extractor.clone());
+        let mut cfg = AppConfig {
+            ai_launch_commands: AiLaunchCommands {
+                icon_data_uris: std::collections::BTreeMap::from([("claude".to_owned(), None), ("copilot".to_owned(), None)]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let changed = backfill_icons(&mut cfg, &cache, std::env::temp_dir().as_path());
+
+        assert!(!changed, "explicit null entries represent cached misses and should suppress retries");
+        assert_eq!(cfg.ai_launch_commands.icon_data_uris.get("claude"), Some(&None));
+        assert_eq!(cfg.ai_launch_commands.icon_data_uris.get("copilot"), Some(&None));
+        assert_eq!(
+            extractor.calls.lock().unwrap().len(),
+            0,
+            "no executable resolution should run for explicit null cache entries"
         );
     }
 

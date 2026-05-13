@@ -1,4 +1,11 @@
-// Claude AI plugin module — scaffold only. Sub-issue #96 will register
-// `ClaudePlugin` here and move `ToolIcon` Claude branches into
-// `./icon.tsx`.
-export {};
+import type { AiPlugin } from '../../registry';
+
+import { ClaudeIcon } from './icon';
+
+export const ClaudeAiPlugin: AiPlugin = {
+  id: 'claude',
+  displayName: 'Claude',
+  defaultProgram: 'claude',
+  defaultInstructionSetPath: 'claude-default.md',
+  Icon: ClaudeIcon,
+};

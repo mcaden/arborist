@@ -308,11 +308,15 @@ pub fn run() {
             // on first boot rather than waiting until next startup.
             if cli_args.ai_launch_claude.is_some() || cli_args.ai_launch_copilot.is_some() {
                 let store = ctx_for_backfill.store();
+                let mut commands = std::collections::BTreeMap::new();
+                if let Some(v) = cli_args.ai_launch_claude.clone() {
+                    commands.insert(types::Tool::Claude.as_id().to_owned(), v);
+                }
+                if let Some(v) = cli_args.ai_launch_copilot.clone() {
+                    commands.insert(types::Tool::Copilot.as_id().to_owned(), v);
+                }
                 let patch = types::PartialAppConfig {
-                    ai_launch_commands: Some(types::PartialAiLaunchCommands {
-                        claude: cli_args.ai_launch_claude.clone(),
-                        copilot: cli_args.ai_launch_copilot.clone(),
-                    }),
+                    ai_launch_commands: Some(types::PartialAiLaunchCommands { commands }),
                     ..Default::default()
                 };
                 if let Err(err) = store.save_config(patch) {

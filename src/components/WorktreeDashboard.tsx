@@ -1,7 +1,10 @@
+import { useMemo } from 'react';
+
 import { ToolIcon } from './ToolIcon';
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError } from '@/lib/tauri-bridge';
 import { useRegistry } from '@/plugins';
+import { useConfigStore } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { Tool, WorktreeTabId } from '@/types/arborist';
@@ -14,6 +17,8 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
   const sessionActions = useSessionActions();
   const registry = useRegistry();
+  const aiPlugins = useMemo(() => registry.ai(), [registry]);
+  const aiIconDataUris = useConfigStore((s) => s.config.aiLaunchCommands.iconDataUris);
 
   if (!tab) {
     return null;
@@ -49,24 +54,21 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
       </header>
 
       <div className="flex gap-3">
-        <button
-          type="button"
-          data-testid="worktree-dashboard-launch-claude"
-          onClick={() => launch('claude')}
-          className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
-        >
-          <ToolIcon tool="claude" className="h-4 w-4" />
-          Launch Claude
-        </button>
-        <button
-          type="button"
-          data-testid="worktree-dashboard-launch-copilot"
-          onClick={() => launch('copilot')}
-          className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
-        >
-          <ToolIcon tool="copilot" className="h-4 w-4" />
-          Launch Copilot
-        </button>
+        {aiPlugins.map((plugin) => {
+          const iconDataUri = aiIconDataUris[plugin.id];
+          return (
+            <button
+              key={plugin.id}
+              type="button"
+              data-testid={`worktree-dashboard-launch-${plugin.id}`}
+              onClick={() => launch(plugin.id)}
+              className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+            >
+              <ToolIcon tool={plugin.id} className="h-4 w-4" {...(iconDataUri ? { iconDataUri } : {})} />
+              <span>{`Launch ${plugin.displayName}`}</span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

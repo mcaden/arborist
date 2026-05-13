@@ -17,13 +17,13 @@ const REPO_ROOT = '/repos/arborist';
 
 function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
-    configVersion: 5,
+    configVersion: 9,
     defaultInstructionSets: { claude: '', copilot: '' },
     instructionSetsDir: '/sets',
     workspaceRoot: REPO_ROOT,
     worktreeRoots: [REPO_ROOT],
     worktreePrepCommands: ['nvm use 20'],
-    aiLaunchCommands: { claude: '', copilot: '' },
+    aiLaunchCommands: { commands: {}, iconDataUris: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

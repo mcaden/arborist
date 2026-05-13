@@ -17,7 +17,13 @@ function RegistryProbe(): JSX.Element {
 describe('PluginRegistryProvider / useRegistry', () => {
   it('exposes the registry to child components', () => {
     const r = createRegistry();
-    r.registerAi({ id: 'claude', displayName: 'Claude', defaultProgram: 'claude', defaultInstructionSetPath: 'claude-default.md' });
+    r.registerAi({
+      id: 'claude',
+      displayName: 'Claude',
+      defaultProgram: 'claude',
+      defaultInstructionSetPath: 'claude-default.md',
+      Icon: () => null,
+    });
     r.registerWidget({ id: 'git-status', displayName: 'Git', order: 0, Component: () => null });
 
     render(
@@ -29,13 +35,13 @@ describe('PluginRegistryProvider / useRegistry', () => {
     expect(screen.getByTestId('probe')).toHaveTextContent('ai=1;widgets=1');
   });
 
-  it('falls back to an empty registry when no prop is supplied', () => {
+  it('falls back to a built-in registry when no prop is supplied', () => {
     render(
       <PluginRegistryProvider>
         <RegistryProbe />
       </PluginRegistryProvider>,
     );
-    expect(screen.getByTestId('probe')).toHaveTextContent('ai=0;widgets=0');
+    expect(screen.getByTestId('probe')).toHaveTextContent('ai=2;widgets=2');
   });
 
   it('throws a helpful error when useRegistry() is called outside a provider', () => {

@@ -20,13 +20,13 @@ import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
 import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 5,
+  configVersion: 9,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   workspaceRoot: null,
   worktreeRoots: [],
   worktreePrepCommands: [],
-  aiLaunchCommands: { claude: '', copilot: '' },
+  aiLaunchCommands: { commands: {}, iconDataUris: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,

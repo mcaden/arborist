@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
-import { PluginRegistryProvider, createRegistry, type DashboardWidgetPlugin } from '@/plugins';
+import { PluginRegistryProvider, createBuiltinsRegistry, createRegistry, type DashboardWidgetPlugin } from '@/plugins';
 import { useSessionStore } from '@/store/session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { WorktreeTab, WorktreeTabId } from '@/types/arborist';
@@ -34,7 +34,7 @@ function widget(id: string, order: number): DashboardWidgetPlugin {
   };
 }
 
-function renderDashboard(registry = createRegistry()): ReturnType<typeof render> {
+function renderDashboard(registry = createBuiltinsRegistry()): ReturnType<typeof render> {
   return render(
     <PluginRegistryProvider registry={registry}>
       <WorktreeDashboard tabId={TAB_ID} />

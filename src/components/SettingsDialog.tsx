@@ -9,18 +9,20 @@
 //                       invariant lives in one place — see
 //                       `lib/workspace-switch.ts`), instruction sets
 //                       directory (path picker), worktree prep commands
-//                       (one shell command per line), and per-agent CLI
-//                       launch overrides (claude / copilot).
+//                       (one shell command per line), and per-AI-plugin
+//                       CLI launch overrides.
 //   Custom Processes  — CRUD over `AppConfig.customProcesses` (lives in
 //                       a dedicated `CustomProcessesTab` component).
 //   About             — lightweight project attribution and context.
 
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import { CustomProcessesTab } from './CustomProcessesTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError, pickDirectory } from '@/lib/tauri-bridge';
+import type { AiPlugin } from '@/plugins';
+import { useRegistry } from '@/plugins';
 import { changeWorkspace } from '@/lib/workspace-switch';
 import {
   selectAiLaunchCommands,
@@ -62,7 +64,17 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
+function launchCommandInputs(plugins: readonly AiPlugin[], commands: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const plugin of plugins) {
+    result[plugin.id] = commands[plugin.id] ?? '';
+  }
+  return result;
+}
+
 export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDialogProps): JSX.Element {
+  const registry = useRegistry();
+  const aiPlugins = useMemo(() => registry.ai(), [registry]);
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const worktreePrepCommands = useConfigStore(selectWorktreePrepCommands);
@@ -72,8 +84,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(worktreePrepCommands));
-  const [claudeCmdInput, setClaudeCmdInput] = useState<string>(aiLaunchCommands.claude);
-  const [copilotCmdInput, setCopilotCmdInput] = useState<string>(aiLaunchCommands.copilot);
+  const [launchCmdInputById, setLaunchCmdInputById] = useState<Record<string, string>>(() =>
+    launchCommandInputs(aiPlugins, aiLaunchCommands.commands),
+  );
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -140,20 +153,16 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     setCmdsInput(commandsToText(worktreePrepCommands));
   }, [worktreePrepCommands]);
   useEffect(() => {
-    setClaudeCmdInput(aiLaunchCommands.claude);
-  }, [aiLaunchCommands.claude]);
-  useEffect(() => {
-    setCopilotCmdInput(aiLaunchCommands.copilot);
-  }, [aiLaunchCommands.copilot]);
+    setLaunchCmdInputById(launchCommandInputs(aiPlugins, aiLaunchCommands.commands));
+  }, [aiPlugins, aiLaunchCommands.commands]);
 
   const parsedCmds = textToCommands(cmdsInput);
-  const claudeCmdTrimmed = claudeCmdInput.trim();
-  const copilotCmdTrimmed = copilotCmdInput.trim();
-  const dirty =
-    instrInput !== instructionSetsDir ||
-    !arraysEqual(parsedCmds, worktreePrepCommands) ||
-    claudeCmdTrimmed !== aiLaunchCommands.claude ||
-    copilotCmdTrimmed !== aiLaunchCommands.copilot;
+  const launchDirty = aiPlugins.some((plugin) => {
+    const current = (launchCmdInputById[plugin.id] ?? '').trim();
+    const persisted = aiLaunchCommands.commands[plugin.id] ?? '';
+    return current !== persisted;
+  });
+  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, worktreePrepCommands) || launchDirty;
 
   const handleBrowseInstructions = useCallback(async () => {
     const picked = await pickDirectory();
@@ -170,14 +179,17 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
       const patch: {
         instructionSetsDir?: string;
         worktreePrepCommands?: string[];
-        aiLaunchCommands?: { claude?: string; copilot?: string };
+        aiLaunchCommands?: { commands?: Record<string, string> };
       } = {};
       if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
       if (!arraysEqual(parsedCmds, worktreePrepCommands)) patch.worktreePrepCommands = parsedCmds;
-      const launchPatch: { claude?: string; copilot?: string } = {};
-      if (claudeCmdTrimmed !== aiLaunchCommands.claude) launchPatch.claude = claudeCmdTrimmed;
-      if (copilotCmdTrimmed !== aiLaunchCommands.copilot) launchPatch.copilot = copilotCmdTrimmed;
-      if (Object.keys(launchPatch).length > 0) patch.aiLaunchCommands = launchPatch;
+      const launchPatch: Record<string, string> = {};
+      for (const plugin of aiPlugins) {
+        const current = (launchCmdInputById[plugin.id] ?? '').trim();
+        const persisted = aiLaunchCommands.commands[plugin.id] ?? '';
+        if (current !== persisted) launchPatch[plugin.id] = current;
+      }
+      if (Object.keys(launchPatch).length > 0) patch.aiLaunchCommands = { commands: launchPatch };
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
     } catch (err) {
@@ -191,10 +203,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     instructionSetsDir,
     parsedCmds,
     worktreePrepCommands,
-    claudeCmdTrimmed,
-    copilotCmdTrimmed,
-    aiLaunchCommands.claude,
-    aiLaunchCommands.copilot,
+    aiPlugins,
+    launchCmdInputById,
+    aiLaunchCommands.commands,
     setConfig,
     onClose,
   ]);
@@ -382,42 +393,29 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                   Replace the default CLI invocation for each agent. The text is passed to the shell verbatim, so you may include arguments (e.g.{' '}
                   <code>npx claude --model sonnet</code>). Leave blank to use the default.
                 </p>
-                <div className="mb-2">
-                  <label htmlFor="settings-launch-claude" className="mb-1 block text-xs text-slate-600 dark:text-slate-300">
-                    Claude
-                  </label>
-                  <input
-                    id="settings-launch-claude"
-                    type="text"
-                    value={claudeCmdInput}
-                    onChange={(e) => {
-                      setSubmitError(null);
-                      setClaudeCmdInput(e.target.value);
-                    }}
-                    placeholder="claude"
-                    spellCheck={false}
-                    data-testid="settings-launch-claude"
-                    className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="settings-launch-copilot" className="mb-1 block text-xs text-slate-600 dark:text-slate-300">
-                    GitHub Copilot
-                  </label>
-                  <input
-                    id="settings-launch-copilot"
-                    type="text"
-                    value={copilotCmdInput}
-                    onChange={(e) => {
-                      setSubmitError(null);
-                      setCopilotCmdInput(e.target.value);
-                    }}
-                    placeholder="copilot"
-                    spellCheck={false}
-                    data-testid="settings-launch-copilot"
-                    className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-                  />
-                </div>
+                {aiPlugins.map((plugin, idx) => {
+                  const inputId = `settings-launch-${plugin.id}`;
+                  return (
+                    <div key={plugin.id} className={idx < aiPlugins.length - 1 ? 'mb-2' : ''}>
+                      <label htmlFor={inputId} className="mb-1 block text-xs text-slate-600 dark:text-slate-300">
+                        {plugin.displayName}
+                      </label>
+                      <input
+                        id={inputId}
+                        type="text"
+                        value={launchCmdInputById[plugin.id] ?? ''}
+                        onChange={(e) => {
+                          setSubmitError(null);
+                          setLaunchCmdInputById((prev) => ({ ...prev, [plugin.id]: e.target.value }));
+                        }}
+                        placeholder={plugin.defaultProgram}
+                        spellCheck={false}
+                        data-testid={inputId}
+                        className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                      />
+                    </div>
+                  );
+                })}
               </section>
 
               {submitError && (

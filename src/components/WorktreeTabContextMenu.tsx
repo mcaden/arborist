@@ -1,11 +1,10 @@
 // WorktreeTabContextMenu — right-click menu for a worktree tab (issue #44).
 //
 // Items (flat, no submenu):
-//   * Launch Claude  → creates a Claude session under this worktree tab.
-//   * Launch Copilot → creates a Copilot session under this worktree tab.
-//   * <custom defs>  → one entry per enabled custom-process definition.
-//   * Settings…      → opens the Settings dialog on the Custom Processes tab.
-//   * Close          → cascades close of the worktree tab and all children (pinned to bottom).
+//   * Launch <AI plugin> → creates an AI session under this worktree tab.
+//   * <custom defs>      → one entry per enabled custom-process definition.
+//   * Settings…          → opens the Settings dialog on the Custom Processes tab.
+//   * Close              → cascades close of the worktree tab and all children (pinned to bottom).
 //
 // Keyboard model: ↑/↓ cycles items, Enter activates, Esc closes and
 // restores focus to the trigger.
@@ -15,6 +14,7 @@ import { createPortal } from 'react-dom';
 
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError } from '@/lib/tauri-bridge';
+import { useRegistry } from '@/plugins';
 import { useEnabledCustomProcesses, useConfigStore } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
 import { useSubSessionActions } from '@/store/sub-session-store';
@@ -31,21 +31,21 @@ export interface WorktreeTabContextMenuProps {
   onOpenSettings?: () => void;
 }
 
-type Item = 'close' | 'launch-claude' | 'launch-copilot' | 'settings' | `cp:${string}`;
+type Item = 'close' | 'settings' | `launch:${Tool}` | `cp:${string}`;
 
 export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo, onOpenSettings }: WorktreeTabContextMenuProps): JSX.Element | null {
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
   const wttActions = useWorktreeTabActions();
   const sessionActions = useSessionActions();
   const subActions = useSubSessionActions();
+  const registry = useRegistry();
+  const aiPlugins = useMemo(() => registry.ai(), [registry]);
   const customProcesses = useEnabledCustomProcesses();
-  const claudeIconDataUri = useConfigStore((s) => s.config.aiLaunchCommands.claudeIconDataUri);
-  const copilotIconDataUri = useConfigStore((s) => s.config.aiLaunchCommands.copilotIconDataUri);
+  const aiIconDataUris = useConfigStore((s) => s.config.aiLaunchCommands.iconDataUris);
 
-  // Build the full item order: Launch Claude, Launch Copilot, custom
-  // processes, Settings…, then Close pinned at the bottom.
+  // Build the full item order: launchers, custom processes, Settings…, Close.
   const itemOrder = useMemo<Item[]>(() => {
-    const items: Item[] = ['launch-claude', 'launch-copilot'];
+    const items: Item[] = aiPlugins.map((plugin) => `launch:${plugin.id}` as Item);
     if (customProcesses.length > 0) {
       for (const def of customProcesses) {
         items.push(`cp:${def.id}` as Item);
@@ -53,12 +53,13 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     }
     items.push('settings', 'close');
     return items;
-  }, [customProcesses]);
+  }, [aiPlugins, customProcesses]);
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Map<Item, HTMLButtonElement | null>>(new Map());
 
-  const [focusedItem, setFocusedItem] = useState<Item>('launch-claude');
+  const firstMenuItem = itemOrder[0] ?? 'settings';
+  const [focusedItem, setFocusedItem] = useState<Item>(firstMenuItem);
 
   const closeMenu = useCallback((): void => {
     onClose();
@@ -69,8 +70,9 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   // Focus the first item when the menu mounts.
   useEffect(() => {
-    itemRefs.current.get('launch-claude')?.focus();
-  }, []);
+    setFocusedItem(firstMenuItem);
+    itemRefs.current.get(firstMenuItem)?.focus();
+  }, [firstMenuItem]);
 
   // Outside pointer-down dismisses.
   useEffect(() => {
@@ -151,9 +153,10 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   const activateItem = (item: Item): void => {
     if (item === 'close') handleClose();
-    else if (item === 'launch-claude') handleLaunch('claude');
-    else if (item === 'launch-copilot') handleLaunch('copilot');
-    else if (item === 'settings') handleSettings();
+    else if (item.startsWith('launch:')) {
+      const plugin = aiPlugins.find((candidate) => `launch:${candidate.id}` === item);
+      if (plugin) handleLaunch(plugin.id);
+    } else if (item === 'settings') handleSettings();
     else if (item.startsWith('cp:')) handleCustomProcess(item.slice(3));
   };
 
@@ -210,30 +213,24 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
         }
       }}
     >
-      <button
-        ref={setItemRef('launch-claude')}
-        type="button"
-        role="menuitem"
-        data-testid="worktree-tab-context-menu-launch-claude"
-        onClick={() => handleLaunch('claude')}
-        onMouseEnter={() => setFocusedItem('launch-claude')}
-        className={itemBase}
-      >
-        <MenuIcon src={claudeIconDataUri} fallback="🤖" />
-        <span>Launch Claude</span>
-      </button>
-      <button
-        ref={setItemRef('launch-copilot')}
-        type="button"
-        role="menuitem"
-        data-testid="worktree-tab-context-menu-launch-copilot"
-        onClick={() => handleLaunch('copilot')}
-        onMouseEnter={() => setFocusedItem('launch-copilot')}
-        className={itemBase}
-      >
-        <MenuIcon src={copilotIconDataUri} fallback="🤖" />
-        <span>Launch Copilot</span>
-      </button>
+      {aiPlugins.map((plugin) => {
+        const key: Item = `launch:${plugin.id}` as Item;
+        return (
+          <button
+            key={plugin.id}
+            ref={setItemRef(key)}
+            type="button"
+            role="menuitem"
+            data-testid={`worktree-tab-context-menu-launch-${plugin.id}`}
+            onClick={() => handleLaunch(plugin.id)}
+            onMouseEnter={() => setFocusedItem(key)}
+            className={itemBase}
+          >
+            <MenuIcon src={aiIconDataUris[plugin.id] ?? undefined} fallback="🤖" />
+            <span>{`Launch ${plugin.displayName}`}</span>
+          </button>
+        );
+      })}
       {customProcesses.length > 0 &&
         customProcesses.map((def) => {
           const key: Item = `cp:${def.id}` as Item;

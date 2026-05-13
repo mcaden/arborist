@@ -12,12 +12,14 @@
 // reorder pipeline; pointer-drag is exercised at the integration level
 // (manual smoke during dev).
 
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
+import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
@@ -25,6 +27,14 @@ import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { ChildId, SessionStatus, SessionView, SubSession, WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
 import { Sidebar } from './Sidebar';
+
+function render(ui: ReactNode) {
+  const rendered = rtlRender(<PluginRegistryProvider>{ui}</PluginRegistryProvider>);
+  return {
+    ...rendered,
+    rerender: (nextUi: ReactNode) => rendered.rerender(<PluginRegistryProvider>{nextUi}</PluginRegistryProvider>),
+  };
+}
 
 function makeView(id: string, overrides: Partial<SessionView> = {}): SessionView {
   return {

@@ -37,7 +37,7 @@ use tracing::{debug, error, warn};
 
 use crate::activity::{ActivityEvent, ActivityScanner, TICK_INTERVAL};
 use crate::compose::{self, platform_shell};
-use crate::types::{Error, Session, SessionId, SessionStatus, Tool};
+use crate::types::{Error, Session, SessionId, SessionStatus};
 
 // --------------------------------------------------------------------------- Tunables (DESIGN §8.3 / SPEC NF-09)
 // ---------------------------------------------------------------------------
@@ -505,29 +505,20 @@ impl PtyPool {
         // We do this here — not in `commands/session.rs` — so every spawn path (create, restart, restore-on-launch) gets the same treatment without
         // each call site having to remember. Mirror of the post-close cleanup that already lives next to `kill`.
         let env = compose::env_for_tool(session.tool, &session.id);
-        // Tool-specific spawn prep is keyed off `session.tool`, NOT off "env is non-empty" — those concepts are independent. A future tool that needs
-        // env injection but no temp file (or vice versa) must not get Copilot's stale-OTel cleanup applied to it. Match on Tool explicitly.
-        match session.tool {
-            Tool::Copilot => {
-                // Copilot's OTel exporter writes to a per-session JSONL in a temp dir. Ensure the dir exists before the child opens the file, and
-                // remove any stale JSONL from a previous run so restart / restore-on-launch don't replay old spans and double-count totals.
-                let dir = compose::session_temp_dir(&session.id);
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    debug!(session_id = %session.id, error = %e, dir = %dir.display(), "session temp dir create failed");
-                }
-                // Single source of truth for the path is `compose::copilot_otel_path` — no string literal here. Best-effort removal; missing file is
-                // fine.
-                let stale = compose::copilot_otel_path(&session.id);
-                match std::fs::remove_file(&stale) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => {
-                        debug!(session_id = %session.id, error = %e, "stale otel.jsonl removal failed");
-                    }
-                }
+        let prep = crate::plugins::ai::spawn_prep(session.tool, &session.id);
+        if prep.ensure_temp_dir {
+            let dir = compose::session_temp_dir(&session.id);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                debug!(session_id = %session.id, error = %e, dir = %dir.display(), "session temp dir create failed");
             }
-            Tool::Claude => {
-                // No spawn-time prep needed today.
+        }
+        for stale in prep.stale_files {
+            match std::fs::remove_file(&stale) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    debug!(session_id = %session.id, path = %stale.display(), error = %e, "stale session file removal failed");
+                }
             }
         }
 

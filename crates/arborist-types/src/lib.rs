@@ -12,6 +12,7 @@
 //! * ID newtypes use `#[serde(transparent)]` so they appear as plain strings on
 //!   the wire while remaining strongly typed in Rust.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -155,6 +156,20 @@ impl std::fmt::Display for WorktreeTabId {
 pub enum Tool {
     Claude,
     Copilot,
+}
+
+impl Tool {
+    /// Every persisted `Tool` variant in stable iteration order.
+    pub const ALL: [Self; 2] = [Self::Claude, Self::Copilot];
+
+    /// Stable serde discriminator used on disk and as the AI-plugin registry id.
+    #[must_use]
+    pub const fn as_id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Copilot => "copilot",
+        }
+    }
 }
 
 /// Lifecycle state of a session's underlying PTY child.
@@ -488,24 +503,100 @@ pub struct DefaultInstructionSets {
 ///   dropped with a warning.
 /// * `8` — added [`WorktreeTab::icon_id`] (Issue #45: per-worktree icon). Migration backfills any tab with `icon_id == 0` (the serde default for
 ///   pre-v8 records) by walking [`AppConfig::worktree_tab_order`] and applying [`crate::worktree_icon::pick_least_used_icon`] incrementally.
-pub const CONFIG_VERSION_CURRENT: u32 = 8;
+/// * `9` — generalized `ai_launch_commands` to plugin-keyed maps:
+///   `{ commands: { "<plugin-id>": "<command>" }, iconDataUris: { "<plugin-id>": "<data-uri>" } }`.
+///   Legacy `claude` / `copilot` fixed fields are migrated in-place on load.
+pub const CONFIG_VERSION_CURRENT: u32 = 9;
 
-/// Per-agent CLI launch command override. Each field is a verbatim shell snippet (e.g. `"npx claude --model sonnet"`) interpolated into the composed
-/// command in place of the bare program token. Empty string means "use the default" (`claude` / `copilot`). Added in `configVersion = 4`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+/// Per-AI-plugin CLI launch command override.
+///
+/// `commands` maps plugin id → verbatim shell snippet (e.g. `"npx claude --model sonnet"`). Missing key and empty-string key both mean "use plugin
+/// default program".
+///
+/// `icon_data_uris` caches resolved launcher icons by plugin id (`data:image/png;base64,…`). Backend-managed; frontend patches only touch `commands`.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AiLaunchCommands {
     #[serde(default)]
-    pub claude: String,
+    pub commands: BTreeMap<String, String>,
     #[serde(default)]
-    pub copilot: String,
-    /// Cached `data:image/png;base64,…` URI for Claude's launcher executable, resolved from `claude` at config-save time. `None` when resolution fell
-    /// through to a known interpreter wrapper (`node.exe` etc.) — the frontend then falls back to the bundled `ToolIcon` SVG. Backend-managed;
-    /// frontend patches don't carry it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_icon_data_uri: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub copilot_icon_data_uri: Option<String>,
+    pub icon_data_uris: BTreeMap<String, Option<String>>,
+}
+
+impl AiLaunchCommands {
+    /// Effective command override for a plugin id. Empty string = use plugin default.
+    #[must_use]
+    pub fn command_for_id(&self, plugin_id: &str) -> &str {
+        self.commands.get(plugin_id).map_or("", String::as_str)
+    }
+
+    /// Effective command override for a persisted [`Tool`].
+    #[must_use]
+    pub fn command_for_tool(&self, tool: Tool) -> &str {
+        self.command_for_id(tool.as_id())
+    }
+
+    /// Cached icon data URI for a plugin id, if present.
+    #[must_use]
+    pub fn icon_data_uri_for_id(&self, plugin_id: &str) -> Option<&str> {
+        self.icon_data_uris.get(plugin_id).and_then(Option::as_deref)
+    }
+
+    /// Returns true when an icon cache entry exists for `plugin_id`, including explicit cached misses (`null` / `None`).
+    #[must_use]
+    pub fn has_icon_cache_entry_for_id(&self, plugin_id: &str) -> bool {
+        self.icon_data_uris.contains_key(plugin_id)
+    }
+
+    /// Cached icon data URI for a persisted [`Tool`], if present.
+    #[must_use]
+    pub fn icon_data_uri_for_tool(&self, tool: Tool) -> Option<&str> {
+        self.icon_data_uri_for_id(tool.as_id())
+    }
+}
+
+impl<'de> Deserialize<'de> for AiLaunchCommands {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            #[serde(default)]
+            commands: BTreeMap<String, String>,
+            #[serde(default)]
+            icon_data_uris: BTreeMap<String, Option<String>>,
+            // Legacy (config <= v8) fixed fields.
+            #[serde(default)]
+            claude: Option<String>,
+            #[serde(default)]
+            copilot: Option<String>,
+            #[serde(default)]
+            claude_icon_data_uri: Option<String>,
+            #[serde(default)]
+            copilot_icon_data_uri: Option<String>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let mut commands = wire.commands;
+        if let Some(v) = wire.claude {
+            commands.entry(Tool::Claude.as_id().to_owned()).or_insert(v);
+        }
+        if let Some(v) = wire.copilot {
+            commands.entry(Tool::Copilot.as_id().to_owned()).or_insert(v);
+        }
+
+        let mut icon_data_uris = wire.icon_data_uris;
+        if let Some(v) = wire.claude_icon_data_uri {
+            icon_data_uris.entry(Tool::Claude.as_id().to_owned()).or_insert(Some(v));
+        }
+        if let Some(v) = wire.copilot_icon_data_uri {
+            icon_data_uris.entry(Tool::Copilot.as_id().to_owned()).or_insert(Some(v));
+        }
+
+        Ok(Self { commands, icon_data_uris })
+    }
 }
 
 /// Persisted application configuration. Lives in `config.json` (Phase 4).
@@ -611,15 +702,42 @@ pub struct PartialDefaultInstructionSets {
     pub copilot: Option<InstructionSetId>,
 }
 
-/// Partial form of [`AiLaunchCommands`]. Each field is `Some` to overwrite that agent's launch command (set empty string to clear / revert to
-/// default), or `None` to leave it alone.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+/// Partial form of [`AiLaunchCommands`]. Keys present in `commands` overwrite
+/// only those plugin command entries; omitted keys are untouched.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PartialAiLaunchCommands {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub claude: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub copilot: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub commands: BTreeMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for PartialAiLaunchCommands {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            #[serde(default)]
+            commands: BTreeMap<String, String>,
+            // Legacy fixed fields kept for backwards compatibility.
+            #[serde(default)]
+            claude: Option<String>,
+            #[serde(default)]
+            copilot: Option<String>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let mut commands = wire.commands;
+        if let Some(v) = wire.claude {
+            commands.entry(Tool::Claude.as_id().to_owned()).or_insert(v);
+        }
+        if let Some(v) = wire.copilot {
+            commands.entry(Tool::Copilot.as_id().to_owned()).or_insert(v);
+        }
+        Ok(Self { commands })
+    }
 }
 
 /// Patch over [`AppConfig`]: every field optional so callers can update one key at a time. Phase 4 deep-merges this into the persisted config.
@@ -1686,7 +1804,7 @@ mod tests {
 
     fn app_config_fixture() -> (AppConfig, Value) {
         let value = AppConfig {
-            config_version: 5,
+            config_version: 9,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
@@ -1696,10 +1814,8 @@ mod tests {
             worktree_roots: vec![PathBuf::from("/repo")],
             worktree_prep_commands: vec!["npm install".to_owned()],
             ai_launch_commands: AiLaunchCommands {
-                claude: "npx claude".to_owned(),
-                copilot: String::new(),
-                claude_icon_data_uri: None,
-                copilot_icon_data_uri: None,
+                commands: BTreeMap::from([("claude".to_owned(), "npx claude".to_owned()), ("copilot".to_owned(), String::new())]),
+                icon_data_uris: BTreeMap::new(),
             },
             last_open_sessions: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             tab_order: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
@@ -1728,7 +1844,7 @@ mod tests {
             sidebar_width_px: None,
         };
         let fixture = json!({
-            "configVersion": 5,
+            "configVersion": 9,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
@@ -1738,8 +1854,11 @@ mod tests {
             "worktreeRoots": ["/repo"],
             "worktreePrepCommands": ["npm install"],
             "aiLaunchCommands": {
-                "claude": "npx claude",
-                "copilot": ""
+                "commands": {
+                    "claude": "npx claude",
+                    "copilot": ""
+                },
+                "iconDataUris": {}
             },
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
             "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
@@ -1897,6 +2016,23 @@ mod tests {
     fn app_config_roundtrip() {
         let (value, fixture) = app_config_fixture();
         assert_roundtrip(&value, fixture);
+    }
+
+    #[test]
+    fn ai_launch_commands_distinguishes_absent_from_explicit_null_icon_cache_entry() {
+        let cmds = AiLaunchCommands {
+            commands: BTreeMap::new(),
+            icon_data_uris: BTreeMap::from([
+                ("claude".to_owned(), None),
+                ("copilot".to_owned(), Some("data:image/png;base64,AAAA".to_owned())),
+            ]),
+        };
+
+        assert!(cmds.has_icon_cache_entry_for_id("claude"));
+        assert!(cmds.has_icon_cache_entry_for_id("copilot"));
+        assert!(!cmds.has_icon_cache_entry_for_id("cursor"));
+        assert_eq!(cmds.icon_data_uri_for_id("claude"), None);
+        assert_eq!(cmds.icon_data_uri_for_id("copilot"), Some("data:image/png;base64,AAAA"));
     }
 
     #[test]

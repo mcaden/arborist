@@ -19,6 +19,7 @@ import { StatusIcon } from './StatusIcon';
 import { ToolIcon } from './ToolIcon';
 import { BranchDecoration } from './BranchDecoration';
 import { formatError } from '@/lib/tauri-bridge';
+import { useRegistry } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import {
   useDisplayStatus,
@@ -81,13 +82,16 @@ export function SidebarTab({
   const openPermissions = useOpenPermissions(id);
   const metrics = useMetrics(id);
   const actions = useSessionActions();
+  const registry = useRegistry();
   // Pull the cached AI-tool icon URI from config. The selector is a
   // narrow string-or-undefined so unrelated config changes don't
   // re-render this row.
   const tool = session?.tool;
-  const toolIconDataUri = useConfigStore((s) =>
-    tool === 'claude' ? s.config.aiLaunchCommands.claudeIconDataUri : tool === 'copilot' ? s.config.aiLaunchCommands.copilotIconDataUri : undefined,
-  );
+  const toolIconDataUri = useConfigStore((s) => {
+    if (!tool) return undefined;
+    const uri = s.config.aiLaunchCommands.iconDataUris[tool];
+    return uri ?? undefined;
+  });
   // `useToolSiblingOrdinal` builds a single (tool, worktreePath) ->
   // ordinal map per `sessions` array reference and shares it across
   // every SidebarTab — each tab's lookup is O(1) and the hook returns
@@ -141,7 +145,7 @@ export function SidebarTab({
             className={isActive ? 'h-5 w-5 shrink-0 text-sky-700 dark:text-sky-300' : 'h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400'}
           />
           <span className="min-w-0 flex-1 truncate">
-            {toolDisplayName(session.tool) + (siblingOrdinal !== undefined ? ` ${siblingOrdinal}` : '')}
+            {toolDisplayName(registry, session.tool) + (siblingOrdinal !== undefined ? ` ${siblingOrdinal}` : '')}
           </span>
           <SessionStatusIndicator
             status={displayStatus}
@@ -261,13 +265,9 @@ function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element
 
 // AI session tabs sit *under* a worktree tab that already shows the
 // worktree name, so the row itself just identifies which CLI it hosts.
-function toolDisplayName(tool: Tool): string {
-  switch (tool) {
-    case 'claude':
-      return 'Claude CLI';
-    case 'copilot':
-      return 'Copilot CLI';
-  }
+function toolDisplayName(registry: ReturnType<typeof useRegistry>, tool: Tool): string {
+  const plugin = registry.aiById(tool);
+  return plugin ? `${plugin.displayName} CLI` : `${tool} CLI`;
 }
 
 /** Format a token count as `12.3k` for >= 1000, else as the raw number. */

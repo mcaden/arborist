@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CustomProcessDef } from '@/types/arborist';
+import type { CustomProcessDef, Tool } from '@/types/arborist';
 
 import { createRegistry, PluginRegisterError, type AiPlugin, type CustomProcessPlugin, type DashboardWidgetPlugin } from './index';
 
-const makeAi = (id: string): AiPlugin => ({
+const makeAi = (id: Tool): AiPlugin => ({
   id,
   displayName: id,
   defaultProgram: id,
   defaultInstructionSetPath: `${id}-default.md`,
+  Icon: () => null,
 });
 
 const makeDef = (id: string, command = 'noop'): CustomProcessDef => ({
@@ -46,11 +47,13 @@ describe('createRegistry()', () => {
 
   it('registers AI plugins in insertion order and supports id lookup', () => {
     const r = createRegistry();
-    r.registerAi(makeAi('alpha'));
-    r.registerAi(makeAi('beta'));
-    expect(r.ai().map((p) => p.id)).toEqual(['alpha', 'beta']);
-    expect(r.aiById('alpha')?.displayName).toBe('alpha');
-    expect(r.aiById('missing')).toBeUndefined();
+    r.registerAi(makeAi('claude'));
+    expect(r.aiById('claude')?.displayName).toBe('claude');
+    expect(r.aiById('copilot')).toBeUndefined();
+
+    r.registerAi(makeAi('copilot'));
+    expect(r.ai().map((p) => p.id)).toEqual(['claude', 'copilot']);
+    expect(r.aiById('copilot')?.displayName).toBe('copilot');
   });
 
   it('throws PluginRegisterError on duplicate AI ids', () => {
@@ -113,22 +116,21 @@ describe('createRegistry()', () => {
     // Without the local capture, registerAi would have read `plugin.id` separately for the duplicate check, the error path, and the
     // `aiIndex.set(...)` call. A getter that returns a different value on each read would then leave the index pointing at one id while a
     // later `aiById(...)` lookup with the "current" id misses entirely. Capturing once locks in a single value for the whole method.
-    let counter = 0;
+    let reads = 0;
     const plugin: AiPlugin = {
-      get id(): string {
-        counter += 1;
-        return `ai-${counter}`;
+      get id(): Tool {
+        reads += 1;
+        return reads === 1 ? 'claude' : 'copilot';
       },
       displayName: 'Counter AI',
       defaultProgram: 'noop',
       defaultInstructionSetPath: 'noop.md',
+      Icon: () => null,
     };
     const r = createRegistry();
     r.registerAi(plugin);
-    const idAtRegister = counter; // value of the counter at the moment register* captured the id
-    // The id captured at register-time is the canonical id used by the index. Lookups under that exact value must succeed even though the
-    // getter has advanced past it on subsequent reads.
-    expect(r.aiById(`ai-${idAtRegister}`)?.displayName).toBe('Counter AI');
+    expect(r.aiById('claude')?.displayName).toBe('Counter AI');
+    expect(r.aiById('copilot')).toBeUndefined();
   });
 
   it('preserves prototype methods/getters when freezing class-based plugin instances', () => {
@@ -165,7 +167,7 @@ describe('createRegistry()', () => {
       (stored as { id: string }).id = 'attacker';
     }).toThrow(TypeError);
     expect(r.aiById('claude')?.id).toBe('claude');
-    expect(r.aiById('attacker')).toBeUndefined();
+    expect(r.aiById('copilot')).toBeUndefined();
   });
 
   it('accessors return defensive copies so external mutation cannot desync the registry', () => {

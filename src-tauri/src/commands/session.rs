@@ -409,10 +409,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
 
     // 5. Compose command + temp files.
     let session_id = SessionId::new();
-    let cli_override = match args.tool {
-        crate::types::Tool::Claude => cfg.ai_launch_commands.claude.as_str(),
-        crate::types::Tool::Copilot => cfg.ai_launch_commands.copilot.as_str(),
-    };
+    let cli_override = cfg.ai_launch_commands.command_for_tool(args.tool);
     let composed = compose::compose_command(&ComposeInputs {
         session_id,
         tool: args.tool,
@@ -449,10 +446,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     //    `ai_session_id` continues to be discovered from the transcript
     //    after the first user prompt.
     let tab_index = ctx.store().load_config().tab_order.len().min(usize::MAX - 1);
-    let preallocated_ai_id = match args.tool {
-        Tool::Copilot => Some(uuid::Uuid::new_v4().to_string()),
-        Tool::Claude => None,
-    };
+    let preallocated_ai_id = crate::plugins::ai::create_ai_session_id(args.tool);
     let session = Session {
         id: session_id,
         tool: args.tool,
@@ -1004,11 +998,12 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     //     session-state directory (which would irrevocably orphan the prior
     //     conversation on a transient respawn failure).
     ctx.metrics.stop_and_join(&id);
-    let restart_ai_id: Option<String> = match session.tool {
-        Tool::Copilot => Some(uuid::Uuid::new_v4().to_string()),
-        Tool::Claude => None,
+    let restart_policy = crate::plugins::ai::restart_ai_session_policy(session.tool);
+    let restart_ai_id: Option<String> = match restart_policy {
+        crate::plugins::ai::RestartAiSessionPolicy::RotateUuid => Some(uuid::Uuid::new_v4().to_string()),
+        crate::plugins::ai::RestartAiSessionPolicy::Preserve | crate::plugins::ai::RestartAiSessionPolicy::Clear => None,
     };
-    if matches!(session.tool, Tool::Claude) {
+    if matches!(restart_policy, crate::plugins::ai::RestartAiSessionPolicy::Clear) {
         if let Err(e) = ctx.store().update_session_ai_session_id(&id, None) {
             warn!(session_id = %id, error = ?e, "restart: failed to clear ai_session_id");
         }
@@ -1040,7 +1035,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
 
     // Spawn succeeded — *now* persist the rotated Copilot uuid. Doing this after respawn means a failed restart (above) leaves the prior
     // ai_session_id intact and resumable.
-    if matches!(session.tool, Tool::Copilot) {
+    if matches!(restart_policy, crate::plugins::ai::RestartAiSessionPolicy::RotateUuid) {
         if let Err(e) = ctx.store().update_session_ai_session_id(&id, restart_ai_id.clone()) {
             warn!(session_id = %id, error = ?e, "restart: failed to persist rotated ai_session_id");
         }
@@ -1121,17 +1116,13 @@ fn stale_worktree_message(path: &std::path::Path) -> String {
 /// On any I/O failure we conservatively return `true` so the worst case is the CLI reports its own "no such session" error, which is no worse than
 /// today's behaviour.
 fn ai_session_transcript_exists(tool: Tool, worktree_path: &std::path::Path, ai_session_id: &str) -> bool {
+    if !crate::plugins::ai::resume_requires_preflight(tool) {
+        return true;
+    }
     let Some(home) = crate::session_metrics::home_dir() else {
         return true;
     };
-    let path = match tool {
-        Tool::Claude => home
-            .join(".claude")
-            .join("projects")
-            .join(crate::session_metrics::encode_cwd(worktree_path))
-            .join(format!("{ai_session_id}.jsonl")),
-        Tool::Copilot => home.join(".copilot").join("session-state").join(ai_session_id),
-    };
+    let path = crate::plugins::ai::ai_session_transcript_path(tool, &home, worktree_path, ai_session_id);
     // `try_exists` distinguishes "definitely missing" from "couldn't tell" (e.g. permission denied on a parent dir). `Path::is_file`/`is_dir` would
     // conflate both as `false`, which would silently strip a valid `--resume` whenever the home dir is briefly unreadable.
     match path.try_exists() {
@@ -1307,21 +1298,15 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         // pre-allocated by Arborist at create/restart time.
         let mut session_to_spawn = session.clone();
         if let Some(aid) = session.ai_session_id.as_deref() {
-            let should_splice = match session.tool {
-                Tool::Copilot => true,
-                Tool::Claude => {
-                    let exists = ai_session_transcript_exists(session.tool, &session.worktree_path, aid);
-                    if !exists {
-                        warn!(
-                            session_id = %id,
-                            ai_session_id = %aid,
-                            "restore: Claude transcript missing on disk; starting fresh conversation",
-                        );
-                        let _ = store.update_session_ai_session_id(&id, None);
-                    }
-                    exists
-                }
-            };
+            let should_splice = ai_session_transcript_exists(session.tool, &session.worktree_path, aid);
+            if !should_splice {
+                warn!(
+                    session_id = %id,
+                    ai_session_id = %aid,
+                    "restore: AI session transcript missing on disk; starting fresh conversation",
+                );
+                let _ = store.update_session_ai_session_id(&id, None);
+            }
             if should_splice {
                 session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, aid);
             }

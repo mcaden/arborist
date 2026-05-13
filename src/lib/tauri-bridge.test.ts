@@ -153,13 +153,13 @@ describe('frontendReady', () => {
 describe('configGet', () => {
   it("calls invoke('config_get') with no args and returns the parsed AppConfig", async () => {
     const cfg: AppConfig = {
-      configVersion: 3,
+      configVersion: 9,
       defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
       instructionSetsDir: '/cfg/instr',
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
-      aiLaunchCommands: { claude: '', copilot: '' },
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -182,13 +182,13 @@ describe('configGet', () => {
 describe('configSet', () => {
   it("calls invoke('config_set') wrapping the partial under `partial` and returns the merged AppConfig", async () => {
     const merged: AppConfig = {
-      configVersion: 4,
+      configVersion: 9,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: ['nvm use'],
-      aiLaunchCommands: { claude: '', copilot: '' },
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -319,13 +319,13 @@ describe('workspaceSwitch', () => {
   // not at runtime — which is the entire point of having the fixtures
   // hoisted to describe scope rather than inlined inside `it` blocks.
   const cfg: AppConfig = {
-    configVersion: 3,
+    configVersion: 9,
     defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
     instructionSetsDir: '/cfg/instr',
     workspaceRoot: '/new/ws',
     worktreeRoots: [],
     worktreePrepCommands: [],
-    aiLaunchCommands: { claude: '', copilot: '' },
+    aiLaunchCommands: { commands: {}, iconDataUris: {} },
     lastOpenSessions: ['sid-restored'],
     tabOrder: ['sid-restored'],
     activeSessionId: 'sid-restored',
