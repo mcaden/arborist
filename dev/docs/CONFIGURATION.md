@@ -104,7 +104,7 @@ to other pairs can keep running.
 Field notes:
 
 - `configVersion` — schema version of the file. Currently `9` (see
-  `CONFIG_VERSION_CURRENT` in `src-tauri/src/types.rs`). Bumped only when
+  `CONFIG_VERSION_CURRENT` in `crates/arborist-types/src/lib.rs`). Bumped only when
   the on-disk shape changes; older versions are quarantined (see below).
 - `instructionSetsDir` — must be an **absolute** path that points at an
   existing directory. The path is canonicalized on load (symlinks resolved,
