@@ -50,7 +50,6 @@ flowchart TB
 | `src/`                   | React/TypeScript frontend. Components, hooks, stores, plugins, bridge wrappers, and TS wire types.                                      |
 | `src-tauri/src/`         | Rust backend. Tauri entrypoint, command implementations, PTY pools, config store, workspace locks, Git helpers, metrics, and launchers. |
 | `crates/arborist-types/` | Canonical serialized wire and persistence types shared by backend code and mirrored manually in `src/types/arborist.ts`.                |
-| `instructions/`          | Starter instruction-set Markdown files. Runtime uses the configured `instructionSetsDir`; this directory is a template.                 |
 | `docs/`                  | Active project documentation.                                                                                                           |
 | `dev/e2e/linux/`         | Dockerized Linux E2E harness.                                                                                                           |
 | `.github/workflows/`     | CI, approval-gated Rust checks, and release workflow.                                                                                   |
@@ -64,7 +63,7 @@ flowchart TB
 | `store_layout.rs`                                         | Per-branch and per-workspace app-data path layout.                                                                                  |
 | `workspace_lock.rs`                                       | `fs2` advisory lock for one process per `(branch, workspace)` store.                                                                |
 | `workspace_scope.rs`                                      | Current workspace binding and `ConfigStore` handle.                                                                                 |
-| `config_store.rs`                                         | Atomic JSON persistence, migrations, quarantine, config merge, session records, worktree tabs, and instruction discovery.           |
+| `config_store.rs`                                         | Atomic JSON persistence, migrations, quarantine, config merge, session records, and worktree tabs.                                  |
 | `commands/mod.rs`                                         | Thin `#[tauri::command]` wrappers and production event sinks.                                                                       |
 | `commands/session.rs`                                     | Session, workspace, worktree-create, restore, and switch implementation logic.                                                      |
 | `commands/worktree_tab.rs`                                | Worktree tab open, close, focus, reorder, and active-child logic.                                                                   |
@@ -108,12 +107,11 @@ Rust wire/persistence type must update the TypeScript mirror in the same commit.
 | `WorktreeTab`      | `config.json`           | Yes              | Top-level sidebar parent for one worktree path.                                                       |
 | `SubSession`       | In-memory runtime store | Yes              | Live custom-process child tab.                                                                        |
 | `SubSessionRecord` | `config.json`           | No direct UI use | Lightweight restore record for sub-sessions.                                                          |
-| `InstructionSet`   | Discovered from disk    | Yes              | Instruction file metadata.                                                                            |
 | `AppConfig`        | `config.json`           | Yes              | User/workspace configuration and persisted UI/session ordering.                                       |
 | `PartialAppConfig` | Request payload         | Yes              | Deep-merge patch for `config_set`.                                                                    |
 | `AppError`         | Command error payload   | Yes              | Stable `{ code, message }` shape for frontend branching.                                              |
 
-Current `AppConfig.configVersion` is `10`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
+Current `AppConfig.configVersion` is `11`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
 
 ## Command and event contract
 
@@ -134,7 +132,6 @@ Every command must be present in all of these places:
 | `ping`                          | none                            | `string`                  | Command-boundary smoke check.                                                                                      |
 | `config_get`                    | none                            | `AppConfig`               | Load current workspace config.                                                                                     |
 | `config_set`                    | `PartialAppConfig`              | `AppConfig`               | Deep-merge config patch, validate, persist, and return merged config.                                              |
-| `instructions_list`             | none                            | `InstructionSet[]`        | Discover instruction-set files under `instructionSetsDir`.                                                         |
 | `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                                      |
 | `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                                      |
 | `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                                         |
@@ -182,10 +179,9 @@ Every command must be present in all of these places:
 
 Tauri v2 rejects frontend invokes without capability permissions. `src-tauri/capabilities/main.json` currently grants:
 
-`core:event:allow-listen`, `core:event:allow-unlisten`, `allow-ping`, `allow-config`, `allow-instructions`, `allow-session`,
-`allow-frontend-ready`, `allow-worktrees-list`, `allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`,
-`allow-worktree-create`, `allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, and
-`allow-dialog-pick-directory`.
+`core:event:allow-listen`, `core:event:allow-unlisten`, `allow-ping`, `allow-config`, `allow-session`, `allow-frontend-ready`,
+`allow-worktrees-list`, `allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`, `allow-worktree-create`,
+`allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, and `allow-dialog-pick-directory`.
 
 Broad built-in/plugin grants such as `core:default`, dialog, shell, store, and filesystem permissions are intentionally not granted. Plugin crates may
 still be registered for planned surfaces, but registration alone does not expose commands to the WebView; any future plugin command must get a narrow,

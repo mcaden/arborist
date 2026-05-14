@@ -16,15 +16,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import * as bridge from './tauri-bridge';
-import type {
-  AppConfig,
-  InstructionSet,
-  PartialAppConfig,
-  SessionOutputEvent,
-  SessionStatusEvent,
-  SessionView,
-  WorkspaceSwitchResult,
-} from '@/types/arborist';
+import type { AppConfig, PartialAppConfig, SessionOutputEvent, SessionStatusEvent, SessionView, WorkspaceSwitchResult } from '@/types/arborist';
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -59,7 +51,6 @@ describe('sessionCreate', () => {
       worktreePath: '/repo/feat',
       worktreeName: 'feat',
       label: 'feat',
-      instructionSetId: 'claude-default',
       status: 'running' as const,
       pid: 1234,
       createdAt: 1700000000,
@@ -69,7 +60,6 @@ describe('sessionCreate', () => {
     const args = {
       tool: 'claude' as const,
       worktreePath: '/repo/feat',
-      instructionSetId: 'claude-default',
       cols: 100,
       rows: 30,
     };
@@ -153,9 +143,7 @@ describe('frontendReady', () => {
 describe('configGet', () => {
   it("calls invoke('config_get') with no args and returns the parsed AppConfig", async () => {
     const cfg: AppConfig = {
-      configVersion: 10,
-      defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
-      instructionSetsDir: '/cfg/instr',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
@@ -183,9 +171,7 @@ describe('configGet', () => {
 describe('configSet', () => {
   it("calls invoke('config_set') wrapping the partial under `partial` and returns the merged AppConfig", async () => {
     const merged: AppConfig = {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: ['nvm use'],
@@ -211,30 +197,10 @@ describe('configSet', () => {
 
   it('forwards rejections from the backend', async () => {
     invokeMock.mockRejectedValueOnce({ code: 'InvalidPath', message: 'relative' });
-    await expect(bridge.configSet({ instructionSetsDir: 'relative/x' })).rejects.toEqual({
+    await expect(bridge.configSet({ workspaceRoot: 'relative/x' })).rejects.toEqual({
       code: 'InvalidPath',
       message: 'relative',
     });
-  });
-});
-
-describe('instructionsList', () => {
-  it("calls invoke('instructions_list') and returns the list", async () => {
-    const sets: InstructionSet[] = [
-      {
-        id: 'claude-default',
-        name: 'Claude default',
-        tool: 'claude',
-        filePath: '/cfg/instr/claude-default.md',
-        isDefault: true,
-      },
-    ];
-    invokeMock.mockResolvedValueOnce(sets);
-
-    const result = await bridge.instructionsList();
-
-    expect(invokeMock).toHaveBeenCalledWith('instructions_list', undefined);
-    expect(result).toEqual(sets);
   });
 });
 
@@ -321,9 +287,7 @@ describe('workspaceSwitch', () => {
   // not at runtime — which is the entire point of having the fixtures
   // hoisted to describe scope rather than inlined inside `it` blocks.
   const cfg: AppConfig = {
-    configVersion: 10,
-    defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
-    instructionSetsDir: '/cfg/instr',
+    configVersion: 11,
     workspaceRoot: '/new/ws',
     worktreeRoots: [],
     worktreePrepCommands: [],
@@ -344,7 +308,6 @@ describe('workspaceSwitch', () => {
     worktreePath: '/new/ws/.arborist/.worktrees/feat',
     worktreeName: 'feat',
     label: 'feat',
-    instructionSetId: 'claude-default',
     status: 'starting',
     createdAt: 1_700_000_000,
     tabIndex: 0,

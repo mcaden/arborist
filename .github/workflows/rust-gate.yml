@@ -12,10 +12,6 @@ on:
   pull_request_review:
     types: [submitted]
 
-permissions:
-  actions: write   # required for `gh workflow run` to create workflow_dispatch
-  contents: read
-
 jobs:
   dispatch-rust:
     # Skip non-approving reviews and fork PRs. Fork PRs are skipped because
@@ -27,6 +23,9 @@ jobs:
       github.event.review.state == 'approved' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      actions: write # required for `gh workflow run` to create workflow_dispatch
+      contents: read
     steps:
       - name: Dispatch Rust workflow against PR head branch
         env:
@@ -50,6 +49,7 @@ jobs:
       github.event.review.state == 'approved' &&
       github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Log fork-PR skip
         env:

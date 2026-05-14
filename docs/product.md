@@ -24,7 +24,6 @@ Success looks like:
 | Worktree tab               | A top-level sidebar tab for a worktree path. Its dashboard is shown when no child is active.     |
 | AI session                 | A Claude or Copilot CLI process running in a PTY in the worktree `cwd`.                          |
 | Custom-process sub-session | A child tab launched from a configured custom process definition.                                |
-| Instruction set            | Optional Markdown file discovered from `instructionSetsDir`; only Claude receives it at launch.  |
 | Worktree prep              | One-shot commands run after `worktree_create`, with output logged and surfaced through a banner. |
 
 ## Functional requirements
@@ -66,15 +65,14 @@ Success looks like:
 | T-06 | Unexpected non-zero exit must surface an error state with a restart action.                                        |
 | T-07 | Clean exit must surface an exited state instead of silently pretending the session is still active.                |
 
-### Instruction sets and launch commands
+### AI launch commands
 
 | ID   | Requirement                                                                                                                                               |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| I-01 | Instruction sets are optional Markdown files in a configured directory.                                                                                   |
-| I-02 | Claude receives a composed temp file only when an instruction set is attached. The temp file includes Arborist context plus the instruction content.      |
-| I-03 | Copilot is launched without `--instructions` so repo-level auto-discovery remains active.                                                                 |
-| I-04 | Custom AI launch commands are plugin-keyed overrides. Missing or empty override means use the plugin default program.                                     |
-| I-05 | Dynamic paths must be canonicalized before use and shell-quoted when inserted into command strings. Worktree paths are passed as `cwd`, not interpolated. |
+| I-01 | Claude and Copilot run in the selected worktree `cwd` so each tool can load its own repository-level instruction files.                                   |
+| I-02 | Arborist must not pass `--system-prompt` to Claude or `--instructions` to Copilot for newly created sessions.                                             |
+| I-03 | Custom AI launch commands are plugin-keyed overrides. Missing or empty override means use the plugin default program.                                     |
+| I-04 | Dynamic paths must be canonicalized before use and shell-quoted when inserted into command strings. Worktree paths are passed as `cwd`, not interpolated. |
 
 ### Custom processes and sub-sessions
 

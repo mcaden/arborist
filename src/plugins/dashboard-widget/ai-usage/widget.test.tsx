@@ -15,7 +15,6 @@ function session(id: string, worktreePath: string, status: SessionView['status']
     worktreePath,
     worktreeName: 'feature-x',
     label: id,
-    instructionSetId: 'default-claude',
     status,
     createdAt: 0,
     tabIndex: 0,

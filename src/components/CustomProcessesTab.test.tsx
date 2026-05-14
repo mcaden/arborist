@@ -11,9 +11,7 @@ import type { CustomProcessDef } from '@/types/arborist';
 function seedDefs(defs: CustomProcessDef[]): void {
   useConfigStore.setState({
     config: {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],

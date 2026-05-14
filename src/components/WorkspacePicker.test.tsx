@@ -180,3 +180,40 @@ describe('WorkspacePicker — change mode', () => {
     expect(warning).toHaveTextContent(/already be open in another arborist window/i);
   });
 });
+
+describe('WorkspacePicker — Enter-to-submit', () => {
+  it('submits on Enter when validation is valid', async () => {
+    workspaceValidate.mockResolvedValue({ valid: true });
+    const onConfirm = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined);
+    render(<WorkspacePicker mode="first-boot" onConfirm={onConfirm} />);
+
+    const input = screen.getByLabelText(/workspace path/i);
+    fireEvent.change(input, { target: { value: '/repo' } });
+    await flushDebounce();
+    await waitFor(() => expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled());
+
+    await act(async () => {
+      fireEvent.submit(input.closest('form')!);
+      await Promise.resolve();
+    });
+
+    expect(onConfirm).toHaveBeenCalledWith('/repo');
+  });
+
+  it('does not submit on Enter when validation is invalid', async () => {
+    workspaceValidate.mockResolvedValue({ valid: false, error: 'bad path' });
+    const onConfirm = vi.fn();
+    render(<WorkspacePicker mode="first-boot" onConfirm={onConfirm} />);
+
+    const input = screen.getByLabelText(/workspace path/i);
+    fireEvent.change(input, { target: { value: '/bad' } });
+    await flushDebounce();
+
+    await act(async () => {
+      fireEvent.submit(input.closest('form')!);
+      await Promise.resolve();
+    });
+
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+});

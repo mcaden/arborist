@@ -54,7 +54,6 @@ function seedSession(overrides: Partial<SessionView> = {}): SessionView {
     worktreePath: '/wt',
     worktreeName: 'wt',
     label: 'wt',
-    instructionSetId: 'default',
     status: 'running',
     createdAt: 0,
     tabIndex: 0,

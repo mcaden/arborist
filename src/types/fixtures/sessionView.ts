@@ -10,7 +10,6 @@ export const sessionViewFixture = {
   worktreePath: '/repo/feature-x',
   worktreeName: 'feature-x',
   label: 'feature-x',
-  instructionSetId: 'claude-default',
   status: 'running',
   pid: 12345,
   createdAt: 1700000000,

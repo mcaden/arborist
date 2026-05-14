@@ -113,7 +113,7 @@ export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element 
           ) : (
             <ul
               data-testid="worktree-dashboard-git-files"
-              className="max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 font-mono text-[11px] dark:border-slate-700 dark:bg-slate-950"
+              className="themed-scrollbar max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 font-mono text-[11px] dark:border-slate-700 dark:bg-slate-950"
             >
               {status.files.map((f) => (
                 <li key={`${f.path}-${f.kind}`} className="flex items-center gap-2 truncate">

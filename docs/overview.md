@@ -45,17 +45,17 @@ Key ideas:
 | Sidebar              | Top-level worktree tabs and child tabs for AI/custom-process sessions.                                  |
 | Worktree dashboard   | Overview for the active worktree when no child tab is selected. Shows status widgets such as Git state. |
 | Terminal viewport    | xterm.js view attached to the active AI session or terminal sub-session.                                |
-| Settings             | Workspace, instruction-set, launch-command, sidebar, and custom-process configuration.                  |
+| Settings             | Workspace, launch-command, sidebar, and custom-process configuration.                                   |
 | Worktree prep banner | Status for one-shot prep commands kicked off after new worktree creation.                               |
 
 ## Supported tools
 
-| Tool                       | Launch behavior                                                                                                                                                                         |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude CLI                 | Runs in the worktree `cwd`. Optional Arborist instruction sets are written to a temp file and passed with `--system-prompt`. `CLAUDE.md` is still auto-discovered by Claude from `cwd`. |
-| GitHub Copilot CLI         | Runs bare in the worktree `cwd`. Arborist deliberately avoids `--instructions` so `.github/copilot-instructions.md` auto-discovery remains active.                                      |
-| Custom terminal process    | Runs a configured shell command in a PTY with the parent worktree as `cwd`.                                                                                                             |
-| Custom application process | Launches a configured external application detached from Arborist. The tab tracks and can focus the process where the OS allows it.                                                     |
+| Tool                       | Launch behavior                                                                                                                                    |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude CLI                 | Runs bare in the worktree `cwd`. `CLAUDE.md` is auto-discovered by Claude from that directory.                                                     |
+| GitHub Copilot CLI         | Runs bare in the worktree `cwd`. Arborist deliberately avoids `--instructions` so `.github/copilot-instructions.md` auto-discovery remains active. |
+| Custom terminal process    | Runs a configured shell command in a PTY with the parent worktree as `cwd`.                                                                        |
+| Custom application process | Launches a configured external application detached from Arborist. The tab tracks and can focus the process where the OS allows it.                |
 
 ## What Arborist is not
 

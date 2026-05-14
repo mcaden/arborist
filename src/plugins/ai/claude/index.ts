@@ -6,7 +6,6 @@ export const ClaudeAiPlugin: AiPlugin = {
   id: 'claude',
   displayName: 'Claude',
   defaultProgram: 'claude',
-  defaultInstructionSetPath: 'claude-default.md',
   contextMetricsLimitTooltipSuffix: ' (model nominal max; includes harness overhead in usage)',
   settings: [
     {

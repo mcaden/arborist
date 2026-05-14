@@ -11,9 +11,7 @@ import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 import { useConfigStore } from './config-store';
 
 const SAMPLE: AppConfig = {
-  configVersion: 10,
-  defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
-  instructionSetsDir: '/cfg/instr',
+  configVersion: 11,
   workspaceRoot: null,
   worktreeRoots: ['/repo'],
   worktreePrepCommands: ['nvm use'],
@@ -32,9 +30,7 @@ const SAMPLE: AppConfig = {
 function resetStore(): void {
   useConfigStore.setState({
     config: {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
@@ -95,7 +91,7 @@ describe('useConfigStore.set', () => {
     const diff = {
       worktreePrepCommands: ['nvm use'],
       // explicit undefined must be stripped
-      instructionSetsDir: undefined,
+      sidebarWidthPx: undefined,
     } as unknown as PartialAppConfig;
 
     await useConfigStore.getState().set(diff);
@@ -103,7 +99,7 @@ describe('useConfigStore.set', () => {
     expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
     const [arg] = bridgeMock.configSet.mock.calls[0]!;
     expect(arg).toEqual({ worktreePrepCommands: ['nvm use'] });
-    expect(arg).not.toHaveProperty('instructionSetsDir');
+    expect(arg).not.toHaveProperty('sidebarWidthPx');
   });
 
   it('mirrors the merged config returned by the backend after a successful write', async () => {
@@ -120,22 +116,7 @@ describe('useConfigStore.set', () => {
 
     expect(useConfigStore.getState().config.worktreePrepCommands).toEqual(['echo hi']);
     // Untouched fields survive (mirrored from the returned snapshot).
-    expect(useConfigStore.getState().config.instructionSetsDir).toBe('/cfg/instr');
-  });
-
-  it('deep-merges defaultInstructionSets so a partial patch keeps the other tool', async () => {
-    useConfigStore.setState({ config: { ...SAMPLE } });
-    bridgeMock.configSet.mockResolvedValueOnce({
-      ...SAMPLE,
-      defaultInstructionSets: { claude: 'claude-other', copilot: 'copilot-default' },
-    });
-    await useConfigStore.getState().set({
-      defaultInstructionSets: { claude: 'claude-other' },
-    });
-    expect(useConfigStore.getState().config.defaultInstructionSets).toEqual({
-      claude: 'claude-other',
-      copilot: 'copilot-default',
-    });
+    expect(useConfigStore.getState().config.worktreeRoots).toEqual(['/repo']);
   });
 
   it('does not mutate the cache when the backend rejects', async () => {
@@ -145,10 +126,10 @@ describe('useConfigStore.set', () => {
       message: 'relative',
     });
 
-    await expect(useConfigStore.getState().set({ instructionSetsDir: 'rel/path' })).rejects.toMatchObject({ code: 'InvalidPath' });
+    await expect(useConfigStore.getState().set({ workspaceRoot: 'rel/path' })).rejects.toMatchObject({ code: 'InvalidPath' });
 
     // Cache untouched.
-    expect(useConfigStore.getState().config.instructionSetsDir).toBe('/cfg/instr');
+    expect(useConfigStore.getState().config.workspaceRoot).toBeNull();
   });
 
   it('mirrors customProcesses + lastOpenSubSessions from the backend snapshot', async () => {

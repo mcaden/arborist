@@ -3,14 +3,11 @@
 //! We override the `claude` program token by populating
 //! `AppConfig.ai_launch_commands.commands["claude"]` with the path to
 //! `arborist-test-child` (the
-//! deterministic child shipped alongside the PTY-pool tests). This proves the end-to-end flow — compose → temp file → portable-pty spawn → output
+//! deterministic child shipped alongside the PTY-pool tests). This proves the end-to-end flow — compose → portable-pty spawn → output
 //! drain → status persistence — works with no fakes anywhere except the CLI itself.
 //!
-//! **Unix-only.** On Windows, `shell_quote_cmd` always wraps its input in `"…"`. Combined with the temp-file path argument's own quoting, the
-//! composed string we hand to `cmd.exe /c` contains four quote characters, which trips cmd.exe's "old behavior" (strip first + last quote) and
-//! produces an unspawnable command. Production `claude` is a bare token (never quoted), so this only manifests under the test override seam. The
-//! FakeSpawner suite (`session_lifecycle_fake.rs`) covers every Phase 7 code path on Windows, and `pty_pool.rs` exercises PortablePtySpawner
-//! end-to-end with a hand-crafted composed string that sidesteps the issue.
+//! **Unix-only.** The FakeSpawner suite (`session_lifecycle_fake.rs`) covers every Phase 7 code path on Windows, and `pty_pool.rs` exercises
+//! PortablePtySpawner end-to-end with a hand-crafted composed string.
 
 #![cfg(unix)]
 #![cfg(feature = "test-helpers")]
@@ -21,10 +18,7 @@ use std::time::Duration;
 use arborist_lib::commands::session::{session_close_impl, session_create_impl, session_input_impl, AppContext};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
-use arborist_lib::types::{
-    InstructionSetId, PartialAiLaunchCommands, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs,
-    SessionStatus, Tool,
-};
+use arborist_lib::types::{PartialAiLaunchCommands, PartialAppConfig, SessionCreateArgs, SessionId, SessionInputArgs, SessionStatus, Tool};
 use tempfile::TempDir;
 
 const TEST_CHILD: &str = env!("CARGO_BIN_EXE_arborist-test-child");
@@ -62,20 +56,11 @@ fn wait_until<F: FnMut() -> bool>(mut f: F, dur: Duration) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_spawner_drives_create_input_close_round_trip() {
     let config_dir = TempDir::new().unwrap();
-    let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
-
-    let instruction_id = InstructionSetId("claude-default".into());
-    std::fs::write(instructions_dir.path().join("claude-default.md"), "# real-spawner test instructions").unwrap();
 
     let store = ConfigStore::open(config_dir.path()).unwrap();
     store
         .save_config(PartialAppConfig {
-            instruction_sets_dir: Some(instructions_dir.path().to_path_buf()),
-            default_instruction_sets: Some(PartialDefaultInstructionSets {
-                claude: Some(instruction_id.clone()),
-                copilot: None,
-            }),
             // Replace the bare `claude` program token with the deterministic test child via the user-config override path
             // (`AppConfig.ai_launch_commands.commands["claude"]`). This is the same plumbing real users get via the Settings dialog.
             ai_launch_commands: Some(PartialAiLaunchCommands {
@@ -90,14 +75,12 @@ async fn real_spawner_drives_create_input_close_round_trip() {
     let sink = build_sink(Arc::clone(&captured), store.clone());
     let ctx = Arc::new(AppContext::with_real_git(pool, store, sink));
 
-    // Create — this materialises the temp file, composes the command using the override (so the program is `<TEST_CHILD>` instead of `claude`), and
-    // spawns through portable-pty.
+    // Create — this composes the command using the override (so the program is `<TEST_CHILD>` instead of `claude`) and spawns through portable-pty.
     let view = session_create_impl(
         &ctx,
         SessionCreateArgs {
             tool: Tool::Claude,
             worktree_path: worktree.path().to_path_buf(),
-            instruction_set_id: Some(instruction_id),
             cols: 80,
             rows: 24,
         },

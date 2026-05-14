@@ -145,7 +145,13 @@ export function WorkspacePicker({ mode, initialPath, onConfirm, onCancel }: Work
       aria-labelledby={`${inputId}-heading`}
       className="flex h-full w-full items-center justify-center bg-white p-8 text-slate-900 dark:bg-slate-900 dark:text-slate-100"
     >
-      <div className="w-full max-w-lg">
+      <form
+        className="w-full max-w-lg"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void handleSubmit();
+        }}
+      >
         <h1 id={`${inputId}-heading`} className="text-xl font-semibold">
           {heading}
         </h1>
@@ -208,15 +214,14 @@ export function WorkspacePicker({ mode, initialPath, onConfirm, onCancel }: Work
             </button>
           ) : null}
           <button
-            type="button"
-            onClick={() => void handleSubmit()}
+            type="submit"
             disabled={!canSubmit}
             className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {submitting ? 'Saving…' : mode === 'first-boot' ? 'Continue' : 'Switch workspace'}
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }
