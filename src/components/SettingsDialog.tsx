@@ -287,7 +287,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={generalPanelId}
               aria-labelledby={generalTabId}
               data-testid="settings-panel-general"
-              className="min-h-0 flex-1 overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-y-auto pr-2"
             >
               <section className="mb-4">
                 <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Workspace</h3>
@@ -398,7 +398,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={pluginsPanelId}
               aria-labelledby={pluginsTabId}
               data-testid="settings-panel-plugins"
-              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
             >
               <PluginsTab onClose={onClose} />
             </div>
@@ -408,7 +408,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={customProcessesPanelId}
               aria-labelledby={customProcessesTabId}
               data-testid="settings-panel-custom-processes"
-              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
             >
               <CustomProcessesTab onClose={onClose} />
             </div>
@@ -418,7 +418,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={aboutPanelId}
               aria-labelledby={aboutTabId}
               data-testid="settings-panel-about"
-              className="min-h-0 flex-1 overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-y-auto pr-2"
             >
               <section className="space-y-3 text-xs leading-5 text-slate-600 dark:text-slate-300">
                 <p data-testid="settings-about-attribution">

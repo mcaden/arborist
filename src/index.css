@@ -21,3 +21,37 @@ body,
 body {
   margin: 0;
 }
+
+/* Themed scrollbar — apply .themed-scrollbar to any overflow container.
+   Matches the sidebar's slate palette in both light and dark modes. */
+
+/* Standard properties (Firefox, future browsers) */
+.themed-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225) transparent; /* slate-300 thumb */
+}
+.themed-scrollbar:where(.dark, .dark *) {
+  scrollbar-color: rgb(71 85 105) transparent; /* slate-600 thumb */
+}
+
+/* WebKit (Chromium, Safari, Tauri WebView) */
+.themed-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.themed-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.themed-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgb(203 213 225); /* slate-300 */
+  border-radius: 3px;
+}
+.themed-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(148 163 184); /* slate-400 */
+}
+
+.themed-scrollbar:where(.dark, .dark *)::-webkit-scrollbar-thumb {
+  background-color: rgb(71 85 105); /* slate-600 */
+}
+.themed-scrollbar:where(.dark, .dark *)::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(100 116 139); /* slate-500 */
+}

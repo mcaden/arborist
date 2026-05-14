@@ -51,7 +51,7 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
       data-testid="worktree-dashboard"
       role="region"
       aria-labelledby="worktree-dashboard-title"
-      className="flex h-full min-w-0 flex-1 flex-col gap-6 overflow-y-auto bg-white px-8 py-6 text-slate-700 dark:bg-slate-950 dark:text-slate-200"
+      className="themed-scrollbar flex h-full min-w-0 flex-1 flex-col gap-6 overflow-y-auto bg-white px-8 py-6 text-slate-700 dark:bg-slate-950 dark:text-slate-200"
     >
       <header className="flex flex-col gap-1">
         <h1 id="worktree-dashboard-title" className="text-lg font-semibold">

@@ -296,7 +296,7 @@ export function NewSessionDialog(): JSX.Element | null {
                   elsewhere.
                 </p>
               ) : (
-                <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+                <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
                   {worktrees.map((w) => (
                     <li key={w.path}>
                       <button
