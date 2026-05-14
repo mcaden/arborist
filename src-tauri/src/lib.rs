@@ -245,7 +245,7 @@ pub fn run() {
             let workspace_handle = std::sync::Arc::new(std::sync::RwLock::new(scope));
             let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(pty_pool::PortablePtySpawner)));
             let sink = commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
-            let metrics_emit = commands::build_production_metrics_emit(app.handle().clone());
+            let metrics_emit = commands::build_production_metrics_emit(app.handle().clone(), workspace_handle.clone());
             let ai_session_discover = commands::build_production_ai_session_discover(workspace_handle.clone());
             let turn_emit = commands::build_production_turn_emit(app.handle().clone());
             let git_runner: std::sync::Arc<dyn git::GitRunner> = std::sync::Arc::new(git::RealGitRunner);

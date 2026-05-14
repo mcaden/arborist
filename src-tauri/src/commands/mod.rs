@@ -457,13 +457,23 @@ pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<Worksp
     crate::pty_pool::PtySink::new(output, status, activity)
 }
 
-/// Build the production metrics emitter (Issue #3) — fires `session://metrics` Tauri events. Tests construct their own callback (typically a channel
-/// sender) and pass it to [`AppContext::new`].
+/// Build the production metrics emitter (Issue #3) — fires `session://metrics` Tauri events and persists the snapshot on the session record so
+/// restore can seed the frontend dashboard (Issue #140). Tests construct their own callback (typically a channel sender) and pass it to
+/// [`AppContext::new`].
 #[must_use]
-pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_metrics::MetricsCb {
+pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLock<WorkspaceScope>>) -> crate::session_metrics::MetricsCb {
     Arc::new(move |payload: crate::types::SessionMetricsEvent| {
-        if let Err(e) = app.emit("session://metrics", payload) {
+        if let Err(e) = app.emit("session://metrics", &payload) {
             tracing::debug!(error = %e, "emit session://metrics failed");
+        }
+        // Best-effort persist — errors are swallowed so a transient store issue doesn't crash the watcher thread.
+        let store = match workspace.read() {
+            Ok(guard) => guard.store.clone(),
+            Err(_) => return,
+        };
+        let session_id = payload.session_id;
+        if let Err(e) = store.update_session_metrics(&session_id, payload) {
+            tracing::debug!(error = ?e, "failed to persist session metrics");
         }
     })
 }

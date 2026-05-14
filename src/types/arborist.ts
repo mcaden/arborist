@@ -88,6 +88,8 @@ export interface SessionView {
   pid?: number;
   createdAt: number;
   tabIndex: number;
+  /** Last-known metrics snapshot, persisted so restore can seed the dashboard without waiting for the watcher. */
+  lastMetrics?: SessionMetricsEvent;
 }
 
 // MIRROR: src-tauri/src/types.rs::ChildId

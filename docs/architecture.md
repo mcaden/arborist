@@ -103,7 +103,7 @@ Rust wire/persistence type must update the TypeScript mirror in the same commit.
 
 | Type               | Stored where            | Sent to frontend | Purpose                                                                                               |
 | ------------------ | ----------------------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
-| `Session`          | `sessions.json`         | No               | Full backend record for an AI PTY session. Includes `composedCommand`, temp files, and AI session id. |
+| `Session`          | `sessions.json`         | No               | Full backend record for an AI PTY session. Includes `composedCommand`, temp files, AI session id, and last-known metrics snapshot. |
 | `SessionView`      | Derived from `Session`  | Yes              | Frontend-safe projection without backend-only command/temp-file material.                             |
 | `WorktreeTab`      | `config.json`           | Yes              | Top-level sidebar parent for one worktree path.                                                       |
 | `SubSession`       | In-memory runtime store | Yes              | Live custom-process child tab.                                                                        |
@@ -172,7 +172,7 @@ Every command must be present in all of these places:
 | `session://output`      | `SessionOutputEvent`      | PTY output for AI sessions and terminal sub-sessions. Sub-session ids are mapped into the session id-shaped field. |
 | `session://status`      | `SessionStatusEvent`      | AI session lifecycle status and optional explanatory message.                                                      |
 | `session://activity`    | `SessionActivityEvent`    | Attention, working/idle, title, prompt/command, turn, tool, and permission activity.                               |
-| `session://metrics`     | `SessionMetricsEvent`     | Token/context-window snapshot for a session.                                                                       |
+| `session://metrics`     | `SessionMetricsEvent`     | Token/context-window snapshot for a session. Also persisted on `Session.last_metrics` for restore.  |
 | `subsession://status`   | `SubSessionStatusEvent`   | Custom-process sub-session status and optional pid/message.                                                        |
 | `subsession://exited`   | `SubSessionExitedEvent`   | Application sub-session process exit notification.                                                                 |
 | `subsession://restored` | `SubSessionRestoredEvent` | Restore pass materialized a sub-session row.                                                                       |

@@ -257,6 +257,10 @@ pub struct Session {
     /// — omitted from [`SessionView`]; not surfaced to the frontend today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_session_id: Option<String>,
+    /// Last-known token-usage / context-window snapshot for this session, persisted so the frontend can restore dashboard totals across app restarts
+    /// without waiting for the metrics watcher to re-emit. Updated on every `session://metrics` emission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_metrics: Option<SessionMetricsEvent>,
 }
 
 /// Frontend-facing projection of [`Session`]. Intentionally drops `composed_command` (backend-only restart material) and `temp_files` (backend-only
@@ -277,6 +281,10 @@ pub struct SessionView {
     pub pid: Option<u32>,
     pub created_at: i64,
     pub tab_index: usize,
+    /// Last-known metrics snapshot, carried from the persisted [`Session`] so the frontend can seed its metrics store on hydrate without waiting for
+    /// the watcher to re-emit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_metrics: Option<SessionMetricsEvent>,
 }
 
 impl From<&Session> for SessionView {
@@ -292,6 +300,7 @@ impl From<&Session> for SessionView {
             pid: s.pid,
             created_at: s.created_at,
             tab_index: s.tab_index,
+            last_metrics: s.last_metrics.clone(),
         }
     }
 }
@@ -1919,6 +1928,7 @@ mod tests {
                 contents: "context".to_owned(),
             }],
             ai_session_id: None,
+            last_metrics: None,
         }
     }
 

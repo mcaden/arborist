@@ -505,6 +505,7 @@ fn fake_session(worktree: &Path, label: &str) -> arborist_lib::types::Session {
         tab_index: 0,
         temp_files: Vec::new(),
         ai_session_id: None,
+        last_metrics: None,
     }
 }
 

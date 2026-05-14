@@ -74,6 +74,23 @@ describe('hydrate', () => {
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b', 'c']);
     expect(useSessionStore.getState().isHydrated).toBe(true);
   });
+
+  it('seeds metrics store from lastMetrics on restored sessions', async () => {
+    const views = [
+      makeView({
+        id: 'with-metrics',
+        lastMetrics: { sessionId: 'with-metrics', inputTokens: 5000, outputTokens: 1000, observedAt: 1_700_000_100 },
+      }),
+      makeView({ id: 'no-metrics' }),
+    ];
+    bridgeMock.sessionList.mockResolvedValueOnce(views);
+
+    await useSessionStore.getState().actions.hydrate();
+
+    const { metrics } = useSessionStore.getState();
+    expect(metrics['with-metrics']).toEqual({ sessionId: 'with-metrics', inputTokens: 5000, outputTokens: 1000, observedAt: 1_700_000_100 });
+    expect(metrics['no-metrics']).toBeUndefined();
+  });
 });
 
 describe('create', () => {

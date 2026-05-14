@@ -257,6 +257,14 @@ export const useSessionStore = create<Store>((set, get) => {
   const actions: SessionStoreActions = {
     hydrate: async () => {
       const sessions = await sessionList();
+      // Seed metrics from persisted lastMetrics snapshots so the dashboard
+      // doesn't start at zero after restore (Issue #140).
+      const restoredMetrics: Record<string, SessionMetrics> = {};
+      for (const s of sessions) {
+        if (s.lastMetrics) {
+          restoredMetrics[s.id] = s.lastMetrics;
+        }
+      }
       // Clear any orphan status messages — keys may belong to sessions
       // that no longer exist after the backend reload.
       set({
@@ -265,7 +273,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: {},
+        metrics: restoredMetrics,
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},
@@ -286,6 +294,13 @@ export const useSessionStore = create<Store>((set, get) => {
       } else {
         activeId = sessions[0]?.id;
       }
+      // Seed metrics from persisted lastMetrics (Issue #140).
+      const restoredMetrics: Record<string, SessionMetrics> = {};
+      for (const s of sessions) {
+        if (s.lastMetrics) {
+          restoredMetrics[s.id] = s.lastMetrics;
+        }
+      }
       set({
         sessions,
         activeId,
@@ -293,7 +308,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: {},
+        metrics: restoredMetrics,
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},

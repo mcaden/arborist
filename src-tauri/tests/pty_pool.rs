@@ -48,6 +48,7 @@ fn make_session(workdir: &Path) -> Session {
         tab_index: 0,
         temp_files: Vec::new(),
         ai_session_id: None,
+        last_metrics: None,
     }
 }
 
@@ -377,6 +378,7 @@ fn make_copilot_session(workdir: &Path) -> Session {
         tab_index: 0,
         temp_files: Vec::new(),
         ai_session_id: None,
+        last_metrics: None,
     }
 }
 
