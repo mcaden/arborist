@@ -313,6 +313,7 @@ mod windows_process_tree {
 
     const TH32CS_SNAPPROCESS: Dword = 0x0000_0002;
     const PROCESS_TERMINATE: Dword = 0x0001;
+    const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
     const SYNCHRONIZE: Dword = 0x0010_0000;
     const ERROR_INVALID_PARAMETER: i32 = 87;
     const ERROR_NO_MORE_FILES: i32 = 18;
@@ -338,12 +339,34 @@ mod windows_process_tree {
         szExeFile: [u16; MAX_PATH],
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct ProcessSnapshotEntry {
+        pid: u32,
+        parent_pid: u32,
+        creation_time: Option<u64>,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    #[allow(non_snake_case)]
+    struct FileTime {
+        dwLowDateTime: Dword,
+        dwHighDateTime: Dword,
+    }
+
     #[link(name = "kernel32")]
     extern "system" {
         fn CreateToolhelp32Snapshot(dw_flags: Dword, process_id: Dword) -> Handle;
         fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> Bool;
         fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> Bool;
         fn OpenProcess(desired_access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+        fn GetProcessTimes(
+            process: Handle,
+            creation_time: *mut FileTime,
+            exit_time: *mut FileTime,
+            kernel_time: *mut FileTime,
+            user_time: *mut FileTime,
+        ) -> Bool;
         fn TerminateProcess(process: Handle, exit_code: u32) -> Bool;
         fn WaitForSingleObject(handle: Handle, milliseconds: Dword) -> Dword;
         fn CloseHandle(object: Handle) -> Bool;
@@ -368,7 +391,7 @@ mod windows_process_tree {
         }
     }
 
-    fn snapshot_process_parent_pairs() -> io::Result<Vec<(u32, u32)>> {
+    fn snapshot_process_parent_pairs() -> io::Result<Vec<ProcessSnapshotEntry>> {
         // SAFETY: CreateToolhelp32Snapshot is called with the documented process-snapshot flag and process id 0 for all processes.
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot as isize == INVALID_HANDLE_VALUE {
@@ -385,7 +408,7 @@ mod windows_process_tree {
         result
     }
 
-    fn collect_process_parent_pairs(snapshot: Handle) -> io::Result<Vec<(u32, u32)>> {
+    fn collect_process_parent_pairs(snapshot: Handle) -> io::Result<Vec<ProcessSnapshotEntry>> {
         let mut entry = ProcessEntry32W {
             dwSize: std::mem::size_of::<ProcessEntry32W>() as Dword,
             cntUsage: 0,
@@ -411,7 +434,11 @@ mod windows_process_tree {
 
         let mut entries = Vec::new();
         loop {
-            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            entries.push(ProcessSnapshotEntry {
+                pid: entry.th32ProcessID,
+                parent_pid: entry.th32ParentProcessID,
+                creation_time: process_creation_time(entry.th32ProcessID),
+            });
             // SAFETY: same initialized entry buffer; Process32NextW mutates it in place until it returns 0.
             if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
                 let error = io::Error::last_os_error();
@@ -424,24 +451,59 @@ mod windows_process_tree {
         }
     }
 
-    fn descendant_pids_deepest_first(root_pid: u32, entries: &[(u32, u32)]) -> Vec<u32> {
-        let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (pid, parent) in entries {
-            if *pid != root_pid {
-                children_by_parent.entry(*parent).or_default().push(*pid);
+    fn process_creation_time(pid: u32) -> Option<u64> {
+        // SAFETY: OpenProcess accepts any PID and returns NULL for stale/invalid ones; no pointers are dereferenced.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+
+        let mut creation_time = FileTime::default();
+        let mut exit_time = FileTime::default();
+        let mut kernel_time = FileTime::default();
+        let mut user_time = FileTime::default();
+        // SAFETY: handle is valid and all FILETIME pointers are initialized writable buffers.
+        let ok = unsafe { GetProcessTimes(handle, &mut creation_time, &mut exit_time, &mut kernel_time, &mut user_time) };
+        // SAFETY: handle is valid and closed exactly once.
+        unsafe {
+            CloseHandle(handle);
+        }
+
+        if ok == 0 {
+            None
+        } else {
+            Some((u64::from(creation_time.dwHighDateTime) << 32) | u64::from(creation_time.dwLowDateTime))
+        }
+    }
+
+    fn descendant_pids_deepest_first(root_pid: u32, entries: &[ProcessSnapshotEntry]) -> Vec<u32> {
+        let Some(root_created_at) = entries.iter().find(|entry| entry.pid == root_pid).and_then(|entry| entry.creation_time) else {
+            return Vec::new();
+        };
+
+        let mut children_by_parent: HashMap<u32, Vec<ProcessSnapshotEntry>> = HashMap::new();
+        for entry in entries {
+            if entry.pid != root_pid && entry.creation_time.is_some() {
+                children_by_parent.entry(entry.parent_pid).or_default().push(*entry);
             }
         }
         for children in children_by_parent.values_mut() {
-            children.sort_unstable();
+            children.sort_unstable_by_key(|entry| entry.pid);
         }
 
         let mut seen = HashSet::new();
         let mut ordered = Vec::new();
-        let _ = append_descendants(root_pid, &children_by_parent, &mut seen, &mut ordered);
+        let _ = append_descendants(root_pid, root_created_at, &children_by_parent, &mut seen, &mut ordered);
         ordered
     }
 
-    fn append_descendants(pid: u32, children_by_parent: &HashMap<u32, Vec<u32>>, seen: &mut HashSet<u32>, ordered: &mut Vec<u32>) -> bool {
+    fn append_descendants(
+        pid: u32,
+        parent_created_at: u64,
+        children_by_parent: &HashMap<u32, Vec<ProcessSnapshotEntry>>,
+        seen: &mut HashSet<u32>,
+        ordered: &mut Vec<u32>,
+    ) -> bool {
         if !seen.insert(pid) {
             return false;
         }
@@ -449,8 +511,14 @@ mod windows_process_tree {
             return true;
         };
         for child in children {
-            if append_descendants(*child, children_by_parent, seen, ordered) {
-                ordered.push(*child);
+            let Some(child_created_at) = child.creation_time else {
+                continue;
+            };
+            if child_created_at < parent_created_at {
+                continue;
+            }
+            if append_descendants(child.pid, child_created_at, children_by_parent, seen, ordered) {
+                ordered.push(child.pid);
             }
         }
         true
@@ -505,14 +573,58 @@ mod windows_process_tree {
 
     #[cfg(test)]
     mod tests {
-        use super::descendant_pids_deepest_first;
+        use super::{descendant_pids_deepest_first, ProcessSnapshotEntry};
         use pretty_assertions::assert_eq;
+
+        fn entry(pid: u32, parent_pid: u32, creation_time: u64) -> ProcessSnapshotEntry {
+            ProcessSnapshotEntry {
+                pid,
+                parent_pid,
+                creation_time: Some(creation_time),
+            }
+        }
 
         #[test]
         fn descendant_pids_are_deepest_first_without_root() {
-            let entries = [(10, 1), (11, 10), (12, 10), (13, 11), (14, 13), (15, 12), (99, 14), (20, 2)];
+            let entries = [
+                entry(10, 1, 100),
+                entry(11, 10, 110),
+                entry(12, 10, 120),
+                entry(13, 11, 130),
+                entry(14, 13, 140),
+                entry(15, 12, 150),
+                entry(99, 14, 160),
+                entry(20, 2, 170),
+            ];
 
             assert_eq!(descendant_pids_deepest_first(10, &entries), vec![99, 14, 13, 11, 15, 12]);
+        }
+
+        #[test]
+        fn descendant_pids_skip_children_older_than_parent_pid() {
+            let entries = [
+                entry(10, 1, 100),
+                entry(11, 10, 110),
+                // Simulates a long-lived unrelated process whose original parent PID was later reused by the root process.
+                entry(12, 10, 90),
+                entry(13, 12, 130),
+            ];
+
+            assert_eq!(descendant_pids_deepest_first(10, &entries), vec![11]);
+        }
+
+        #[test]
+        fn descendant_pids_skip_when_root_creation_time_is_unknown() {
+            let entries = [
+                ProcessSnapshotEntry {
+                    pid: 10,
+                    parent_pid: 1,
+                    creation_time: None,
+                },
+                entry(11, 10, 110),
+            ];
+
+            assert_eq!(descendant_pids_deepest_first(10, &entries), Vec::<u32>::new());
         }
     }
 }
