@@ -287,13 +287,7 @@ export function NewSessionDialog(): JSX.Element | null {
 
         <div role="tabpanel" id="worktree-panel-existing" aria-labelledby="worktree-tab-existing" hidden={worktreeMode !== 'existing'}>
           {worktreeMode === 'existing' && (
-            <form
-              id="existing-worktree-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void onConfirmExisting();
-              }}
-            >
+            <>
               {worktreesLoading ? (
                 <p className="text-sm text-slate-500">Loading...</p>
               ) : worktrees.length === 0 ? (
@@ -307,13 +301,15 @@ export function NewSessionDialog(): JSX.Element | null {
                     <li key={w.path}>
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
                           setWorktree({
                             path: w.path,
                             ...(w.branch !== undefined ? { branch: w.branch } : {}),
                             isMain: w.isMain,
-                          })
-                        }
+                          });
+                          // Move focus to the confirm button so Enter opens the worktree.
+                          requestAnimationFrame(() => existingConfirmRef.current?.focus());
+                        }}
                         className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
                           worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
                         }`}
@@ -341,7 +337,7 @@ export function NewSessionDialog(): JSX.Element | null {
               >
                 Browse...
               </button>
-            </form>
+            </>
           )}
         </div>
         <div role="tabpanel" id="worktree-panel-new" aria-labelledby="worktree-tab-new" hidden={worktreeMode !== 'new'}>
@@ -431,8 +427,10 @@ export function NewSessionDialog(): JSX.Element | null {
         {worktreeMode === 'existing' && (
           <button
             ref={existingConfirmRef}
-            type="submit"
-            form="existing-worktree-form"
+            type="button"
+            onClick={() => {
+              void onConfirmExisting();
+            }}
             disabled={submitting || creating || !worktree}
             className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
