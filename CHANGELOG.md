@@ -7,6 +7,15 @@ and this project follows semantic versioning once it reaches a stable v1.
 
 ## [Unreleased]
 
+### Changed — Documentation refresh for public open-source readiness (issue #106)
+
+- Consolidated active project documentation under lowercase `docs/` files, added root GitHub community-health files, and removed the previous split
+  documentation set.
+- Reworked architecture, runtime-flow, configuration, worktree, development, testing, contributing, release, roadmap, security, support, and conduct
+  documentation for public readers.
+- Standardized active documentation diagrams on Mermaid.
+- Historical changelog entries may still mention old documentation paths because they describe the project state at the time of those changes.
+
 ### Added — Worktree as parent tab, AI agents as child tabs (issue #44)
 
 The sidebar is now a two-level hierarchy: each top-level row is a **worktree
@@ -112,9 +121,6 @@ the UUID id space is global across `Session` and `SubSession`.
 
 ### Documentation
 
-- `dev/docs/SPEC.md` §5.7 (CP-01 – CP-11): functional requirements for the
-  feature.
-- `dev/docs/DESIGN.md` §3.4 / §5.7 / §6 / §7 / §8.1: data model, lifecycle
-  flows, command/event API, directory layout, and the shell-injection
-  invariant for custom-process commands.
+- The custom-process requirements and architecture notes now live in
+  `docs/product.md`, `docs/architecture.md`, and `docs/runtime-flows.md`.
 - `README.md` — Optional system dependencies section.

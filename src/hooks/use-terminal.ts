@@ -4,12 +4,12 @@
 // ------------
 // * One `Terminal` instance per `sessionId` lives in a **module-scoped Map**
 //   (`registry`) so it survives any React component unmount — including the
-//   tab-switch case (SPEC T-03). The hook returned by `useTerminal()` only
+//   tab-switch case (see docs/product.md T-03). The hook returned by `useTerminal()` only
 //   ever attaches / detaches a terminal from the DOM; it never disposes.
 // * Disposal is tied to *session lifetime*, not component lifetime. A single
 //   subscription to the session store fires `disposeTerminal()` when an id
 //   disappears from `sessions`.
-// * Output bypasses Zustand entirely (see DESIGN §5.2): a single
+// * Output bypasses Zustand entirely (see docs/architecture.md): a single
 //   `onSessionOutput` listener is attached at boot via the explicit
 //   `initTerminalRouter()` (called from `App.tsx`) and demuxes by
 //   `sessionId` to the relevant `Terminal`. The lazy fallback inside
@@ -41,7 +41,7 @@
 //   coalesced through a single `rAF` so a sleep→wake that fires multiple
 //   events still only does one refit pass.
 //
-//   Workspace-switch safety (DESIGN.md §5.5c — `workspace_switch`):
+//   Workspace-switch safety (see docs/runtime-flows.md#workspace-switching):
 //   `workspace_switch` parks every session in the outgoing workspace
 //   (PTY killed, persisted record preserved) and inline-restores the new
 //   workspace's sessions under a write barrier. The session-store

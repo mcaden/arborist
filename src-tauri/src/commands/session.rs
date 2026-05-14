@@ -1,6 +1,6 @@
 //! Phase 7 session lifecycle commands.
 //!
-//! This module hosts the **business-logic** functions (`*_impl`) for every `session_*` command listed in DESIGN §6. The thin `#[tauri::command]`
+//! This module hosts the **business-logic** functions (`*_impl`) for every `session_*` command listed in docs/architecture.md. The thin `#[tauri::command]`
 //! wrappers in [`super`] forward into these so the integration tests can exercise the same code paths without spinning up Tauri.
 //!
 //! ## AppContext
@@ -438,7 +438,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     //    the previous shutdown. (Original symptom: "only the active tab
     //    fully resumes".)
     //
-    //    The persisted `composed_command` stays bare (DESIGN §5.4 — no
+    //    The persisted `composed_command` stays bare — no
     //    `--resume` baked into the immutable record); the splice happens
     //    at every spawn site below, mirroring `restore_all_sessions`.
     //
@@ -706,7 +706,7 @@ async fn park_session_for_switch_impl(ctx: &AppContext, id: SessionId) {
     //    hot path). We still continue with the swap because rolling
     //    back the workspace switch on a single park's reap timeout
     //    would block the user on a problem they can't see; the swap
-    //    contract is "park is best-effort" (DESIGN §5.5c step 7).
+    //    contract is "park is best-effort".
     if ctx.pool.contains(&id) {
         match ctx.pool.kill(&id).await {
             Ok(crate::pty_pool::KillOutcome::Reaped) => {}
@@ -874,7 +874,7 @@ pub fn session_resize_impl(ctx: &AppContext, args: SessionResizeArgs) -> Result<
 
     // Atomically claim a pending-spawn entry for this session, if any. `restore_all_sessions` registers restored sessions here without spawning,
     // deferring the actual `pool.spawn` until the frontend measures its host and fires the first `session_resize`. That way the CLI's first paint
-    // sees the correct PTY width rather than the OS-default 80×24 — see DESIGN §5.5 (restore-on-launch) and the PR notes for the long-standing
+    // sees the correct PTY width rather than the OS-default 80×24 — see docs/runtime-flows.md#boot-and-restore and the PR notes for the long-standing
     // splash-screen-too-narrow bug.
     let pending = {
         let mut guard = ctx
@@ -958,7 +958,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     }
 
     // Re-materialise temp files in case they were deleted (e.g. by a prior close path that ran while the session was still open in another window —
-    // defensive). Composed command is reused verbatim per DESIGN §5.4 — *never* recompose at restart time.
+    // defensive). Composed command is reused verbatim — *never* recompose at restart time.
     if let Err(e) = materialise_temp_files(&session.temp_files) {
         let msg = format!("Failed to prepare session temp files: {e}");
         let _ = ctx.store().update_session_status(&id, SessionStatus::Error, None);
@@ -972,7 +972,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
         .map_err(AppError::from)?;
     (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
-    // Restart starts a fresh AI conversation (DESIGN §5.4). The previous ai_session_id refers to a transcript the new CLI invocation will not be
+    // Restart starts a fresh AI conversation. The previous ai_session_id refers to a transcript the new CLI invocation will not be
     // writing to.
     //
     // For Copilot we *re-allocate* a fresh uuid and pre-bind the new conversation to it via `--resume <new-uuid>` (Copilot will create a brand-new
@@ -1202,7 +1202,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
     let ids: Vec<SessionId> = sessions.keys().copied().collect();
 
     // Sweep stale temp dirs whose UUIDs no longer correspond to any persisted session. Stale dirs whose UUID *is* still persisted are intentionally
-    // kept (DESIGN §5.6 / Phase 6 spec).
+    // kept.
     if let Err(e) = cleanup_orphans(&ids) {
         warn!(error = %e, "cleanup_orphans failed during restore");
     }
@@ -1277,8 +1277,8 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         }
         (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
-        // AI-session resume — DESIGN §5.5. Augment composed_command with `--resume <ai_session_id>` so the underlying CLI continues the prior
-        // conversation. We *augment*, never *recompose from inputs* (DESIGN §5.4 still holds for the persisted record). We only resume on app-restart
+        // AI-session resume. Augment composed_command with `--resume <ai_session_id>` so the underlying CLI continues the prior
+        // conversation. We *augment*, never *recompose from inputs*. We only resume on app-restart
         // restore — user-initiated `session_restart` intentionally allocates a fresh AI-side conversation (Copilot gets a freshly-allocated uuid;
         // Claude clears the field).
         //

@@ -96,7 +96,7 @@ x11vnc -display :99 -nopw -forever &
 
 ## Spec Overview
 
-| Spec | Description | SPEC IDs |
+| Spec | Description | Product IDs |
 |---|---|---|
 | `01-launch` | App boots, sidebar + main area render, no error overlay | T-01, S-01 |
 | `02-workspace-bind` | Workspace picker: primary repo accepted, linked worktree rejected | W-01, W-02 |

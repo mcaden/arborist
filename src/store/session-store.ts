@@ -65,7 +65,7 @@ export interface SessionStoreState {
    * `session://output` arrives for a non-active session; cleared on
    * activation. Boolean (not byte count) so we update the store at most
    * once per false→true transition — keeps PTY output off the
-   * re-render hot path (see DESIGN §5.2).
+   * re-render hot path (see docs/architecture.md).
    */
   hasUnread: Record<SessionId, true>;
   /**

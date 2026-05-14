@@ -121,7 +121,7 @@ impl MetricsRegistry {
     /// Start a watcher for `session_id`. If one is already running it is stopped first so the new one starts from a clean slate (used by session
     /// restart). Returns `false` if no watcher could be started (e.g. Claude session whose home dir could not be resolved).
     ///
-    /// For Copilot sessions with a known `ai_session_id` (pre-allocated at create / restart time, see DESIGN §5.4), a sibling events.jsonl tailer is
+    /// For Copilot sessions with a known `ai_session_id` (pre-allocated at create / restart time), a sibling events.jsonl tailer is
     /// also spawned (see
     /// [`crate::copilot_events`]). It feeds richer per-state events
     /// (`AwaitingPermission`, `ToolStart`/`ToolEnd`, `TurnStart`) into the same `session://activity` channel via `activity_emit`. Failure to spawn

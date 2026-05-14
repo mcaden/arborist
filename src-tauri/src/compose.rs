@@ -13,13 +13,12 @@
 //! composition.
 //!
 //! Spec/design references:
-//! - SPEC §5.2 C-05 (label dedup)
-//! - SPEC §5.4 I-04 (instruction-set delivery)
-//! - SPEC §5.6 (Shell Commands at Launch)
-//! - DESIGN §5.1 step 2 (platform shell selection)
-//! - DESIGN §5.4 (restart reuses `composed_command` verbatim)
-//! - DESIGN §5.6 (per-tool CLI launch table)
-//! - DESIGN §8 (security: quoting, canonicalization, path-as-cwd)
+//! - label deduplication
+//! - instruction-set delivery
+//! - platform shell selection
+//! - restart/restore reuse of `composed_command`
+//! - per-tool CLI launch behavior
+//! - security: quoting, canonicalization, path-as-cwd
 
 use std::path::{Path, PathBuf};
 
@@ -33,7 +32,7 @@ use crate::types::{Error, InstructionSet, SessionId, TempFileSpec, Tool};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposedInvocation {
     /// Full shell command — the per-tool CLI launch command. Stored verbatim on `Session.composed_command` and reused by `session_restart` and
-    /// restore-on-launch (DESIGN §5.4 / §5.5). Issue #63 retired the `prelaunch_commands` join: those snippets now run once per worktree creation
+    /// restore-on-launch. Issue #63 retired the `prelaunch_commands` join: those snippets now run once per worktree creation
     /// via the `worktree_prep` module, not in front of every session shell.
     pub composed_command: String,
     /// Files the backend must write to disk before spawning the PTY. For Claude this contains exactly one entry (the `--system-prompt` file). For
@@ -54,7 +53,7 @@ pub struct ComposeInputs<'a> {
     /// * Copilot ignores this field — it is launched bare regardless, and reads
     ///   `.github/copilot-instructions.md` from `cwd`.
     pub instruction_set: Option<&'a InstructionSet>,
-    /// In-memory contents of the selected instruction set file. The caller reads the file (and enforces the size cap from DESIGN §8); compose stays
+    /// In-memory contents of the selected instruction set file. The caller reads the file and enforces the size cap; compose stays
     /// pure. Must be `Some` when [`Self::instruction_set`] is `Some`, `None` otherwise. Ignored for Copilot.
     pub instruction_set_contents: Option<&'a str>,
     /// Optional user override for the CLI launch command. When `Some` and non-empty, replaces the bare program token (`claude` / `copilot`) in the
@@ -65,7 +64,7 @@ pub struct ComposeInputs<'a> {
 
 /// Compose the shell command for a session.
 ///
-/// Implements the per-tool table in DESIGN §5.6 / SPEC I-04:
+/// Mirrors the launch composition rules in docs/runtime-flows.md#opening-a-worktree-tab-and-launching-an-ai-session:
 ///
 /// | Tool    | CLI                                              | Temp file |
 /// |---------|--------------------------------------------------|-----------|
@@ -73,7 +72,7 @@ pub struct ComposeInputs<'a> {
 /// | Copilot | `copilot` (bare; interactive mode is the default) | no        |
 ///
 /// **Worktree handling**: the worktree path is *never* interpolated into the composed command. In both cases the real `cwd` for `portable-pty` is set
-/// separately by the PTY pool; we never emit `cd "<path>" && …` (DESIGN §8).
+/// separately by the PTY pool; we never emit `cd "<path>" && ...`.
 pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation, Error> {
     let quoter = platform_shell().quoter;
     let (composed_command, temp_files) = crate::plugins::ai::compose(inputs.tool, inputs, quoter);
@@ -84,7 +83,7 @@ pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation,
     })
 }
 
-/// Per SPEC C-05: produce a label that does not collide with `existing`.
+/// Produce a label that does not collide with `existing`.
 ///
 /// Algorithm: if `base` is not in `existing`, return it unchanged. Otherwise pick the lowest integer `n >= 2` such that `format!("{base} {n}")` is
 /// not in `existing`. Existing gaps are **not** refilled in the sense that this function only returns `base` itself when nothing collides — but among
@@ -243,10 +242,10 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 ///
 /// Used by every spawn site that has an `ai_session_id` to honor: `session_create` (Copilot only — pre-allocated uuid), `session_restart` (Copilot
 /// only — freshly re-allocated uuid), and `restore_all_sessions` (both tools when an id is persisted). The persisted `composed_command` itself stays
-/// bare (DESIGN §5.4 — the immutable record never contains `--resume`); the splice happens on a clone at every spawn.
+/// bare (the immutable record never contains `--resume`); the splice happens on a clone at every spawn.
 ///
 /// We append at the end of the command rather than parse and re-emit the CLI invocation. Both `claude` and `copilot` accept positional flags in any
-/// order, and the trailing token of `composed_command` is the CLI invocation (DESIGN §5.6 step 3), so appending binds correctly. Issue #63 retired
+/// order, and the trailing token of `composed_command` is the CLI invocation, so appending binds correctly. Issue #63 retired
 /// the legacy `prelaunch && cli` chaining — there are no leading hooks anymore — but the append-at-end strategy remains correct either way.
 ///
 /// `ai_session_id` is shell-quoted using the host quoter only when it contains characters that could be interpreted by the shell. In practice CLI
@@ -372,7 +371,7 @@ pub fn shell_quote_cmd(value: &str) -> String {
 /// A function pointer to the appropriate quoter for the host shell.
 pub type Quoter = fn(&str) -> String;
 
-/// Platform shell selection per DESIGN §5.1 step 2.
+/// Platform shell selection.
 pub struct PlatformShell {
     /// Program to spawn (e.g. `/bin/sh`, `cmd.exe`).
     pub program: String,

@@ -825,7 +825,7 @@ async fn restore_spawn_failure_keeps_record() {
     assert!(!error_evs.is_empty(), "restore must emit status=Error after spawn failure");
 }
 
-/// `subsession_relaunch_impl` must refresh `composed_command` from the current def — DESIGN §5.7 explicitly carves this out as the one place we
+/// `subsession_relaunch_impl` must refresh `composed_command` from the current def — this is the one place we
 /// re-derive the command (everywhere else the compose-once invariant holds). User-facing impact: editing a Custom Process def's `command` field must
 /// take effect on the next relaunch of any existing sub-session bound to that def.
 #[tokio::test]
