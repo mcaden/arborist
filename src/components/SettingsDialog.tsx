@@ -19,6 +19,8 @@
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
+import type { ThemeMode } from '@/types/arborist';
+
 import { CustomProcessesTab } from './CustomProcessesTab';
 import { PluginsTab } from './PluginsTab';
 import { WorkspacePicker } from './WorkspacePicker';
@@ -68,6 +70,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(worktreePrepCommands));
+  const [themeInput, setThemeInput] = useState<ThemeMode>(theme);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -137,9 +140,12 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   useEffect(() => {
     setCmdsInput(commandsToText(worktreePrepCommands));
   }, [worktreePrepCommands]);
+  useEffect(() => {
+    setThemeInput(theme);
+  }, [theme]);
 
   const parsedCmds = textToCommands(cmdsInput);
-  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, worktreePrepCommands);
+  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, worktreePrepCommands) || themeInput !== theme;
 
   const handleBrowseInstructions = useCallback(async () => {
     const picked = await pickDirectory();
@@ -156,9 +162,11 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
       const patch: {
         instructionSetsDir?: string;
         worktreePrepCommands?: string[];
+        theme?: ThemeMode;
       } = {};
       if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
       if (!arraysEqual(parsedCmds, worktreePrepCommands)) patch.worktreePrepCommands = parsedCmds;
+      if (themeInput !== theme) patch.theme = themeInput;
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
     } catch (err) {
@@ -167,7 +175,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     } finally {
       setSaving(false);
     }
-  }, [instrInput, instructionSetsDir, parsedCmds, worktreePrepCommands, setConfig, onClose]);
+  }, [instrInput, instructionSetsDir, parsedCmds, worktreePrepCommands, themeInput, theme, setConfig, onClose]);
 
   const handleWorkspaceConfirm = useCallback(async (path: string) => {
     await changeWorkspace(path);
@@ -321,8 +329,8 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                           type="radio"
                           name="theme"
                           value={mode}
-                          checked={theme === mode}
-                          onChange={() => void setConfig({ theme: mode })}
+                          checked={themeInput === mode}
+                          onChange={() => setThemeInput(mode)}
                           className="accent-blue-600"
                         />
                         {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}

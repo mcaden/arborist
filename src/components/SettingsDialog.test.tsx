@@ -309,4 +309,52 @@ describe('SettingsDialog', () => {
       pluginSettings: { ai: { claude: { settings: { launchCommand: '' } } } },
     });
   });
+
+  it('theme picker reflects stored preference and changing it marks the form dirty', () => {
+    seedConfig();
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const radios = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    expect(radios).toHaveLength(3);
+    // Default is 'system'
+    expect(radios[0]!.checked).toBe(true); // system
+    expect(radios[1]!.checked).toBe(false); // light
+    expect(radios[2]!.checked).toBe(false); // dark
+
+    const save = screen.getByRole('button', { name: /^save$/i });
+    expect(save).toBeDisabled();
+
+    // Select 'dark'
+    fireEvent.click(radios[2]!);
+    expect(radios[2]!.checked).toBe(true);
+    expect(save).toBeEnabled();
+  });
+
+  it('saving the theme persists only the theme field and closes', async () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const darkRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!;
+    fireEvent.click(darkRadio);
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+    expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
+    expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({ theme: 'dark' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel discards the theme change without persisting', () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const lightRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1]!;
+    fireEvent.click(lightRadio);
+    expect(lightRadio.checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(bridgeMock.configSet).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
