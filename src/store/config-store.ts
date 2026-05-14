@@ -20,13 +20,14 @@ import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
 import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 9,
+  configVersion: 10,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   workspaceRoot: null,
   worktreeRoots: [],
   worktreePrepCommands: [],
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
+  pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -121,6 +122,7 @@ export const selectWorkspaceRoot = (s: ConfigStoreState): string | null => s.con
 export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] => s.config.worktreeRoots;
 export const selectWorktreePrepCommands = (s: ConfigStoreState): readonly string[] => s.config.worktreePrepCommands;
 export const selectAiLaunchCommands = (s: ConfigStoreState): AppConfig['aiLaunchCommands'] => s.config.aiLaunchCommands;
+export const selectPluginSettings = (s: ConfigStoreState): AppConfig['pluginSettings'] => s.config.pluginSettings;
 export const selectDefaultInstructionSets = (s: ConfigStoreState): AppConfig['defaultInstructionSets'] => s.config.defaultInstructionSets;
 export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.config.tabOrder;
 export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] => s.config.lastOpenSessions;

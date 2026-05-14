@@ -83,7 +83,7 @@ to other pairs can keep running.
 
 ```json
 {
-  "configVersion": 9,
+  "configVersion": 10,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -93,8 +93,16 @@ to other pairs can keep running.
   "worktreeRoots": ["/absolute/path/to/repo"],
   "worktreePrepCommands": [],
   "aiLaunchCommands": {
-    "commands": { "claude": "", "copilot": "" },
+    "commands": {},
     "iconDataUris": {}
+  },
+  "pluginSettings": {
+    "ai": {
+      "claude": { "settings": { "launchCommand": "" } },
+      "copilot": { "settings": { "launchCommand": "" } }
+    },
+    "customProcess": {},
+    "dashboardWidget": {}
   },
   "lastOpenSessions": [],
   "tabOrder": []
@@ -103,7 +111,7 @@ to other pairs can keep running.
 
 Field notes:
 
-- `configVersion` — schema version of the file. Currently `9` (see
+- `configVersion` — schema version of the file. Currently `10` (see
   `CONFIG_VERSION_CURRENT` in `crates/arborist-types/src/lib.rs`). Bumped only when
   the on-disk shape changes; older versions are quarantined (see below).
 - `instructionSetsDir` — must be an **absolute** path that points at an
@@ -134,11 +142,18 @@ Field notes:
   set per tool. The ID is the filename (without the `.md` extension) of the
   file inside `instructionSetsDir`. If the configured ID isn't present, the
   loader falls back to the discovered default for that tool (see below).
-- `aiLaunchCommands.commands` — map of `plugin-id -> CLI launcher override`.
-  Empty string (the default) means "use the plugin default program" (`claude` /
-  `copilot` for built-ins, resolved via `PATH`). A non-empty value replaces the
-  program token at compose time and is **not** shell-quoted, so use a quoted
-  absolute path if the value contains spaces.
+- `pluginSettings` — per-plugin enable flags and plugin-owned settings, grouped
+  by plugin kind (`ai`, `customProcess`, `dashboardWidget`). `enabled` may be
+  omitted to use the plugin default (built-ins default to enabled). AI agent
+  launcher overrides live at
+  `pluginSettings.ai.<plugin-id>.settings.launchCommand`; empty string means
+  "use the plugin default program" (`claude` / `copilot` for built-ins,
+  resolved via `PATH`). A non-empty value replaces the program token at compose
+  time and is **not** shell-quoted, so use a quoted absolute path if the value
+  contains spaces.
+- `aiLaunchCommands.commands` — legacy input compatibility for v9 configs and
+  old automation. Values are migrated into
+  `pluginSettings.ai.<plugin-id>.settings.launchCommand` on load or save.
 - `aiLaunchCommands.iconDataUris` — backend-managed cache of executable icons.
   This map is sparse: unresolved plugins may be absent entirely; present values
   are `data URI | null` (`null` is reserved for explicit cached misses). This

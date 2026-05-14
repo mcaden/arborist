@@ -384,6 +384,16 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     //    win over user-level `AppConfig` defaults for instruction sets and AI
     //    launch commands.
     let cfg = crate::repo_settings::apply_repo_overlay(ctx.store().load_config());
+    let plugin = crate::plugins::ai::plugin_for_tool(args.tool);
+    if !cfg.plugin_settings.ai_enabled(plugin.id(), plugin.default_enabled()) {
+        return Err(AppError::new(
+            "PluginDisabled",
+            format!(
+                "AI plugin {} is disabled; enable it in Settings > Plugins before launching a new session",
+                plugin.display_name()
+            ),
+        ));
+    }
     let id_opt = args.instruction_set_id.as_ref().filter(|id| !id.as_str().is_empty());
     let set_opt = match id_opt {
         Some(id) => Some(lookup_instruction_set(&cfg, id, args.tool)?),
@@ -409,7 +419,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
 
     // 5. Compose command + temp files.
     let session_id = SessionId::new();
-    let cli_override = cfg.ai_launch_commands.command_for_tool(args.tool);
+    let cli_override = cfg.ai_launch_command_for_tool(args.tool);
     let composed = compose::compose_command(&ComposeInputs {
         session_id,
         tool: args.tool,

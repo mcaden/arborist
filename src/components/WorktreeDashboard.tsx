@@ -3,7 +3,7 @@ import { useMemo } from 'react';
 import { ToolIcon } from './ToolIcon';
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError } from '@/lib/tauri-bridge';
-import { useRegistry } from '@/plugins';
+import { pluginEnabled, useRegistry } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -17,8 +17,16 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
   const sessionActions = useSessionActions();
   const registry = useRegistry();
-  const aiPlugins = useMemo(() => registry.ai(), [registry]);
+  const pluginSettings = useConfigStore((s) => s.config.pluginSettings);
+  const aiPlugins = useMemo(
+    () => registry.ai().filter((plugin) => pluginEnabled(pluginSettings, 'ai', plugin.id, plugin.defaultEnabled ?? true)),
+    [registry, pluginSettings],
+  );
   const aiIconDataUris = useConfigStore((s) => s.config.aiLaunchCommands.iconDataUris);
+  const widgets = useMemo(
+    () => registry.widgets().filter((widget) => pluginEnabled(pluginSettings, 'dashboardWidget', widget.id, widget.defaultEnabled ?? true)),
+    [registry, pluginSettings],
+  );
 
   if (!tab) {
     return null;
@@ -72,7 +80,7 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        {registry.widgets().map((widget) => (
+        {widgets.map((widget) => (
           <widget.Component key={widget.id} tabId={tab.id} tabPath={tab.path} />
         ))}
       </div>

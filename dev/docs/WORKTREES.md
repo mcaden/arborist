@@ -113,7 +113,8 @@ overridden — those whose meaning is genuinely repo-specific:
 | Field                  | Source-of-truth on disk                     | Meaning when set                                   |
 | ---------------------- | ------------------------------------------- | -------------------------------------------------- |
 | `defaultInstructionSets` | `.arborist/settings.json`                 | Default Claude / Copilot instruction set IDs.      |
-| `aiLaunchCommands`     | `.arborist/settings.json` (commands map only)| Per-plugin CLI launch override (e.g. `npx claude …`).|
+| `pluginSettings.ai.*.settings.launchCommand` | `.arborist/settings.json` | Per-AI-plugin CLI launch override (e.g. `npx claude …`). |
+| `aiLaunchCommands`     | `.arborist/settings.json` (legacy commands map only)| Backwards-compatible alias for AI launch overrides. |
 | `worktreePrepCommands` | `.arborist/settings.json`                   | Commands run once after a worktree is created.     |
 
 Override semantics: present fields win; absent fields fall back to the

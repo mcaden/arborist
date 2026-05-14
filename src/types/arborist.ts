@@ -139,6 +139,23 @@ export interface AiLaunchCommands {
   iconDataUris: Record<string, string | null>;
 }
 
+// MIRROR: crates/arborist-types/src/lib.rs::PluginSettingValue
+export type PluginSettingValue = string | boolean | string[];
+
+// MIRROR: crates/arborist-types/src/lib.rs::PluginSettingState
+export interface PluginSettingState {
+  /** Omitted = use the plugin descriptor's default-enabled policy. */
+  enabled?: boolean;
+  settings: Record<string, PluginSettingValue>;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::PluginSettings
+export interface PluginSettings {
+  ai: Record<string, PluginSettingState>;
+  customProcess: Record<string, PluginSettingState>;
+  dashboardWidget: Record<string, PluginSettingState>;
+}
+
 // MIRROR: src-tauri/src/types.rs::AppConfig
 export interface AppConfig {
   configVersion: number;
@@ -159,8 +176,10 @@ export interface AppConfig {
    * removed in the same migration.
    */
   worktreePrepCommands: string[];
-  /** Per-plugin CLI launch overrides + icon cache. Added in `configVersion = 4` and map-shaped in v9. */
+  /** Legacy AI launch command input plus backend-managed icon cache. Command settings moved to `pluginSettings` in v10. */
   aiLaunchCommands: AiLaunchCommands;
+  /** Per-plugin enable flags and settings. Added in `configVersion = 10`; AI launch commands live under the corresponding AI plugin. */
+  pluginSettings: PluginSettings;
   lastOpenSessions: SessionId[];
   tabOrder: SessionId[];
   /** Persisted active-session selection. `null` when no session is active. */
@@ -202,6 +221,19 @@ export interface PartialAiLaunchCommands {
   commands?: Record<string, string>;
 }
 
+// MIRROR: crates/arborist-types/src/lib.rs::PartialPluginSettingState
+export interface PartialPluginSettingState {
+  enabled?: boolean;
+  settings?: Record<string, PluginSettingValue>;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::PartialPluginSettings
+export interface PartialPluginSettings {
+  ai?: Record<string, PartialPluginSettingState>;
+  customProcess?: Record<string, PartialPluginSettingState>;
+  dashboardWidget?: Record<string, PartialPluginSettingState>;
+}
+
 // MIRROR: src-tauri/src/types.rs::PartialAppConfig
 // Every field optional so Phase 4's `config_set` can deep-merge updates.
 // `activeSessionId` is tri-state: omit to leave alone, `null` to clear,
@@ -220,6 +252,7 @@ export interface PartialAppConfig {
   /** Issue #63 — see {@link AppConfig.worktreePrepCommands}. */
   worktreePrepCommands?: string[];
   aiLaunchCommands?: PartialAiLaunchCommands;
+  pluginSettings?: PartialPluginSettings;
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
   activeSessionId?: SessionId | null;

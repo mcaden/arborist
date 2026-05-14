@@ -62,7 +62,7 @@ export const frontendReady: Mock<typeof realBridge.frontendReady> = vi.fn(() => 
 // of Phase 4; their default mock behaviour returns benign empty values so
 // tests don't need to wire each call individually unless they care.
 const defaultAppConfig = (): AppConfig => ({
-  configVersion: 9,
+  configVersion: 10,
   defaultInstructionSets: { claude: '', copilot: '' },
   instructionSetsDir: '',
   // Tests assume the main UI is reachable by default. The first-boot
@@ -71,6 +71,7 @@ const defaultAppConfig = (): AppConfig => ({
   worktreeRoots: [],
   worktreePrepCommands: [],
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
+  pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,

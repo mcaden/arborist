@@ -22,12 +22,28 @@ import type { ComponentType } from 'react';
 
 import type { CustomProcessDef, Tool, WorktreeTabId } from '@/types/arborist';
 
+export const AI_LAUNCH_COMMAND_SETTING = 'launchCommand';
+
+export type PluginSettingDescriptor = {
+  id: string;
+  kind: 'text';
+  label: string;
+  defaultValue: string;
+  placeholder?: string;
+  helpText?: string;
+  spellCheck?: boolean;
+};
+
 // MIRROR: src-tauri/src/plugins/mod.rs::Plugin
 export interface Plugin {
   /** Stable identifier used as a serde key on the Rust side. */
   id: string;
   /** Human-readable name surfaced in the UI. */
   displayName: string;
+  /** Default availability when AppConfig.pluginSettings omits this plugin. */
+  defaultEnabled?: boolean;
+  /** User-editable settings exposed by the Plugins settings tab. */
+  settings?: readonly PluginSettingDescriptor[];
 }
 
 // MIRROR: src-tauri/src/plugins/ai/mod.rs::AiPlugin

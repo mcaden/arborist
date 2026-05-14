@@ -107,7 +107,7 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
             composed_command,
             cwd.clone(),
             sub_ctx.sink.clone(),
-            owner_resolver_for(sub_ctx.registry.as_ref(), def, &cwd),
+            owner_resolver_for(sub_ctx.registry.as_ref(), &cfg, def, &cwd),
         ),
     };
 
@@ -745,7 +745,7 @@ pub async fn subsession_relaunch_impl(ctx: &AppContext, sub_ctx: &SubAppContext,
             composed_command,
             cwd.clone(),
             sub_ctx.sink.clone(),
-            owner_resolver_for(sub_ctx.registry.as_ref(), &def, &cwd),
+            owner_resolver_for(sub_ctx.registry.as_ref(), &cfg, &def, &cwd),
         ),
     };
 
@@ -779,8 +779,14 @@ fn now_unix_seconds() -> i64 {
 /// Build the [`crate::app_launcher::OwnerResolver`] (if any) by delegating to the first matching custom-process plugin in the registry.
 fn owner_resolver_for(
     registry: &crate::plugins::PluginRegistry,
+    cfg: &crate::types::AppConfig,
     def: &crate::types::CustomProcessDef,
     cwd: &std::path::Path,
 ) -> Option<Arc<dyn crate::app_launcher::OwnerResolver>> {
-    registry.custom_process_for_def(def).and_then(|plugin| plugin.owner_resolver(cwd))
+    registry.custom_process_for_def(def).and_then(|plugin| {
+        cfg.plugin_settings
+            .custom_process_enabled(plugin.id(), plugin.default_enabled())
+            .then(|| plugin.owner_resolver(cwd))
+            .flatten()
+    })
 }

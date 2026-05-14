@@ -31,7 +31,7 @@ function renderWithPlugins(ui: JSX.Element): ReturnType<typeof render> {
 beforeEach(() => {
   bridgeMock.resetBridgeMocks();
   useConfigStore.setState((s) => ({
-    config: { ...s.config, customProcesses: [] },
+    config: { ...s.config, customProcesses: [], pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} } },
     status: 'ready',
     error: null,
   }));
@@ -50,6 +50,24 @@ describe('WorktreeTabContextMenu', () => {
     expect(screen.getByTestId('worktree-tab-context-menu-launch-claude')).toBeInTheDocument();
     expect(screen.getByTestId('worktree-tab-context-menu-launch-copilot')).toBeInTheDocument();
     expect(screen.getByTestId('worktree-tab-context-menu-close')).toBeInTheDocument();
+  });
+
+  it('omits disabled AI launch items', () => {
+    useConfigStore.setState((s) => ({
+      config: {
+        ...s.config,
+        pluginSettings: {
+          ai: { copilot: { enabled: false, settings: {} } },
+          customProcess: {},
+          dashboardWidget: {},
+        },
+      },
+    }));
+
+    renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+
+    expect(screen.getByTestId('worktree-tab-context-menu-launch-claude')).toBeInTheDocument();
+    expect(screen.queryByTestId('worktree-tab-context-menu-launch-copilot')).toBeNull();
   });
 
   it('Close requests close (sets pendingClose) and dismisses the menu', () => {

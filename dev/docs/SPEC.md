@@ -108,6 +108,13 @@ The sidebar is a two-level hierarchy: each top-level row is a **worktree tab** (
 | CP-10  | A `CustomProcessDef.command` MUST be passed to the platform shell with the parent's worktree path as `cwd`; it MUST NOT be interpolated into the command string (DESIGN §8.1). |
 | CP-11  | Window-focus on Linux MAY require the optional system dependency `wmctrl`. Its absence MUST degrade gracefully (logged warning, no error toast). Wayland sessions MUST report `Unsupported` rather than attempting an X11-only call. |
 
+### 5.8 Built-in Plugins
+
+| ID     | Requirement |
+|--------|-------------|
+| P-01   | The Settings dialog MUST expose a Plugins tab where users can enable/disable registered built-in plugins by kind. Disabled AI plugins MUST NOT appear as new-session launch actions, and disabled dashboard widgets MUST NOT render on the worktree dashboard. |
+| P-02   | Plugin-owned settings MUST be associated with the corresponding plugin entry. For AI plugins, the CLI launch command override belongs to the Claude/Copilot plugin row; an empty launch command MUST use the plugin's default program. |
+
 ## 6. Non-Functional Requirements
 
 | ID     | Requirement |
@@ -127,7 +134,7 @@ The sidebar is a two-level hierarchy: each top-level row is a **worktree tab** (
 
 - Built-in chat UI — the app delegates all interaction to the CLI tools in a terminal.
 - Remote/SSH worktree support.
-- Plugin/extension system.
+- Out-of-tree plugin/extension loading.
 - Multi-window support.
 - In-app editing of instruction set files (users manage these as plain text files on disk).
 

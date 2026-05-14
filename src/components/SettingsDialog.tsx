@@ -9,30 +9,24 @@
 //                       invariant lives in one place — see
 //                       `lib/workspace-switch.ts`), instruction sets
 //                       directory (path picker), worktree prep commands
-//                       (one shell command per line), and per-AI-plugin
-//                       CLI launch overrides.
+//                       (one shell command per line).
+//   Plugins           — enable/disable plugins and edit plugin-owned
+//                       settings such as AI launch commands.
 //   Custom Processes  — CRUD over `AppConfig.customProcesses` (lives in
 //                       a dedicated `CustomProcessesTab` component).
 //   About             — lightweight project attribution and context.
 
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { CustomProcessesTab } from './CustomProcessesTab';
+import { PluginsTab } from './PluginsTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError, pickDirectory } from '@/lib/tauri-bridge';
-import type { AiPlugin } from '@/plugins';
-import { useRegistry } from '@/plugins';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import {
-  selectAiLaunchCommands,
-  selectInstructionSetsDir,
-  selectWorkspaceRoot,
-  selectWorktreePrepCommands,
-  useConfigStore,
-} from '@/store/config-store';
+import { selectInstructionSetsDir, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
 
-export type SettingsTab = 'general' | 'customProcesses' | 'about';
+export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'about';
 
 export interface SettingsDialogProps {
   onClose: () => void;
@@ -64,42 +58,31 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
-function launchCommandInputs(plugins: readonly AiPlugin[], commands: Record<string, string>): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const plugin of plugins) {
-    result[plugin.id] = commands[plugin.id] ?? '';
-  }
-  return result;
-}
-
 export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDialogProps): JSX.Element {
-  const registry = useRegistry();
-  const aiPlugins = useMemo(() => registry.ai(), [registry]);
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const worktreePrepCommands = useConfigStore(selectWorktreePrepCommands);
-  const aiLaunchCommands = useConfigStore(selectAiLaunchCommands);
   const setConfig = useConfigStore((s) => s.set);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(worktreePrepCommands));
-  const [launchCmdInputById, setLaunchCmdInputById] = useState<Record<string, string>>(() =>
-    launchCommandInputs(aiPlugins, aiLaunchCommands.commands),
-  );
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
 
   const headingId = useId();
   const generalTabId = useId();
+  const pluginsTabId = useId();
   const customProcessesTabId = useId();
   const aboutTabId = useId();
   const generalPanelId = useId();
+  const pluginsPanelId = useId();
   const customProcessesPanelId = useId();
   const aboutPanelId = useId();
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const generalTabRef = useRef<HTMLButtonElement | null>(null);
+  const pluginsTabRef = useRef<HTMLButtonElement | null>(null);
   const customProcessesTabRef = useRef<HTMLButtonElement | null>(null);
   const aboutTabRef = useRef<HTMLButtonElement | null>(null);
 
@@ -112,9 +95,10 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   // would mean two keypresses to reach a tab the user clearly wants).
   const handleTablistKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>): void => {
-      const order: SettingsTab[] = ['general', 'customProcesses', 'about'];
+      const order: SettingsTab[] = ['general', 'plugins', 'customProcesses', 'about'];
       const refs: Record<SettingsTab, RefObject<HTMLButtonElement | null>> = {
         general: generalTabRef,
+        plugins: pluginsTabRef,
         customProcesses: customProcessesTabRef,
         about: aboutTabRef,
       };
@@ -152,17 +136,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   useEffect(() => {
     setCmdsInput(commandsToText(worktreePrepCommands));
   }, [worktreePrepCommands]);
-  useEffect(() => {
-    setLaunchCmdInputById(launchCommandInputs(aiPlugins, aiLaunchCommands.commands));
-  }, [aiPlugins, aiLaunchCommands.commands]);
 
   const parsedCmds = textToCommands(cmdsInput);
-  const launchDirty = aiPlugins.some((plugin) => {
-    const current = (launchCmdInputById[plugin.id] ?? '').trim();
-    const persisted = aiLaunchCommands.commands[plugin.id] ?? '';
-    return current !== persisted;
-  });
-  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, worktreePrepCommands) || launchDirty;
+  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, worktreePrepCommands);
 
   const handleBrowseInstructions = useCallback(async () => {
     const picked = await pickDirectory();
@@ -179,17 +155,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
       const patch: {
         instructionSetsDir?: string;
         worktreePrepCommands?: string[];
-        aiLaunchCommands?: { commands?: Record<string, string> };
       } = {};
       if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
       if (!arraysEqual(parsedCmds, worktreePrepCommands)) patch.worktreePrepCommands = parsedCmds;
-      const launchPatch: Record<string, string> = {};
-      for (const plugin of aiPlugins) {
-        const current = (launchCmdInputById[plugin.id] ?? '').trim();
-        const persisted = aiLaunchCommands.commands[plugin.id] ?? '';
-        if (current !== persisted) launchPatch[plugin.id] = current;
-      }
-      if (Object.keys(launchPatch).length > 0) patch.aiLaunchCommands = { commands: launchPatch };
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
     } catch (err) {
@@ -198,17 +166,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     } finally {
       setSaving(false);
     }
-  }, [
-    instrInput,
-    instructionSetsDir,
-    parsedCmds,
-    worktreePrepCommands,
-    aiPlugins,
-    launchCmdInputById,
-    aiLaunchCommands.commands,
-    setConfig,
-    onClose,
-  ]);
+  }, [instrInput, instructionSetsDir, parsedCmds, worktreePrepCommands, setConfig, onClose]);
 
   const handleWorkspaceConfirm = useCallback(async (path: string) => {
     await changeWorkspace(path);
@@ -266,6 +224,24 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               }`}
             >
               General
+            </button>
+            <button
+              ref={pluginsTabRef}
+              type="button"
+              role="tab"
+              id={pluginsTabId}
+              aria-selected={activeTab === 'plugins'}
+              aria-controls={pluginsPanelId}
+              tabIndex={activeTab === 'plugins' ? 0 : -1}
+              onClick={() => setActiveTab('plugins')}
+              data-testid="settings-tab-plugins"
+              className={`-mb-px rounded-t border-b-2 px-3 py-1 text-xs ${
+                activeTab === 'plugins'
+                  ? 'border-blue-600 font-medium text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
+            >
+              Plugins
             </button>
             <button
               ref={customProcessesTabRef}
@@ -387,37 +363,6 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                 </p>
               </section>
 
-              <section className="mb-4">
-                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">AI agent launch commands</h3>
-                <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-                  Replace the default CLI invocation for each agent. The text is passed to the shell verbatim, so you may include arguments (e.g.{' '}
-                  <code>npx claude --model sonnet</code>). Leave blank to use the default.
-                </p>
-                {aiPlugins.map((plugin, idx) => {
-                  const inputId = `settings-launch-${plugin.id}`;
-                  return (
-                    <div key={plugin.id} className={idx < aiPlugins.length - 1 ? 'mb-2' : ''}>
-                      <label htmlFor={inputId} className="mb-1 block text-xs text-slate-600 dark:text-slate-300">
-                        {plugin.displayName}
-                      </label>
-                      <input
-                        id={inputId}
-                        type="text"
-                        value={launchCmdInputById[plugin.id] ?? ''}
-                        onChange={(e) => {
-                          setSubmitError(null);
-                          setLaunchCmdInputById((prev) => ({ ...prev, [plugin.id]: e.target.value }));
-                        }}
-                        placeholder={plugin.defaultProgram}
-                        spellCheck={false}
-                        data-testid={inputId}
-                        className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-                      />
-                    </div>
-                  );
-                })}
-              </section>
-
               {submitError && (
                 <p
                   role="alert"
@@ -446,6 +391,16 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                   {saving ? 'Saving…' : 'Save'}
                 </button>
               </div>
+            </div>
+          ) : activeTab === 'plugins' ? (
+            <div
+              role="tabpanel"
+              id={pluginsPanelId}
+              aria-labelledby={pluginsTabId}
+              data-testid="settings-panel-plugins"
+              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
+            >
+              <PluginsTab onClose={onClose} />
             </div>
           ) : activeTab === 'customProcesses' ? (
             <div

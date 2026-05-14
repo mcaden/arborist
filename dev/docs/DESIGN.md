@@ -137,7 +137,7 @@ interface InstructionSet {
 
 ```typescript
 interface AppConfig {
-  configVersion: number; // On-disk schema version (currently 9; bumped on breaking changes)
+  configVersion: number; // On-disk schema version (currently 10; bumped on breaking changes)
   defaultInstructionSets: {
     claude: string; // InstructionSet ID
     copilot: string; // InstructionSet ID
@@ -147,8 +147,13 @@ interface AppConfig {
   worktreeRoots: string[]; // Legacy: additional repo roots to scan (kept for forward compatibility)
   worktreePrepCommands: string[]; // One-shot prep commands run once when a worktree is created (issue #63)
   aiLaunchCommands: {
-    commands: Record<string, string>; // Per-plugin CLI override; empty string = plugin default
+    commands: Record<string, string>; // Legacy input compatibility; migrated to pluginSettings.ai[*].settings.launchCommand
     iconDataUris: Record<string, string | null>; // Sparse cache: unresolved plugins may be absent; present values are data URI or null
+  };
+  pluginSettings: {
+    ai: Record<string, { enabled?: boolean; settings: Record<string, string | boolean | string[]> }>;
+    customProcess: Record<string, { enabled?: boolean; settings: Record<string, string | boolean | string[]> }>;
+    dashboardWidget: Record<string, { enabled?: boolean; settings: Record<string, string | boolean | string[]> }>;
   };
   lastOpenSessions: string[]; // Session IDs to restore on next launch
   tabOrder: string[]; // Session IDs in sidebar display order
@@ -176,6 +181,10 @@ Schema version history (`configVersion`):
   worktree-prep model run in different contexts and at different times.
 - `9` — reshaped `aiLaunchCommands` from fixed Claude/Copilot fields to
   plugin-keyed maps (`commands` + `iconDataUris`) for the AI-plugin model.
+- `10` — added `pluginSettings` for per-plugin enable flags and settings. AI
+  launch command overrides moved to
+  `pluginSettings.ai[pluginId].settings.launchCommand`; legacy
+  `aiLaunchCommands.commands` values are migrated on load.
 
 Future versions (`> CONFIG_VERSION_CURRENT`) are quarantined
 on load and replaced with defaults to protect downgrade scenarios.
@@ -321,8 +330,9 @@ with a warn log rather than poisoning the whole config.
   <TabContextMenu />           // Right-click / Shift+F10 / Apps key on a SidebarTab (child)
   <WorktreeTabContextMenu />   // Right-click on a SidebarWorktreeTab (flat launch/custom-process items + Close)
   <NewSessionDialog />         // Modal: open/create a worktree tab (agent launch happens later)
-  <SettingsDialog>             // Tabbed: General / Custom Processes
+  <SettingsDialog>             // Tabbed: General / Plugins / Custom Processes / About
     <GeneralTab />
+    <PluginsTab />             // AppConfig.pluginSettings enable flags + plugin-owned settings
     <CustomProcessesTab />     // CRUD over AppConfig.customProcesses
   </SettingsDialog>
 </App>
@@ -1029,11 +1039,12 @@ All commands are gated by Tauri capability declarations in `capabilities/main.js
 
 > **Test-only seam.** The integration tests and Linux e2e harness override
 > the `claude` / `copilot` program tokens through the user-facing
-> `AppConfig.ai_launch_commands` config field — there is no environment-variable
-> seam. For e2e, `--ai-launch-claude=<path>` and `--ai-launch-copilot=<path>`
-> CLI flags (parsed in `boot::parse_cli_args`) seed the same config field at
-> boot. Production users get the same plumbing via the Settings dialog. See
-> `compose::cli_program_for_tool`.
+> `pluginSettings.ai[pluginId].settings.launchCommand` config value — there is
+> no environment-variable seam. For e2e, `--ai-launch-claude=<path>` and
+> `--ai-launch-copilot=<path>` CLI flags (parsed in `boot::parse_cli_args`) seed
+> the same setting at boot. Production users get the same plumbing via
+> Settings → Plugins. Legacy `AppConfig.ai_launch_commands.commands` patches are
+> migrated into the plugin setting for backwards compatibility.
 
 ### Events (Rust → Frontend)
 

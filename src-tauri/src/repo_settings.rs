@@ -15,8 +15,8 @@
 //! per field; absent fields fall back to the user's defaults. The set of
 //! overridable fields is intentionally narrow — only those whose meaning is
 //! repo-specific (default instruction sets, AI launch overrides, worktree-prep
-//! commands) — so the user's machine-level config (paths, custom processes,
-//! tab order, …) is never silently shadowed by a checked-in file.
+//! commands) — so the user's machine-level config (paths, plugin enable flags,
+//! custom processes, tab order, …) is never silently shadowed by a checked-in file.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::types::{AppConfig, DefaultInstructionSets};
+use crate::types::{AppConfig, DefaultInstructionSets, PluginSettingValue, AI_LAUNCH_COMMAND_SETTING};
 
 /// Subdirectory name under a workspace root that hosts repo-stored Arborist
 /// state. Source-controlled (except for the entries listed in `.gitignore`).
@@ -52,7 +52,7 @@ const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
 /// `.arborist/settings.json`. Every field is optional; missing fields fall
 /// through to the user-level config.
 ///
-/// Wire format is camelCase (`defaultInstructionSets`, `aiLaunchCommands`,
+/// Wire format is camelCase (`defaultInstructionSets`, `pluginSettings`,
 /// `worktreePrepCommands`) to match the rest of the on-disk JSON shape.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -61,6 +61,8 @@ pub struct RepoSettings {
     pub default_instruction_sets: Option<DefaultInstructionSets>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_launch_commands: Option<RepoAiLaunchCommands>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_settings: Option<RepoPluginSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_prep_commands: Option<Vec<String>>,
 }
@@ -73,6 +75,21 @@ pub struct RepoSettings {
 pub struct RepoAiLaunchCommands {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub commands: BTreeMap<String, String>,
+}
+
+/// Repo-level subset of plugin settings. Repo overlays may set AI launch command strings, but do not control user-level enable/disable choices.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepoPluginSettings {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ai: BTreeMap<String, RepoPluginAiSettings>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepoPluginAiSettings {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, PluginSettingValue>,
 }
 
 impl<'de> Deserialize<'de> for RepoAiLaunchCommands {
@@ -196,11 +213,23 @@ impl RepoSettings {
         }
         if let Some(ai) = &self.ai_launch_commands {
             for (plugin_id, command) in &ai.commands {
-                let command_changed = cfg.ai_launch_commands.command_for_id(plugin_id) != command;
-                if command_changed {
-                    cfg.ai_launch_commands.icon_data_uris.remove(plugin_id);
+                cfg.set_ai_launch_command(plugin_id.clone(), command.clone());
+            }
+        }
+        if let Some(plugin_settings) = &self.plugin_settings {
+            for (plugin_id, state) in &plugin_settings.ai {
+                if let Some(value) = state.settings.get(AI_LAUNCH_COMMAND_SETTING) {
+                    let Some(command) = value.as_str() else {
+                        warn!(
+                            code = "InvalidConfig",
+                            plugin_id,
+                            setting = AI_LAUNCH_COMMAND_SETTING,
+                            "ignoring repo plugin setting because AI launch command must be a string",
+                        );
+                        continue;
+                    };
+                    cfg.set_ai_launch_command(plugin_id.clone(), command.to_owned());
                 }
-                cfg.ai_launch_commands.commands.insert(plugin_id.clone(), command.clone());
             }
         }
         if let Some(prep) = &self.worktree_prep_commands {
@@ -368,33 +397,34 @@ mod tests {
             worktree_prep_commands: vec!["user-cmd".to_owned()],
             ..AppConfig::default()
         };
-        cfg.ai_launch_commands.commands.insert("claude".to_owned(), "user-claude".to_owned());
+        cfg.set_ai_launch_command("claude".to_owned(), "user-claude".to_owned());
         cfg.ai_launch_commands
             .icon_data_uris
             .insert("claude".to_owned(), Some("data:image/png;base64,USER".to_owned()));
-        cfg.ai_launch_commands.commands.insert("copilot".to_owned(), "user-copilot".to_owned());
+        cfg.set_ai_launch_command("copilot".to_owned(), "user-copilot".to_owned());
 
         let repo = RepoSettings {
             default_instruction_sets: None,
             ai_launch_commands: Some(RepoAiLaunchCommands {
                 commands: BTreeMap::from([("claude".to_owned(), "repo-claude".to_owned())]),
             }),
+            plugin_settings: None,
             worktree_prep_commands: Some(vec!["repo-cmd".to_owned()]),
         };
         repo.apply_to(&mut cfg);
 
         assert_eq!(cfg.worktree_prep_commands, vec!["repo-cmd".to_owned()]);
-        assert_eq!(cfg.ai_launch_commands.commands.get("claude").map(String::as_str), Some("repo-claude"));
+        assert_eq!(cfg.ai_launch_command_for_id("claude"), "repo-claude");
         // Icon cache was invalidated because the command changed.
         assert!(!cfg.ai_launch_commands.icon_data_uris.contains_key("claude"));
         // Copilot left alone (override didn't set it).
-        assert_eq!(cfg.ai_launch_commands.commands.get("copilot").map(String::as_str), Some("user-copilot"));
+        assert_eq!(cfg.ai_launch_command_for_id("copilot"), "user-copilot");
     }
 
     #[test]
     fn apply_to_keeps_icon_cache_when_command_unchanged() {
         let mut cfg = AppConfig::default();
-        cfg.ai_launch_commands.commands.insert("claude".to_owned(), "same".to_owned());
+        cfg.set_ai_launch_command("claude".to_owned(), "same".to_owned());
         cfg.ai_launch_commands
             .icon_data_uris
             .insert("claude".to_owned(), Some("data:image/png;base64,KEEP".to_owned()));
@@ -430,6 +460,50 @@ mod tests {
             cfg.ai_launch_commands.icon_data_uris.get("claude").and_then(Option::as_deref),
             Some("data:image/png;base64,KEEP")
         );
+    }
+
+    #[test]
+    fn apply_to_accepts_plugin_settings_ai_launch_command() {
+        let mut cfg = AppConfig::default();
+        let repo = RepoSettings {
+            plugin_settings: Some(RepoPluginSettings {
+                ai: BTreeMap::from([(
+                    "claude".to_owned(),
+                    RepoPluginAiSettings {
+                        settings: BTreeMap::from([(
+                            AI_LAUNCH_COMMAND_SETTING.to_owned(),
+                            PluginSettingValue::String("repo-plugin-claude".to_owned()),
+                        )]),
+                    },
+                )]),
+            }),
+            ..RepoSettings::default()
+        };
+
+        repo.apply_to(&mut cfg);
+
+        assert_eq!(cfg.ai_launch_command_for_id("claude"), "repo-plugin-claude");
+    }
+
+    #[test]
+    fn apply_to_ignores_non_string_plugin_settings_ai_launch_command() {
+        let mut cfg = AppConfig::default();
+        cfg.set_ai_launch_command("claude".to_owned(), "user-claude".to_owned());
+        let repo = RepoSettings {
+            plugin_settings: Some(RepoPluginSettings {
+                ai: BTreeMap::from([(
+                    "claude".to_owned(),
+                    RepoPluginAiSettings {
+                        settings: BTreeMap::from([(AI_LAUNCH_COMMAND_SETTING.to_owned(), PluginSettingValue::Bool(true))]),
+                    },
+                )]),
+            }),
+            ..RepoSettings::default()
+        };
+
+        repo.apply_to(&mut cfg);
+
+        assert_eq!(cfg.ai_launch_command_for_id("claude"), "user-claude");
     }
 
     #[test]
