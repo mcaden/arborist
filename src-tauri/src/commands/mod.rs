@@ -469,7 +469,10 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLoc
         // Best-effort persist — errors are swallowed so a transient store issue doesn't crash the watcher thread.
         let store = match workspace.read() {
             Ok(guard) => guard.store.clone(),
-            Err(_) => return,
+            Err(_) => {
+                tracing::warn!("workspace lock poisoned; skipping metrics persist");
+                return;
+            }
         };
         let session_id = payload.session_id;
         if let Err(e) = store.update_session_metrics(&session_id, payload) {

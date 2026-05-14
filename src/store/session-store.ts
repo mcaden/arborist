@@ -253,18 +253,21 @@ function pickNeighbour(previousSessions: SessionView[], closedId: SessionId): Se
   return undefined;
 }
 
+/** Extract persisted metrics snapshots from session views into a lookup keyed by session id (Issue #140). */
+function extractRestoredMetrics(sessions: SessionView[]): Record<SessionId, SessionMetrics> {
+  const result: Record<SessionId, SessionMetrics> = {};
+  for (const s of sessions) {
+    if (s.lastMetrics) {
+      result[s.id] = s.lastMetrics;
+    }
+  }
+  return result;
+}
+
 export const useSessionStore = create<Store>((set, get) => {
   const actions: SessionStoreActions = {
     hydrate: async () => {
       const sessions = await sessionList();
-      // Seed metrics from persisted lastMetrics snapshots so the dashboard
-      // doesn't start at zero after restore (Issue #140).
-      const restoredMetrics: Record<string, SessionMetrics> = {};
-      for (const s of sessions) {
-        if (s.lastMetrics) {
-          restoredMetrics[s.id] = s.lastMetrics;
-        }
-      }
       // Clear any orphan status messages — keys may belong to sessions
       // that no longer exist after the backend reload.
       set({
@@ -273,7 +276,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: restoredMetrics,
+        metrics: extractRestoredMetrics(sessions),
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},
@@ -295,12 +298,6 @@ export const useSessionStore = create<Store>((set, get) => {
         activeId = sessions[0]?.id;
       }
       // Seed metrics from persisted lastMetrics (Issue #140).
-      const restoredMetrics: Record<string, SessionMetrics> = {};
-      for (const s of sessions) {
-        if (s.lastMetrics) {
-          restoredMetrics[s.id] = s.lastMetrics;
-        }
-      }
       set({
         sessions,
         activeId,
@@ -308,7 +305,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: restoredMetrics,
+        metrics: extractRestoredMetrics(sessions),
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},

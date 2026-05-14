@@ -425,7 +425,15 @@ impl ConfigStore {
 
     /// Persist the latest metrics snapshot on a session record. Called on every `session://metrics` emission so restore can seed the frontend.
     /// Returns `Ok(false)` when the stored value already matches (avoids redundant disk writes).
+    ///
+    /// # Panics (debug only)
+    /// Debug-asserts that `metrics.session_id` matches the supplied `id`. The separate `id` parameter exists so the caller can copy it before moving
+    /// `metrics` (avoiding a borrow-after-move); it must always agree with the payload's own `session_id`.
     pub fn update_session_metrics(&self, id: &SessionId, metrics: SessionMetricsEvent) -> Result<bool, Error> {
+        debug_assert_eq!(
+            metrics.session_id, *id,
+            "update_session_metrics: id parameter and metrics.session_id must match"
+        );
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
         let Some(session) = all.get_mut(id) else {
