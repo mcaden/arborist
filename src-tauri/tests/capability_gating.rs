@@ -66,10 +66,6 @@ fn main_capability_allows_required_commands_only() {
         "main capability must include allow-config so config_get/config_set are callable; got {identifiers:?}",
     );
     assert!(
-        identifiers.contains(&"allow-instructions"),
-        "main capability must include allow-instructions so instructions_list is callable; got {identifiers:?}",
-    );
-    assert!(
         identifiers.contains(&"allow-session"),
         "main capability must include allow-session so session_* commands are callable; got {identifiers:?}",
     );
@@ -251,20 +247,6 @@ fn allow_config_permission_file_declares_config_commands() {
     );
     assert!(raw.contains("\"config_get\""), "permission must allow the `config_get` command",);
     assert!(raw.contains("\"config_set\""), "permission must allow the `config_set` command",);
-}
-
-#[test]
-fn allow_instructions_permission_file_declares_instructions_command() {
-    let path = manifest_dir().join("permissions").join("allow-instructions.toml");
-    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    assert!(
-        raw.contains("identifier = \"allow-instructions\""),
-        "permission identifier must remain `allow-instructions`",
-    );
-    assert!(
-        raw.contains("\"instructions_list\""),
-        "permission must allow the `instructions_list` command",
-    );
 }
 
 #[test]

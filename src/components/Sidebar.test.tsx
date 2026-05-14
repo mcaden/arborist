@@ -43,7 +43,6 @@ function makeView(id: string, overrides: Partial<SessionView> = {}): SessionView
     worktreePath: `/repo/${id}`,
     worktreeName: id,
     label: id,
-    instructionSetId: 'default-claude',
     status: 'running',
     createdAt: 1_700_000_000_000,
     tabIndex: 0,
@@ -327,7 +326,7 @@ describe('Sidebar', () => {
     seed([makeView('a')], 'a');
     render(<Sidebar />);
     fireEvent.click(screen.getByTestId('settings-button'));
-    const input = screen.getByLabelText(/instruction sets directory/i);
+    const input = screen.getByLabelText(/worktree prep commands/i);
     input.focus();
     fireEvent.keyDown(input, { key: 'Delete' });
     // The close-confirm dialog must NOT have been opened — Delete

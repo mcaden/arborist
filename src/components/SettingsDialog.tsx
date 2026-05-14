@@ -7,8 +7,7 @@
 //   General           — workspace root (delegates to the existing
 //                       WorkspacePicker so the park-old-sessions
 //                       invariant lives in one place — see
-//                       `lib/workspace-switch.ts`), instruction sets
-//                       directory (path picker), worktree prep commands
+//                       `lib/workspace-switch.ts`), worktree prep commands
 //                       (one shell command per line).
 //   Plugins           — enable/disable plugins and edit plugin-owned
 //                       settings such as AI launch commands.
@@ -22,9 +21,9 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { CustomProcessesTab } from './CustomProcessesTab';
 import { PluginsTab } from './PluginsTab';
 import { WorkspacePicker } from './WorkspacePicker';
-import { formatError, pickDirectory } from '@/lib/tauri-bridge';
+import { formatError } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import { selectInstructionSetsDir, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
+import { selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
 
 export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'about';
 
@@ -60,12 +59,10 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
 
 export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDialogProps): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
-  const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const worktreePrepCommands = useConfigStore(selectWorktreePrepCommands);
   const setConfig = useConfigStore((s) => s.set);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
-  const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(worktreePrepCommands));
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -131,32 +128,19 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   // Re-sync local edit buffers if the persisted config changes underfoot
   // (e.g. via the workspace-change flow we delegate to WorkspacePicker).
   useEffect(() => {
-    setInstrInput(instructionSetsDir);
-  }, [instructionSetsDir]);
-  useEffect(() => {
     setCmdsInput(commandsToText(worktreePrepCommands));
   }, [worktreePrepCommands]);
 
   const parsedCmds = textToCommands(cmdsInput);
-  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, worktreePrepCommands);
-
-  const handleBrowseInstructions = useCallback(async () => {
-    const picked = await pickDirectory();
-    if (picked) {
-      setSubmitError(null);
-      setInstrInput(picked);
-    }
-  }, []);
+  const dirty = !arraysEqual(parsedCmds, worktreePrepCommands);
 
   const handleSave = useCallback(async () => {
     setSubmitError(null);
     setSaving(true);
     try {
       const patch: {
-        instructionSetsDir?: string;
         worktreePrepCommands?: string[];
       } = {};
-      if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
       if (!arraysEqual(parsedCmds, worktreePrepCommands)) patch.worktreePrepCommands = parsedCmds;
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
@@ -166,7 +150,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     } finally {
       setSaving(false);
     }
-  }, [instrInput, instructionSetsDir, parsedCmds, worktreePrepCommands, setConfig, onClose]);
+  }, [parsedCmds, worktreePrepCommands, setConfig, onClose]);
 
   const handleWorkspaceConfirm = useCallback(async (path: string) => {
     await changeWorkspace(path);
@@ -308,35 +292,6 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Changing the workspace closes every open session.</p>
-              </section>
-
-              <section className="mb-4">
-                <label
-                  htmlFor="settings-instr-dir"
-                  className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
-                >
-                  Instruction sets directory
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="settings-instr-dir"
-                    type="text"
-                    value={instrInput}
-                    onChange={(e) => {
-                      setSubmitError(null);
-                      setInstrInput(e.target.value);
-                    }}
-                    placeholder="(absolute path)"
-                    className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handleBrowseInstructions()}
-                    className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
-                  >
-                    Browse…
-                  </button>
-                </div>
               </section>
 
               <section className="mb-4">
