@@ -10,6 +10,8 @@
 //! - `unicode\n`            → write a known multibyte UTF-8 string (used by the
 //!   streaming-decoder tests).
 //! - any other line `X`     → write `echo: X\n`.
+//! - `--spawn-grandchild`   → spawn a long-lived `--hold` child, print its PID,
+//!   and then stay alive (used by Windows PTY process-tree kill tests).
 //!
 //! Cross-platform: pure stdlib, no extra dependencies. The binary is wired into `Cargo.toml` so integration tests in this crate receive its path via
 //! `env!("CARGO_BIN_EXE_arborist-test-child")`.
@@ -19,9 +21,20 @@
 //! prevents `tauri build` from trying to copy this helper into the AppImage / .deb / .app bundle. Do not move this file back into `src/bin/`.
 
 use std::io::{self, BufRead, Write};
-use std::process::ExitCode;
+use std::process::{Child, ExitCode};
+use std::time::Duration;
 
 fn main() -> ExitCode {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == std::ffi::OsStr::new("--hold")) {
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+    if args.get(1).is_some_and(|arg| arg == std::ffi::OsStr::new("--spawn-grandchild")) {
+        return spawn_grandchild(args.get(2));
+    }
+
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if writeln!(out, "ARBORIST-TEST-CHILD READY").is_err() {
@@ -75,4 +88,42 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn spawn_grandchild(marker_path: Option<&std::ffi::OsString>) -> ExitCode {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(_) => return ExitCode::from(2),
+    };
+    let mut child = match std::process::Command::new(exe).arg("--hold").spawn() {
+        Ok(child) => child,
+        Err(_) => return ExitCode::from(2),
+    };
+    if let Some(marker_path) = marker_path {
+        let marker_path = std::path::PathBuf::from(marker_path);
+        if std::fs::write(&marker_path, child.id().to_string()).is_err() {
+            terminate_spawned_child(&mut child);
+            return ExitCode::from(2);
+        }
+    }
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if writeln!(out, "ARBORIST-TEST-CHILD GRANDCHILD {}", child.id()).is_err() {
+        terminate_spawned_child(&mut child);
+        return ExitCode::from(2);
+    }
+    if out.flush().is_err() {
+        terminate_spawned_child(&mut child);
+        return ExitCode::from(2);
+    }
+
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+fn terminate_spawned_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }

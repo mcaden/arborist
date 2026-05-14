@@ -15,10 +15,16 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use tracing::{debug, warn};
 
 use crate::types::{Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
+
+#[cfg(windows)]
+const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[25, 50, 100, 200, 400, 800, 1_000];
+#[cfg(not(windows))]
+const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[];
 
 /// Build a `git` [`Command`] with the repo-selection environment variables stripped.
 ///
@@ -64,7 +70,8 @@ pub trait GitRunner: Send + Sync {
     fn create_worktree(&self, repo_root: &Path, relative_path: &Path, branch: &str) -> Result<PathBuf, Error>;
 
     /// Run `git -C <repo_root> worktree remove --force <worktree_path>`. `--force` is used because the user has explicitly confirmed deletion in the
-    /// UI (CloseConfirmDialog) and we have just torn down the PTY that owned the cwd.
+    /// UI (CloseConfirmDialog) and we have just torn down the PTY that owned the cwd. The production runner retries transient Windows filesystem
+    /// errors because process exit and handle release can lag the close call by a short interval.
     ///
     /// `repo_root` must be a stable checkout of the same repository *outside* the target `worktree_path` — typically the configured `workspace_root`.
     /// Callers must not pass `worktree_path` itself as `repo_root`: the spawned `git` would inherit it as its CWD, and on Windows the OS prevents
@@ -195,22 +202,12 @@ impl GitRunner for RealGitRunner {
         if !repo_root.is_dir() {
             return Err(Error::WorktreeMissing(repo_root.to_path_buf()));
         }
-        let output = git_command()
-            .current_dir(repo_root)
-            .arg("-C")
-            .arg(repo_root)
-            .args(["worktree", "remove", "--force"])
-            .arg(worktree_path)
-            .output()
-            .map_err(|e| Error::Internal(format!("git worktree remove: {e}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(Error::Internal(format!(
-                "git worktree remove failed: {}",
-                if stderr.is_empty() { "<no stderr>".to_owned() } else { stderr }
-            )));
-        }
-        Ok(())
+        remove_worktree_with_retry(
+            repo_root,
+            worktree_path,
+            || run_git_worktree_remove(repo_root, worktree_path),
+            std::thread::sleep,
+        )
     }
 
     fn git_status(&self, worktree_path: &Path) -> Result<WorktreeGitStatus, Error> {
@@ -269,6 +266,77 @@ impl GitRunner for RealGitRunner {
         }
         Ok(parse_status_v2(&output.stdout))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitCommandResult {
+    success: bool,
+    stderr: String,
+}
+
+fn run_git_worktree_remove(repo_root: &Path, worktree_path: &Path) -> Result<GitCommandResult, Error> {
+    let output = git_command()
+        .current_dir(repo_root)
+        .arg("-C")
+        .arg(repo_root)
+        .args(["worktree", "remove", "--force"])
+        .arg(worktree_path)
+        .output()
+        .map_err(|e| Error::Internal(format!("git worktree remove: {e}")))?;
+
+    Ok(GitCommandResult {
+        success: output.status.success(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
+}
+
+fn remove_worktree_with_retry(
+    repo_root: &Path,
+    worktree_path: &Path,
+    mut run: impl FnMut() -> Result<GitCommandResult, Error>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<(), Error> {
+    let mut last_stderr = String::new();
+    for attempt in 0.. {
+        let output = run()?;
+        if output.success {
+            return Ok(());
+        }
+
+        last_stderr = if output.stderr.is_empty() {
+            "<no stderr>".to_owned()
+        } else {
+            output.stderr
+        };
+        let Some(delay_ms) = WORKTREE_REMOVE_RETRY_DELAYS_MS.get(attempt) else {
+            break;
+        };
+        if !is_retryable_worktree_remove_failure(&last_stderr) {
+            break;
+        }
+        warn!(
+            repo_root = %repo_root.display(),
+            worktree_path = %worktree_path.display(),
+            attempt = attempt + 1,
+            delay_ms,
+            stderr = %last_stderr,
+            "git worktree remove hit transient filesystem error; retrying",
+        );
+        sleep(Duration::from_millis(*delay_ms));
+    }
+
+    Err(Error::Internal(format!("git worktree remove failed: {last_stderr}")))
+}
+
+fn is_retryable_worktree_remove_failure(stderr: &str) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("directory not empty")
+        || lower.contains("being used by another process")
+        || lower.contains("access is denied")
+        || lower.contains("permission denied")
 }
 
 /// Parse `git worktree list --porcelain` output. The first block is the main worktree; subsequent blocks are linked worktrees. Detached HEADs produce
@@ -621,6 +689,68 @@ locked migrating to slow disk
         let out = runner.list_worktrees(dir.path()).expect("non-repo must degrade gracefully");
         // Empty even though `git` is on PATH: the command exits non-zero because it isn't a repository.
         assert!(out.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_worktree_retries_transient_directory_not_empty_failure() {
+        let repo_root = Path::new(r"C:\repo");
+        let worktree_path = Path::new(r"C:\repo\.arborist\.worktrees\feature");
+        let calls = std::cell::Cell::new(0usize);
+        let sleeps = std::cell::RefCell::new(Vec::new());
+
+        remove_worktree_with_retry(
+            repo_root,
+            worktree_path,
+            || {
+                let n = calls.get();
+                calls.set(n + 1);
+                Ok(if n == 0 {
+                    GitCommandResult {
+                        success: false,
+                        stderr: "error: failed to delete 'feature': Directory not empty".to_owned(),
+                    }
+                } else {
+                    GitCommandResult {
+                        success: true,
+                        stderr: String::new(),
+                    }
+                })
+            },
+            |delay| sleeps.borrow_mut().push(delay),
+        )
+        .expect("second attempt should succeed");
+
+        assert_eq!(calls.get(), 2);
+        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(25)]);
+    }
+
+    #[test]
+    fn remove_worktree_does_not_retry_non_transient_failure() {
+        let repo_root = Path::new(if cfg!(windows) { r"C:\repo" } else { "/repo" });
+        let worktree_path = Path::new(if cfg!(windows) {
+            r"C:\repo\.arborist\.worktrees\feature"
+        } else {
+            "/repo/.arborist/.worktrees/feature"
+        });
+        let calls = std::cell::Cell::new(0usize);
+
+        let err = remove_worktree_with_retry(
+            repo_root,
+            worktree_path,
+            || {
+                calls.set(calls.get() + 1);
+                Ok(GitCommandResult {
+                    success: false,
+                    stderr: "fatal: not a git repository".to_owned(),
+                })
+            },
+            |_| panic!("non-transient failure must not sleep/retry"),
+        )
+        .expect_err("non-transient git failure should surface");
+
+        assert_eq!(calls.get(), 1);
+        assert!(matches!(err, Error::Internal(msg) if msg.contains("fatal: not a git repository")));
     }
 
     /// Build a `Command` with both repo-selection *and* identity/config `GIT_*` variables stripped. Tests get a stricter scrub than production

@@ -141,8 +141,8 @@ pub trait PtyWaiter: Send {
 
 /// Kill handle. Independent of the waiter so the kill caller never has to contend with the wait thread.
 ///
-/// On Unix the production impl sends SIGTERM, waits up to [`KILL_GRACE`], then escalates to SIGKILL. On Windows it forwards to portable-pty's `kill`,
-/// which terminates the child via `TerminateProcess`.
+/// On Unix the production impl sends SIGTERM, waits up to [`KILL_GRACE`], then escalates to SIGKILL. On Windows it terminates the spawned shell's
+/// process tree before forwarding to portable-pty's `kill`, because `%COMSPEC% /c <cmd>` can leave the actual CLI as a child process.
 pub trait PtyKiller: Send + Sync {
     fn kill(&self) -> Result<(), Error>;
 }
@@ -212,6 +212,8 @@ impl PtySpawner for PortablePtySpawner {
         let killer = Arc::new(PortableKiller {
             inner: Mutex::new(killer_inner),
             pid,
+            #[cfg(windows)]
+            root_creation_time: windows_process_tree::process_creation_time(pid),
         });
         let waiter = Box::new(PortableWaiter { child });
 
@@ -256,16 +258,37 @@ impl PtyWaiter for PortableWaiter {
 
 struct PortableKiller {
     inner: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
-    #[allow(dead_code)]
     pid: u32,
+    #[cfg(windows)]
+    root_creation_time: Option<u64>,
 }
 
 impl PtyKiller for PortableKiller {
     fn kill(&self) -> Result<(), Error> {
+        #[cfg(windows)]
+        let tree_kill_result = windows_process_tree::kill_process_tree(self.pid, self.root_creation_time);
+
         {
             let mut guard = self.inner.lock().map_err(|_| Error::PtyKillFailed("killer mutex poisoned".into()))?;
-            guard.kill().map_err(|e| Error::PtyKillFailed(format!("kill failed: {e}")))?;
+            #[cfg(windows)]
+            {
+                // portable-pty 0.8.x/0.9.x has the WinChildKiller success check inverted, so successful TerminateProcess calls surface as
+                // "The operation completed successfully. (os error 0)". We still invoke it to let the backend release its handle, but our
+                // process-tree kill above is the load-bearing Windows termination path.
+                if let Err(e) = guard.kill() {
+                    if e.raw_os_error() != Some(0) {
+                        return Err(Error::PtyKillFailed(format!("kill failed: {e}")));
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                guard.kill().map_err(|e| Error::PtyKillFailed(format!("kill failed: {e}")))?;
+            }
         }
+
+        #[cfg(windows)]
+        tree_kill_result?;
 
         // Unix-only SIGKILL escalation if the child doesn't react to SIGTERM within KILL_GRACE.
         #[cfg(unix)]
@@ -277,6 +300,376 @@ impl PtyKiller for PortableKiller {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+mod windows_process_tree {
+    use std::collections::{HashMap, HashSet};
+    use std::ffi::c_void;
+    use std::io;
+
+    use crate::types::Error;
+
+    type Bool = i32;
+    type Dword = u32;
+    type Handle = *mut c_void;
+
+    const TH32CS_SNAPPROCESS: Dword = 0x0000_0002;
+    const PROCESS_TERMINATE: Dword = 0x0001;
+    const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+    const SYNCHRONIZE: Dword = 0x0010_0000;
+    const ERROR_INVALID_PARAMETER: i32 = 87;
+    const ERROR_NO_MORE_FILES: i32 = 18;
+    const INVALID_HANDLE_VALUE: isize = -1;
+    const MAX_PATH: usize = 260;
+    const WAIT_OBJECT_0: Dword = 0x0000_0000;
+    const WAIT_TIMEOUT: Dword = 0x0000_0102;
+    const WAIT_FAILED: Dword = 0xffff_ffff;
+    const TERMINATE_WAIT_MS: Dword = 2_000;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct ProcessEntry32W {
+        dwSize: Dword,
+        cntUsage: Dword,
+        th32ProcessID: Dword,
+        th32DefaultHeapID: usize,
+        th32ModuleID: Dword,
+        cntThreads: Dword,
+        th32ParentProcessID: Dword,
+        pcPriClassBase: i32,
+        dwFlags: Dword,
+        szExeFile: [u16; MAX_PATH],
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct ProcessSnapshotEntry {
+        pid: u32,
+        parent_pid: u32,
+        creation_time: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ProcessToTerminate {
+        pid: u32,
+        creation_time: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    #[allow(non_snake_case)]
+    struct FileTime {
+        dwLowDateTime: Dword,
+        dwHighDateTime: Dword,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dw_flags: Dword, process_id: Dword) -> Handle;
+        fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> Bool;
+        fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> Bool;
+        fn OpenProcess(desired_access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+        fn GetProcessTimes(
+            process: Handle,
+            creation_time: *mut FileTime,
+            exit_time: *mut FileTime,
+            kernel_time: *mut FileTime,
+            user_time: *mut FileTime,
+        ) -> Bool;
+        fn TerminateProcess(process: Handle, exit_code: u32) -> Bool;
+        fn WaitForSingleObject(handle: Handle, milliseconds: Dword) -> Dword;
+        fn CloseHandle(object: Handle) -> Bool;
+    }
+
+    pub(super) fn kill_process_tree(root_pid: u32, expected_root_creation_time: Option<u64>) -> Result<(), Error> {
+        let entries =
+            snapshot_process_parent_pairs().map_err(|e| Error::PtyKillFailed(format!("process tree snapshot failed for pid {root_pid}: {e}")))?;
+        let Some(root_creation_time) = validated_root_creation_time(root_pid, expected_root_creation_time, &entries) else {
+            return Ok(());
+        };
+
+        let descendants = descendant_pids_deepest_first(root_pid, root_creation_time, &entries);
+        let mut first_error: Option<(u32, io::Error)> = None;
+
+        for process in descendants.into_iter().chain(std::iter::once(ProcessToTerminate {
+            pid: root_pid,
+            creation_time: root_creation_time,
+        })) {
+            if let Err(e) = terminate_pid(process) {
+                first_error.get_or_insert((process.pid, e));
+            }
+        }
+
+        if let Some((pid, error)) = first_error {
+            Err(Error::PtyKillFailed(format!("process tree kill failed for pid {pid}: {error}")))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn snapshot_process_parent_pairs() -> io::Result<Vec<ProcessSnapshotEntry>> {
+        // SAFETY: CreateToolhelp32Snapshot is called with the documented process-snapshot flag and process id 0 for all processes.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot as isize == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+
+        let result = collect_process_parent_pairs(snapshot);
+
+        // SAFETY: snapshot is a valid HANDLE returned by CreateToolhelp32Snapshot.
+        unsafe {
+            CloseHandle(snapshot);
+        }
+
+        result
+    }
+
+    fn collect_process_parent_pairs(snapshot: Handle) -> io::Result<Vec<ProcessSnapshotEntry>> {
+        let mut entry = ProcessEntry32W {
+            dwSize: std::mem::size_of::<ProcessEntry32W>() as Dword,
+            cntUsage: 0,
+            th32ProcessID: 0,
+            th32DefaultHeapID: 0,
+            th32ModuleID: 0,
+            cntThreads: 0,
+            th32ParentProcessID: 0,
+            pcPriClassBase: 0,
+            dwFlags: 0,
+            szExeFile: [0; MAX_PATH],
+        };
+
+        // SAFETY: entry points to an initialized PROCESSENTRY32W with dwSize set as required by the Toolhelp API.
+        if unsafe { Process32FirstW(snapshot, &mut entry) } == 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
+                Ok(Vec::new())
+            } else {
+                Err(error)
+            };
+        }
+
+        let mut entries = Vec::new();
+        loop {
+            entries.push(ProcessSnapshotEntry {
+                pid: entry.th32ProcessID,
+                parent_pid: entry.th32ParentProcessID,
+                creation_time: process_creation_time(entry.th32ProcessID),
+            });
+            // SAFETY: same initialized entry buffer; Process32NextW mutates it in place until it returns 0.
+            if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                let error = io::Error::last_os_error();
+                return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
+                    Ok(entries)
+                } else {
+                    Err(error)
+                };
+            }
+        }
+    }
+
+    fn validated_root_creation_time(root_pid: u32, expected_root_creation_time: Option<u64>, entries: &[ProcessSnapshotEntry]) -> Option<u64> {
+        let expected = expected_root_creation_time?;
+        let actual = entries.iter().find(|entry| entry.pid == root_pid).and_then(|entry| entry.creation_time)?;
+        (actual == expected).then_some(actual)
+    }
+
+    pub(super) fn process_creation_time(pid: u32) -> Option<u64> {
+        // SAFETY: OpenProcess accepts any PID and returns NULL for stale/invalid ones; no pointers are dereferenced.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+
+        let creation_time = process_creation_time_from_handle(handle);
+        // SAFETY: handle is valid and closed exactly once.
+        unsafe {
+            CloseHandle(handle);
+        }
+
+        creation_time
+    }
+
+    fn process_creation_time_from_handle(handle: Handle) -> Option<u64> {
+        let mut creation_time = FileTime::default();
+        let mut exit_time = FileTime::default();
+        let mut kernel_time = FileTime::default();
+        let mut user_time = FileTime::default();
+        // SAFETY: handle is valid and all FILETIME pointers are initialized writable buffers.
+        let ok = unsafe { GetProcessTimes(handle, &mut creation_time, &mut exit_time, &mut kernel_time, &mut user_time) };
+        (ok != 0).then_some((u64::from(creation_time.dwHighDateTime) << 32) | u64::from(creation_time.dwLowDateTime))
+    }
+
+    fn descendant_pids_deepest_first(root_pid: u32, root_created_at: u64, entries: &[ProcessSnapshotEntry]) -> Vec<ProcessToTerminate> {
+        let mut children_by_parent: HashMap<u32, Vec<ProcessSnapshotEntry>> = HashMap::new();
+        for entry in entries {
+            if entry.pid != root_pid && entry.creation_time.is_some() {
+                children_by_parent.entry(entry.parent_pid).or_default().push(*entry);
+            }
+        }
+        for children in children_by_parent.values_mut() {
+            children.sort_unstable_by_key(|entry| entry.pid);
+        }
+
+        let mut seen = HashSet::new();
+        let mut ordered = Vec::new();
+        let _ = append_descendants(root_pid, root_created_at, &children_by_parent, &mut seen, &mut ordered);
+        ordered
+    }
+
+    fn append_descendants(
+        pid: u32,
+        parent_created_at: u64,
+        children_by_parent: &HashMap<u32, Vec<ProcessSnapshotEntry>>,
+        seen: &mut HashSet<u32>,
+        ordered: &mut Vec<ProcessToTerminate>,
+    ) -> bool {
+        if !seen.insert(pid) {
+            return false;
+        }
+        let Some(children) = children_by_parent.get(&pid) else {
+            return true;
+        };
+        for child in children {
+            let Some(child_created_at) = child.creation_time else {
+                continue;
+            };
+            if child_created_at < parent_created_at {
+                continue;
+            }
+            if append_descendants(child.pid, child_created_at, children_by_parent, seen, ordered) {
+                ordered.push(ProcessToTerminate {
+                    pid: child.pid,
+                    creation_time: child_created_at,
+                });
+            }
+        }
+        true
+    }
+
+    fn terminate_pid(process: ProcessToTerminate) -> io::Result<()> {
+        // SAFETY: OpenProcess accepts any PID and returns NULL for stale/invalid ones; no pointers are dereferenced here.
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, process.pid) };
+        if handle.is_null() {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) {
+                Ok(())
+            } else {
+                Err(error)
+            };
+        }
+
+        let actual_creation_time = process_creation_time_from_handle(handle);
+        if actual_creation_time != Some(process.creation_time) {
+            // The PID went stale or was reused after the snapshot; never terminate a process we cannot re-identify by creation time.
+            // SAFETY: handle is valid and closed exactly once on this early-return path.
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Ok(());
+        }
+
+        // SAFETY: handle is a valid process handle opened with PROCESS_TERMINATE. CloseHandle is called exactly once.
+        let terminated = unsafe { TerminateProcess(handle, 1) };
+        let error = io::Error::last_os_error();
+        let wait = if terminated != 0 {
+            // SAFETY: handle is a valid process handle opened with SYNCHRONIZE.
+            Some(unsafe { WaitForSingleObject(handle, TERMINATE_WAIT_MS) })
+        } else {
+            None
+        };
+        let wait_error = io::Error::last_os_error();
+        // SAFETY: handle is valid and must be closed regardless of TerminateProcess success.
+        unsafe {
+            CloseHandle(handle);
+        }
+
+        if terminated == 0 {
+            if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        } else if wait == Some(WAIT_OBJECT_0) {
+            Ok(())
+        } else if wait == Some(WAIT_TIMEOUT) {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("timed out waiting for pid {} to terminate", process.pid),
+            ))
+        } else if wait == Some(WAIT_FAILED) {
+            Err(wait_error)
+        } else {
+            Err(io::Error::other(format!("unexpected wait result {:?} for pid {}", wait, process.pid)))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{descendant_pids_deepest_first, validated_root_creation_time, ProcessSnapshotEntry};
+        use pretty_assertions::assert_eq;
+
+        fn entry(pid: u32, parent_pid: u32, creation_time: u64) -> ProcessSnapshotEntry {
+            ProcessSnapshotEntry {
+                pid,
+                parent_pid,
+                creation_time: Some(creation_time),
+            }
+        }
+
+        fn descendant_pids(root_pid: u32, root_created_at: u64, entries: &[ProcessSnapshotEntry]) -> Vec<u32> {
+            descendant_pids_deepest_first(root_pid, root_created_at, entries)
+                .into_iter()
+                .map(|process| process.pid)
+                .collect()
+        }
+
+        #[test]
+        fn descendant_pids_are_deepest_first_without_root() {
+            let entries = [
+                entry(10, 1, 100),
+                entry(11, 10, 110),
+                entry(12, 10, 120),
+                entry(13, 11, 130),
+                entry(14, 13, 140),
+                entry(15, 12, 150),
+                entry(99, 14, 160),
+                entry(20, 2, 170),
+            ];
+
+            assert_eq!(descendant_pids(10, 100, &entries), vec![99, 14, 13, 11, 15, 12]);
+        }
+
+        #[test]
+        fn descendant_pids_skip_children_older_than_parent_pid() {
+            let entries = [
+                entry(10, 1, 100),
+                entry(11, 10, 110),
+                // Simulates a long-lived unrelated process whose original parent PID was later reused by the root process.
+                entry(12, 10, 90),
+                entry(13, 12, 130),
+            ];
+
+            assert_eq!(descendant_pids(10, 100, &entries), vec![11]);
+        }
+
+        #[test]
+        fn root_creation_validation_rejects_missing_unknown_or_reused_root() {
+            let entries = [
+                entry(9, 1, 90),
+                ProcessSnapshotEntry {
+                    pid: 10,
+                    parent_pid: 1,
+                    creation_time: None,
+                },
+                entry(11, 10, 110),
+            ];
+
+            assert_eq!(validated_root_creation_time(10, Some(100), &entries), None);
+            assert_eq!(validated_root_creation_time(11, None, &entries), None);
+            assert_eq!(validated_root_creation_time(11, Some(100), &entries), None);
+            assert_eq!(validated_root_creation_time(11, Some(110), &entries), Some(110));
+        }
     }
 }
 
