@@ -85,7 +85,7 @@ pub struct SpawnPrep {
     pub reset_files: Vec<SpawnPrepFile>,
 }
 
-/// Typed session temp files that may be reset during spawn prep.
+/// Typed session temp files that may be reset during spawn prep. Reset handlers are responsible for creating their own parent directories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnPrepFile {
     CopilotOtel,

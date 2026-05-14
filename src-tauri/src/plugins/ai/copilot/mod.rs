@@ -49,7 +49,7 @@ impl AiPlugin for CopilotPlugin {
 
     fn spawn_prep(&self, _session_id: &SessionId) -> crate::plugins::ai::SpawnPrep {
         crate::plugins::ai::SpawnPrep {
-            ensure_temp_dir: true,
+            ensure_temp_dir: false,
             reset_files: vec![crate::plugins::ai::SpawnPrepFile::CopilotOtel],
         }
     }
