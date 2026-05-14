@@ -7,8 +7,8 @@
 //! * **Dashboard-widget plugins** ([`dashboard_widget::DashboardWidgetBackend`]) — Git Status / AI Usage today.
 //!
 //! The registry is append-only and populated with built-ins in [`build_registry`].
-//! Today that includes custom-process plugins (issue #97: VS Code + Windows Explorer) and dashboard widgets (issue #98: Git Status + AI Usage).
-//! AI plugin migrations remain deferred to sub-issue #96.
+//! Today that includes AI plugins (issue #96: Claude + Copilot), custom-process plugins (issue #97: VS Code + Windows Explorer), and dashboard
+//! widgets (issue #98: Git Status + AI Usage).
 //!
 //! ## Design constraints (kept open for out-of-tree plugins later — see #93)
 //!
@@ -63,9 +63,9 @@ impl std::error::Error for RegisterError {}
 
 /// Typed context passed into plugin trait methods.
 ///
-/// Plugins never reach into `AppContext` directly — instead they receive a `PluginCtx` carrying the minimum surface they need. The v1 surface is
-/// deliberately tiny (worktree path + config snapshot); later migration sub-issues add fields as they discover them. Keeping the surface narrow is
-/// what lets us swap in a WASM or dlopen bridge without rewriting the trait surface.
+/// Plugins never reach into `AppContext` directly — instead they receive a `PluginCtx` carrying the minimum surface they need. The v1 surface stays
+/// deliberately tiny (worktree path + config snapshot); future plugin surfaces should add fields only when a concrete behavior needs them. Keeping
+/// the surface narrow is what lets us swap in a WASM or dlopen bridge without rewriting the trait surface.
 #[derive(Debug, Clone, Copy)]
 pub struct PluginCtx<'a> {
     /// Absolute path to the worktree the plugin is operating against. PTY spawn / git invocations / file lookups MUST treat this as authoritative;

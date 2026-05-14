@@ -117,6 +117,9 @@ pub const BUILTIN_AI: [BuiltinAi; 2] = [
 ];
 
 /// Resolve a built-in AI plugin for a persisted [`Tool`].
+///
+/// This is the intentional serde-glue seam: the exhaustive match keeps the compiler checking that every persisted `Tool` variant has a plugin.
+/// Call sites outside `plugins/ai/*` should use the wrapper helpers below instead of branching on `Tool` directly.
 #[must_use]
 pub fn plugin_for_tool(tool: Tool) -> &'static dyn AiPlugin {
     match tool {
