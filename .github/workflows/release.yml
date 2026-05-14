@@ -8,6 +8,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: Verify tag is on main
@@ -45,7 +48,7 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Normalized tag: '${tag}' (raw: '${RAW}')"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
@@ -98,21 +101,22 @@ jobs:
       # Check out the exact tag the user requested (normalized by the verify
       # job) so the built binaries correspond to the release tag rather than
       # the default branch HEAD.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
         with:
           ref: refs/tags/${{ needs.verify.outputs.tag }}
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # pnpm/action-setup@v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # actions/setup-node@v5
         with:
           node-version: '22'
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           targets: ${{ matrix.platform.rust-targets }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
 
@@ -144,7 +148,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # tauri-apps/tauri-action@v0
         id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -188,6 +192,6 @@ jobs:
       # artifacts are produced (because we set `tagName`), which fails the
       # job and causes this step to be skipped automatically.
       - name: Attest build provenance for release artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # actions/attest-build-provenance@v2
         with:
           subject-path: ${{ join(fromJSON(steps.tauri.outputs.artifactPaths), ',') }}

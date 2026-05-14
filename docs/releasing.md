@@ -91,6 +91,10 @@ Attestations prove the artifact was produced by the repository workflow for the 
 
 Use a throwaway tag to validate workflow changes. Delete the draft release and tag afterward.
 
+Run a dry release whenever release workflow action pins change, especially for Tauri publishing or build-attestation actions. The workflow pins every
+`uses:` dependency to a full commit SHA with an inline comment naming the upstream action ref; Dependabot opens update PRs, but maintainers should verify
+the new SHA and comment before merging.
+
 ## Out of scope today
 
 - Apple notarization.
