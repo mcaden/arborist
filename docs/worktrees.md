@@ -32,12 +32,13 @@ ignored.
 
 Worktree names are validated in both TypeScript (`validateWorktreeName`) and Rust (`compose::validate_worktree_name`):
 
-- 1 to 255 characters.
-- No spaces.
-- No `..`, `~`, `^`, `:`, `?`, `*`, `[`, or `\`.
+- 1 to 255 Unicode scalar characters.
+- Cannot be exactly `@` or start with `-`.
+- No spaces or control characters.
+- No `..`, `@{`, `//`, `~`, `^`, `:`, `?`, `*`, `[`, or `\`.
 - Cannot start or end with `.` or `/`.
 - Cannot end with `.lock`.
-- Cannot be exactly `@`.
+- Each `/`-separated path component must be non-empty, must not start with `.`, and must not end with `.lock`.
 
 The same name is passed to Git as a branch reference and composed into a path under `.arborist/.worktrees/`, so both sides validate before the backend
 shells out.
