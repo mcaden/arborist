@@ -8,7 +8,25 @@ license: MIT
 
 Companion to the **Shift-left quality** principles in `.github/copilot-instructions.md`. Those principles are always loaded; this file is a lookup. Read only the section needed for the current task instead of processing the whole document.
 
-## 1. Build, run, lint, test — command reference
+## 1. Quality gate — single command
+
+The primary way to run the full acceptance gate:
+
+```
+pnpm gate              # full gate (frontend + Rust in parallel, auto-fixes formatting)
+pnpm gate:fe           # frontend only
+pnpm gate:rust         # rust only
+```
+
+`pnpm gate` runs `scripts/quality-gate.mjs` which:
+- Runs frontend (eslint → prettier → typecheck+build → vitest) and Rust (cargo fmt → clippy → test) **in parallel**
+- **Auto-fixes** formatting failures (eslint --fix, prettier --write, cargo fmt) then re-checks
+- **Suppresses output on success** — only shows failure details (last 80 lines)
+- Reports per-step timings, wall-clock total, and parallelism factor
+
+Typical timing (warm cache): ~90–170s wall-clock depending on machine and cache state.
+
+## 2. Individual commands (for inner-loop or debugging)
 
 ```
 pnpm install                                     # install JS deps
@@ -31,7 +49,12 @@ These commands are wired up in `package.json` and the workspace
 `Cargo.toml`; if you find a discrepancy, treat it as a docs bug and
 update this skill in the same PR.
 
-## 2. Inner-loop setup (one-time per contributor)
+**Prefer `pnpm gate` over running individual commands** — it handles
+auto-fixing, parallelism, and context-efficient output automatically.
+Use individual commands only for inner-loop iteration or debugging
+specific failures.
+
+## 3. Inner-loop setup (one-time per contributor)
 
 Run continuously while coding so type/lint/test feedback hits in <5 s:
 
@@ -47,7 +70,7 @@ cargo watch -x 'test --workspace --features test-helpers'         # tests
 
 **Editor configuration**: ESLint + Prettier on save, `rust-analyzer` with `clippy` as the check command. No "I'll lint at the end" — by then it's a wall of changes.
 
-## 3. Pre-commit / pre-push hooks (Husky + lint-staged)
+## 4. Pre-commit / pre-push hooks (Husky + lint-staged)
 
 Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for branches explicitly marked as WIP and not intended for merging into `main`.
 
@@ -58,7 +81,7 @@ Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for bra
   - `pnpm test --run` (vitest in CI mode)
   - `cargo test --workspace --features test-helpers`
 
-## 4. Test architecture rules
+## 5. Test architecture rules
 
 ### Rust
 - Unit tests in-module: `#[cfg(test)] mod tests { ... }`
@@ -78,7 +101,7 @@ Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for bra
 - **Coverage** is a smell detector, not a target. No percentage gate, but a file <60% line coverage is a yellow flag worth explaining.
 - **Flaky tests are bugs.** Quarantine (`.skip` with a linked issue) within the same day; fix or delete within the week. Never retry to green.
 
-## 5. End-of-feature performance & memory smoke tests
+## 6. End-of-feature performance & memory smoke tests
 
 Run these before claiming a feature done:
 
