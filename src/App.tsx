@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
 import { Sidebar } from '@/components/Sidebar';
+import { ShellCommandTrustDialogHost } from '@/components/ShellCommandTrustDialog';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
@@ -108,6 +109,7 @@ export function App(): JSX.Element {
   return (
     <PluginRegistryProvider registry={registry}>
       <AppInner />
+      <ShellCommandTrustDialogHost />
     </PluginRegistryProvider>
   );
 }

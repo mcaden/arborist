@@ -1,37 +1,44 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
 
 import { repoCommandAllowOnce, repoCommandTrust, resetBridgeMocks, shellCommandPreview } from '@/lib/tauri-bridge.mock';
-import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
+import {
+  ensureShellCommandTrusted,
+  resetShellCommandTrustPromptStateForTest,
+  setShellCommandTrustPromptAdapterForTest,
+} from '@/lib/shell-command-trust';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 describe('ensureShellCommandTrusted', () => {
   beforeEach(() => {
     resetBridgeMocks();
+    resetShellCommandTrustPromptStateForTest();
   });
 
   afterEach(() => {
-    document.body.innerHTML = '';
+    resetShellCommandTrustPromptStateForTest();
     vi.restoreAllMocks();
   });
 
   it('continues without prompting when no repo command needs trust', async () => {
     shellCommandPreview.mockResolvedValueOnce({ targetWorktreePath: '/repo/wt', commands: [], trustRecords: [], trustRequired: false });
+    const prompt = vi.fn();
+    setShellCommandTrustPromptAdapterForTest(prompt);
 
     await expect(ensureShellCommandTrusted({ kind: 'worktreeCreate', name: 'feat-x' })).resolves.toBe(true);
 
+    expect(prompt).not.toHaveBeenCalled();
     expect(repoCommandTrust).not.toHaveBeenCalled();
     expect(repoCommandAllowOnce).not.toHaveBeenCalled();
   });
 
-  it('shows source, target, command, and precise-command scope before storing trust', async () => {
-    shellCommandPreview.mockResolvedValueOnce({
+  it('stores trust after the prompt approves remembering the exact command', async () => {
+    const preview = {
       targetWorktreePath: '/repo/.arborist/.worktrees/feat-x',
       commands: [
         {
-          kind: 'worktreePrep',
-          source: 'repoSettings',
+          kind: 'worktreePrep' as const,
+          source: 'repoSettings' as const,
           command: 'pnpm install',
           targetWorktreePath: '/repo/.arborist/.worktrees/feat-x',
           sourcePath: '/repo/.arborist/settings.json',
@@ -43,35 +50,31 @@ describe('ensureShellCommandTrusted', () => {
           fingerprint: 'abc',
           workspaceRoot: '/repo',
           sourcePath: '/repo/.arborist/settings.json',
-          kind: 'worktreePrep',
+          kind: 'worktreePrep' as const,
           command: 'pnpm install',
           trustedAt: 0,
         },
       ],
       trustRequired: true,
-    });
+    };
+    shellCommandPreview.mockResolvedValueOnce(preview);
+    const prompt = vi.fn().mockResolvedValue('always');
+    setShellCommandTrustPromptAdapterForTest(prompt);
 
-    const pending = ensureShellCommandTrusted({ kind: 'worktreeCreate', name: 'feat-x' });
-    expect(await screen.findByText(/\/repo\/\.arborist\/\.worktrees\/feat-x/)).toBeInTheDocument();
-    expect(screen.getByText(/\/repo\/\.arborist\/settings\.json/)).toBeInTheDocument();
-    expect(screen.getByText(/pnpm install/)).toBeInTheDocument();
-    expect(screen.getAllByText(/this exact command/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole('button', { name: /don't ask again for this exact command/i }));
+    await expect(ensureShellCommandTrusted({ kind: 'worktreeCreate', name: 'feat-x' })).resolves.toBe(true);
 
-    await expect(pending).resolves.toBe(true);
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(prompt).toHaveBeenCalledWith(preview);
     expect(repoCommandAllowOnce).not.toHaveBeenCalled();
     expect(repoCommandTrust).toHaveBeenCalledWith({ intent: { kind: 'worktreeCreate', name: 'feat-x' } });
-    expect(document.body.textContent).not.toContain('pnpm install');
   });
 
   it('allows a single run without storing persistent trust', async () => {
-    shellCommandPreview.mockResolvedValueOnce({
+    const preview = {
       targetWorktreePath: '/repo/wt',
       commands: [
         {
-          kind: 'aiLaunch',
-          source: 'repoSettings',
+          kind: 'aiLaunch' as const,
+          source: 'repoSettings' as const,
           command: 'repo-claude',
           targetWorktreePath: '/repo/wt',
           sourcePath: '/repo/.arborist/settings.json',
@@ -80,14 +83,12 @@ describe('ensureShellCommandTrusted', () => {
       ],
       trustRecords: [],
       trustRequired: true,
-    });
+    };
+    shellCommandPreview.mockResolvedValueOnce(preview);
+    setShellCommandTrustPromptAdapterForTest(vi.fn().mockResolvedValue('once'));
 
-    const pending = ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId: 'sid-1' });
-    expect(await screen.findByText(/repo-claude/)).toBeInTheDocument();
-    expect(screen.getAllByText(/this exact command/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole('button', { name: /run once/i }));
+    await expect(ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId: 'sid-1' })).resolves.toBe(true);
 
-    await expect(pending).resolves.toBe(true);
     expect(repoCommandAllowOnce).toHaveBeenCalledWith({ intent: { kind: 'sessionRestart', sessionId: 'sid-1' } });
     expect(repoCommandTrust).not.toHaveBeenCalled();
   });
@@ -108,11 +109,10 @@ describe('ensureShellCommandTrusted', () => {
       trustRecords: [],
       trustRequired: true,
     });
+    setShellCommandTrustPromptAdapterForTest(vi.fn().mockResolvedValue('cancel'));
 
-    const pending = ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId: 'sid-1' });
-    fireEvent.click(await screen.findByRole('button', { name: /cancel/i }));
+    await expect(ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId: 'sid-1' })).resolves.toBe(false);
 
-    await expect(pending).resolves.toBe(false);
     expect(repoCommandTrust).not.toHaveBeenCalled();
     expect(repoCommandAllowOnce).not.toHaveBeenCalled();
   });

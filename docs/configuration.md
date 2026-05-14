@@ -59,12 +59,7 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 
 ```json
 {
-  "configVersion": 10,
-  "defaultInstructionSets": {
-    "claude": "claude-default",
-    "copilot": "copilot-default"
-  },
-  "instructionSetsDir": "/absolute/path/to/instructions",
+  "configVersion": 11,
   "workspaceRoot": "/absolute/path/to/primary-clone",
   "worktreeRoots": [],
   "worktreePrepCommands": [],
@@ -98,7 +93,6 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 | Field                                                     | Notes                                                                                                                           |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                         |
-| `instructionSetsDir`                                      | Absolute directory scanned for instruction-set Markdown files. Relative paths are rejected on write and cleared on load.        |
 | `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                                    |
 | `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                         |
 | `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                             |
@@ -111,19 +105,6 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 | `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                       |
 | `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                                    |
 
-## Instruction-set discovery
-
-`instructions_list` scans `instructionSetsDir` for `*.md` files:
-
-1. Canonicalize each candidate.
-2. Reject files whose canonical path escapes `instructionSetsDir`.
-3. Skip files larger than 1 MiB.
-4. Bind files prefixed with `claude-` to Claude and `copilot-` to Copilot.
-5. Use the filename without `.md` as the instruction-set id.
-6. Prefer `<tool>-default.md` as the default; otherwise use the first alphabetical match for that tool.
-
-The repository `instructions/` directory contains starter templates. Runtime behavior uses the configured `instructionSetsDir`.
-
 ## Repo overlay
 
 `<workspace>/.arborist/settings.json` can provide source-controlled repo defaults. It is read as an overlay at operational sites; `config_get`
@@ -133,7 +114,6 @@ Supported overlay fields:
 
 | Field                                        | Behavior                                                                                                                       |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `defaultInstructionSets`                     | Overrides default instruction-set ids for the repo.                                                                            |
 | `pluginSettings.ai.*.settings.launchCommand` | Default AI plugin launch commands for the repo when the user has not set that command. Cached icon data remains machine-local. |
 | `aiLaunchCommands.commands`                  | Legacy alias for repo AI launch command defaults.                                                                              |
 | `worktreePrepCommands`                       | Default prep commands for worktrees created in the repo when the user has not set prep commands.                               |

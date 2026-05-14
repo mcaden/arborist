@@ -25,8 +25,8 @@ use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::types::{
-    ChildId, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, RepoCommandTrustArgs, SessionCreateArgs, SessionId, SessionInputArgs,
-    SessionResizeArgs, SessionRestartArgs, SessionStatus, ShellCommandIntent, ShellCommandPreviewArgs, Tool, WorktreeInfo, WorktreeTabOpenArgs,
+    ChildId, PartialAppConfig, RepoCommandTrustArgs, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs,
+    SessionStatus, ShellCommandIntent, ShellCommandPreviewArgs, Tool, WorktreeInfo, WorktreeTabOpenArgs,
 };
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
@@ -199,9 +199,7 @@ struct Harness {
     spawner: Arc<FakeSpawner>,
     events: Arc<CapturedEvents>,
     _config_dir: TempDir,
-    _instructions_dir: TempDir,
     worktree: TempDir,
-    instruction_id: InstructionSetId,
 }
 
 /// Records `remove_worktree` invocations so a test can assert opt-in deletion was forwarded to the git layer.
@@ -245,26 +243,9 @@ fn build_harness() -> Harness {
 
 fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let config_dir = TempDir::new().unwrap();
-    let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
 
-    // Seed a single instruction set on disk so session_create can resolve it.
-    let instruction_id = InstructionSetId("claude-default".into());
-    let instr_path = instructions_dir.path().join("claude-default.md");
-    std::fs::write(&instr_path, "# Claude default instructions\nbe helpful").unwrap();
-
     let store = ConfigStore::open(config_dir.path()).unwrap();
-    // Wire the discovery dir so the instruction lookup succeeds.
-    store
-        .save_config(PartialAppConfig {
-            instruction_sets_dir: Some(instructions_dir.path().to_path_buf()),
-            default_instruction_sets: Some(PartialDefaultInstructionSets {
-                claude: Some(instruction_id.clone()),
-                copilot: None,
-            }),
-            ..Default::default()
-        })
-        .unwrap();
 
     let spawner = Arc::new(FakeSpawner::new());
     let pool = Arc::new(PtyPool::new(spawner.clone() as Arc<dyn PtySpawner>));
@@ -285,9 +266,7 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         spawner,
         events,
         _config_dir: config_dir,
-        _instructions_dir: instructions_dir,
         worktree,
-        instruction_id,
     }
 }
 
@@ -295,7 +274,6 @@ fn create_args(h: &Harness) -> SessionCreateArgs {
     SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(h.instruction_id.clone()),
         cols: 80,
         rows: 24,
     }
@@ -346,7 +324,6 @@ fn trust_repo_claude_launch(h: &Harness) {
         intent: ShellCommandIntent::SessionCreate {
             tool: Tool::Claude,
             worktree_path: h.worktree.path().to_path_buf(),
-            instruction_set_id: Some(h.instruction_id.clone()),
         },
     };
     let preview = shell_command_preview_impl(&h.ctx, preview_args.clone()).expect("preview");
@@ -360,7 +337,6 @@ fn allow_once_repo_claude_launch(h: &Harness) {
         intent: ShellCommandIntent::SessionCreate {
             tool: Tool::Claude,
             worktree_path: h.worktree.path().to_path_buf(),
-            instruction_set_id: Some(h.instruction_id.clone()),
         },
     };
     repo_command_allow_once_impl(&h.ctx, args).expect("allow repo launch once");
@@ -431,8 +407,7 @@ async fn create_uses_structured_argv_for_default_launcher() {
 
     let cmd = h.spawner.state.lock().unwrap().last_cmd.clone().expect("spawn command");
     assert_eq!(cmd.program, "claude");
-    assert_eq!(cmd.args.first().map(String::as_str), Some("--system-prompt"));
-    assert_eq!(cmd.args.len(), 2);
+    assert!(cmd.args.is_empty());
 }
 
 #[tokio::test]
@@ -466,7 +441,6 @@ async fn user_ai_launch_command_wins_over_repo_and_does_not_prompt() {
             intent: ShellCommandIntent::SessionCreate {
                 tool: Tool::Claude,
                 worktree_path: h.worktree.path().to_path_buf(),
-                instruction_set_id: Some(h.instruction_id.clone()),
             },
         },
     )
@@ -608,7 +582,6 @@ async fn create_passes_initial_size_to_spawner() {
     let args = SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(h.instruction_id.clone()),
         cols: 173,
         rows: 47,
     };
@@ -650,7 +623,6 @@ async fn create_rejects_zero_dimensions() {
         let args = SessionCreateArgs {
             tool: Tool::Claude,
             worktree_path: h.worktree.path().to_path_buf(),
-            instruction_set_id: Some(h.instruction_id.clone()),
             cols,
             rows,
         };
@@ -693,37 +665,6 @@ async fn resize_rejects_zero_dimensions() {
     )
     .expect_err("resize with 0×0 should fail");
     assert_eq!(err.code, "InvalidArgs");
-}
-
-#[tokio::test]
-async fn create_with_unknown_instruction_set_returns_notfound() {
-    let h = build_harness();
-    let args = SessionCreateArgs {
-        tool: Tool::Claude,
-        worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(InstructionSetId("does-not-exist".into())),
-        cols: 80,
-        rows: 24,
-    };
-    let err = session_create_impl(&h.ctx, args).expect_err("should fail");
-    assert_eq!(err.code, "NotFound");
-}
-
-#[tokio::test]
-async fn create_with_tool_mismatch_returns_toolmismatch() {
-    let h = build_harness();
-    // Add a copilot-tagged instruction set under the same dir.
-    let copilot_path = h._instructions_dir.path().join("copilot-only.md");
-    std::fs::write(&copilot_path, "for copilot").unwrap();
-    let args = SessionCreateArgs {
-        tool: Tool::Claude,
-        worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(InstructionSetId("copilot-only".into())),
-        cols: 80,
-        rows: 24,
-    };
-    let err = session_create_impl(&h.ctx, args).expect_err("should fail");
-    assert_eq!(err.code, "ToolMismatch");
 }
 
 #[tokio::test]
@@ -1073,7 +1014,9 @@ async fn close_kills_pty_removes_record_and_clears_active() {
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
     let temp = session_temp_dir(&view.id);
-    assert!(temp.exists(), "Claude temp dir must exist after create");
+    assert!(!temp.exists(), "new Claude sessions must not create prompt temp dirs");
+    std::fs::create_dir_all(&temp).expect("create legacy temp dir");
+    std::fs::write(temp.join("legacy-system-prompt.md"), b"legacy prompt").expect("write legacy temp file");
 
     session_close_impl(&h.ctx, view.id, false).await.unwrap();
 
@@ -1084,7 +1027,7 @@ async fn close_kills_pty_removes_record_and_clears_active() {
     assert!(cfg.tab_order.is_empty());
     assert!(cfg.last_open_sessions.is_empty());
 
-    // Temp dir is swept by either pool.kill or the post-close belt-and-braces cleanup. Allow a beat for filesystem to settle on Windows.
+    // Legacy temp dirs are swept by either pool.kill or the post-close belt-and-braces cleanup. Allow a beat for filesystem to settle on Windows.
     let cleared = wait_until(|| !temp.exists(), Duration::from_secs(2));
     assert!(cleared, "session temp dir {temp:?} should be removed");
 }
@@ -1382,7 +1325,7 @@ async fn restore_defers_spawn_until_first_session_resize() {
     assert_eq!(restored.composed_command, original_command);
     let cmd = st.last_cmd.as_ref().unwrap();
     assert_eq!(cmd.program, "claude");
-    assert_eq!(cmd.args.first().map(String::as_str), Some("--system-prompt"));
+    assert!(cmd.args.is_empty());
 }
 
 // (no extra trailing helpers)
@@ -1548,16 +1491,9 @@ async fn restore_does_not_rewrite_config_when_no_orphans_present() {
 // equivalent flag and continues the discovery path.
 
 fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
-    // The shared harness seeds a Claude-only instruction set on disk, so for Copilot we pass None — Copilot doesn't accept --instructions anyway
-    // (Copilot auto-discovers `.github/copilot-instructions.md` from cwd).
-    let instruction_set_id = match tool {
-        Tool::Claude => Some(h.instruction_id.clone()),
-        Tool::Copilot => None,
-    };
     SessionCreateArgs {
         tool,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id,
         cols: 80,
         rows: 24,
     }

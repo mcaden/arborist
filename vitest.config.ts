@@ -14,6 +14,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Keep fork-worker startup under Windows hook timeouts; higher auto-detected parallelism intermittently fails before tests run.
     maxWorkers: 4,
     exclude: [...configDefaults.exclude, '**/.worktrees/**', 'dev/e2e/**'],
   },

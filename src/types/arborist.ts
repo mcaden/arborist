@@ -22,9 +22,6 @@ export type SubSessionId = string;
 // `open-folder`, `vscode`.
 export type CustomProcessDefId = string;
 
-// MIRROR: src-tauri/src/types.rs::InstructionSetId
-export type InstructionSetId = string;
-
 // MIRROR: src-tauri/src/types.rs::WorktreeTabId
 // Stable identifier for a WorktreeTab. Backed by a UUID v4 on the Rust side;
 // distinct from SessionId/SubSessionId at the type level.
@@ -96,7 +93,7 @@ export interface ShellCommandPreviewItem {
 
 // MIRROR: crates/arborist-types/src/lib.rs::ShellCommandIntent
 export type ShellCommandIntent =
-  | { kind: 'sessionCreate'; tool: Tool; worktreePath: string; instructionSetId?: InstructionSetId }
+  | { kind: 'sessionCreate'; tool: Tool; worktreePath: string }
   | { kind: 'sessionRestart'; sessionId: SessionId }
   | { kind: 'worktreeCreate'; name: string };
 
@@ -133,7 +130,6 @@ export interface Session {
   worktreePath: string;
   worktreeName: string;
   label: string;
-  instructionSetId?: InstructionSetId;
   composedCommand: string;
   structuredCommand?: StructuredCommand;
   commandProvenance?: CommandProvenance[];
@@ -159,7 +155,6 @@ export interface SessionView {
   worktreePath: string;
   worktreeName: string;
   label: string;
-  instructionSetId?: InstructionSetId;
   status: SessionStatus;
   pid?: number;
   createdAt: number;
@@ -191,21 +186,6 @@ export interface WorktreeTab {
   iconId: number;
 }
 
-// MIRROR: src-tauri/src/types.rs::InstructionSet
-export interface InstructionSet {
-  id: InstructionSetId;
-  name: string;
-  tool: Tool;
-  filePath: string;
-  isDefault: boolean;
-}
-
-// MIRROR: src-tauri/src/types.rs::DefaultInstructionSets
-export interface DefaultInstructionSets {
-  claude: InstructionSetId;
-  copilot: InstructionSetId;
-}
-
 // MIRROR: crates/arborist-types/src/lib.rs::AiLaunchCommands
 // Per-AI-plugin CLI launch overrides + backend-managed icon cache.
 export interface AiLaunchCommands {
@@ -235,8 +215,6 @@ export interface PluginSettings {
 // MIRROR: src-tauri/src/types.rs::AppConfig
 export interface AppConfig {
   configVersion: number;
-  defaultInstructionSets: DefaultInstructionSets;
-  instructionSetsDir: string;
   /**
    * Active workspace root: the single git repository the app operates
    * within. `null` until the user picks one in the first-boot picker
@@ -288,12 +266,6 @@ export interface AppConfig {
   sidebarWidthPx?: number;
 }
 
-// MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
-export interface PartialDefaultInstructionSets {
-  claude?: InstructionSetId;
-  copilot?: InstructionSetId;
-}
-
 // MIRROR: crates/arborist-types/src/lib.rs::PartialAiLaunchCommands
 export interface PartialAiLaunchCommands {
   commands?: Record<string, string>;
@@ -318,8 +290,6 @@ export interface PartialPluginSettings {
 // string to set.
 export interface PartialAppConfig {
   configVersion?: number;
-  defaultInstructionSets?: PartialDefaultInstructionSets;
-  instructionSetsDir?: string;
   /**
    * Tri-state: omit to leave alone; `null` to clear; string to set. The
    * backend canonicalizes the path and rejects relative values with

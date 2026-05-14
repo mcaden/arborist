@@ -308,7 +308,6 @@ export const useSessionStore = create<Store>((set, get) => {
         kind: 'sessionCreate',
         tool: args.tool,
         worktreePath: args.worktreePath,
-        ...(args.instructionSetId ? { instructionSetId: args.instructionSetId } : {}),
       });
       if (!trusted) {
         throw new Error('Session launch canceled because repository command settings were not trusted.');

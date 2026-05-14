@@ -10,13 +10,9 @@
 //!     .worktrees/<name> # linked worktrees (git-ignored by the .gitignore above)
 //! ```
 //!
-//! The `settings.json` file lets a team commit shared Arborist defaults to
-//! source control. Repo-owned executable settings fill empty user settings but
-//! never replace user-entered launch/prep commands. The set of repo-provided
-//! fields is intentionally narrow — only those whose meaning is repo-specific
-//! (default instruction sets, AI launch defaults, worktree-prep defaults) — so
-//! the user's machine-level config (paths, plugin enable flags, custom
-//! processes, tab order, …) is never silently shadowed by a checked-in file.
+//! The `settings.json` file lets a team commit shared Arborist defaults to source control. Repo-owned executable settings fill empty user settings but
+//! never replace user-entered launch/prep commands. The set of repo-provided fields is intentionally narrow — only those whose meaning is repo-specific
+//! (AI launch defaults and worktree-prep defaults) — so the user's machine-level config is never silently shadowed by a checked-in file.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,7 +22,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::types::{AppConfig, DefaultInstructionSets, PluginSettingValue, AI_LAUNCH_COMMAND_SETTING};
+use crate::types::{AppConfig, PluginSettingValue, AI_LAUNCH_COMMAND_SETTING};
 
 /// Subdirectory name under a workspace root that hosts repo-stored Arborist
 /// state. Source-controlled (except for the entries listed in `.gitignore`).
@@ -52,13 +48,10 @@ const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
 /// `.arborist/settings.json`. Every field is optional; missing fields fall
 /// through to the user-level config.
 ///
-/// Wire format is camelCase (`defaultInstructionSets`, `pluginSettings`,
-/// `worktreePrepCommands`) to match the rest of the on-disk JSON shape.
+/// Wire format is camelCase (`pluginSettings`, `worktreePrepCommands`) to match the rest of the on-disk JSON shape.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepoSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_instruction_sets: Option<DefaultInstructionSets>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_launch_commands: Option<RepoAiLaunchCommands>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,9 +244,6 @@ impl RepoSettings {
     /// command string — keeping the icon resolution work-cache valid across repo overlays.
     pub fn apply_to(&self, cfg: &mut AppConfig) {
         let user_cfg = cfg.clone();
-        if let Some(defaults) = &self.default_instruction_sets {
-            cfg.default_instruction_sets = defaults.clone();
-        }
         if let Some(ai) = &self.ai_launch_commands {
             for (plugin_id, command) in &ai.commands {
                 if !user_has_ai_launch_command(&user_cfg, plugin_id) {
@@ -434,7 +424,6 @@ mod tests {
         write_settings(
             dir.path(),
             r#"{
-                "defaultInstructionSets": { "claude": "claude-default", "copilot": "copilot-default" },
                 "aiLaunchCommands": { "commands": { "claude": "npx claude --model sonnet" } },
                 "worktreePrepCommands": ["pnpm install", "pnpm run build"]
             }"#,
@@ -444,7 +433,6 @@ mod tests {
             out.worktree_prep_commands.as_deref(),
             Some(&["pnpm install".to_owned(), "pnpm run build".to_owned()][..])
         );
-        assert_eq!(out.default_instruction_sets.as_ref().unwrap().claude.as_str(), "claude-default");
         assert_eq!(
             out.ai_launch_commands.as_ref().unwrap().commands.get("claude").map(String::as_str),
             Some("npx claude --model sonnet")
@@ -465,7 +453,6 @@ mod tests {
         cfg.set_ai_launch_command("copilot".to_owned(), "user-copilot".to_owned());
 
         let repo = RepoSettings {
-            default_instruction_sets: None,
             ai_launch_commands: Some(RepoAiLaunchCommands {
                 commands: BTreeMap::from([("claude".to_owned(), "repo-claude".to_owned())]),
             }),

@@ -696,7 +696,6 @@ mod tests {
             worktree_path: PathBuf::from(worktree),
             worktree_name: "wt".into(),
             label: id.to_string(),
-            instruction_set_id: None,
             composed_command: "echo".into(),
             structured_command: None,
             command_provenance: Vec::new(),

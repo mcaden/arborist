@@ -23,7 +23,6 @@ describe('tauri-bridge.mock', () => {
       'frontendReady',
       'configGet',
       'configSet',
-      'instructionsList',
       'onSessionOutput',
       'onSessionStatus',
     ] as const;
@@ -50,7 +49,6 @@ describe('tauri-bridge.mock', () => {
       mock.sessionCreate({
         tool: 'claude',
         worktreePath: '/wt',
-        instructionSetId: 'claude-default',
         cols: 80,
         rows: 24,
       }),

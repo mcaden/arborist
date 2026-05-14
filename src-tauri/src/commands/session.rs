@@ -24,13 +24,13 @@ use portable_pty::PtySize;
 use tracing::{debug, info, warn};
 
 use crate::compose::{self, ComposeInputs};
-use crate::config_store::{discover_instructions, list_instructions_for, ConfigStore, MAX_INSTRUCTION_FILE_BYTES};
+use crate::config_store::ConfigStore;
 use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, KillOutcome, PtyPool, PtySink};
 use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
-    AppConfig, AppError, Error, InstructionSet, PartialAppConfig, RepoCommandTrustArgs, Session, SessionCloseResult, SessionCreateArgs, SessionId,
-    SessionInputArgs, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, ShellCommandIntent, ShellCommandKind, ShellCommandPreview,
+    AppConfig, AppError, Error, PartialAppConfig, RepoCommandTrustArgs, Session, SessionCloseResult, SessionCreateArgs, SessionId, SessionInputArgs,
+    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, ShellCommandIntent, ShellCommandKind, ShellCommandPreview,
     ShellCommandPreviewArgs, StructuredCommand, Tool, WorktreeTabId,
 };
 use crate::workspace_scope::WorkspaceScope;
@@ -141,10 +141,8 @@ pub struct AppContext {
     ///   the PTY pool (workspace-agnostic), and writes to a PTY about to be
     ///   parked are benign (the bytes go to a soon-killed child). Gating would
     ///   impose lock contention on every keystroke for no correctness benefit.
-    /// * **Read-only commands** (`session_list`, `config_get`,
-    ///   `instructions_list`) are ungated — they see a consistent `ctx.store()`
-    ///   snapshot for the duration of one call, which is all the consistency
-    ///   they owe their caller.
+    /// * **Read-only commands** (`session_list`, `config_get`) are ungated — they see a consistent `ctx.store()` snapshot for the duration of one
+    ///   call, which is all the consistency they owe their caller.
     ///
     /// **Lock ordering / no deadlock cycles.** `switch_lock` is the outermost lock taken by every gated handler. Inner locks (`workspace`,
     /// `pending_spawn`, per-store `write_lock`) are taken briefly inside handler bodies and never re-acquire `switch_lock`. Concurrent switches queue
@@ -450,7 +448,6 @@ fn session_create_trust_inputs(
     ctx: &AppContext,
     tool: Tool,
     worktree_path: &Path,
-    instruction_set_id: Option<&crate::types::InstructionSetId>,
     session_id: SessionId,
 ) -> Result<(PathBuf, AppConfig, Vec<crate::shell_trust::RepoCommandCandidate>), AppError> {
     let worktree = compose::validate_worktree(worktree_path).map_err(AppError::from)?;
@@ -467,27 +464,17 @@ fn session_create_trust_inputs(
         ));
     }
 
-    let id_opt = instruction_set_id.filter(|id| !id.as_str().is_empty());
-    let set_opt = match id_opt {
-        Some(id) => Some(lookup_instruction_set(&cfg, id, tool)?),
-        None => None,
-    };
-    let contents_opt = match &set_opt {
-        Some(set) => Some(read_instruction_file(&set.file_path)?),
-        None => None,
-    };
     let label = worktree
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "session".to_owned());
+    let cli_override = cfg.ai_launch_command_for_tool(tool);
     let composed = compose::compose_command(&ComposeInputs {
         session_id,
         tool,
         worktree_path: &worktree,
         worktree_label: &label,
-        instruction_set: set_opt.as_ref(),
-        instruction_set_contents: contents_opt.as_deref(),
-        cli_launch_command: Some(cfg.ai_launch_command_for_tool(tool)),
+        cli_launch_command: Some(cli_override),
     })
     .map_err(AppError::from)?;
 
@@ -526,13 +513,9 @@ pub fn trusted_worktree_create_config(ctx: &AppContext, name: &str) -> Result<Ap
 pub fn shell_command_preview_impl(ctx: &AppContext, args: ShellCommandPreviewArgs) -> Result<ShellCommandPreview, AppError> {
     let _switch = acquire_switch_read(ctx)?;
     match args.intent {
-        ShellCommandIntent::SessionCreate {
-            tool,
-            worktree_path,
-            instruction_set_id,
-        } => {
+        ShellCommandIntent::SessionCreate { tool, worktree_path } => {
             let preview_id = SessionId(uuid::Uuid::nil());
-            let (target, cfg, candidates) = session_create_trust_inputs(ctx, tool, &worktree_path, instruction_set_id.as_ref(), preview_id)?;
+            let (target, cfg, candidates) = session_create_trust_inputs(ctx, tool, &worktree_path, preview_id)?;
             Ok(crate::shell_trust::preview(target, &cfg, candidates))
         }
         ShellCommandIntent::SessionRestart { session_id } => {
@@ -593,9 +576,8 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     //    IDs from the frontend are treated as "no selection" so an over-eager
     //    wizard can't trigger a NotFound for a `none` sentinel.
     //
-    //    Repo overlay (issue #71): defaults from `<workspace>/.arborist/settings.json`
-    //    win over user-level `AppConfig` defaults for instruction sets and AI
-    //    launch commands.
+    //    Repo overlay (issue #71): defaults from `<workspace>/.arborist/settings.json` apply where allowed; executable settings stay
+    //    subordinate to user-entered launch/prep commands.
     let user_cfg = ctx.store().load_config();
     let (cfg, repo_overlay) = effective_config_with_repo_overlay(user_cfg.clone());
     let plugin = crate::plugins::ai::plugin_for_tool(args.tool);
@@ -608,21 +590,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
             ),
         ));
     }
-    let id_opt = args.instruction_set_id.as_ref().filter(|id| !id.as_str().is_empty());
-    let set_opt = match id_opt {
-        Some(id) => Some(lookup_instruction_set(&cfg, id, args.tool)?),
-        None => None,
-    };
-
-    // 3. Read instruction file contents (re-checking the size cap because
-    //    `discover_instructions` *skips* oversized files but a user could have
-    //    plumbed an ID through that bypassed discovery).
-    let contents_opt = match &set_opt {
-        Some(set) => Some(read_instruction_file(&set.file_path)?),
-        None => None,
-    };
-
-    // 4. Derive a non-colliding label from the worktree basename.
+    // 3. Derive a non-colliding label from the worktree basename.
     let existing_sessions = ctx.store().load_sessions();
     let existing_labels: Vec<&str> = existing_sessions.values().map(|s| s.label.as_str()).collect();
     let basename = worktree
@@ -631,7 +599,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         .unwrap_or_else(|| "session".to_owned());
     let label = compose::dedupe_label(&existing_labels, &basename);
 
-    // 5. Compose command + temp files.
+    // 4. Compose command + legacy temp file list. New sessions do not create prompt temp files, but the field remains for old persisted sessions.
     let session_id = SessionId::new();
     let cli_override = cfg.ai_launch_command_for_tool(args.tool);
     let composed = compose::compose_command(&ComposeInputs {
@@ -639,8 +607,6 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         tool: args.tool,
         worktree_path: &worktree,
         worktree_label: &label,
-        instruction_set: set_opt.as_ref(),
-        instruction_set_contents: contents_opt.as_deref(),
         cli_launch_command: Some(cli_override),
     })
     .map_err(AppError::from)?;
@@ -656,12 +622,10 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         None
     };
 
-    // 6. Materialise temp files on disk.
+    // 5. Materialise temp files on disk.
     materialise_temp_files(&composed.temp_files)?;
 
-    // 7. Build the persisted record. `tab_index` puts the new session at the end of
-    //    the current order.
-    // 7. Build the persisted record. `tab_index` puts the new session at the end of
+    // 6. Build the persisted record. `tab_index` puts the new session at the end of
     //    the current order.
     //
     //    For Copilot we *pre-allocate* the conversation id (a fresh
@@ -688,7 +652,6 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         worktree_path: worktree.clone(),
         worktree_name: basename,
         label: label.clone(),
-        instruction_set_id: set_opt.as_ref().map(|s| s.id.clone()),
         composed_command: composed.composed_command,
         structured_command,
         command_provenance,
@@ -700,11 +663,11 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         ai_session_id: preallocated_ai_id.clone(),
     };
 
-    // 8. Persist before spawning so a crash mid-spawn still leaves an auditable
+    // 7. Persist before spawning so a crash mid-spawn still leaves an auditable
     //    record we can clean up on restart.
     ctx.store().save_session(&session).map_err(AppError::from)?;
 
-    // 9. Append to lastOpenSessions / tabOrder.
+    // 8. Append to lastOpenSessions / tabOrder.
     let mut last = cfg.last_open_sessions.clone();
     if !last.contains(&session.id) {
         last.push(session.id);
@@ -2129,48 +2092,6 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
     }
 
     Ok(WorktreeCreateResult { path: new_path, prep: None })
-}
-
-/// Look up an instruction set by ID, validating that its tool matches the requested one.
-fn lookup_instruction_set(cfg: &crate::types::AppConfig, id: &crate::types::InstructionSetId, tool: Tool) -> Result<InstructionSet, AppError> {
-    // Use the same discovery the frontend sees so behaviour is consistent (in particular, oversize and symlink-out-of-dir filtering).
-    let sets: Vec<InstructionSet> = if cfg.instruction_sets_dir.as_os_str().is_empty() {
-        Vec::new()
-    } else {
-        discover_instructions(&cfg.instruction_sets_dir).map_err(AppError::from)?
-    };
-    let Some(set) = sets.into_iter().find(|s| &s.id == id) else {
-        // Fall back to the helper that surfaces a friendly error shape. `list_instructions_for` may further filter; if absent, NotFound.
-        let helper = list_instructions_for(cfg).unwrap_or_default();
-        if let Some(s) = helper.into_iter().find(|s| &s.id == id) {
-            if s.tool != tool {
-                return Err(AppError::from(Error::ToolMismatch(format!(
-                    "instruction set {id} is for {:?}, not {tool:?}",
-                    s.tool
-                ))));
-            }
-            return Ok(s);
-        }
-        return Err(AppError::from(Error::NotFound(format!("instruction set {id} not found"))));
-    };
-    if set.tool != tool {
-        return Err(AppError::from(Error::ToolMismatch(format!(
-            "instruction set {id} is for {:?}, not {tool:?}",
-            set.tool
-        ))));
-    }
-    Ok(set)
-}
-
-fn read_instruction_file(path: &std::path::Path) -> Result<String, AppError> {
-    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => AppError::from(Error::InstructionFileMissing(path.into())),
-        _ => AppError::from(Error::Io(e)),
-    })?;
-    if meta.len() > MAX_INSTRUCTION_FILE_BYTES {
-        return Err(AppError::from(Error::InstructionFileTooLarge(path.into())));
-    }
-    std::fs::read_to_string(path).map_err(|e| AppError::from(Error::Io(e)))
 }
 
 fn materialise_temp_files(files: &[crate::types::TempFileSpec]) -> Result<(), AppError> {

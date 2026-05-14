@@ -31,7 +31,6 @@ function session(id: string, status: SessionView['status'] = 'running'): Session
     worktreePath: '/repo/feature-x',
     worktreeName: 'feature-x',
     label: id,
-    instructionSetId: 'default-claude',
     status,
     createdAt: 0,
     tabIndex: 0,

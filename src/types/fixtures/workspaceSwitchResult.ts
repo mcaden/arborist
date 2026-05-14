@@ -11,12 +11,7 @@ export const workspaceSwitchResultFixture = {
   workspaceRoot: '/tmp/repo',
   noOp: false,
   config: {
-    configVersion: 10,
-    defaultInstructionSets: {
-      claude: 'claude-default',
-      copilot: 'copilot-default',
-    },
-    instructionSetsDir: '/cfg/instructions',
+    configVersion: 11,
     workspaceRoot: '/tmp/repo',
     worktreeRoots: ['/tmp/repo'],
     worktreePrepCommands: [],

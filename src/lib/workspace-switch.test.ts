@@ -25,9 +25,7 @@ let sessionAdopt: ReturnType<typeof vi.fn<(sessions: SessionView[], activeSessio
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
-    configVersion: 10,
-    defaultInstructionSets: { claude: '', copilot: '' },
-    instructionSetsDir: '',
+    configVersion: 11,
     workspaceRoot: '/new',
     worktreeRoots: [],
     worktreePrepCommands: [],

@@ -20,9 +20,7 @@ import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
 import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 10,
-  defaultInstructionSets: { claude: '', copilot: '' },
-  instructionSetsDir: '',
+  configVersion: 11,
   workspaceRoot: null,
   worktreeRoots: [],
   worktreePrepCommands: [],
@@ -118,13 +116,11 @@ export const useConfigStore = create<ConfigStoreState>((set) => ({
 // ---------------------------------------------------------------------------
 
 export const selectConfig = (s: ConfigStoreState): AppConfig => s.config;
-export const selectInstructionSetsDir = (s: ConfigStoreState): string => s.config.instructionSetsDir;
 export const selectWorkspaceRoot = (s: ConfigStoreState): string | null => s.config.workspaceRoot;
 export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] => s.config.worktreeRoots;
 export const selectWorktreePrepCommands = (s: ConfigStoreState): readonly string[] => s.config.worktreePrepCommands;
 export const selectAiLaunchCommands = (s: ConfigStoreState): AppConfig['aiLaunchCommands'] => s.config.aiLaunchCommands;
 export const selectPluginSettings = (s: ConfigStoreState): AppConfig['pluginSettings'] => s.config.pluginSettings;
-export const selectDefaultInstructionSets = (s: ConfigStoreState): AppConfig['defaultInstructionSets'] => s.config.defaultInstructionSets;
 export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.config.tabOrder;
 export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] => s.config.lastOpenSessions;
 export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] => s.config.customProcesses;

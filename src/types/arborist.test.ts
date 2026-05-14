@@ -13,7 +13,6 @@ import type {
   AppError,
   ChildId,
   CustomProcessDef,
-  InstructionSet,
   PartialAppConfig,
   Session,
   SessionOutputEvent,
@@ -31,7 +30,6 @@ import type {
 
 import { sessionFixture } from './fixtures/session';
 import { sessionViewFixture } from './fixtures/sessionView';
-import { instructionSetFixture } from './fixtures/instructionSet';
 import { appConfigFixture } from './fixtures/appConfig';
 import partialAppConfigFixture from './fixtures/partialAppConfig.json';
 import appErrorFixture from './fixtures/appError.json';
@@ -74,7 +72,6 @@ import { sessionChildIdFixture, subSessionChildIdFixture, worktreeTabFixture } f
 
 const _session = sessionFixture satisfies Session;
 const _sessionView = sessionViewFixture satisfies SessionView;
-const _instructionSet = instructionSetFixture satisfies InstructionSet;
 const _sessionStatusEvent = sessionStatusEventFixture satisfies SessionStatusEvent;
 const _appConfig = appConfigFixture satisfies AppConfig;
 const _partialAppConfig = partialAppConfigFixture satisfies PartialAppConfig;
@@ -96,7 +93,6 @@ const _worktreeTab = worktreeTabFixture satisfies WorktreeTab;
 // check above is what enforces drift — these voids carry no contract.
 void _session;
 void _sessionView;
-void _instructionSet;
 void _sessionStatusEvent;
 void _appConfig;
 void _partialAppConfig;
@@ -137,7 +133,7 @@ describe('arborist type mirrors', () => {
     assertExactKeys(
       sessionFixture as unknown as Record<string, unknown>,
       ['id', 'tool', 'worktreePath', 'worktreeName', 'label', 'composedCommand', 'status', 'createdAt', 'tabIndex', 'tempFiles'],
-      ['pid', 'instructionSetId', 'aiSessionId'],
+      ['pid', 'aiSessionId'],
       'Session',
     );
   });
@@ -146,20 +142,11 @@ describe('arborist type mirrors', () => {
     assertExactKeys(
       sessionViewFixture as unknown as Record<string, unknown>,
       ['id', 'tool', 'worktreePath', 'worktreeName', 'label', 'status', 'createdAt', 'tabIndex'],
-      ['pid', 'instructionSetId'],
+      ['pid'],
       'SessionView',
     );
     expect(sessionViewFixture).not.toHaveProperty('composedCommand');
     expect(sessionViewFixture).not.toHaveProperty('tempFiles');
-  });
-
-  it('InstructionSet fixture matches TS interface key set', () => {
-    assertExactKeys(
-      instructionSetFixture as unknown as Record<string, unknown>,
-      ['id', 'name', 'tool', 'filePath', 'isDefault'],
-      [],
-      'InstructionSet',
-    );
   });
 
   it('AppConfig fixture matches TS interface key set', () => {
@@ -167,8 +154,6 @@ describe('arborist type mirrors', () => {
       appConfigFixture as unknown as Record<string, unknown>,
       [
         'configVersion',
-        'defaultInstructionSets',
-        'instructionSetsDir',
         'workspaceRoot',
         'worktreeRoots',
         'worktreePrepCommands',
@@ -193,8 +178,6 @@ describe('arborist type mirrors', () => {
     // Every PartialAppConfig key is optional; we just guard against typos.
     const allowed = new Set([
       'configVersion',
-      'defaultInstructionSets',
-      'instructionSetsDir',
       'workspaceRoot',
       'worktreeRoots',
       'worktreePrepCommands',
