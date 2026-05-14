@@ -118,14 +118,14 @@
       <section id="install" class="page-section" aria-labelledby="install-title">
         <div class="section-heading">
           <h2 id="install-title">Install and runtime requirements</h2>
-          <p>Signed packaged builds are published on GitHub Releases. Source builds remain available for contributors and maintainers.</p>
+          <p>Packaged builds are published on GitHub Releases. Source builds remain available for contributors and maintainers.</p>
         </div>
         <div class="grid two">
           <article class="card">
             <h3>Download builds</h3>
             <p>
-              Use the <a href="https://github.com/mcaden/arborist/releases">GitHub Releases page</a> for signed installers, release notes, and
-              downloadable artifacts for supported platforms.
+              Use the <a href="https://github.com/mcaden/arborist/releases">GitHub Releases page</a> for installers, release notes, and downloadable
+              artifacts for supported platforms.
             </p>
           </article>
           <article class="card">
@@ -141,8 +141,8 @@
         <div class="callout" role="note" aria-label="Release trust and signing status">
           <h3>Release trust and signing status</h3>
           <p>
-            Release artifacts are OS-signed and notarized where each platform supports it. Published release assets include GitHub build attestations
-            and can be verified with
+            Release artifacts are <strong>not yet code-signed</strong>. We plan to add OS-level signing and notarization as soon as the project
+            qualifies. In the meantime, published release assets include GitHub build attestations and can be verified with
             <code>gh attestation verify &lt;downloaded-file&gt; --repo mcaden/arborist</code>.
           </p>
         </div>
@@ -265,7 +265,7 @@ pnpm dev</code></pre>
       <section class="page-section" aria-labelledby="metadata-title">
         <div class="section-heading">
           <h2 id="metadata-title">Project metadata and trust</h2>
-          <p>Arborist is a public open-source project with signed releases and explicit support boundaries.</p>
+          <p>Arborist is a public open-source project with explicit support boundaries. Code signing is planned.</p>
         </div>
         <div class="metadata">
           <dl>
@@ -278,7 +278,10 @@ pnpm dev</code></pre>
             <dt>Status</dt>
             <dd>Public open-source desktop app for local Git worktree and AI CLI workflows.</dd>
             <dt>Distribution</dt>
-            <dd>Signed installers are distributed through GitHub Releases; package-manager distribution and automatic updates are not supported.</dd>
+            <dd>
+              Installers are distributed through GitHub Releases (not yet code-signed — signing is planned); package-manager distribution and automatic
+              updates are not supported.
+            </dd>
           </dl>
         </div>
       </section>
