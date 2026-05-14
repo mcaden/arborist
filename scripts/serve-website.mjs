@@ -139,6 +139,14 @@ async function fileForRequest(pathname) {
       if (!isInsideWebsiteRoot(indexPath)) {
         return { status: 403, message: 'Forbidden.' };
       }
+      try {
+        const indexInfo = await stat(indexPath);
+        if (!indexInfo.isFile()) {
+          return { status: 404, message: 'Not found.' };
+        }
+      } catch {
+        return { status: 404, message: 'Not found.' };
+      }
       return { filePath: indexPath };
     }
     if (!info.isFile()) {
