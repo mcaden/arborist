@@ -314,7 +314,10 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                           name="theme"
                           value={mode}
                           checked={themeInput === mode}
-                          onChange={() => setThemeInput(mode)}
+                          onChange={() => {
+                            setSubmitError(null);
+                            setThemeInput(mode);
+                          }}
                           className="accent-blue-600"
                         />
                         {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}

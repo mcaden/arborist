@@ -8,7 +8,7 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
-import type { PluginSettings } from '@/types/arborist';
+import type { PluginSettings, ThemeMode } from '@/types/arborist';
 
 function seedConfig(
   overrides: Partial<{
@@ -16,6 +16,7 @@ function seedConfig(
     worktreePrepCommands: string[];
     aiLaunchCommands: { commands: Record<string, string>; iconDataUris: Record<string, string | null> };
     pluginSettings: PluginSettings;
+    theme: ThemeMode;
   }> = {},
 ): void {
   useConfigStore.setState({
@@ -34,7 +35,7 @@ function seedConfig(
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
-      theme: 'system',
+      theme: overrides.theme ?? 'system',
     },
     status: 'ready',
     error: null,
@@ -312,6 +313,16 @@ describe('SettingsDialog', () => {
     expect(save).toBeEnabled();
   });
 
+  it('opens with a non-default persisted theme pre-selected', () => {
+    seedConfig({ theme: 'dark' });
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const radios = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    expect(radios[0]!.checked).toBe(false); // system
+    expect(radios[1]!.checked).toBe(false); // light
+    expect(radios[2]!.checked).toBe(true); // dark — matches persisted value
+  });
+
   it('saving the theme persists only the theme field and closes', async () => {
     seedConfig();
     const onClose = vi.fn();
@@ -338,5 +349,22 @@ describe('SettingsDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     expect(bridgeMock.configSet).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('changing the theme clears a stale submitError', async () => {
+    seedConfig({ worktreePrepCommands: [] });
+    bridgeMock.configSet.mockRejectedValueOnce(new Error('network down'));
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    // Trigger a save error via prep commands
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo x' } });
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+    expect(screen.getByTestId('settings-error')).toBeInTheDocument();
+    // Changing theme radio should clear the error
+    const picker = screen.getByTestId('settings-theme-picker');
+    const darkRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!;
+    fireEvent.click(darkRadio);
+    expect(screen.queryByTestId('settings-error')).toBeNull();
   });
 });
