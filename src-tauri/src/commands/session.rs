@@ -572,12 +572,8 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 1. Validate worktree (canonicalises; rejects relative/missing).
     let worktree = compose::validate_worktree(&args.worktree_path).map_err(AppError::from)?;
 
-    // 2. Optionally resolve the instruction set & enforce tool match. Empty-string
-    //    IDs from the frontend are treated as "no selection" so an over-eager
-    //    wizard can't trigger a NotFound for a `none` sentinel.
-    //
-    //    Repo overlay (issue #71): defaults from `<workspace>/.arborist/settings.json` apply where allowed; executable settings stay
-    //    subordinate to user-entered launch/prep commands.
+    // 2. Load effective config. Repo overlay (issue #71): defaults from `<workspace>/.arborist/settings.json` apply where allowed; executable
+    //    settings stay subordinate to user-entered launch/prep commands.
     let user_cfg = ctx.store().load_config();
     let (cfg, repo_overlay) = effective_config_with_repo_overlay(user_cfg.clone());
     let plugin = crate::plugins::ai::plugin_for_tool(args.tool);
