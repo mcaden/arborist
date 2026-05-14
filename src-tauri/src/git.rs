@@ -1543,8 +1543,8 @@ locked migrating to slow disk
     }
 
     #[test]
-    fn enrich_skips_when_on_source_branch() {
-        // Create a real git repo where the branch IS the source branch (main)
+    fn enrich_returns_none_when_no_origin_remote() {
+        // A repo with no origin remote → detect_source_branch returns None → fields stay None
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path();
         let _ = Command::new("git").current_dir(path).args(["init", "-b", "main"]).output();
@@ -1562,7 +1562,45 @@ locked migrating to slow disk
         SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
 
         enrich_with_source_branch(&mut status, path);
-        // On main with no origin remote, source_branch should be None (detection fails gracefully)
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
+    }
+
+    #[test]
+    fn enrich_skips_when_on_source_branch() {
+        // When current_branch == detected source branch, enrichment is skipped (showing 0/0 relative to self is noise).
+        // Set up a repo with an origin remote whose HEAD points to "main", then check out "main".
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path();
+        let _ = Command::new("git").current_dir(path).args(["init", "-b", "main"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["config", "user.email", "test@test.com"])
+            .output();
+        let _ = Command::new("git").current_dir(path).args(["config", "user.name", "Test"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .output();
+        // Create a local "origin" remote pointing at self, then set origin/HEAD
+        let _ = Command::new("git").current_dir(path).args(["remote", "add", "origin", "."]).output();
+        let _ = Command::new("git").current_dir(path).args(["fetch", "origin"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"])
+            .output();
+
+        let mut status = WorktreeGitStatus {
+            branch: Some("main".to_owned()),
+            ..Default::default()
+        };
+
+        // Clear cache so detect_source_branch runs fresh
+        SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+
+        enrich_with_source_branch(&mut status, path);
+        // Source branch IS "main" and we're ON "main" → skip, all fields stay None
         assert_eq!(status.source_branch, None);
         assert_eq!(status.source_ahead, None);
         assert_eq!(status.source_behind, None);
