@@ -929,6 +929,7 @@ fn kill_returns_unconfirmed_when_killer_errors() {
 
 #[cfg(windows)]
 #[test]
+#[serial_test::serial(real_pty)]
 fn kill_terminates_shell_descendants_on_windows() {
     let pool = PtyPool::new(Arc::new(PortablePtySpawner));
     let dir = tempfile::tempdir().unwrap();

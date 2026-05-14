@@ -350,6 +350,12 @@ mod windows_process_tree {
         creation_time: Option<u64>,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ProcessToTerminate {
+        pid: u32,
+        creation_time: u64,
+    }
+
     #[repr(C)]
     #[derive(Default)]
     #[allow(non_snake_case)]
@@ -386,9 +392,12 @@ mod windows_process_tree {
         let descendants = descendant_pids_deepest_first(root_pid, root_creation_time, &entries);
         let mut first_error: Option<(u32, io::Error)> = None;
 
-        for pid in descendants.into_iter().chain(std::iter::once(root_pid)) {
-            if let Err(e) = terminate_pid(pid) {
-                first_error.get_or_insert((pid, e));
+        for process in descendants.into_iter().chain(std::iter::once(ProcessToTerminate {
+            pid: root_pid,
+            creation_time: root_creation_time,
+        })) {
+            if let Err(e) = terminate_pid(process) {
+                first_error.get_or_insert((process.pid, e));
             }
         }
 
@@ -472,25 +481,26 @@ mod windows_process_tree {
             return None;
         }
 
+        let creation_time = process_creation_time_from_handle(handle);
+        // SAFETY: handle is valid and closed exactly once.
+        unsafe {
+            CloseHandle(handle);
+        }
+
+        creation_time
+    }
+
+    fn process_creation_time_from_handle(handle: Handle) -> Option<u64> {
         let mut creation_time = FileTime::default();
         let mut exit_time = FileTime::default();
         let mut kernel_time = FileTime::default();
         let mut user_time = FileTime::default();
         // SAFETY: handle is valid and all FILETIME pointers are initialized writable buffers.
         let ok = unsafe { GetProcessTimes(handle, &mut creation_time, &mut exit_time, &mut kernel_time, &mut user_time) };
-        // SAFETY: handle is valid and closed exactly once.
-        unsafe {
-            CloseHandle(handle);
-        }
-
-        if ok == 0 {
-            None
-        } else {
-            Some((u64::from(creation_time.dwHighDateTime) << 32) | u64::from(creation_time.dwLowDateTime))
-        }
+        (ok != 0).then_some((u64::from(creation_time.dwHighDateTime) << 32) | u64::from(creation_time.dwLowDateTime))
     }
 
-    fn descendant_pids_deepest_first(root_pid: u32, root_created_at: u64, entries: &[ProcessSnapshotEntry]) -> Vec<u32> {
+    fn descendant_pids_deepest_first(root_pid: u32, root_created_at: u64, entries: &[ProcessSnapshotEntry]) -> Vec<ProcessToTerminate> {
         let mut children_by_parent: HashMap<u32, Vec<ProcessSnapshotEntry>> = HashMap::new();
         for entry in entries {
             if entry.pid != root_pid && entry.creation_time.is_some() {
@@ -512,7 +522,7 @@ mod windows_process_tree {
         parent_created_at: u64,
         children_by_parent: &HashMap<u32, Vec<ProcessSnapshotEntry>>,
         seen: &mut HashSet<u32>,
-        ordered: &mut Vec<u32>,
+        ordered: &mut Vec<ProcessToTerminate>,
     ) -> bool {
         if !seen.insert(pid) {
             return false;
@@ -528,15 +538,18 @@ mod windows_process_tree {
                 continue;
             }
             if append_descendants(child.pid, child_created_at, children_by_parent, seen, ordered) {
-                ordered.push(child.pid);
+                ordered.push(ProcessToTerminate {
+                    pid: child.pid,
+                    creation_time: child_created_at,
+                });
             }
         }
         true
     }
 
-    fn terminate_pid(pid: u32) -> io::Result<()> {
+    fn terminate_pid(process: ProcessToTerminate) -> io::Result<()> {
         // SAFETY: OpenProcess accepts any PID and returns NULL for stale/invalid ones; no pointers are dereferenced here.
-        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid) };
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, process.pid) };
         if handle.is_null() {
             let error = io::Error::last_os_error();
             return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) {
@@ -544,6 +557,16 @@ mod windows_process_tree {
             } else {
                 Err(error)
             };
+        }
+
+        let actual_creation_time = process_creation_time_from_handle(handle);
+        if actual_creation_time != Some(process.creation_time) {
+            // The PID went stale or was reused after the snapshot; never terminate a process we cannot re-identify by creation time.
+            // SAFETY: handle is valid and closed exactly once on this early-return path.
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Ok(());
         }
 
         // SAFETY: handle is a valid process handle opened with PROCESS_TERMINATE. CloseHandle is called exactly once.
@@ -572,12 +595,12 @@ mod windows_process_tree {
         } else if wait == Some(WAIT_TIMEOUT) {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!("timed out waiting for pid {pid} to terminate"),
+                format!("timed out waiting for pid {} to terminate", process.pid),
             ))
         } else if wait == Some(WAIT_FAILED) {
             Err(wait_error)
         } else {
-            Err(io::Error::other(format!("unexpected wait result {:?} for pid {pid}", wait)))
+            Err(io::Error::other(format!("unexpected wait result {:?} for pid {}", wait, process.pid)))
         }
     }
 
@@ -594,6 +617,13 @@ mod windows_process_tree {
             }
         }
 
+        fn descendant_pids(root_pid: u32, root_created_at: u64, entries: &[ProcessSnapshotEntry]) -> Vec<u32> {
+            descendant_pids_deepest_first(root_pid, root_created_at, entries)
+                .into_iter()
+                .map(|process| process.pid)
+                .collect()
+        }
+
         #[test]
         fn descendant_pids_are_deepest_first_without_root() {
             let entries = [
@@ -607,7 +637,7 @@ mod windows_process_tree {
                 entry(20, 2, 170),
             ];
 
-            assert_eq!(descendant_pids_deepest_first(10, 100, &entries), vec![99, 14, 13, 11, 15, 12]);
+            assert_eq!(descendant_pids(10, 100, &entries), vec![99, 14, 13, 11, 15, 12]);
         }
 
         #[test]
@@ -620,7 +650,7 @@ mod windows_process_tree {
                 entry(13, 12, 130),
             ];
 
-            assert_eq!(descendant_pids_deepest_first(10, 100, &entries), vec![11]);
+            assert_eq!(descendant_pids(10, 100, &entries), vec![11]);
         }
 
         #[test]
