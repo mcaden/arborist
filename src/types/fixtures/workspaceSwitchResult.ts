@@ -25,6 +25,7 @@ export const workspaceSwitchResultFixture = {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
   },
   sessions: [],
 } as const satisfies WorkspaceSwitchResult;

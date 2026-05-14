@@ -8,7 +8,7 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
-import type { PluginSettings } from '@/types/arborist';
+import type { PluginSettings, ThemeMode } from '@/types/arborist';
 
 function seedConfig(
   overrides: Partial<{
@@ -16,6 +16,7 @@ function seedConfig(
     worktreePrepCommands: string[];
     aiLaunchCommands: { commands: Record<string, string>; iconDataUris: Record<string, string | null> };
     pluginSettings: PluginSettings;
+    theme: ThemeMode;
   }> = {},
 ): void {
   useConfigStore.setState({
@@ -34,6 +35,7 @@ function seedConfig(
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: overrides.theme ?? 'system',
     },
     status: 'ready',
     error: null,
@@ -72,6 +74,7 @@ afterEach(() => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     },
     status: 'idle',
     error: null,
@@ -288,5 +291,80 @@ describe('SettingsDialog', () => {
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
       pluginSettings: { ai: { claude: { settings: { launchCommand: '' } } } },
     });
+  });
+
+  it('theme picker reflects stored preference and changing it marks the form dirty', () => {
+    seedConfig();
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const radios = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    expect(radios).toHaveLength(3);
+    // Default is 'system'
+    expect(radios[0]!.checked).toBe(true); // system
+    expect(radios[1]!.checked).toBe(false); // light
+    expect(radios[2]!.checked).toBe(false); // dark
+
+    const save = screen.getByRole('button', { name: /^save$/i });
+    expect(save).toBeDisabled();
+
+    // Select 'dark'
+    fireEvent.click(radios[2]!);
+    expect(radios[2]!.checked).toBe(true);
+    expect(save).toBeEnabled();
+  });
+
+  it('opens with a non-default persisted theme pre-selected', () => {
+    seedConfig({ theme: 'dark' });
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const radios = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    expect(radios[0]!.checked).toBe(false); // system
+    expect(radios[1]!.checked).toBe(false); // light
+    expect(radios[2]!.checked).toBe(true); // dark — matches persisted value
+  });
+
+  it('saving the theme persists only the theme field and closes', async () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const darkRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!;
+    fireEvent.click(darkRadio);
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+    expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
+    expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({ theme: 'dark' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel discards the theme change without persisting', () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const lightRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1]!;
+    fireEvent.click(lightRadio);
+    expect(lightRadio.checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(bridgeMock.configSet).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('changing the theme clears a stale submitError', async () => {
+    seedConfig({ worktreePrepCommands: [] });
+    bridgeMock.configSet.mockRejectedValueOnce(new Error('network down'));
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    // Trigger a save error via prep commands
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo x' } });
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+    expect(screen.getByTestId('settings-error')).toBeInTheDocument();
+    // Changing theme radio should clear the error
+    const picker = screen.getByTestId('settings-theme-picker');
+    const darkRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!;
+    fireEvent.click(darkRadio);
+    expect(screen.queryByTestId('settings-error')).toBeNull();
   });
 });

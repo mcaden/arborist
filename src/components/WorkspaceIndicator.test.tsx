@@ -25,6 +25,7 @@ function seedStores(workspaceRoot: string | null): void {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     },
     status: 'ready',
     error: null,
@@ -92,6 +93,7 @@ describe('WorkspaceIndicator', () => {
         worktreeTabs: [],
         worktreeTabOrder: [],
         activeWorktreeTabId: null,
+        theme: 'system',
       },
       sessions: [],
     });

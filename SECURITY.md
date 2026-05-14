@@ -77,11 +77,11 @@ forks may retain it.
 
 ## Release trust
 
-Release artifacts are unsigned by OS code-signing systems unless release notes say otherwise. GitHub build attestations are published for release
-assets and can be verified with:
+Release artifacts are OS-signed and notarized where each platform supports it. GitHub build attestations are published for release assets and can be
+verified with:
 
 ```sh
 gh attestation verify <downloaded-file> --repo mcaden/arborist
 ```
 
-Unsigned binaries may trigger Windows SmartScreen or macOS Gatekeeper first-run warnings. See [releasing](docs/releasing.md) for release mechanics.
+See [releasing](docs/releasing.md) for release mechanics.

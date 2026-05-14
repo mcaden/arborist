@@ -13,9 +13,11 @@
 //! ```
 //! Blocks are separated by blank lines; the very first one is the main worktree.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tracing::{debug, warn};
@@ -266,7 +268,9 @@ impl GitRunner for RealGitRunner {
                 ..Default::default()
             });
         }
-        Ok(parse_status_v2(&output.stdout))
+        let mut status = parse_status_v2(&output.stdout);
+        enrich_with_source_branch(&mut status, worktree_path);
+        Ok(status)
     }
 }
 
@@ -656,6 +660,130 @@ fn push_status_file(status: &mut WorktreeGitStatus, path: String, kind: GitStatu
         kind,
         status: xy.to_owned(),
     });
+}
+
+// --------------------------------------------------------------------------- Source branch detection
+// ---------------------------------------------------------------------------
+
+/// Cache for detected source branches per worktree path. The source branch rarely changes (only on remote HEAD updates
+/// or branch renames), so caching avoids 1–2 subprocess calls per dashboard poll tick. The cache maps **canonicalized**
+/// worktree paths to their detected source branch (or `None` if undetectable).
+///
+/// **Lifecycle:** entries are unbounded and never invalidated within a process lifetime. This is acceptable because:
+/// - The source branch of a repo almost never changes during a session
+/// - The worst case (stale entry after `git remote set-head`) shows slightly outdated but still valid info
+/// - A process restart clears the cache naturally
+/// - Path canonicalization (via `std::fs::canonicalize` at lookup time) prevents duplicate entries from path form
+///   variations (trailing slash, symlinks, case differences on case-insensitive filesystems)
+static SOURCE_BRANCH_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Detect the repo's default/source branch by probing remotes. Returns the short branch name (e.g. `"main"`), or `None` when undetectable.
+///
+/// **Limitation:** only probes the `origin` remote. Repos cloned with a non-standard remote name (e.g. `upstream`) will
+/// not have source branch info detected. This is acceptable for v1 — the result gracefully degrades to `None`.
+///
+/// Strategy:
+/// 1. `git symbolic-ref refs/remotes/origin/HEAD` → strip `refs/remotes/origin/` prefix
+/// 2. Fall back: check if `refs/remotes/origin/main` exists, then `refs/remotes/origin/master`
+///
+/// This is best-effort — if none of the above work, we simply omit source branch info from the status.
+fn detect_source_branch(worktree_path: &Path) -> Option<String> {
+    // Try symbolic-ref first (set by `git clone`)
+    if let Ok(output) = git_command()
+        .current_dir(worktree_path)
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .output()
+    {
+        if output.status.success() {
+            let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // Output is like "origin/main" — strip the remote prefix
+            if let Some(branch) = refname.strip_prefix("origin/") {
+                if !branch.is_empty() {
+                    return Some(branch.to_owned());
+                }
+            }
+        }
+    }
+
+    // Fallback: check if origin/main or origin/master exists
+    for candidate in &["main", "master"] {
+        let ref_path = format!("refs/remotes/origin/{candidate}");
+        if let Ok(output) = git_command()
+            .current_dir(worktree_path)
+            .args(["rev-parse", "--verify", "--quiet", &ref_path])
+            .output()
+        {
+            if output.status.success() {
+                return Some((*candidate).to_owned());
+            }
+        }
+    }
+
+    None
+}
+
+/// Get the ahead/behind counts between HEAD and a reference branch using `git rev-list --left-right --count`.
+/// Returns `(ahead, behind)` or `None` on failure.
+fn rev_list_left_right_count(worktree_path: &Path, reference: &str) -> Option<(u32, u32)> {
+    let range = format!("origin/{reference}...HEAD");
+    let output = git_command()
+        .current_dir(worktree_path)
+        .args(["rev-list", "--left-right", "--count", &range])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_rev_list_count(&output.stdout)
+}
+
+/// Parse the output of `git rev-list --left-right --count` which is `<left>\t<right>\n`.
+///
+/// In the context of `origin/<source>...HEAD`, left = commits on the reference side (behind) and right = commits on HEAD
+/// side (ahead). Returns `(ahead, behind)` — i.e. `(right, left)` — so the caller receives the semantically named pair.
+pub(crate) fn parse_rev_list_count(output: &[u8]) -> Option<(u32, u32)> {
+    let text = std::str::from_utf8(output).ok()?.trim();
+    let mut parts = text.split_whitespace();
+    let left: u32 = parts.next()?.parse().ok()?;
+    let right: u32 = parts.next()?.parse().ok()?;
+    Some((right, left))
+}
+
+/// Enrich a `WorktreeGitStatus` with source branch divergence info. Best-effort: failures are silently ignored.
+///
+/// Uses [`SOURCE_BRANCH_CACHE`] to avoid re-running source branch detection on every poll tick. Only the `rev-list`
+/// count (a single fast subprocess) runs on each call; the detection probes are amortized to once per worktree path.
+fn enrich_with_source_branch(status: &mut WorktreeGitStatus, worktree_path: &Path) {
+    let current_branch = match &status.branch {
+        Some(b) => b.clone(),
+        None => return, // detached HEAD — skip source branch detection
+    };
+
+    // Canonicalize the path for consistent cache keys regardless of path form (trailing slash, symlinks, case)
+    let canonical = worktree_path.canonicalize().unwrap_or_else(|_| worktree_path.to_path_buf());
+
+    let source = {
+        let mut cache = SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache.entry(canonical).or_insert_with(|| detect_source_branch(worktree_path)).clone()
+    };
+
+    let source = match source {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Skip if we're ON the source branch (showing 0/0 relative to self is noise)
+    if current_branch == source {
+        return;
+    }
+
+    if let Some((ahead, behind)) = rev_list_left_right_count(worktree_path, &source) {
+        status.source_branch = Some(source);
+        status.source_ahead = Some(ahead);
+        status.source_behind = Some(behind);
+    }
 }
 
 #[cfg(test)]
@@ -1365,5 +1493,136 @@ locked migrating to slow disk
         let s = runner.git_status(&missing).expect("graceful degradation");
         assert!(s.error.as_deref().unwrap_or("").contains("does not exist"));
         assert_eq!(WorktreeGitStatus { error: None, ..s.clone() }, WorktreeGitStatus::default());
+    }
+
+    // --- parse_rev_list_count unit tests --- //
+
+    #[test]
+    fn parse_rev_list_count_typical() {
+        // Output format: "<left>\t<right>\n" where left = behind, right = ahead
+        let output = b"3\t12\n";
+        assert_eq!(parse_rev_list_count(output), Some((12, 3)));
+    }
+
+    #[test]
+    fn parse_rev_list_count_zeros() {
+        let output = b"0\t0\n";
+        assert_eq!(parse_rev_list_count(output), Some((0, 0)));
+    }
+
+    #[test]
+    fn parse_rev_list_count_no_trailing_newline() {
+        let output = b"5\t7";
+        assert_eq!(parse_rev_list_count(output), Some((7, 5)));
+    }
+
+    #[test]
+    fn parse_rev_list_count_empty() {
+        assert_eq!(parse_rev_list_count(b""), None);
+    }
+
+    #[test]
+    fn parse_rev_list_count_garbage() {
+        assert_eq!(parse_rev_list_count(b"not a number"), None);
+    }
+
+    // --- enrich_with_source_branch unit tests --- //
+
+    #[test]
+    fn enrich_skips_detached_head() {
+        let mut status = WorktreeGitStatus {
+            branch: None, // detached HEAD
+            head: Some("abc123".to_owned()),
+            ..Default::default()
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        enrich_with_source_branch(&mut status, dir.path());
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
+    }
+
+    #[test]
+    fn enrich_returns_none_when_no_origin_remote() {
+        // A repo with no origin remote → detect_source_branch returns None → fields stay None
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path();
+        let _ = Command::new("git").current_dir(path).args(["init", "-b", "main"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .output();
+
+        let mut status = WorktreeGitStatus {
+            branch: Some("main".to_owned()),
+            ..Default::default()
+        };
+
+        // Clear cache for this path so we hit detect_source_branch fresh
+        SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+
+        enrich_with_source_branch(&mut status, path);
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
+    }
+
+    #[test]
+    fn enrich_skips_when_on_source_branch() {
+        // When current_branch == detected source branch, enrichment is skipped (showing 0/0 relative to self is noise).
+        // Set up a repo with an origin remote whose HEAD points to "main", then check out "main".
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path();
+        let _ = Command::new("git").current_dir(path).args(["init", "-b", "main"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["config", "user.email", "test@test.com"])
+            .output();
+        let _ = Command::new("git").current_dir(path).args(["config", "user.name", "Test"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .output();
+        // Create a local "origin" remote pointing at self, then set origin/HEAD
+        let _ = Command::new("git").current_dir(path).args(["remote", "add", "origin", "."]).output();
+        let _ = Command::new("git").current_dir(path).args(["fetch", "origin"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"])
+            .output();
+
+        let mut status = WorktreeGitStatus {
+            branch: Some("main".to_owned()),
+            ..Default::default()
+        };
+
+        // Clear cache so detect_source_branch runs fresh
+        SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+
+        enrich_with_source_branch(&mut status, path);
+        // Source branch IS "main" and we're ON "main" → skip, all fields stay None
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
+    }
+
+    #[test]
+    fn enrich_sets_all_source_fields_together_or_none() {
+        // Verify the invariant: source_branch/source_ahead/source_behind are either all set or all None
+        let mut status = WorktreeGitStatus {
+            branch: Some("feature-x".to_owned()),
+            ..Default::default()
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Clear cache so fresh detection runs (which will fail on a non-git dir → graceful None)
+        SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(dir.path());
+
+        enrich_with_source_branch(&mut status, dir.path());
+
+        // All three must be None together (detection failed since it's not a git repo)
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
     }
 }

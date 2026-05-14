@@ -28,6 +28,33 @@ After changing the Rust crate version, run a Cargo command that updates `Cargo.l
 - Keep the GitHub repository description and topics aligned with the README. Current launch topics: `tauri`, `react`, `rust`, `typescript`,
   `git-worktree`, and `ai-tools`.
 
+## Project website and GitHub Pages
+
+The public website is published from `website/` by `.github/workflows/pages.yml` using GitHub Actions artifact deployment. The primary public URL is
+`https://arborist.tools`; `https://mcaden.github.io/arborist/` is the fallback and diagnostic GitHub Pages URL.
+
+Preview the committed static site locally without starting the Tauri app:
+
+```sh
+pnpm run website:dev
+```
+
+The preview serves `http://127.0.0.1:4173/` and also maps `http://127.0.0.1:4173/arborist/` to the same files so the GitHub Pages fallback path can be
+checked locally. Use `pnpm run website:dev -- --port 4174` if the default port is busy.
+
+Keep these values aligned when changing site or release metadata:
+
+- `website/CNAME`
+- GitHub Pages custom-domain settings and DNS for `arborist.tools`
+- the GitHub repository homepage URL
+- `package.json` homepage metadata
+- Rust package `homepage` fields
+- Tauri bundle `homepage`
+
+Pages uses **GitHub Actions** as the source with the `arborist.tools` custom domain. Maintainers keep DNS, HTTPS provisioning, and repository settings
+aligned with `website/CNAME`. The website is curated for public users and contributors; it should not imply package-manager distribution or automatic
+updates because signed installers are distributed through GitHub Releases.
+
 ## Cut a release
 
 1. Land the version bump through PR.
@@ -64,10 +91,9 @@ The exact filenames are produced by Tauri and include the version.
 
 ## Trust and signing
 
-Release artifacts are not OS code-signed unless a future release note says otherwise. Users should expect first-run warnings from Windows SmartScreen
-and macOS Gatekeeper.
+Release artifacts are OS-signed and notarized where each platform supports it. Signed installers are distributed through GitHub Releases.
 
-Every published release artifact should have a GitHub build attestation:
+Every published release artifact has a GitHub build attestation:
 
 ```sh
 gh attestation verify <downloaded-file> --repo mcaden/arborist
@@ -78,8 +104,8 @@ Attestations prove the artifact was produced by the repository workflow for the 
 ## Release smoke checklist
 
 - Windows installer completes and the app launches.
-- Windows SmartScreen warning is dismissible.
-- macOS DMG opens; right-click Open works on first launch.
+- Windows installer publisher and signature are verified.
+- macOS DMG opens and Gatekeeper verifies the notarized app.
 - Linux AppImage runs after `chmod +x`.
 - Linux `.deb` installs and launches.
 - First-boot workspace picker accepts a primary clone and rejects a linked worktree.
@@ -97,8 +123,6 @@ the new SHA and comment before merging.
 
 ## Out of scope today
 
-- Apple notarization.
-- Authenticode signing.
 - Auto-updates.
 - Package-manager distribution.
 - ARM Linux release artifacts.

@@ -625,6 +625,9 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         // that should self-heal, not a fatal validation error like a non-existent path.
         cfg.sidebar_width_px = Some(width.clamp(crate::types::SIDEBAR_WIDTH_MIN_PX, crate::types::SIDEBAR_WIDTH_MAX_PX));
     }
+    if let Some(theme) = patch.theme {
+        cfg.theme = theme;
+    }
     Ok(())
 }
 
@@ -2706,6 +2709,36 @@ mod tests {
         fs::write(&path, serde_json::to_string(&raw_low).expect("ser")).expect("write");
         let cfg_low = store.load_config();
         assert_eq!(cfg_low.sidebar_width_px, Some(crate::types::SIDEBAR_WIDTH_MIN_PX));
+    }
+
+    #[test]
+    fn merge_theme_preference() {
+        use arborist_types::ThemeMode;
+
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+
+        // Default is System.
+        let cfg = store.load_config();
+        assert_eq!(cfg.theme, ThemeMode::System);
+
+        // Patch to Dark.
+        let after = store
+            .save_config(PartialAppConfig {
+                theme: Some(ThemeMode::Dark),
+                ..Default::default()
+            })
+            .expect("ok");
+        assert_eq!(after.theme, ThemeMode::Dark);
+
+        // Patch without theme field — must preserve Dark.
+        let after2 = store
+            .save_config(PartialAppConfig {
+                sidebar_width_px: Some(200),
+                ..Default::default()
+            })
+            .expect("ok");
+        assert_eq!(after2.theme, ThemeMode::Dark);
     }
 
     #[test]
