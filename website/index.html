@@ -38,6 +38,7 @@
         <div class="nav-links">
           <a href="#features">Features</a>
           <a href="#install">Install</a>
+          <a href="#tips">Tips</a>
           <a href="#run-from-source">Run from source</a>
           <a href="#docs">Docs</a>
           <a href="https://github.com/mcaden/arborist">GitHub</a>
@@ -174,6 +175,36 @@ pnpm dev</code></pre>
               See <a href="https://github.com/mcaden/arborist/blob/main/docs/development.md">development</a> and
               <a href="https://github.com/mcaden/arborist/blob/main/docs/testing.md">testing</a> docs for prerequisites, verification commands, and
               test seams.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="tips" class="page-section" aria-labelledby="tips-title">
+        <div class="section-heading">
+          <h2 id="tips-title">Workflow tips</h2>
+          <p>Patterns that work well once you have multiple worktrees and sessions running.</p>
+        </div>
+        <div class="grid three">
+          <article class="card">
+            <h3>Prefix PRs with the worktree name</h3>
+            <p>
+              Use <code>[worktree-name] Summary</code> as your PR title convention. It makes the PR list scannable and ties each change back to the
+              worktree that produced it. AI agents can be instructed to follow this convention automatically.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Launch your app as a custom process</h3>
+            <p>
+              Configure your app's dev server (or any long-running command) as a custom-process session type. Arborist will start it in the worktree's
+              directory and keep it running alongside your AI and terminal sessions.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Use worktree prep commands</h3>
+            <p>
+              Set up prep commands like <code>pnpm install</code> and <code>git merge main</code> to run automatically when a worktree is created or
+              switched to. This keeps dependencies fresh and the branch up to date without manual steps.
             </p>
           </article>
         </div>
