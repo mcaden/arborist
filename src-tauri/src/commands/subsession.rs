@@ -75,7 +75,7 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
         return Err(AppError::from(Error::WorktreeMissing(tab.path.clone())));
     }
 
-    // Compose once, store-and-reuse (DESIGN §5.4 mirror).
+    // Compose once, store-and-reuse.
     let composed_command = def.command.clone();
     let sub = build_sub_session(args.parent_worktree_tab_id, def, composed_command.clone());
 

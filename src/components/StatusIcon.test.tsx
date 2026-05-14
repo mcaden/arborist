@@ -30,7 +30,7 @@ describe('StatusIcon', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it.each(cases)('emits a single-codepoint Nerd Font codicon glyph for $status', ({ status, testIdSuffix }) => {
+  it.each(cases)('emits a single-codepoint Nerd Font glyph for $status', ({ status, testIdSuffix }) => {
     render(<StatusIcon status={status} />);
     const text = screen.getByTestId(`status-icon-${testIdSuffix}`).textContent ?? '';
     // Single codepoint: surrogate-pair-aware so accidental swaps to a
@@ -39,12 +39,13 @@ describe('StatusIcon', () => {
     expect([...text]).toHaveLength(1);
     const codepoint = text.codePointAt(0);
     expect(codepoint).toBeDefined();
-    // Codicons live in the U+EA60–U+EC1E PUA range. Asserting the range
-    // catches accidental fall-back to ASCII (e.g. typing the literal
-    // character instead of the escape) and warns if a future edit pulls
-    // a glyph from the wrong Nerd Font block.
-    expect(codepoint!).toBeGreaterThanOrEqual(0xea60);
-    expect(codepoint!).toBeLessThanOrEqual(0xec1e);
+    // Nerd Font icon sets live in Unicode private-use ranges. Asserting
+    // PUA catches accidental fall-back to ASCII (e.g. typing the literal
+    // character instead of the escape) while allowing non-Codicon icons.
+    const isBmpPua = codepoint! >= 0xe000 && codepoint! <= 0xf8ff;
+    const isSupplementalPuaA = codepoint! >= 0xf0000 && codepoint! <= 0xffffd;
+    const isSupplementalPuaB = codepoint! >= 0x100000 && codepoint! <= 0x10fffd;
+    expect(isBmpPua || isSupplementalPuaA || isSupplementalPuaB).toBe(true);
   });
 
   it('emits a distinct glyph per non-idle status (no collisions)', () => {
@@ -81,7 +82,7 @@ describe('StatusIcon', () => {
     // (no system fallback) — see `tailwind.config.js`. Asserting it
     // explicitly catches accidental regressions back to `font-sans`,
     // whose stack reorganisation could silently swap to a font that
-    // lacks the codicon PUA glyphs.
+    // lacks the Nerd Font PUA glyphs.
     render(<StatusIcon status="working" />);
     expect(screen.getByTestId('status-icon-working')).toHaveClass('font-icon');
   });

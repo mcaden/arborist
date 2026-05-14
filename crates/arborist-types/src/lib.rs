@@ -355,7 +355,7 @@ pub struct WorktreeTab {
 // --------------------------------------------------------------------------- Worktree discovery
 // ---------------------------------------------------------------------------
 
-/// One entry in the result of `worktrees_list` (DESIGN §6). Mirrored on the frontend by `WorktreeInfo` in `src/types/arborist.ts`.
+/// One entry in the result of `worktrees_list`. Mirrored on the frontend by `WorktreeInfo` in `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeInfo {
@@ -983,7 +983,7 @@ mod double_option {
 // --------------------------------------------------------------------------- Errors
 // ---------------------------------------------------------------------------
 
-/// Payload of the `session://output` event (DESIGN §6).
+/// Payload of the `session://output` event.
 ///
 /// Mirrored on the frontend by `SessionOutputEvent` in `src/types/arborist.ts`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1055,7 +1055,7 @@ pub enum ActivityEvent {
     TurnStart,
 }
 
-/// Payload of the `session://activity` event (DESIGN §6).
+/// Payload of the `session://activity` event.
 ///
 /// `event` is a tagged enum (see [`ActivityEvent`]): `{ kind: "title", value: "..." }`, `{ kind: "attention" }`, `{ kind: "working"
 /// }`, `{ kind: "idle" }`, etc.
@@ -1140,7 +1140,7 @@ impl SessionMetricsEvent {
     }
 }
 
-/// Payload of the `session://status` event (DESIGN §6).
+/// Payload of the `session://status` event.
 ///
 /// `message` is an optional human-readable note that accompanies the status change — used today for stale-worktree restore failures (Roadmap §4.3) so
 /// the terminal overlay can explain *why* the session is in `error` state instead of just showing a generic banner.
@@ -1155,7 +1155,7 @@ pub struct SessionStatusEvent {
     pub message: Option<String>,
 }
 
-// --------------------------------------------------------------------------- Command argument shapes (DESIGN §6)
+// --------------------------------------------------------------------------- Command argument shapes (see docs/architecture.md#command-and-event-contract)
 // ---------------------------------------------------------------------------
 
 /// Arguments for the `session_create` command.
@@ -1608,8 +1608,8 @@ pub struct WorktreePrepOpenLogArgs {
 /// Settings tab (with a toggle) but hidden from the tab context menu.
 ///
 /// `command` is a single shell command string composed exactly like a session's `composedCommand`: passed to `$SHELL -c` (or `%COMSPEC% /c` on
-/// Windows) with `cwd` set to the parent session's worktree path. **The worktree path is never interpolated** into the command (DESIGN §8 — injection
-/// prevention).
+/// Windows) with `cwd` set to the parent session's worktree path. **The worktree path is never interpolated** into the command (see SECURITY.md
+/// for injection-prevention rationale).
 ///
 /// MIRROR: `src/types/arborist.ts::CustomProcessDef`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1687,7 +1687,7 @@ pub struct SubSessionRecord {
     pub kind: CustomProcessKind,
     pub label: String,
     /// Resolved command at sub-session creation time. Persisted so a later edit to the underlying [`CustomProcessDef`] doesn't change what the
-    /// restored sub-session would relaunch — matches the "compose once, store-and-reuse" invariant for top-level sessions (DESIGN §5.4 mirror).
+    /// restored sub-session would relaunch — matches the "compose once, store-and-reuse" invariant for top-level sessions.
     #[serde(default)]
     pub composed_command: String,
 }
@@ -1754,7 +1754,7 @@ pub enum Error {
     #[error("pty kill failed: {0}")]
     PtyKillFailed(String),
 
-    /// An instruction file exceeds the 1 MiB cap from DESIGN §8.2. The payload is the offending file's path for diagnostics.
+    /// An instruction file exceeds the 1 MiB discovery cap. The payload is the offending file's path for diagnostics.
     #[error("instruction file too large: {0}")]
     InstructionFileTooLarge(std::path::PathBuf),
 

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What Arborist is
 
-A cross-platform desktop app (Tauri v2 + React/TypeScript) that manages multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git worktree. Each session gets its own PTY (persistent across tab switches); the sidebar shows vertical tabs and the main area shows one terminal at a time.
+A cross-platform desktop app (Tauri v2 + React/TypeScript) that manages multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git worktree. Each session gets its own PTY (persistent across tab switches); the sidebar shows worktree tabs with child sessions and the main area shows a dashboard or one terminal at a time.
 
-Authoritative specs: `dev/docs/SPEC.md` (requirements), `dev/docs/DESIGN.md` (architecture + data model + command/event API). Engineering conventions live in `.github/copilot-instructions.md`. Read those before proposing structural changes.
+Authoritative docs: `docs/product.md` (requirements), `docs/architecture.md` (architecture + data model + command/event API), and `docs/runtime-flows.md` (boot/session/workspace behavior). Engineering conventions live in `.github/copilot-instructions.md`. Read those before proposing structural changes.
 
 ## Dogfooding safety — don't kill the host
 
@@ -26,7 +26,7 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS (class dark-mode strategy), Zustand, xterm.js
 - **Backend**: Rust, Tauri v2, `portable-pty` (ConPTY on Windows), custom JSON persistence via `config_store.rs`
-- **Layout**: `src/` (frontend), `src-tauri/src/` (Rust), `instructions/` (default instruction-set files), `dev/docs/` (specs)
+- **Layout**: `src/` (frontend), `src-tauri/src/` (Rust), `crates/arborist-types/` (wire types), `instructions/` (default instruction templates), `docs/` (project docs)
 
 ## Commands
 
@@ -119,7 +119,7 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 4. Add `"allow-<name>"` to `capabilities/main.json`
 5. Extend `tests/capability_gating.rs`
 6. Add typed wrapper to `tauri-bridge.ts` and stub to `tauri-bridge.mock.ts`
-7. Update DESIGN.md §6 command table
+7. Update `docs/architecture.md#command-and-event-contract`
 
 ### Test seams
 

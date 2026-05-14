@@ -5,7 +5,7 @@
 // the WebView renders, and the core layout elements (sidebar, main area)
 // are present. No error overlay should appear.
 //
-// Maps to: SPEC T-01 (terminal viewport), S-01 (sidebar)
+// Maps to product IDs T-01 (terminal viewport), S-01 (sidebar)
 // =============================================================================
 
 import { waitForAppReady } from "./helpers/app.js";

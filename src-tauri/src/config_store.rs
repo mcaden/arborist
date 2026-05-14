@@ -53,7 +53,7 @@ use crate::types::{
 const CONFIG_FILENAME: &str = "config.json";
 const SESSIONS_FILENAME: &str = "sessions.json";
 
-/// Maximum size (in bytes) of a single instruction file. Files exceeding this cap are skipped during discovery (defence in depth — see DESIGN §8.2).
+/// Maximum size (in bytes) of a single instruction file. Files exceeding this cap are skipped during discovery (defence in depth).
 pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 
 // --------------------------------------------------------------------------- ConfigStore
@@ -920,7 +920,7 @@ pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
             .find(|t| stem.starts_with(crate::plugins::ai::instruction_stem_prefix(*t)))
         else {
             // Files not matching a registered AI plugin prefix are ignored —
-            // the prefix convention is documented in CONFIGURATION.md.
+            // the prefix convention is documented in docs/configuration.md.
             continue;
         };
 

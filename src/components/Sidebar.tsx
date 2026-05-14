@@ -1,4 +1,4 @@
-// Vertical-tab sidebar — SPEC §5.1 (S-01..S-08), NF-06.
+// Vertical-tab sidebar — see docs/product.md for sidebar requirements.
 //
 // Issue #44 — sessions are now grouped under their parent **worktree tab**.
 // Top-level structure:

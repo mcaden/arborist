@@ -3,8 +3,7 @@
 // this component is responsible for:
 //   * Mounting / unmounting the Terminal into the DOM.
 //   * Auto-focusing the Terminal when this view becomes visible.
-//   * Rendering an error / exited overlay with a Restart button (SPEC C-04
-//     / L-03).
+//   * Rendering an error / exited overlay with a Restart button (see docs/product.md).
 
 import { useEffect, useRef } from 'react';
 

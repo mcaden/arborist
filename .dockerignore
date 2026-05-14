@@ -21,8 +21,8 @@ Thumbs.db
 dev/e2e/linux/specs/
 dev/e2e/linux/node_modules/
 
-# Dev docs (not needed in the image)
-dev/docs/
+# Documentation (not needed in the image)
+docs/
 
 # Worktree / husky (not needed in the image)
 .husky/

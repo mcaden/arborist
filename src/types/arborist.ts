@@ -341,14 +341,14 @@ export interface AppError {
 }
 
 // MIRROR: src-tauri/src/types.rs::SessionOutputEvent
-// Payload of the `session://output` Tauri event (DESIGN §6).
+// Payload of the `session://output` Tauri event (docs/architecture.md#command-and-event-contract).
 export interface SessionOutputEvent {
   sessionId: SessionId;
   data: string;
 }
 
 // MIRROR: src-tauri/src/types.rs::SessionStatusEvent
-// Payload of the `session://status` Tauri event (DESIGN §6).
+// Payload of the `session://status` Tauri event (docs/architecture.md#command-and-event-contract).
 //
 // `message` is an optional context string the backend includes for
 // notable status transitions — used today by `restore_all_sessions`
@@ -516,7 +516,7 @@ export type ActivityEvent =
   | { kind: 'permissionResolved'; requestId: string; approved: boolean };
 
 // MIRROR: src-tauri/src/types.rs::SessionActivityEvent
-// Payload of the `session://activity` Tauri event (DESIGN §6). The
+// Payload of the `session://activity` Tauri event (docs/architecture.md#command-and-event-contract). The
 // `ActivityEvent` fields are flattened into the payload alongside
 // `sessionId`.
 export type SessionActivityEvent = { sessionId: SessionId } & ActivityEvent;
@@ -548,7 +548,7 @@ export interface SessionMetricsEvent {
 export type SessionMetrics = SessionMetricsEvent;
 
 // MIRROR: src-tauri/src/types.rs::WorktreeInfo
-// Returned by the `worktrees_list` command (DESIGN §6, Phase 10).
+// Returned by the `worktrees_list` command.
 // `branch` is omitted by the backend when the worktree has a detached HEAD,
 // so we model it as an optional string.
 export interface WorktreeInfo {

@@ -1,7 +1,7 @@
 //! Cross-platform PTY pool — Phase 6 of the implementation plan.
 //!
-//! Implements DESIGN §2.1 (PTY Pool), §5.1 step 2 + 7-9 (spawn / read thread / backpressure), §5.4 (restart from stored `composedCommand`), §5.6
-//! (`cwd` is discrete, never interpolated), §8.3 (resource management).
+//! Implements the PTY lifecycle documented in `docs/architecture.md` and `docs/runtime-flows.md`: spawn, read thread, backpressure, and restart
+//! (`cwd` is discrete, never interpolated), and resource management.
 //!
 //! ## Architecture (reflecting the rules in `copilot-instructions.md`)
 //!
@@ -18,7 +18,7 @@
 //! - One **tokio task** per session drains a bounded
 //!   `mpsc::channel::<String>(512)` and dispatches each chunk to
 //!   `sink.output(...)`. The bounded channel is the backpressure boundary
-//!   (DESIGN §8.3).
+//!   (see `docs/architecture.md`).
 //! - The pool's lock is a `std::sync::Mutex` over a `BTreeMap`. **It is never
 //!   held across an `.await`** — callers `lock → take → drop → await`.
 
@@ -39,7 +39,7 @@ use crate::activity::{ActivityEvent, ActivityScanner, TICK_INTERVAL};
 use crate::compose::{self, platform_shell};
 use crate::types::{Error, Session, SessionId, SessionStatus};
 
-// --------------------------------------------------------------------------- Tunables (DESIGN §8.3 / SPEC NF-09)
+// --------------------------------------------------------------------------- Tunables
 // ---------------------------------------------------------------------------
 
 /// Bounded capacity for the per-session output channel. Once full, new chunks are **dropped** (newest-first) and a counter is incremented. DESIGN
@@ -177,7 +177,7 @@ impl PtySpawner for PortablePtySpawner {
         for a in &cmd.args {
             builder.arg(a);
         }
-        // DESIGN §5.6: cwd is the discrete worktree path — never spliced into the command string.
+        // cwd is the discrete worktree path — never spliced into the command string.
         builder.cwd(cwd);
         // Per-session env additions. The child still inherits the parent process's env (we never call `env_clear`); these are overrides/additions
         // only — see `compose::env_for_tool`.
@@ -487,7 +487,7 @@ impl PtyPool {
     }
 
     /// Re-spawn a session from its **already-stored** `composed_command`. This is the entry point Phase 7 uses for restart and restore. The behaviour
-    /// is identical to [`spawn`]; the distinct name documents the "do not recompose at restart time" rule from DESIGN §5.4.
+    /// is identical to [`spawn`]; the distinct name documents the "do not recompose at restart time" rule.
     ///
     /// [`spawn`]: Self::spawn
     pub fn respawn_existing(&self, session: &Session, sink: PtySink, size: PtySize) -> Result<u32, Error> {
@@ -530,7 +530,7 @@ impl PtyPool {
             env,
         };
 
-        // ------- 3. Spawn via injected spawner; cwd is discrete (DESIGN §5.6)
+        // ------- 3. Spawn via injected spawner; cwd is discrete.
         let spawned = self.spawner.spawn(cmd, &session.worktree_path, size)?;
         let SpawnedChild {
             pid,
@@ -882,7 +882,7 @@ fn pty_wait_loop(id: SessionId, waiter: Box<dyn PtyWaiter>, sink: PtySink, kille
 /// [`ORPHAN_AGE_THRESHOLD`]. Returns the number deleted.
 ///
 /// Restore-safety: a stale-mtime dir whose UUID **is** still persisted is **kept**, so a Phase 7 restart never races temp-file deletion against
-/// rematerialisation (DESIGN §5.6 / Phase 6 spec).
+/// rematerialisation.
 pub fn cleanup_orphans(persisted_session_ids: &[SessionId]) -> Result<usize, Error> {
     let root = compose::session_temp_dir(&SessionId::new());
     let scan_root = root
