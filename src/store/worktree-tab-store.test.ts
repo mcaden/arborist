@@ -38,6 +38,7 @@ function configWith(activeWorktreeTabId: WorktreeTabId | null = null): AppConfig
     worktreePrepCommands: [],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

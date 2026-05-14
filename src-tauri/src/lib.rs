@@ -18,6 +18,7 @@ pub mod process_icon;
 pub mod pty_pool;
 pub mod repo_settings;
 pub mod session_metrics;
+pub mod shell_trust;
 pub mod sub_sessions;
 /// Wire-contract types for the Rust backend ↔ React frontend boundary.
 ///
@@ -350,6 +351,9 @@ pub fn run() {
             commands::ping,
             commands::config_get,
             commands::config_set,
+            commands::shell_command_preview,
+            commands::repo_command_trust,
+            commands::repo_command_allow_once,
             commands::dialog_pick_directory,
             commands::session_create,
             commands::session_list,

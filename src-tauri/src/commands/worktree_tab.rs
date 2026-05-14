@@ -697,6 +697,8 @@ mod tests {
             worktree_name: "wt".into(),
             label: id.to_string(),
             composed_command: "echo".into(),
+            structured_command: None,
+            command_provenance: Vec::new(),
             status: crate::types::SessionStatus::Running,
             pid: None,
             created_at: 0,

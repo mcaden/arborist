@@ -23,11 +23,12 @@ use tauri::{Emitter, Manager};
 use crate::config_store::ConfigStore;
 use crate::sub_sessions::SubAppContext;
 use crate::types::{
-    AppConfig, AppError, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs,
-    SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession, SubSessionCloseArgs,
-    SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult,
-    WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs,
-    WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
+    AppConfig, AppError, PartialAppConfig, RepoCommandTrustArgs, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
+    SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, ShellCommandPreview,
+    ShellCommandPreviewArgs, SubSession, SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
+    SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs,
+    WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs,
+    WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -86,6 +87,24 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
         })
         .map_err(AppError::from)?;
     Ok(merged)
+}
+
+#[tauri::command]
+pub async fn shell_command_preview(app: tauri::AppHandle, args: ShellCommandPreviewArgs) -> Result<ShellCommandPreview, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::shell_command_preview_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn repo_command_trust(app: tauri::AppHandle, args: RepoCommandTrustArgs) -> Result<AppConfig, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::repo_command_trust_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn repo_command_allow_once(app: tauri::AppHandle, args: RepoCommandTrustArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    session::repo_command_allow_once_impl(&ctx, args)
 }
 
 /// Best-effort cwd for resolving relative-path commands at config-save time. Defs are templates — the user's workspace root is the most useful
@@ -266,8 +285,8 @@ pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateAr
 pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) -> Result<WorktreeCreateResult, AppError> {
     let ctx = ctx_of(&app)?;
     let _switch = session::acquire_switch_read(&ctx)?;
+    let cfg = session::trusted_worktree_create_config(&ctx, &args.name)?;
     let mut result = session::worktree_create_impl(&ctx, &args.name)?;
-    let cfg = crate::repo_settings::apply_repo_overlay(ctx.store().load_config());
     result.prep = crate::worktree_prep::maybe_spawn(&app, ctx.prep_registry.clone(), &cfg, &result.path);
     Ok(result)
 }

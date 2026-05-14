@@ -132,6 +132,9 @@ Every command must be present in all of these places:
 | `ping`                          | none                            | `string`                  | Command-boundary smoke check.                                                                                      |
 | `config_get`                    | none                            | `AppConfig`               | Load current workspace config.                                                                                     |
 | `config_set`                    | `PartialAppConfig`              | `AppConfig`               | Deep-merge config patch, validate, persist, and return merged config.                                              |
+| `shell_command_preview`         | `ShellCommandPreviewArgs`       | `ShellCommandPreview`     | Preview repo-provided executable settings that would run for create/restart actions.                               |
+| `repo_command_trust`            | `RepoCommandTrustArgs`          | `AppConfig`               | Persist trust for the current repo-provided command preview in user config.                                        |
+| `repo_command_allow_once`       | `RepoCommandTrustArgs`          | `void`                    | Allow the current repo-provided command preview to run once without persisting trust.                              |
 | `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                                      |
 | `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                                      |
 | `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                                         |
@@ -206,7 +209,11 @@ state. `enabled` is optional; omission means "use the plugin descriptor default"
 ## Invariants
 
 - Compose once, reuse forever. `Session.composedCommand` is built at creation and reused for restart/restore.
+- Default Claude/Copilot launches also store structured argv; explicit launch overrides remain shell snippets.
 - Worktree path is passed as `cwd` to the child process, never inserted into the shell command.
+- Repo-provided executable settings are defaults only and never replace user-entered launch/prep commands. Applied repo executable defaults require
+  local approval. "Don't ask again" trust is scoped to exact command fingerprints, and persisted repo command provenance is revalidated on
+  restart/restore.
 - Frontend and backend communicate only through Tauri commands and events.
 - All `invoke` and `listen` calls go through `src/lib/tauri-bridge.ts`.
 - Rust wire types and TypeScript mirrors change together.

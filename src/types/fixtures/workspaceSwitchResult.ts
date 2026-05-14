@@ -17,6 +17,7 @@ export const workspaceSwitchResultFixture = {
     worktreePrepCommands: [],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

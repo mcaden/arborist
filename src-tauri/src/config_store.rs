@@ -1260,6 +1260,8 @@ mod tests {
             worktree_name: label.to_owned(),
             label: label.to_owned(),
             composed_command: format!("claude {label}"),
+            structured_command: None,
+            command_provenance: Vec::new(),
             status: SessionStatus::Running,
             pid: Some(42),
             created_at: 1_700_000_000,

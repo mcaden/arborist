@@ -1,0 +1,10 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-shell-command-trust"
+description = "Allows the frontend to preview and trust repo-provided executable settings before they run."
+commands.allow = [
+    "shell_command_preview",
+    "repo_command_trust",
+    "repo_command_allow_once",
+]

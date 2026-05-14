@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -69,7 +69,7 @@ describe('WorktreeDashboard', () => {
     expect(screen.getByText(/on branch feature-x/i)).toBeInTheDocument();
   });
 
-  it('clicking Launch Claude calls sessionCreate with this worktree', () => {
+  it('clicking Launch Claude calls sessionCreate with this worktree', async () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',
@@ -86,15 +86,17 @@ describe('WorktreeDashboard', () => {
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-claude'));
 
-    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tool: 'claude',
-        worktreePath: '/repo/feature-x',
-      }),
+    await waitFor(() =>
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool: 'claude',
+          worktreePath: '/repo/feature-x',
+        }),
+      ),
     );
   });
 
-  it('clicking Launch Copilot calls sessionCreate with copilot tool', () => {
+  it('clicking Launch Copilot calls sessionCreate with copilot tool', async () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',
@@ -111,11 +113,13 @@ describe('WorktreeDashboard', () => {
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-copilot'));
 
-    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tool: 'copilot',
-        worktreePath: '/repo/feature-x',
-      }),
+    await waitFor(() =>
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool: 'copilot',
+          worktreePath: '/repo/feature-x',
+        }),
+      ),
     );
   });
 

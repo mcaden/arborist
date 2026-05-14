@@ -70,6 +70,9 @@ sequenceDiagram
     participant Prep as prep child
     participant Banner as WorktreePrepBanner
 
+    UI->>Rust: shell_command_preview { worktreeCreate }
+    Rust-->>UI: commands requiring trust
+    UI->>Rust: repo_command_allow_once or repo_command_trust { worktreeCreate }
     UI->>Rust: worktree_create { name }
     Rust->>Rust: validateWorktreeName / validate workspace root
     Rust->>Git: git -C <workspace> worktree add .arborist/.worktrees/<name> -b <name>
@@ -83,7 +86,10 @@ Prep commands are one-shot setup commands. They run only after `worktree_create`
 to `<app_data_dir>/worktree-prep-logs/<prepId>.log`. Opening a prep log goes through `worktree_prep_open_log`, which validates that the path resolves
 under the prep-log directory before asking the OS to open it.
 
-Repo-level overrides from `<workspace>/.arborist/settings.json` can replace user-level prep commands for that repo.
+Repo-level executable settings from `<workspace>/.arborist/settings.json` are defaults only. If the user has configured prep commands, the repo prep
+commands are ignored and do not prompt. If repo prep commands apply, the frontend asks the backend for a preview before `worktree_create`; the user can
+run once or persist "don't ask again" for the exact command fingerprint. The backend rechecks approval immediately before using the previewed config,
+so changed repo snippets do not run under old approvals.
 
 ## Opening a worktree tab and launching an AI session
 
@@ -98,10 +104,13 @@ sequenceDiagram
     UI->>Cmd: worktree_tab_open { path }
     Cmd->>Store: persist WorktreeTab
     Cmd-->>UI: WorktreeTab
+    UI->>Cmd: shell_command_preview { sessionCreate }
+    Cmd-->>UI: repo launch command requiring trust, if any
+    UI->>Cmd: repo_command_allow_once or repo_command_trust { sessionCreate }
     UI->>Cmd: session_create { tool, worktreePath, cols, rows }
     Cmd->>Cmd: compose CLI command once
-    Cmd->>Store: persist Session with composedCommand
-    Cmd->>Pty: spawn shell -c composedCommand with cwd=worktreePath
+    Cmd->>Store: persist Session with composedCommand/provenance
+    Cmd->>Pty: spawn structured argv or shell snippet with cwd=worktreePath
     Pty->>CLI: child process starts
     Pty-->>UI: session://output
     Pty-->>UI: session://status
@@ -112,6 +121,11 @@ Launch composition:
 - Claude launches bare as `claude`; repository-level `CLAUDE.md` discovery is handled by the CLI from the worktree `cwd`.
 - Copilot launches bare as `copilot`; Arborist does not pass `--instructions`.
 - Custom AI launch commands replace the program token and are stored by plugin id.
+- Default Claude/Copilot launches use structured argv. User launch overrides and applied repo launch defaults remain shell snippets because they
+  intentionally allow extra args.
+- Repo-provided launch defaults apply only when the user has not configured that tool's launch command. Applied repo launch defaults require approval
+  before session creation. The user can run once or choose "don't ask again" for the exact command fingerprint; the session stores command provenance
+  for later restart/restore checks.
 
 The worktree path is always the process `cwd`. It is not embedded in `composedCommand`.
 
@@ -121,13 +135,17 @@ The worktree path is always the process `cwd`. It is not embedded in `composedCo
 flowchart LR
     Exit["PTY exits with error"] --> Status["session://status error"]
     Status --> Overlay["Terminal overlay shows restart"]
-    Overlay --> Restart["session_restart { sessionId, cols, rows }"]
+    Overlay --> Preview["shell_command_preview { sessionRestart }"]
+    Preview --> Approve["repo_command_allow_once or repo_command_trust"]
+    Approve --> Restart["session_restart { sessionId, cols, rows }"]
     Restart --> Spawn["Respawn stored composedCommand<br/>cwd = stored worktreePath"]
     Spawn --> Starting["session://status starting"]
 ```
 
 Restart intentionally starts a fresh AI conversation. App-restart restore can resume an AI conversation when the backend has a known AI session id;
-manual restart clears or replaces that id according to the tool.
+manual restart clears or replaces that id according to the tool. If the stored session was created from an applied repo-provided launch default, restart and
+restore revalidate the persisted command provenance. Restore cannot prompt, so an untrusted restored session is left in `error` state for the user to
+review and restart.
 
 ## Closing worktree tabs and sessions
 

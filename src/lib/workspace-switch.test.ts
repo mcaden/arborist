@@ -31,6 +31,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     worktreePrepCommands: [],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
