@@ -160,7 +160,8 @@ async function handleRequest(req, res, host) {
     return;
   }
 
-  const url = new URL(req.url ?? '/', `http://${host}`);
+  const urlHost = host.includes(':') ? `[${host}]` : host;
+  const url = new URL(req.url ?? '/', `http://${urlHost}`);
   const result = await fileForRequest(url.pathname);
 
   if (result.redirectTo) {
@@ -201,9 +202,10 @@ function startServer({ host, port }) {
   });
 
   server.listen(port, host, () => {
+    const displayHost = host.includes(':') ? `[${host}]` : host;
     process.stdout.write(`Serving ${websiteRoot}\n`);
-    process.stdout.write(`  Local URL: http://${host}:${port}/\n`);
-    process.stdout.write(`  Pages fallback path: http://${host}:${port}${FALLBACK_BASE}/\n`);
+    process.stdout.write(`  Local URL: http://${displayHost}:${port}/\n`);
+    process.stdout.write(`  Pages fallback path: http://${displayHost}:${port}${FALLBACK_BASE}/\n`);
     process.stdout.write('Press Ctrl+C to stop.\n');
   });
 }
