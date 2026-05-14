@@ -468,7 +468,14 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLoc
         };
         let session_id = payload.session_id;
         if let Err(e) = store.update_session_metrics(&session_id, payload) {
-            tracing::debug!(error = ?e, "failed to persist session metrics");
+            match &e {
+                crate::types::Error::NotFound(_) => {
+                    tracing::trace!(error = ?e, "metrics persist skipped (session gone — expected during teardown)");
+                }
+                _ => {
+                    tracing::debug!(error = ?e, "failed to persist session metrics");
+                }
+            }
         }
     })
 }

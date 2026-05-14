@@ -381,14 +381,15 @@ impl ConfigStore {
     /// Persist the latest metrics snapshot on a session record. Called on every `session://metrics` emission so restore can seed the frontend.
     /// Returns `Ok(false)` when the stored value already matches (avoids redundant disk writes).
     ///
-    /// # Panics (debug only)
-    /// Debug-asserts that `metrics.session_id` matches the supplied `id`. The separate `id` parameter exists so the caller can copy it before moving
-    /// `metrics` (avoiding a borrow-after-move); it must always agree with the payload's own `session_id`.
+    /// # Errors
+    /// Returns `Error::NotFound` if `id` does not match any stored session, or if `metrics.session_id` does not match `id`.
     pub fn update_session_metrics(&self, id: &SessionId, metrics: SessionMetricsEvent) -> Result<bool, Error> {
-        debug_assert_eq!(
-            metrics.session_id, *id,
-            "update_session_metrics: id parameter and metrics.session_id must match"
-        );
+        if metrics.session_id != *id {
+            return Err(Error::NotFound(format!(
+                "update_session_metrics: id ({id}) does not match metrics.session_id ({})",
+                metrics.session_id
+            )));
+        }
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.load_sessions();
         let Some(session) = all.get_mut(id) else {
@@ -1676,6 +1677,27 @@ mod tests {
         };
         let err = store.update_session_metrics(&id, metrics).expect_err("must fail");
         assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn update_session_metrics_errors_on_id_mismatch() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let id_a = SessionId::new();
+        let id_b = SessionId::new();
+        let metrics = SessionMetricsEvent {
+            session_id: id_b,
+            model: None,
+            context_used_pct: None,
+            context_tokens_used: None,
+            context_tokens_limit: None,
+            input_tokens: None,
+            output_tokens: None,
+            observed_at: 0,
+        };
+        let err = store.update_session_metrics(&id_a, metrics).expect_err("must fail on mismatch");
+        assert!(matches!(err, Error::NotFound(_)));
+        assert!(err.to_string().contains("does not match"));
     }
 
     // ----- Copilot composed_command migration --------------------------
