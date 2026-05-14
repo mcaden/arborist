@@ -13,7 +13,6 @@ import type { PluginSettings } from '@/types/arborist';
 function seedConfig(
   overrides: Partial<{
     workspaceRoot: string | null;
-    instructionSetsDir: string;
     worktreePrepCommands: string[];
     aiLaunchCommands: { commands: Record<string, string>; iconDataUris: Record<string, string | null> };
     pluginSettings: PluginSettings;
@@ -21,9 +20,7 @@ function seedConfig(
 ): void {
   useConfigStore.setState({
     config: {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: overrides.instructionSetsDir ?? '/cfg/instr',
+      configVersion: 11,
       workspaceRoot: overrides.workspaceRoot ?? '/work',
       worktreeRoots: [],
       worktreePrepCommands: overrides.worktreePrepCommands ?? [],
@@ -61,9 +58,7 @@ afterEach(() => {
   // Reset config store between tests by re-seeding the empty default.
   useConfigStore.setState({
     config: {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
@@ -84,15 +79,13 @@ afterEach(() => {
 });
 
 describe('SettingsDialog', () => {
-  it('shows the current workspace root, instructions dir, and worktree prep commands', () => {
+  it('shows the current workspace root and worktree prep commands', () => {
     seedConfig({
       workspaceRoot: '/repos/grove',
-      instructionSetsDir: '/cfg/instr',
       worktreePrepCommands: ['source ~/.zshenv', 'nvm use 20'],
     });
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-workspace-path')).toHaveTextContent('/repos/grove');
-    expect(screen.getByLabelText(/instruction sets directory/i)).toHaveValue('/cfg/instr');
     expect(screen.getByLabelText(/worktree prep commands/i)).toHaveValue('source ~/.zshenv\nnvm use 20');
   });
 
@@ -101,15 +94,14 @@ describe('SettingsDialog', () => {
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     const save = screen.getByRole('button', { name: /^save$/i });
     expect(save).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
-      target: { value: '/new/instr' },
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
+      target: { value: 'echo changed' },
     });
     expect(save).toBeEnabled();
   });
 
   it('persists only the changed fields and closes on success', async () => {
     seedConfig({
-      instructionSetsDir: '/old',
       worktreePrepCommands: ['echo a'],
     });
     const onClose = vi.fn();
@@ -142,28 +134,18 @@ describe('SettingsDialog', () => {
   });
 
   it('surfaces backend errors without closing', async () => {
-    seedConfig({ instructionSetsDir: '/old' });
+    seedConfig();
     bridgeMock.configSet.mockRejectedValueOnce(new Error('bad path'));
     const onClose = vi.fn();
     renderWithPlugins(<SettingsDialog onClose={onClose} />);
-    fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
-      target: { value: 'rel/path' },
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
+      target: { value: 'bad command' },
     });
     await act(async () => {
       screen.getByRole('button', { name: /^save$/i }).click();
     });
     expect(screen.getByTestId('settings-error')).toHaveTextContent('bad path');
     expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('Browse… button populates the instructions input from the directory picker', async () => {
-    seedConfig({ instructionSetsDir: '' });
-    bridgeMock.pickDirectory.mockResolvedValueOnce('/picked/dir');
-    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
-    await act(async () => {
-      screen.getByRole('button', { name: /browse/i }).click();
-    });
-    expect(screen.getByLabelText(/instruction sets directory/i)).toHaveValue('/picked/dir');
   });
 
   it('clicking the backdrop closes the dialog', () => {
@@ -178,8 +160,8 @@ describe('SettingsDialog', () => {
     seedConfig();
     const onClose = vi.fn();
     renderWithPlugins(<SettingsDialog onClose={onClose} />);
-    fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
-      target: { value: '/something/new' },
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
+      target: { value: 'echo changed' },
     });
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     expect(bridgeMock.configSet).not.toHaveBeenCalled();

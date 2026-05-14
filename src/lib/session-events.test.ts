@@ -17,7 +17,6 @@ function makeView(id: string): SessionView {
     worktreePath: `/repo/${id}`,
     worktreeName: id,
     label: id,
-    instructionSetId: 'd',
     status: 'starting',
     createdAt: 0,
     tabIndex: 0,

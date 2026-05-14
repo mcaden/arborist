@@ -11,9 +11,7 @@ vi.mock('@/lib/tauri-bridge', () => import('@/lib/tauri-bridge.mock'));
 function seedStores(workspaceRoot: string | null): void {
   useConfigStore.setState({
     config: {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot,
       worktreeRoots: [],
       worktreePrepCommands: [],
@@ -80,9 +78,7 @@ describe('WorkspaceIndicator', () => {
       workspaceRoot: '/new',
       noOp: false,
       config: {
-        configVersion: 10,
-        defaultInstructionSets: { claude: '', copilot: '' },
-        instructionSetsDir: '',
+        configVersion: 11,
         workspaceRoot: '/new',
         worktreeRoots: [],
         worktreePrepCommands: [],

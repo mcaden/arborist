@@ -215,9 +215,6 @@ mod tests {
         fn default_program(&self) -> &'static str {
             "test"
         }
-        fn default_instruction_set_path(&self) -> &'static str {
-            "test-default.md"
-        }
         fn compose(&self, _inputs: &crate::compose::ComposeInputs<'_>, _quoter: crate::compose::Quoter) -> (String, Vec<crate::types::TempFileSpec>) {
             ("test".to_owned(), Vec::new())
         }
@@ -244,9 +241,6 @@ mod tests {
         }
         fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
             home.join(ai_session_id)
-        }
-        fn instruction_stem_prefix(&self) -> &'static str {
-            "test-"
         }
     }
 
