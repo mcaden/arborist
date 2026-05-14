@@ -9,6 +9,7 @@ const makeAi = (id: Tool): AiPlugin => ({
   displayName: id,
   defaultProgram: id,
   defaultInstructionSetPath: `${id}-default.md`,
+  contextMetricsLimitTooltipSuffix: `${id} context source`,
   Icon: () => null,
 });
 
@@ -125,6 +126,7 @@ describe('createRegistry()', () => {
       displayName: 'Counter AI',
       defaultProgram: 'noop',
       defaultInstructionSetPath: 'noop.md',
+      contextMetricsLimitTooltipSuffix: 'counter context source',
       Icon: () => null,
     };
     const r = createRegistry();

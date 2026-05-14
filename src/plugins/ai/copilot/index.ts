@@ -7,5 +7,6 @@ export const CopilotAiPlugin: AiPlugin = {
   displayName: 'Copilot',
   defaultProgram: 'copilot',
   defaultInstructionSetPath: 'copilot-default.md',
+  contextMetricsLimitTooltipSuffix: ' (Copilot-reported; excludes its system-prompt + tool overhead)',
   Icon: CopilotIcon,
 };

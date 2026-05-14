@@ -263,8 +263,7 @@ pub fn run() {
             let ctx_for_backfill = ctx.clone();
             app.manage(ctx);
 
-            // Plugin registry wiring. Issue #97 registers built-in custom-process plugins here; #96 (AI plugins) and #98 (dashboard widgets)
-            // extend the same `plugins::build_registry()` seam.
+            // Plugin registry wiring: built-in AI, custom-process, and dashboard-widget plugins all register through `plugins::build_registry()`.
             //
             // A `RegisterError` here means a developer added two plugins with the same id — log + structured exit instead of an `expect()` panic
             // so the user sees a single clear line and the process exits cleanly (matches the boot-failure pattern earlier in this block).
