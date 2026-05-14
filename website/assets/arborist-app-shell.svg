@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Arborist app shell illustration</title>
+  <desc id="desc">A static illustration of the Arborist sidebar, worktree tabs, child sessions, and terminal workflow.</desc>
+  <defs>
+    <linearGradient id="window" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#111827" />
+      <stop offset="1" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="terminal" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0f172a" />
+      <stop offset="1" stop-color="#111827" />
+    </linearGradient>
+    <filter id="shadow" x="-8%" y="-10%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#020617" flood-opacity="0.28" />
+    </filter>
+  </defs>
+  <rect width="1200" height="760" rx="38" fill="#ecfeff" />
+  <rect x="60" y="58" width="1080" height="644" rx="30" fill="url(#window)" filter="url(#shadow)" />
+  <rect x="60" y="58" width="1080" height="52" rx="30" fill="#1f2937" />
+  <circle cx="99" cy="84" r="8" fill="#f87171" />
+  <circle cx="126" cy="84" r="8" fill="#fbbf24" />
+  <circle cx="153" cy="84" r="8" fill="#34d399" />
+  <text x="188" y="91" fill="#d1d5db" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">
+    Arborist - mcaden/arborist
+  </text>
+
+  <rect x="60" y="110" width="274" height="592" fill="#0f172a" />
+  <text x="91" y="157" fill="#f8fafc" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="24" font-weight="800">
+    Worktrees
+  </text>
+  <rect x="88" y="184" width="218" height="74" rx="15" fill="#115e59" />
+  <text x="112" y="215" fill="#ecfeff" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">
+    github-pages
+  </text>
+  <text x="112" y="240" fill="#99f6e4" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="14">branch: pages-site</text>
+  <rect x="111" y="275" width="172" height="48" rx="12" fill="#1e293b" />
+  <circle cx="133" cy="299" r="7" fill="#86efac" />
+  <text x="151" y="305" fill="#e2e8f0" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="15">Copilot CLI</text>
+  <rect x="111" y="334" width="172" height="48" rx="12" fill="#1e293b" />
+  <circle cx="133" cy="358" r="7" fill="#fcd34d" />
+  <text x="151" y="364" fill="#e2e8f0" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="15">Terminal</text>
+  <rect x="88" y="408" width="218" height="68" rx="15" fill="#111827" stroke="#334155" />
+  <text x="112" y="438" fill="#cbd5e1" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">release-notes</text>
+  <text x="112" y="461" fill="#64748b" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="14">2 background sessions</text>
+  <rect x="88" y="501" width="218" height="44" rx="12" fill="#0f766e" opacity="0.28" />
+  <text x="117" y="529" fill="#ccfbf1" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700">+ Open or create worktree</text>
+
+  <rect x="334" y="110" width="806" height="592" fill="#f8fafc" />
+  <rect x="366" y="146" width="742" height="86" rx="22" fill="#ffffff" stroke="#e2e8f0" />
+  <text x="398" y="184" fill="#0f172a" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="28" font-weight="800">
+    github-pages
+  </text>
+  <text x="398" y="211" fill="#475569" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="16">
+    Worktree dashboard and persistent child sessions stay restorable across launches.
+  </text>
+  <rect x="928" y="166" width="154" height="42" rx="12" fill="#0f766e" />
+  <text x="959" y="193" fill="#ecfeff" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700">Launch AI</text>
+
+  <rect x="366" y="259" width="742" height="382" rx="22" fill="url(#terminal)" />
+  <rect x="366" y="259" width="742" height="48" rx="22" fill="#1f2937" />
+  <text x="394" y="289" fill="#e2e8f0" font-family="ui-sans-serif, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700">
+    Copilot CLI - running in cwd .arborist/.worktrees/github-pages
+  </text>
+  <text x="395" y="348" fill="#86efac" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="18">$ git status --short --branch</text>
+  <text x="395" y="382" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="18">## github-pages</text>
+  <text x="395" y="430" fill="#86efac" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="18">
+    $ copilot "implement the next task"
+  </text>
+  <text x="395" y="464" fill="#93c5fd" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="18">
+    Working in the selected worktree. Background PTYs keep running.
+  </text>
+  <text x="395" y="518" fill="#f8fafc" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="18">
+    Session output streams directly to xterm.js when this tab is active.
+  </text>
+  <rect x="395" y="570" width="14" height="26" fill="#5eead4" />
+
+  <rect x="394" y="657" width="178" height="14" rx="7" fill="#99f6e4" />
+  <rect x="592" y="657" width="112" height="14" rx="7" fill="#cbd5e1" />
+  <rect x="724" y="657" width="146" height="14" rx="7" fill="#cbd5e1" />
+</svg>

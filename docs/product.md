@@ -125,4 +125,3 @@ Success looks like:
 - In-app instruction-file editing.
 - A general third-party plugin marketplace.
 - Automatic app updates.
-- Code signing and notarization.
