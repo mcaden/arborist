@@ -2,6 +2,20 @@
   "name": "arborist",
   "private": true,
   "version": "0.1.0",
+  "description": "Cross-platform desktop app for managing AI coding-assistant sessions across Git worktrees.",
+  "license": "MIT",
+  "author": "Aaron Moore",
+  "contributors": [
+    "Arborist contributors"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcaden/arborist.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mcaden/arborist/issues"
+  },
+  "homepage": "https://arborist.tools",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {

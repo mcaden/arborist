@@ -11,8 +11,22 @@ GitHub Release and generates GitHub build attestations.
   - `package.json`
   - `src-tauri/tauri.conf.json`
   - `src-tauri/Cargo.toml`
+  - `crates/arborist-types/Cargo.toml`
 
 After changing the Rust crate version, run a Cargo command that updates `Cargo.lock` if needed.
+
+## Metadata policy
+
+- The public app identifier is `io.github.mcaden.arborist`. Changing it later changes OS app identity and app data/config paths, so do not change it
+  after public installs without a migration plan.
+- `package.json`, Rust package metadata, and Tauri bundle metadata describe Arborist as a cross-platform desktop app for managing AI coding-assistant
+  sessions across Git worktrees.
+- Package metadata names Aaron Moore as author and `Arborist contributors` as contributors. Rust crates list both in `authors` because Cargo does not
+  have a contributors field.
+- Frontend and Rust packages are not published independently today: `package.json` stays `"private": true`, and Rust crates stay `publish = false`.
+- Public homepage metadata points to `https://arborist.tools`; repository metadata points to `https://github.com/mcaden/arborist`.
+- Keep the GitHub repository description and topics aligned with the README. Current launch topics: `tauri`, `react`, `rust`, `typescript`,
+  `git-worktree`, and `ai-tools`.
 
 ## Cut a release
 
