@@ -23,7 +23,7 @@ const __filename = fileURLToPath(import.meta.url);
 if (!isMainThread) {
   const results = runPipelineSync(workerData.steps);
   parentPort.postMessage(results);
-  process.exit(0);
+  parentPort.close();
 }
 
 // ─── Main thread ──────────────────────────────────────────────────────────────
@@ -78,10 +78,10 @@ function runPipelineSync(steps) {
 // ─── Pipeline definitions ─────────────────────────────────────────────────────
 
 const FE_STEPS = [
-  { label: 'eslint', cmd: 'npx eslint .', fix: 'npx eslint . --fix' },
-  { label: 'prettier', cmd: 'npx prettier --check .', fix: 'npx prettier --write .' },
-  { label: 'typecheck + build', cmd: 'npx tsc --noEmit && npx vite build' },
-  { label: 'vitest', cmd: 'npx vitest run' },
+  { label: 'eslint', cmd: 'pnpm exec eslint .', fix: 'pnpm exec eslint . --fix' },
+  { label: 'prettier', cmd: 'pnpm exec prettier --check .', fix: 'pnpm exec prettier --write .' },
+  { label: 'typecheck + build', cmd: 'pnpm exec tsc --noEmit && pnpm exec vite build' },
+  { label: 'vitest', cmd: 'pnpm exec vitest run' },
 ];
 
 const RUST_STEPS = [
@@ -124,7 +124,8 @@ function report(label, results) {
       console.log('─'.repeat(60));
       const lines = r.output.split('\n');
       if (lines.length > 80) {
-        console.log(`  ... (${lines.length - 80} lines omitted)`);
+        const omitted = lines.length - 80;
+        console.log(`  ... (${omitted} ${omitted === 1 ? 'line' : 'lines'} omitted)`);
         console.log(lines.slice(-80).join('\n'));
       } else {
         console.log(r.output);
