@@ -76,4 +76,5 @@ Arborist never writes this file. Malformed overlays are ignored with a warning.
 - Worktree paths are canonicalized before use.
 - Worktree paths are never interpolated into shell commands.
 - The workspace root itself is never deleted by session/worktree close flows.
+- Worktree deletion is refused when child process teardown is unconfirmed.
 - Worktree deletion failures are reported as warnings in command results so UI state can still converge on "tab closed".

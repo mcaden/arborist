@@ -136,8 +136,9 @@ Session close:
 
 1. The frontend asks for confirmation.
 2. `session_close` tears down the PTY and removes the session record.
-3. If `deleteWorktree` is true, the backend attempts `git worktree remove --force`.
-4. Worktree deletion failure is returned as `worktreeDeleteError`; the session still closes.
+3. If PTY kill/reap is unconfirmed, `teardownError` is returned and worktree deletion is refused because the process may still hold the worktree cwd.
+4. If `deleteWorktree` is true and teardown was confirmed, the backend attempts `git worktree remove --force`.
+5. Worktree deletion failure is returned as `worktreeDeleteError`; the session still closes.
 
 Worktree-tab close:
 
@@ -145,7 +146,7 @@ Worktree-tab close:
 2. `worktree_tab_close` cascades to child AI sessions and sub-sessions.
 3. Terminal children terminate. Application children detach or terminate according to policy.
 4. Child teardown errors are returned in `childErrors`.
-5. Optional worktree deletion happens after child teardown and reports `worktreeDeleteError` on failure.
+5. Optional worktree deletion happens only when child teardown reported no errors; deletion refusal/failure is returned as `worktreeDeleteError`.
 
 ## Custom-process sub-sessions
 

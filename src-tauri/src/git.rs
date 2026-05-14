@@ -13,6 +13,7 @@
 //! ```
 //! Blocks are separated by blank lines; the very first one is the main worktree.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -206,6 +207,7 @@ impl GitRunner for RealGitRunner {
             repo_root,
             worktree_path,
             || run_git_worktree_remove(repo_root, worktree_path),
+            || remove_residual_worktree_dir(worktree_path),
             std::thread::sleep,
         )
     }
@@ -294,9 +296,11 @@ fn remove_worktree_with_retry(
     repo_root: &Path,
     worktree_path: &Path,
     mut run: impl FnMut() -> Result<GitCommandResult, Error>,
+    mut remove_residual: impl FnMut() -> io::Result<()>,
     mut sleep: impl FnMut(Duration),
 ) -> Result<(), Error> {
     let mut last_stderr = String::new();
+    let mut saw_retryable_delete_failure = false;
     for attempt in 0.. {
         let output = run()?;
         if output.success {
@@ -308,12 +312,22 @@ fn remove_worktree_with_retry(
         } else {
             output.stderr
         };
+        if saw_retryable_delete_failure && is_already_unregistered_worktree_failure(&last_stderr) {
+            warn!(
+                repo_root = %repo_root.display(),
+                worktree_path = %worktree_path.display(),
+                stderr = %last_stderr,
+                "git worktree remove reports the worktree is already unregistered; deleting residual directory directly",
+            );
+            return remove_residual_worktree_dir_with_retry(repo_root, worktree_path, &mut remove_residual, &mut sleep);
+        }
         let Some(delay_ms) = WORKTREE_REMOVE_RETRY_DELAYS_MS.get(attempt) else {
             break;
         };
         if !is_retryable_worktree_remove_failure(&last_stderr) {
             break;
         }
+        saw_retryable_delete_failure = true;
         warn!(
             repo_root = %repo_root.display(),
             worktree_path = %worktree_path.display(),
@@ -328,6 +342,50 @@ fn remove_worktree_with_retry(
     Err(Error::Internal(format!("git worktree remove failed: {last_stderr}")))
 }
 
+fn remove_residual_worktree_dir(worktree_path: &Path) -> io::Result<()> {
+    match std::fs::remove_dir_all(worktree_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn remove_residual_worktree_dir_with_retry(
+    repo_root: &Path,
+    worktree_path: &Path,
+    remove_residual: &mut impl FnMut() -> io::Result<()>,
+    sleep: &mut impl FnMut(Duration),
+) -> Result<(), Error> {
+    let mut last_error = String::new();
+    for attempt in 0.. {
+        match remove_residual() {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                last_error = e.to_string();
+            }
+        }
+
+        let Some(delay_ms) = WORKTREE_REMOVE_RETRY_DELAYS_MS.get(attempt) else {
+            break;
+        };
+        warn!(
+            repo_root = %repo_root.display(),
+            worktree_path = %worktree_path.display(),
+            attempt = attempt + 1,
+            delay_ms,
+            error = %last_error,
+            "residual worktree directory cleanup hit filesystem error; retrying",
+        );
+        sleep(Duration::from_millis(*delay_ms));
+    }
+
+    Err(Error::Internal(format!(
+        "git worktree remove unregistered the worktree but residual directory cleanup failed for {}: {last_error}",
+        worktree_path.display()
+    )))
+}
+
 fn is_retryable_worktree_remove_failure(stderr: &str) -> bool {
     if !cfg!(windows) {
         return false;
@@ -337,6 +395,11 @@ fn is_retryable_worktree_remove_failure(stderr: &str) -> bool {
         || lower.contains("being used by another process")
         || lower.contains("access is denied")
         || lower.contains("permission denied")
+}
+
+fn is_already_unregistered_worktree_failure(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("not a working tree") || lower.contains("not a worktree")
 }
 
 /// Parse `git worktree list --porcelain` output. The first block is the main worktree; subsequent blocks are linked worktrees. Detached HEADs produce
@@ -717,6 +780,7 @@ locked migrating to slow disk
                     }
                 })
             },
+            || panic!("residual cleanup must not run after a successful git retry"),
             |delay| sleeps.borrow_mut().push(delay),
         )
         .expect("second attempt should succeed");
@@ -745,12 +809,94 @@ locked migrating to slow disk
                     stderr: "fatal: not a git repository".to_owned(),
                 })
             },
+            || panic!("residual cleanup must not run for non-transient failures"),
             |_| panic!("non-transient failure must not sleep/retry"),
         )
         .expect_err("non-transient git failure should surface");
 
         assert_eq!(calls.get(), 1);
         assert!(matches!(err, Error::Internal(msg) if msg.contains("fatal: not a git repository")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_worktree_cleans_residual_dir_when_git_unregistered_after_transient_delete_failure() {
+        let repo_root = Path::new(r"C:\repo");
+        let worktree_path = Path::new(r"C:\repo\.arborist\.worktrees\feature");
+        let calls = std::cell::Cell::new(0usize);
+        let residual_calls = std::cell::Cell::new(0usize);
+        let sleeps = std::cell::RefCell::new(Vec::new());
+
+        remove_worktree_with_retry(
+            repo_root,
+            worktree_path,
+            || {
+                let n = calls.get();
+                calls.set(n + 1);
+                Ok(if n == 0 {
+                    GitCommandResult {
+                        success: false,
+                        stderr: "error: failed to delete 'feature': Directory not empty".to_owned(),
+                    }
+                } else {
+                    GitCommandResult {
+                        success: false,
+                        stderr: "fatal: 'C:\\repo\\.arborist\\.worktrees\\feature' is not a working tree".to_owned(),
+                    }
+                })
+            },
+            || {
+                residual_calls.set(residual_calls.get() + 1);
+                Ok(())
+            },
+            |delay| sleeps.borrow_mut().push(delay),
+        )
+        .expect("residual directory cleanup should complete the partially unregistered removal");
+
+        assert_eq!(calls.get(), 2);
+        assert_eq!(residual_calls.get(), 1);
+        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(25)]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_worktree_reports_residual_cleanup_failure_after_git_unregisters() {
+        let repo_root = Path::new(r"C:\repo");
+        let worktree_path = Path::new(r"C:\repo\.arborist\.worktrees\feature");
+        let calls = std::cell::Cell::new(0usize);
+        let residual_calls = std::cell::Cell::new(0usize);
+        let sleeps = std::cell::RefCell::new(Vec::new());
+
+        let err = remove_worktree_with_retry(
+            repo_root,
+            worktree_path,
+            || {
+                let n = calls.get();
+                calls.set(n + 1);
+                Ok(if n == 0 {
+                    GitCommandResult {
+                        success: false,
+                        stderr: "error: failed to delete 'feature': Directory not empty".to_owned(),
+                    }
+                } else {
+                    GitCommandResult {
+                        success: false,
+                        stderr: "fatal: 'C:\\repo\\.arborist\\.worktrees\\feature' is not a working tree".to_owned(),
+                    }
+                })
+            },
+            || {
+                residual_calls.set(residual_calls.get() + 1);
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "still locked"))
+            },
+            |delay| sleeps.borrow_mut().push(delay),
+        )
+        .expect_err("residual cleanup failure should surface");
+
+        assert_eq!(calls.get(), 2);
+        assert_eq!(residual_calls.get(), WORKTREE_REMOVE_RETRY_DELAYS_MS.len() + 1);
+        assert_eq!(sleeps.borrow().len(), WORKTREE_REMOVE_RETRY_DELAYS_MS.len() + 1);
+        assert!(matches!(err, Error::Internal(msg) if msg.contains("residual directory cleanup failed") && msg.contains("still locked")));
     }
 
     /// Build a `Command` with both repo-selection *and* identity/config `GIT_*` variables stripped. Tests get a stricter scrub than production

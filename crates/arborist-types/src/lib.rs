@@ -1203,14 +1203,17 @@ pub struct SessionCloseArgs {
     pub delete_worktree: bool,
 }
 
-/// Result of `session_close`. The session record and PTY are always torn down on success; if the user opted into worktree deletion and the `git
-/// worktree remove` step failed, the failure is reported here as a warning string rather than as a hard error so callers can converge UI state
-/// regardless.
+/// Result of `session_close`. The session record is removed on success; if the PTY kill was issued but reaping could not be confirmed, the warning is
+/// reported here and worktree deletion is refused. If the user opted into worktree deletion and the `git worktree remove` step failed, the failure is
+/// also reported here as a warning string rather than as a hard error so callers can converge UI state regardless.
 ///
 /// MIRROR: `src/lib/tauri-bridge.ts::SessionCloseResult`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCloseResult {
+    /// Human-readable warning from PTY teardown, currently populated when the child kill was issued but process reaping could not be confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown_error: Option<String>,
     /// Human-readable error message from `git worktree remove`. `None` when worktree deletion was not requested or succeeded.
     pub worktree_delete_error: Option<String>,
 }
