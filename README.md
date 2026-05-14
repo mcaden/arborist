@@ -2,6 +2,10 @@
 
 # Arborist
 
+[![CI](https://github.com/mcaden/arborist/actions/workflows/ci.yml/badge.svg)](https://github.com/mcaden/arborist/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/mcaden/arborist?include_prereleases&sort=semver)](https://github.com/mcaden/arborist/releases)
+
 **Arborist is a cross-platform desktop app for managing AI coding-assistant sessions across Git worktrees.**
 
 It gives each worktree its own persistent terminal-backed context for Claude CLI, GitHub Copilot CLI, and configured custom processes. Worktree tabs
