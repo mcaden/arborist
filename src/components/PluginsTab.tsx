@@ -137,7 +137,7 @@ export function PluginsTab({ onClose }: PluginsTabProps): JSX.Element {
         disabled.
       </p>
 
-      <div className="-mx-1 flex-1 space-y-4 overflow-y-auto px-1">
+      <div className="themed-scrollbar -mx-1 flex-1 space-y-4 overflow-y-auto px-1">
         <section>
           <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">AI agents</h3>
           <div className="space-y-3">
