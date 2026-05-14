@@ -445,6 +445,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         tab_index,
         temp_files: composed.temp_files,
         ai_session_id: preallocated_ai_id.clone(),
+        last_metrics: None,
     };
 
     // 7. Persist before spawning so a crash mid-spawn still leaves an auditable

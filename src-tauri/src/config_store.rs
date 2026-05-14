@@ -33,8 +33,8 @@ use tracing::{debug, warn};
 use crate::store_layout::StoreLayout;
 use crate::types::{
     AppConfig, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, PartialAppConfig, PartialPluginSettingState,
-    PartialPluginSettings, PluginSettingState, Session, SessionId, SessionStatus, SubSessionRecord, Tool, WorktreeTab, WorktreeTabId,
-    AI_LAUNCH_COMMAND_SETTING, CONFIG_VERSION_CURRENT,
+    PartialPluginSettings, PluginSettingState, Session, SessionId, SessionMetricsEvent, SessionStatus, SubSessionRecord, Tool, WorktreeTab,
+    WorktreeTabId, AI_LAUNCH_COMMAND_SETTING, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -374,6 +374,32 @@ impl ConfigStore {
             return Ok(false);
         }
         session.ai_session_id = ai_session_id;
+        write_atomic(&self.sessions_path(), &all)?;
+        Ok(true)
+    }
+
+    /// Persist the latest metrics snapshot on a session record. Called on every `session://metrics` emission so restore can seed the frontend.
+    /// Returns `Ok(false)` when the stored value already matches (avoids redundant disk writes).
+    ///
+    /// # Errors
+    /// Returns `Error::Internal` if `metrics.session_id` does not match `id` (invariant violation).
+    /// Returns `Error::NotFound` if `id` does not match any stored session.
+    pub fn update_session_metrics(&self, id: &SessionId, metrics: SessionMetricsEvent) -> Result<bool, Error> {
+        if metrics.session_id != *id {
+            return Err(Error::Internal(format!(
+                "update_session_metrics: id ({id}) does not match metrics.session_id ({})",
+                metrics.session_id
+            )));
+        }
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = self.load_sessions();
+        let Some(session) = all.get_mut(id) else {
+            return Err(Error::NotFound(format!("session {id} not found")));
+        };
+        if session.last_metrics.as_ref().is_some_and(|prev| prev.same_payload_as(&metrics)) {
+            return Ok(false);
+        }
+        session.last_metrics = Some(metrics);
         write_atomic(&self.sessions_path(), &all)?;
         Ok(true)
     }
@@ -1243,6 +1269,7 @@ mod tests {
                 contents: "ctx".to_owned(),
             }],
             ai_session_id: None,
+            last_metrics: None,
         }
     }
 
@@ -1579,6 +1606,102 @@ mod tests {
         let changed = store.update_session_ai_session_id(&s.id, None).expect("clear");
         assert!(changed);
         assert_eq!(store.load_sessions().get(&s.id).expect("present").ai_session_id, None,);
+    }
+
+    // ----- update_session_metrics ----------------------------------------
+
+    #[test]
+    fn update_session_metrics_persists_snapshot() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let s = make_session(Uuid::new_v4(), "x", td.path());
+        store.save_session(&s).expect("save");
+
+        let metrics = SessionMetricsEvent {
+            session_id: s.id,
+            model: Some("claude-sonnet-4-6".to_owned()),
+            context_used_pct: Some(42),
+            context_tokens_used: Some(84_000),
+            context_tokens_limit: Some(200_000),
+            input_tokens: Some(50_000),
+            output_tokens: Some(10_000),
+            observed_at: 1_700_000_100,
+        };
+
+        let changed = store.update_session_metrics(&s.id, metrics.clone()).expect("update");
+        assert!(changed, "first set must report a change");
+
+        let after = store.load_sessions();
+        let persisted = after.get(&s.id).expect("present").last_metrics.as_ref().expect("has metrics");
+        assert_eq!(persisted.input_tokens, Some(50_000));
+        assert_eq!(persisted.output_tokens, Some(10_000));
+        assert_eq!(persisted.model.as_deref(), Some("claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn update_session_metrics_is_idempotent() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let s = make_session(Uuid::new_v4(), "x", td.path());
+        store.save_session(&s).expect("save");
+
+        let metrics = SessionMetricsEvent {
+            session_id: s.id,
+            model: None,
+            context_used_pct: None,
+            context_tokens_used: None,
+            context_tokens_limit: None,
+            input_tokens: Some(100),
+            output_tokens: Some(50),
+            observed_at: 1_700_000_100,
+        };
+
+        store.update_session_metrics(&s.id, metrics.clone()).expect("first");
+        // Same payload, different observed_at — should be idempotent (same_payload_as ignores observed_at).
+        let mut same_payload = metrics;
+        same_payload.observed_at = 1_700_000_200;
+        let changed = store.update_session_metrics(&s.id, same_payload).expect("second");
+        assert!(!changed, "no-op write must report no change");
+    }
+
+    #[test]
+    fn update_session_metrics_returns_not_found_for_unknown_id() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let id = SessionId::new();
+        let metrics = SessionMetricsEvent {
+            session_id: id,
+            model: None,
+            context_used_pct: None,
+            context_tokens_used: None,
+            context_tokens_limit: None,
+            input_tokens: None,
+            output_tokens: None,
+            observed_at: 0,
+        };
+        let err = store.update_session_metrics(&id, metrics).expect_err("must fail");
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn update_session_metrics_errors_on_id_mismatch() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let id_a = SessionId::new();
+        let id_b = SessionId::new();
+        let metrics = SessionMetricsEvent {
+            session_id: id_b,
+            model: None,
+            context_used_pct: None,
+            context_tokens_used: None,
+            context_tokens_limit: None,
+            input_tokens: None,
+            output_tokens: None,
+            observed_at: 0,
+        };
+        let err = store.update_session_metrics(&id_a, metrics).expect_err("must fail on mismatch");
+        assert!(matches!(err, Error::Internal(_)));
+        assert!(err.to_string().contains("does not match"));
     }
 
     // ----- Copilot composed_command migration --------------------------

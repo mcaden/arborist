@@ -182,10 +182,13 @@ flowchart LR
     Metrics --> Activity
     Metrics --> Snapshot["session://metrics"]
     Metrics --> Store["AI session id discovery"]
+    Metrics --> Persist["Session.last_metrics (persist)"]
 ```
 
 Activity events drive sidebar state such as working, idle, attention, tool running, and awaiting permission. Metrics events drive token/context
-display. Watchers deduplicate unchanged snapshots and stop/join during workspace switches so stale callbacks do not write into an old workspace.
+display and are also persisted on the session record (`last_metrics`) so the frontend can seed its metrics store on restore without waiting for the
+watcher to re-emit. Watchers deduplicate unchanged snapshots and stop/join during workspace switches so stale callbacks do not write into an old
+workspace.
 
 ## Event ordering expectations
 

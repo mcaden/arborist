@@ -253,6 +253,17 @@ function pickNeighbour(previousSessions: SessionView[], closedId: SessionId): Se
   return undefined;
 }
 
+/** Extract persisted metrics snapshots from session views into a lookup keyed by session id (Issue #140). */
+function extractRestoredMetrics(sessions: SessionView[]): Record<SessionId, SessionMetrics> {
+  const result: Record<SessionId, SessionMetrics> = {};
+  for (const s of sessions) {
+    if (s.lastMetrics) {
+      result[s.id] = s.lastMetrics;
+    }
+  }
+  return result;
+}
+
 export const useSessionStore = create<Store>((set, get) => {
   const actions: SessionStoreActions = {
     hydrate: async () => {
@@ -265,7 +276,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: {},
+        metrics: extractRestoredMetrics(sessions),
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},
@@ -286,6 +297,7 @@ export const useSessionStore = create<Store>((set, get) => {
       } else {
         activeId = sessions[0]?.id;
       }
+      // Seed metrics from persisted lastMetrics (Issue #140).
       set({
         sessions,
         activeId,
@@ -293,7 +305,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: {},
+        metrics: extractRestoredMetrics(sessions),
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},
