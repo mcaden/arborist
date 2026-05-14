@@ -22,9 +22,8 @@
 //!   `worktree_create`. They surface to the UI via the same `worktree://prep`
 //!   channel: a `Started` event followed immediately by an `Exited` event with
 //!   `exit_code = None` and a populated `error_message`.
-//! - The worktree path itself is passed as `Command::current_dir` — it is
-//!   never interpolated into the joined script (DESIGN §8 — injection
-//!   prevention).
+//! - The worktree path itself is passed as `Command::current_dir`; it is
+//!   never interpolated into the joined script.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

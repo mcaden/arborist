@@ -16,7 +16,7 @@
 //   but keeps undismissed failures so sticky failure banners stay visible.
 // * The store deliberately keeps NO long-term history: prep records vanish
 //   on app restart. Auto-resuming previously-running prep across restarts
-//   is intentionally out of scope for v1 (SPEC §7 limits the shipped scope).
+//   is intentionally out of scope for v1 (see docs/product.md#out-of-scope-for-v1).
 
 import { create } from 'zustand';
 

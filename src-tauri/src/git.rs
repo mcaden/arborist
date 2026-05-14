@@ -2,7 +2,7 @@
 //!
 //! The trait seam ([`GitRunner`]) lets tests inject canned outputs without depending on a real `git` binary. The production implementation
 //! ([`RealGitRunner`]) shells out to `git` and degrades gracefully: any failure (binary missing, not a repo, parse error, IO) yields `Ok(vec![])`
-//! with a `warn!` carrying a stable structured `code` so the frontend never blocks on discovery — see SPEC §5.2 (the manual "Browse…" affordance is
+//! with a `warn!` carrying a stable structured `code` so the frontend never blocks on discovery — the manual "Browse…" affordance is
 //! always present).
 //!
 //! Porcelain format reference: <https://git-scm.com/docs/git-worktree#_porcelain_format>
@@ -49,7 +49,7 @@ pub(crate) fn git_command() -> Command {
 /// `AppContext` and share it across worker threads.
 pub trait GitRunner: Send + Sync {
     /// Enumerate the worktrees rooted at `repo_root`. Implementations MUST return `Ok(vec![])` rather than an error if discovery is impossible
-    /// (missing binary, not a repo, IO error) — graceful degradation is a load-bearing requirement of the SPEC §5.2 create flow.
+    /// (missing binary, not a repo, IO error) — graceful degradation is a load-bearing requirement of the create flow.
     fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>, Error>;
 
     /// Probe whether `path` is a git repository — runs `git -C <path> rev-parse --is-inside-work-tree`. Returns `Ok(true)` only on a clean

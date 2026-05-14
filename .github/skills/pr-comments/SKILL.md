@@ -194,7 +194,7 @@ Every reply the agent posts on behalf of the user **must** start with the discla
 - Address the reviewer's point directly. Don't restate their comment.
 - For `accept`: state what changed and link the commit:
   `Done in <SHORT_SHA>. <one-line summary of the change>.`
-- For `decline`: lead with the reason, not the disagreement. Cite spec/design docs when relevant (`per DESIGN.md §5.4`).
+- For `decline`: lead with the reason, not the disagreement. Cite product/architecture docs when relevant.
 - For `question`: answer plainly. If you don't know, say so — don't guess.
 - For `defer`: name the follow-up (`tracked in #NNN`) or say a follow-up will be filed.
 - Never add filler ("Great catch!", "Thanks for the review!"). The reviewer's time is the scarce resource.

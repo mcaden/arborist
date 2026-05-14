@@ -176,7 +176,7 @@ pub async fn session_restart(app: tauri::AppHandle, args: SessionRestartArgs) ->
     session::session_restart_impl(&ctx, args)
 }
 
-/// Frontend signals that it has subscribed to `session://output` and `session://status`. The first call triggers restore-on-launch (DESIGN §5.5);
+/// Frontend signals that it has subscribed to `session://output` and `session://status`. The first call triggers restore-on-launch;
 /// subsequent calls are no-ops.
 ///
 /// **Awaits restore registration** before resolving so the frontend can safely fire its first `session_resize` (issued synchronously by
@@ -232,7 +232,7 @@ pub async fn frontend_ready(app: tauri::AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Enumerate worktrees rooted at `repo_root` (DESIGN §6, Phase 10). Always returns `Ok(vec![])` on discovery failures so the UI's "Browse…" fallback
+/// Enumerate worktrees rooted at `repo_root`. Always returns `Ok(vec![])` on discovery failures so the UI's "Browse…" fallback
 /// is never blocked by an error toast.
 #[tauri::command]
 pub async fn worktrees_list(app: tauri::AppHandle, repo_root: String) -> Result<Vec<crate::types::WorktreeInfo>, AppError> {

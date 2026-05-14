@@ -2,5 +2,5 @@
 
 [[permission]]
 identifier = "allow-frontend-ready"
-description = "Allows the frontend to signal it is ready to receive `session://output` and `session://status` events; the backend uses this signal to trigger the one-shot restore-on-launch path (DESIGN §5.5)."
+description = "Allows the frontend to signal it is ready to receive `session://output` and `session://status` events; the backend uses this signal to trigger the one-shot restore-on-launch path."
 commands.allow = ["frontend_ready"]

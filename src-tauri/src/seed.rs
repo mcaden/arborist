@@ -156,7 +156,7 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
     // ---- config.json ----
     //
     // Branch builds strip `lastOpenSessions` / `tabOrder` / `activeSessionId` from the seeded config because they don't also seed `sessions.json`
-    // (per SPEC §C-04). Without the strip, the seeded config carries IDs that point at sessions which never existed in this storage dir — phantom IDs
+    // Without the strip, the seeded config carries IDs that point at sessions which never existed in this storage dir — phantom IDs
     // that `restore_all_sessions`'s per-session worktree-missing trim never visits (it iterates over actual records, not config refs).
     // `restore_all_sessions` also has an upfront orphan-trim step as defense in depth, but the cleaner fix is to not produce the inconsistency in the
     // first place.
@@ -178,7 +178,7 @@ pub fn initialise_workspace_dir(layout: &StoreLayout) -> Result<SeedReport, Seed
         }
     }
 
-    // ---- sessions.json ---- Only canonical builds seed sessions. Branch dev builds start with an empty session list per SPEC §C-04 so
+    // ---- sessions.json ---- Only canonical builds seed sessions. Branch dev builds start with an empty session list so
     // feature-branch experiments don't entangle with the user's "real" session set.
     let dest_sessions = layout.sessions_path();
     if layout.root().is_canonical() && !dest_sessions.exists() {
@@ -373,7 +373,7 @@ mod tests {
         assert!(again.outcomes.is_empty());
     }
 
-    /// Branch build with a matching canonical workspace settings file seeds `config.json` from canonical and never touches sessions. Per SPEC §C-04
+    /// Branch build with a matching canonical workspace settings file seeds `config.json` from canonical and never touches sessions.
     /// (branch builds start with a fresh session list), the seeded copy must have `lastOpenSessions` / `tabOrder` / `activeSessionId` stripped —
     /// otherwise it would carry IDs that point at sessions which never existed in this branch's `sessions.json`.
     #[test]

@@ -2,10 +2,10 @@
 // frontend code MUST go through this module — never import from
 // `@tauri-apps/api` directly. This is the single source of truth for the
 // frontend half of the command/event contract documented in
-// `dev/docs/DESIGN.md` §6.
+// `docs/architecture.md#command-and-event-contract`.
 //
 // Phase 3 status: only `ping` is implemented. Every other command listed in
-// DESIGN §6 is stubbed with `Promise.reject(new Error('not implemented'))`
+// the command/event contract is stubbed with `Promise.reject(new Error('not implemented'))`
 // so callers can be written and typed against the final shape; later phases
 // will flip stubs to real implementations one at a time.
 //
@@ -62,7 +62,7 @@ import type {
 // ---------------------------------------------------------------------------
 // Command argument shapes
 //
-// MIRROR: the keys here mirror the payload column of DESIGN §6. When a real
+// MIRROR: the keys here mirror the command/event contract in docs/architecture.md. When a real
 // implementation lands in a later phase, the matching Rust `#[serde(...)]`
 // payload struct in `src-tauri/src/types.rs` (or a sibling) becomes the
 // canonical definition and these aliases must be re-checked.
@@ -77,7 +77,7 @@ export interface SessionCreateArgs {
    * opens the child PTY at exactly this size so the CLI's first paint
    * (e.g. a Claude/Copilot splash) renders at the host's actual width
    * instead of the OS-default 80 cols. Frontend callers should derive
-   * these from `measureInitialPtyDimensions()` (see DESIGN §5.5b).
+   * these from `measureInitialPtyDimensions()` (see docs/runtime-flows.md).
    *
    * MIRROR: `src-tauri/src/types.rs::SessionCreateArgs`.
    */
@@ -92,7 +92,7 @@ export interface SessionIdArg {
 /**
  * Arguments for `session_restart`. Mirrors `session_create` in passing the
  * caller-measured initial PTY dimensions so the respawned child paints at
- * the real host size from the first byte (DESIGN §5.4).
+ * the real host size from the first byte (see docs/runtime-flows.md).
  *
  * MIRROR: `src-tauri/src/types.rs::SessionRestartArgs`.
  */
@@ -206,7 +206,7 @@ export function sessionInput(args: SessionInputArgs): Promise<void> {
 
 /**
  * Re-spawn `sessionId` from its persisted `composedCommand`. The command
- * is reused verbatim — never recomposed (DESIGN §5.4). The caller passes
+ * is reused verbatim — never recomposed. The caller passes
  * the current xterm dims so the new PTY is opened at the right size.
  */
 export function sessionRestart(args: SessionRestartArgs): Promise<void> {
@@ -217,7 +217,7 @@ export function sessionRestart(args: SessionRestartArgs): Promise<void> {
  * Signals the backend that the frontend is now subscribed to
  * `session://output` and `session://status`. The first call triggers
  * restore-on-launch; subsequent calls are no-ops on the backend side
- * (DESIGN §5.5).
+ * (see docs/runtime-flows.md).
  */
 export function frontendReady(): Promise<void> {
   return invoke<void>('frontend_ready');
@@ -260,7 +260,7 @@ export function instructionsList(): Promise<InstructionSet[]> {
 /**
  * Enumerate git worktrees rooted at `repoRoot`. Always resolves with a
  * (possibly empty) array — the backend swallows discovery failures so the
- * UI can fall back to the manual "Browse…" picker (DESIGN §6, Phase 10).
+ * UI can fall back to the manual "Browse…" picker.
  */
 export function worktreesList(repoRoot: string): Promise<WorktreeInfo[]> {
   return invoke<WorktreeInfo[]>('worktrees_list', { repoRoot });

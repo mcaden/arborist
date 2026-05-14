@@ -10,7 +10,7 @@
 //      indirection. Rendering all views means each Terminal is `attach`'d
 //      exactly once per session lifetime, which sidesteps any reattachment
 //      flicker and makes the lifecycle trivially reasonable.
-//   2. Keeps SPEC T-03 (scrollback persists across tab switches) honest:
+//   2. Keeps the product contract (scrollback persists across tab switches) honest:
 //      hidden views still receive `session://output` (because the listener
 //      is keyed by id in the registry, not by mount status) and keep their
 //      xterm scrollback intact.
