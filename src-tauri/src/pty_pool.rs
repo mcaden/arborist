@@ -141,8 +141,8 @@ pub trait PtyWaiter: Send {
 
 /// Kill handle. Independent of the waiter so the kill caller never has to contend with the wait thread.
 ///
-/// On Unix the production impl sends SIGTERM, waits up to [`KILL_GRACE`], then escalates to SIGKILL. On Windows it forwards to portable-pty's `kill`,
-/// which terminates the child via `TerminateProcess`.
+/// On Unix the production impl sends SIGTERM, waits up to [`KILL_GRACE`], then escalates to SIGKILL. On Windows it terminates the spawned shell's
+/// process tree before forwarding to portable-pty's `kill`, because `%COMSPEC% /c <cmd>` can leave the actual CLI as a child process.
 pub trait PtyKiller: Send + Sync {
     fn kill(&self) -> Result<(), Error>;
 }
@@ -256,16 +256,35 @@ impl PtyWaiter for PortableWaiter {
 
 struct PortableKiller {
     inner: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
-    #[allow(dead_code)]
     pid: u32,
 }
 
 impl PtyKiller for PortableKiller {
     fn kill(&self) -> Result<(), Error> {
+        #[cfg(windows)]
+        let tree_kill_result = windows_process_tree::kill_process_tree(self.pid);
+
         {
             let mut guard = self.inner.lock().map_err(|_| Error::PtyKillFailed("killer mutex poisoned".into()))?;
-            guard.kill().map_err(|e| Error::PtyKillFailed(format!("kill failed: {e}")))?;
+            #[cfg(windows)]
+            {
+                // portable-pty 0.8.x/0.9.x has the WinChildKiller success check inverted, so successful TerminateProcess calls surface as
+                // "The operation completed successfully. (os error 0)". We still invoke it to let the backend release its handle, but our
+                // process-tree kill above is the load-bearing Windows termination path.
+                if let Err(e) = guard.kill() {
+                    if e.raw_os_error() != Some(0) {
+                        return Err(Error::PtyKillFailed(format!("kill failed: {e}")));
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                guard.kill().map_err(|e| Error::PtyKillFailed(format!("kill failed: {e}")))?;
+            }
         }
+
+        #[cfg(windows)]
+        tree_kill_result?;
 
         // Unix-only SIGKILL escalation if the child doesn't react to SIGTERM within KILL_GRACE.
         #[cfg(unix)]
@@ -277,6 +296,224 @@ impl PtyKiller for PortableKiller {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+mod windows_process_tree {
+    use std::collections::{HashMap, HashSet};
+    use std::ffi::c_void;
+    use std::io;
+
+    use crate::types::Error;
+
+    type Bool = i32;
+    type Dword = u32;
+    type Handle = *mut c_void;
+
+    const TH32CS_SNAPPROCESS: Dword = 0x0000_0002;
+    const PROCESS_TERMINATE: Dword = 0x0001;
+    const SYNCHRONIZE: Dword = 0x0010_0000;
+    const ERROR_INVALID_PARAMETER: i32 = 87;
+    const ERROR_NO_MORE_FILES: i32 = 18;
+    const INVALID_HANDLE_VALUE: isize = -1;
+    const MAX_PATH: usize = 260;
+    const WAIT_OBJECT_0: Dword = 0x0000_0000;
+    const WAIT_TIMEOUT: Dword = 0x0000_0102;
+    const WAIT_FAILED: Dword = 0xffff_ffff;
+    const TERMINATE_WAIT_MS: Dword = 2_000;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct ProcessEntry32W {
+        dwSize: Dword,
+        cntUsage: Dword,
+        th32ProcessID: Dword,
+        th32DefaultHeapID: usize,
+        th32ModuleID: Dword,
+        cntThreads: Dword,
+        th32ParentProcessID: Dword,
+        pcPriClassBase: i32,
+        dwFlags: Dword,
+        szExeFile: [u16; MAX_PATH],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dw_flags: Dword, process_id: Dword) -> Handle;
+        fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> Bool;
+        fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> Bool;
+        fn OpenProcess(desired_access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+        fn TerminateProcess(process: Handle, exit_code: u32) -> Bool;
+        fn WaitForSingleObject(handle: Handle, milliseconds: Dword) -> Dword;
+        fn CloseHandle(object: Handle) -> Bool;
+    }
+
+    pub(super) fn kill_process_tree(root_pid: u32) -> Result<(), Error> {
+        let entries =
+            snapshot_process_parent_pairs().map_err(|e| Error::PtyKillFailed(format!("process tree snapshot failed for pid {root_pid}: {e}")))?;
+        let descendants = descendant_pids_deepest_first(root_pid, &entries);
+        let mut first_error: Option<(u32, io::Error)> = None;
+
+        for pid in descendants.into_iter().chain(std::iter::once(root_pid)) {
+            if let Err(e) = terminate_pid(pid) {
+                first_error.get_or_insert((pid, e));
+            }
+        }
+
+        if let Some((pid, error)) = first_error {
+            Err(Error::PtyKillFailed(format!("process tree kill failed for pid {pid}: {error}")))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn snapshot_process_parent_pairs() -> io::Result<Vec<(u32, u32)>> {
+        // SAFETY: CreateToolhelp32Snapshot is called with the documented process-snapshot flag and process id 0 for all processes.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot as isize == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+
+        let result = collect_process_parent_pairs(snapshot);
+
+        // SAFETY: snapshot is a valid HANDLE returned by CreateToolhelp32Snapshot.
+        unsafe {
+            CloseHandle(snapshot);
+        }
+
+        result
+    }
+
+    fn collect_process_parent_pairs(snapshot: Handle) -> io::Result<Vec<(u32, u32)>> {
+        let mut entry = ProcessEntry32W {
+            dwSize: std::mem::size_of::<ProcessEntry32W>() as Dword,
+            cntUsage: 0,
+            th32ProcessID: 0,
+            th32DefaultHeapID: 0,
+            th32ModuleID: 0,
+            cntThreads: 0,
+            th32ParentProcessID: 0,
+            pcPriClassBase: 0,
+            dwFlags: 0,
+            szExeFile: [0; MAX_PATH],
+        };
+
+        // SAFETY: entry points to an initialized PROCESSENTRY32W with dwSize set as required by the Toolhelp API.
+        if unsafe { Process32FirstW(snapshot, &mut entry) } == 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
+                Ok(Vec::new())
+            } else {
+                Err(error)
+            };
+        }
+
+        let mut entries = Vec::new();
+        loop {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            // SAFETY: same initialized entry buffer; Process32NextW mutates it in place until it returns 0.
+            if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                let error = io::Error::last_os_error();
+                return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
+                    Ok(entries)
+                } else {
+                    Err(error)
+                };
+            }
+        }
+    }
+
+    fn descendant_pids_deepest_first(root_pid: u32, entries: &[(u32, u32)]) -> Vec<u32> {
+        let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (pid, parent) in entries {
+            if *pid != root_pid {
+                children_by_parent.entry(*parent).or_default().push(*pid);
+            }
+        }
+        for children in children_by_parent.values_mut() {
+            children.sort_unstable();
+        }
+
+        let mut seen = HashSet::new();
+        let mut ordered = Vec::new();
+        let _ = append_descendants(root_pid, &children_by_parent, &mut seen, &mut ordered);
+        ordered
+    }
+
+    fn append_descendants(pid: u32, children_by_parent: &HashMap<u32, Vec<u32>>, seen: &mut HashSet<u32>, ordered: &mut Vec<u32>) -> bool {
+        if !seen.insert(pid) {
+            return false;
+        }
+        let Some(children) = children_by_parent.get(&pid) else {
+            return true;
+        };
+        for child in children {
+            if append_descendants(*child, children_by_parent, seen, ordered) {
+                ordered.push(*child);
+            }
+        }
+        true
+    }
+
+    fn terminate_pid(pid: u32) -> io::Result<()> {
+        // SAFETY: OpenProcess accepts any PID and returns NULL for stale/invalid ones; no pointers are dereferenced here.
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) {
+                Ok(())
+            } else {
+                Err(error)
+            };
+        }
+
+        // SAFETY: handle is a valid process handle opened with PROCESS_TERMINATE. CloseHandle is called exactly once.
+        let terminated = unsafe { TerminateProcess(handle, 1) };
+        let error = io::Error::last_os_error();
+        let wait = if terminated != 0 {
+            // SAFETY: handle is a valid process handle opened with SYNCHRONIZE.
+            Some(unsafe { WaitForSingleObject(handle, TERMINATE_WAIT_MS) })
+        } else {
+            None
+        };
+        let wait_error = io::Error::last_os_error();
+        // SAFETY: handle is valid and must be closed regardless of TerminateProcess success.
+        unsafe {
+            CloseHandle(handle);
+        }
+
+        if terminated == 0 {
+            if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        } else if wait == Some(WAIT_OBJECT_0) {
+            Ok(())
+        } else if wait == Some(WAIT_TIMEOUT) {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("timed out waiting for pid {pid} to terminate"),
+            ))
+        } else if wait == Some(WAIT_FAILED) {
+            Err(wait_error)
+        } else {
+            Err(io::Error::other(format!("unexpected wait result {:?} for pid {pid}", wait)))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::descendant_pids_deepest_first;
+        use pretty_assertions::assert_eq;
+
+        #[test]
+        fn descendant_pids_are_deepest_first_without_root() {
+            let entries = [(10, 1), (11, 10), (12, 10), (13, 11), (14, 13), (15, 12), (99, 14), (20, 2)];
+
+            assert_eq!(descendant_pids_deepest_first(10, &entries), vec![99, 14, 13, 11, 15, 12]);
+        }
     }
 }
 

@@ -68,6 +68,88 @@ fn quote_program(p: &str) -> String {
     arborist_lib::compose::shell_quote_posix(p)
 }
 
+#[cfg(windows)]
+fn parse_grandchild_pid(output: &str) -> Option<u32> {
+    let marker = "ARBORIST-TEST-CHILD GRANDCHILD ";
+    let (_, rest) = output.split_once(marker)?;
+    let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    digits.parse::<u32>().ok()
+}
+
+#[cfg(windows)]
+struct PidCleanupGuard {
+    pid: u32,
+}
+
+#[cfg(windows)]
+impl PidCleanupGuard {
+    fn new(pid: u32) -> Self {
+        Self { pid }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PidCleanupGuard {
+    fn drop(&mut self) {
+        terminate_pid_best_effort(self.pid);
+    }
+}
+
+#[cfg(windows)]
+fn is_pid_running(pid: u32) -> bool {
+    use std::ffi::c_void;
+
+    type Handle = *mut c_void;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
+        fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
+        fn CloseHandle(object: Handle) -> i32;
+    }
+
+    // SAFETY: OpenProcess accepts stale PIDs and returns NULL; no pointers are dereferenced.
+    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    // SAFETY: handle is a valid process handle opened for SYNCHRONIZE.
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    // SAFETY: handle is valid and closed exactly once.
+    unsafe {
+        CloseHandle(handle);
+    }
+    wait == WAIT_TIMEOUT
+}
+
+#[cfg(windows)]
+fn terminate_pid_best_effort(pid: u32) {
+    use std::ffi::c_void;
+
+    type Handle = *mut c_void;
+    const PROCESS_TERMINATE: u32 = 0x0001;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
+        fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
+        fn CloseHandle(object: Handle) -> i32;
+    }
+
+    // SAFETY: best-effort cleanup for a PID this test spawned; invalid/stale PIDs return NULL.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: handle is valid and opened with PROCESS_TERMINATE.
+    unsafe {
+        TerminateProcess(handle, 1);
+        CloseHandle(handle);
+    }
+}
+
 /// Construct a `(sink, recordings)` pair where output and status updates are pushed into shared `Vec`s for inspection.
 type OutputLog = Arc<Mutex<Vec<String>>>;
 type StatusLog = Arc<Mutex<Vec<(SessionStatus, Option<u32>)>>>;
@@ -853,6 +935,40 @@ fn kill_returns_unconfirmed_when_killer_errors() {
     // Even on Unconfirmed, the runtime entry must be evicted so the SessionId is free for a fresh respawn (this matches the existing pool-eviction
     // contract that callers already rely on).
     assert!(!pool.contains(&session.id));
+}
+
+#[cfg(windows)]
+#[test]
+fn kill_terminates_shell_descendants_on_windows() {
+    let pool = PtyPool::new(Arc::new(PortablePtySpawner));
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = make_session(dir.path());
+    session.composed_command = format!("{} --spawn-grandchild", quote_program(TEST_CHILD_PATH));
+    let (sink, outs, _stats) = recording_sink();
+
+    let rt = rt();
+    let _g = rt.enter();
+    pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
+
+    let Some(output) = wait_for(&outs, |out| parse_grandchild_pid(out).is_some(), Duration::from_secs(5)) else {
+        let _ = rt.block_on(async { pool.kill(&session.id).await });
+        panic!("test child did not report grandchild pid; output was {:?}", outs.lock().unwrap());
+    };
+    let grandchild_pid = parse_grandchild_pid(&output).expect("predicate already confirmed pid is present");
+    let _cleanup = PidCleanupGuard::new(grandchild_pid);
+    assert!(
+        is_pid_running(grandchild_pid),
+        "grandchild pid {grandchild_pid} should be running before kill"
+    );
+
+    let outcome = rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
+
+    assert_eq!(
+        outcome,
+        arborist_lib::pty_pool::KillOutcome::Reaped,
+        "Windows PTY kill should treat portable-pty's os-error-0 success as confirmed when the wait thread joins"
+    );
+    assert!(!is_pid_running(grandchild_pid), "grandchild pid {grandchild_pid} survived PTY kill");
 }
 
 // Silence unused-import lints when the platform-specific quoter selects only one of the two variants.
