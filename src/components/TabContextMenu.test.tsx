@@ -1,7 +1,7 @@
 // Behavioural tests for `TabContextMenu`. Tauri bridge is mocked
 // wholesale (per project convention) so no real `invoke()` runs.
 
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -95,14 +95,14 @@ describe('TabContextMenu', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('Restart invokes session_restart with the parent id and closes', () => {
+  it('Restart invokes session_restart with the parent id and closes', async () => {
     seed();
     const onClose = vi.fn();
 
     render(<TabContextMenu parentSessionId={PARENT} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
     fireEvent.click(screen.getByRole('menuitem', { name: /restart/i }));
 
-    expect(bridgeMock.sessionRestart).toHaveBeenCalledWith(expect.objectContaining({ sessionId: PARENT }));
+    await waitFor(() => expect(bridgeMock.sessionRestart).toHaveBeenCalledWith(expect.objectContaining({ sessionId: PARENT })));
     const call = bridgeMock.sessionRestart.mock.calls[0]?.[0];
     expect(call?.cols).toBeGreaterThan(0);
     expect(call?.rows).toBeGreaterThan(0);

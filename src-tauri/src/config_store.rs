@@ -1484,6 +1484,8 @@ mod tests {
             label: label.to_owned(),
             instruction_set_id: Some(InstructionSetId::new("claude-default")),
             composed_command: format!("claude {label}"),
+            structured_command: None,
+            command_provenance: Vec::new(),
             status: SessionStatus::Running,
             pid: Some(42),
             created_at: 1_700_000_000,

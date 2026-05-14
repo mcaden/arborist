@@ -13,6 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { isInsideWorktreesDir } from '@/lib/worktree-paths';
 import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
@@ -152,6 +153,8 @@ export function NewSessionDialog(): JSX.Element | null {
     setCreateError(null);
     setSubmitError(null);
     try {
+      const trusted = await ensureShellCommandTrusted({ kind: 'worktreeCreate', name: trimmed });
+      if (!trusted) return;
       const result = await worktreeCreate(trimmed);
       setWorktree({ path: result.path, branch: trimmed, isMain: false });
       setNewName('');

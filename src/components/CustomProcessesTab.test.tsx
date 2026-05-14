@@ -19,6 +19,7 @@ function seedDefs(defs: CustomProcessDef[]): void {
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,

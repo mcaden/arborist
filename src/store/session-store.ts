@@ -34,6 +34,7 @@ import {
   type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
+import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { useConfigStore } from '@/store/config-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type {
@@ -303,6 +304,15 @@ export const useSessionStore = create<Store>((set, get) => {
     },
 
     create: async (args) => {
+      const trusted = await ensureShellCommandTrusted({
+        kind: 'sessionCreate',
+        tool: args.tool,
+        worktreePath: args.worktreePath,
+        ...(args.instructionSetId ? { instructionSetId: args.instructionSetId } : {}),
+      });
+      if (!trusted) {
+        throw new Error('Session launch canceled because repository command settings were not trusted.');
+      }
       const view = await sessionCreate(args);
       set((s) => ({
         sessions: [...s.sessions, view],

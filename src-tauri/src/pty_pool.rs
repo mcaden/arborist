@@ -915,12 +915,20 @@ impl PtyPool {
             }
         }
 
-        // ------- 2. Compose ChildCommand from platform shell + composed_command
-        let shell = platform_shell();
-        let cmd = ChildCommand {
-            program: shell.program.clone(),
-            args: vec![shell.flag.to_string(), session.composed_command.clone()],
-            env,
+        // ------- 2. Compose ChildCommand from structured argv when available; otherwise use the platform shell + composed_command.
+        let cmd = if let Some(structured) = &session.structured_command {
+            ChildCommand {
+                program: structured.program.clone(),
+                args: structured.args.clone(),
+                env,
+            }
+        } else {
+            let shell = platform_shell();
+            ChildCommand {
+                program: shell.program.clone(),
+                args: vec![shell.flag.to_string(), session.composed_command.clone()],
+                env,
+            }
         };
 
         // ------- 3. Spawn via injected spawner; cwd is discrete.

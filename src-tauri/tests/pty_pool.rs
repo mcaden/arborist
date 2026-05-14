@@ -42,6 +42,8 @@ fn make_session(workdir: &Path) -> Session {
         label: "test".into(),
         instruction_set_id: Some(InstructionSetId("default".into())),
         composed_command: composed,
+        structured_command: None,
+        command_provenance: Vec::new(),
         status: SessionStatus::Starting,
         pid: None,
         created_at: 0,
@@ -371,6 +373,8 @@ fn make_copilot_session(workdir: &Path) -> Session {
         instruction_set_id: None,
         // Composed command can be anything — the FakeSpawner doesn't run it. We just need pool.spawn to reach the spawner with the env populated.
         composed_command: "true".into(),
+        structured_command: None,
+        command_provenance: Vec::new(),
         status: SessionStatus::Starting,
         pid: None,
         created_at: 0,

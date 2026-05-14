@@ -11,12 +11,12 @@
 //! ```
 //!
 //! The `settings.json` file lets a team commit shared Arborist defaults to
-//! source control. Fields present here override the user-level [`AppConfig`]
-//! per field; absent fields fall back to the user's defaults. The set of
-//! overridable fields is intentionally narrow — only those whose meaning is
-//! repo-specific (default instruction sets, AI launch overrides, worktree-prep
-//! commands) — so the user's machine-level config (paths, plugin enable flags,
-//! custom processes, tab order, …) is never silently shadowed by a checked-in file.
+//! source control. Repo-owned executable settings fill empty user settings but
+//! never replace user-entered launch/prep commands. The set of repo-provided
+//! fields is intentionally narrow — only those whose meaning is repo-specific
+//! (default instruction sets, AI launch defaults, worktree-prep defaults) — so
+//! the user's machine-level config (paths, plugin enable flags, custom
+//! processes, tab order, …) is never silently shadowed by a checked-in file.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -48,7 +48,7 @@ const GITIGNORE_BODY: &str = ".worktrees/\n";
 /// depth — a hand-edited config should be tiny.
 const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
 
-/// Subset of [`AppConfig`] that a repository may override via
+/// Subset of [`AppConfig`] that a repository may contribute via
 /// `.arborist/settings.json`. Every field is optional; missing fields fall
 /// through to the user-level config.
 ///
@@ -122,6 +122,48 @@ impl<'de> Deserialize<'de> for RepoAiLaunchCommands {
 }
 
 impl RepoSettings {
+    #[must_use]
+    pub fn settings_path(workspace: &Path) -> PathBuf {
+        workspace.join(ARBORIST_DIR).join(SETTINGS_FILENAME)
+    }
+
+    #[must_use]
+    pub fn ai_launch_command_for_id(&self, plugin_id: &str) -> Option<&str> {
+        self.plugin_settings
+            .as_ref()
+            .and_then(|plugin_settings| plugin_settings.ai.get(plugin_id))
+            .and_then(|state| state.settings.get(AI_LAUNCH_COMMAND_SETTING))
+            .and_then(PluginSettingValue::as_str)
+            .or_else(|| {
+                self.ai_launch_commands
+                    .as_ref()
+                    .and_then(|ai| ai.commands.get(plugin_id).map(String::as_str))
+            })
+    }
+
+    #[must_use]
+    pub fn worktree_prep_commands(&self) -> Option<&[String]> {
+        self.worktree_prep_commands.as_deref()
+    }
+
+    #[must_use]
+    pub fn ai_launch_command_for_id_if_user_unset(&self, user_cfg: &AppConfig, plugin_id: &str) -> Option<&str> {
+        if user_has_ai_launch_command(user_cfg, plugin_id) {
+            None
+        } else {
+            self.ai_launch_command_for_id(plugin_id)
+        }
+    }
+
+    #[must_use]
+    pub fn worktree_prep_commands_if_user_unset(&self, user_cfg: &AppConfig) -> Option<&[String]> {
+        if user_has_worktree_prep_commands(user_cfg) {
+            None
+        } else {
+            self.worktree_prep_commands()
+        }
+    }
+
     /// Best-effort load of `<workspace>/.arborist/settings.json`.
     ///
     /// Returns `Self::default()` (i.e. "no overrides") when:
@@ -151,7 +193,7 @@ impl RepoSettings {
             }
             Ok(_) | Err(_) => {}
         }
-        let path = arborist.join(SETTINGS_FILENAME);
+        let path = Self::settings_path(workspace);
         let meta = match fs::symlink_metadata(&path) {
             Ok(m) if m.file_type().is_symlink() => {
                 warn!(
@@ -201,19 +243,22 @@ impl RepoSettings {
         }
     }
 
-    /// Apply `self` on top of `cfg`. Fields present in `self` overwrite the
-    /// corresponding fields on `cfg`; unset fields leave `cfg` untouched.
+    /// Apply `self` on top of `cfg`. Repo-owned executable settings are defaults only: they fill empty user settings but never replace a user-entered
+    /// launch/prep command.
     ///
     /// `aiLaunchCommands.icon_data_uris[pluginId]` cached icon URIs are preserved on
-    /// the user-level `cfg` whenever the repo override does not change the
+    /// the user-level `cfg` whenever the applied repo default does not change the
     /// command string — keeping the icon resolution work-cache valid across repo overlays.
     pub fn apply_to(&self, cfg: &mut AppConfig) {
+        let user_cfg = cfg.clone();
         if let Some(defaults) = &self.default_instruction_sets {
             cfg.default_instruction_sets = defaults.clone();
         }
         if let Some(ai) = &self.ai_launch_commands {
             for (plugin_id, command) in &ai.commands {
-                cfg.set_ai_launch_command(plugin_id.clone(), command.clone());
+                if !user_has_ai_launch_command(&user_cfg, plugin_id) {
+                    cfg.set_ai_launch_command(plugin_id.clone(), command.clone());
+                }
             }
         }
         if let Some(plugin_settings) = &self.plugin_settings {
@@ -228,14 +273,30 @@ impl RepoSettings {
                         );
                         continue;
                     };
-                    cfg.set_ai_launch_command(plugin_id.clone(), command.to_owned());
+                    if !user_has_ai_launch_command(&user_cfg, plugin_id) {
+                        cfg.set_ai_launch_command(plugin_id.clone(), command.to_owned());
+                    }
                 }
             }
         }
         if let Some(prep) = &self.worktree_prep_commands {
-            cfg.worktree_prep_commands = prep.clone();
+            if !user_has_worktree_prep_commands(&user_cfg) {
+                cfg.worktree_prep_commands = prep.clone();
+            }
         }
     }
+}
+
+fn user_has_ai_launch_command(cfg: &AppConfig, plugin_id: &str) -> bool {
+    cfg.plugin_settings
+        .ai
+        .get(plugin_id)
+        .is_some_and(|state| state.settings.contains_key(AI_LAUNCH_COMMAND_SETTING))
+        || cfg.ai_launch_commands.commands.contains_key(plugin_id)
+}
+
+fn user_has_worktree_prep_commands(cfg: &AppConfig) -> bool {
+    cfg.worktree_prep_commands.iter().any(|cmd| !cmd.trim().is_empty())
 }
 
 /// Compatibility helper used during `worktree_create`: ensure
@@ -392,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_to_overrides_only_set_fields() {
+    fn apply_to_preserves_user_executable_settings() {
         let mut cfg = AppConfig {
             worktree_prep_commands: vec!["user-cmd".to_owned()],
             ..AppConfig::default()
@@ -413,11 +474,32 @@ mod tests {
         };
         repo.apply_to(&mut cfg);
 
+        assert_eq!(cfg.worktree_prep_commands, vec!["user-cmd".to_owned()]);
+        assert_eq!(cfg.ai_launch_command_for_id("claude"), "user-claude");
+        assert_eq!(
+            cfg.ai_launch_commands.icon_data_uris.get("claude").and_then(Option::as_deref),
+            Some("data:image/png;base64,USER")
+        );
+        // Copilot left alone (override didn't set it).
+        assert_eq!(cfg.ai_launch_command_for_id("copilot"), "user-copilot");
+    }
+
+    #[test]
+    fn apply_to_uses_repo_executable_settings_when_user_unset() {
+        let mut cfg = AppConfig::default();
+        cfg.set_ai_launch_command("copilot".to_owned(), "user-copilot".to_owned());
+
+        let repo = RepoSettings {
+            ai_launch_commands: Some(RepoAiLaunchCommands {
+                commands: BTreeMap::from([("claude".to_owned(), "repo-claude".to_owned())]),
+            }),
+            worktree_prep_commands: Some(vec!["repo-cmd".to_owned()]),
+            ..RepoSettings::default()
+        };
+        repo.apply_to(&mut cfg);
+
         assert_eq!(cfg.worktree_prep_commands, vec!["repo-cmd".to_owned()]);
         assert_eq!(cfg.ai_launch_command_for_id("claude"), "repo-claude");
-        // Icon cache was invalidated because the command changed.
-        assert!(!cfg.ai_launch_commands.icon_data_uris.contains_key("claude"));
-        // Copilot left alone (override didn't set it).
         assert_eq!(cfg.ai_launch_command_for_id("copilot"), "user-copilot");
     }
 
@@ -625,12 +707,19 @@ mod tests {
         let dir = tempdir().unwrap();
         write_settings(dir.path(), r#"{ "worktreePrepCommands": ["from-repo"] }"#);
 
+        let unset_cfg = AppConfig {
+            workspace_root: Some(dir.path().to_path_buf()),
+            ..AppConfig::default()
+        };
+        let unset_out = apply_repo_overlay(unset_cfg);
+        assert_eq!(unset_out.worktree_prep_commands, vec!["from-repo".to_owned()]);
+
         let cfg = AppConfig {
             workspace_root: Some(dir.path().to_path_buf()),
             worktree_prep_commands: vec!["from-user".to_owned()],
             ..AppConfig::default()
         };
         let out = apply_repo_overlay(cfg);
-        assert_eq!(out.worktree_prep_commands, vec!["from-repo".to_owned()]);
+        assert_eq!(out.worktree_prep_commands, vec!["from-user".to_owned()]);
     }
 }

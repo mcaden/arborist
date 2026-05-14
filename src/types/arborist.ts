@@ -44,6 +44,80 @@ export type CustomProcessKind = 'terminal' | 'application';
 // MIRROR: src-tauri/src/types.rs::SubSessionStatus
 export type SubSessionStatus = 'starting' | 'running' | 'exited' | 'error';
 
+// MIRROR: crates/arborist-types/src/lib.rs::StructuredCommand
+export interface StructuredCommand {
+  program: string;
+  args: string[];
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::ShellCommandKind
+export type ShellCommandKind = 'aiLaunch' | 'worktreePrep';
+
+// MIRROR: crates/arborist-types/src/lib.rs::ShellCommandSource
+export type ShellCommandSource = 'default' | 'userConfig' | 'repoSettings';
+
+// MIRROR: crates/arborist-types/src/lib.rs::CommandProvenance
+export interface CommandProvenance {
+  kind: ShellCommandKind;
+  source: ShellCommandSource;
+  command: string;
+  scope?: string;
+  fingerprint?: string;
+  workspaceRoot?: string;
+  sourcePath?: string;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::RepoCommandTrustRecord
+export interface RepoCommandTrustRecord {
+  fingerprint: string;
+  workspaceRoot: string;
+  sourcePath: string;
+  kind: ShellCommandKind;
+  scope?: string;
+  command: string;
+  trustedAt: number;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::RepoCommandTrustState
+export interface RepoCommandTrustState {
+  records: Record<string, RepoCommandTrustRecord>;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::ShellCommandPreviewItem
+export interface ShellCommandPreviewItem {
+  kind: ShellCommandKind;
+  source: ShellCommandSource;
+  command: string;
+  targetWorktreePath: string;
+  scope?: string;
+  sourcePath?: string;
+  trusted: boolean;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::ShellCommandIntent
+export type ShellCommandIntent =
+  | { kind: 'sessionCreate'; tool: Tool; worktreePath: string; instructionSetId?: InstructionSetId }
+  | { kind: 'sessionRestart'; sessionId: SessionId }
+  | { kind: 'worktreeCreate'; name: string };
+
+// MIRROR: crates/arborist-types/src/lib.rs::ShellCommandPreviewArgs
+export interface ShellCommandPreviewArgs {
+  intent: ShellCommandIntent;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::ShellCommandPreview
+export interface ShellCommandPreview {
+  targetWorktreePath: string;
+  commands: ShellCommandPreviewItem[];
+  trustRecords: RepoCommandTrustRecord[];
+  trustRequired: boolean;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::RepoCommandTrustArgs
+export interface RepoCommandTrustArgs {
+  intent: ShellCommandIntent;
+}
+
 // MIRROR: src-tauri/src/types.rs::TempFileSpec
 export interface TempFileSpec {
   path: string;
@@ -61,6 +135,8 @@ export interface Session {
   label: string;
   instructionSetId?: InstructionSetId;
   composedCommand: string;
+  structuredCommand?: StructuredCommand;
+  commandProvenance?: CommandProvenance[];
   status: SessionStatus;
   pid?: number;
   createdAt: number;
@@ -180,6 +256,8 @@ export interface AppConfig {
   aiLaunchCommands: AiLaunchCommands;
   /** Per-plugin enable flags and settings. Added in `configVersion = 10`; AI launch commands live under the corresponding AI plugin. */
   pluginSettings: PluginSettings;
+  /** User trust for executable settings read from repo-owned `.arborist/settings.json`; never written to repo settings. */
+  repoCommandTrust: RepoCommandTrustState;
   lastOpenSessions: SessionId[];
   tabOrder: SessionId[];
   /** Persisted active-session selection. `null` when no session is active. */

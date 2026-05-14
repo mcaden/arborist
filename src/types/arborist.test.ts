@@ -173,6 +173,7 @@ describe('arborist type mirrors', () => {
         'worktreeRoots',
         'worktreePrepCommands',
         'aiLaunchCommands',
+        'repoCommandTrust',
         'pluginSettings',
         'lastOpenSessions',
         'tabOrder',
