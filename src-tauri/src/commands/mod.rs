@@ -469,7 +469,7 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLoc
         let session_id = payload.session_id;
         if let Err(e) = store.update_session_metrics(&session_id, payload) {
             match &e {
-                crate::types::Error::NotFound(msg) if msg.contains("does not match") => {
+                crate::types::Error::Internal(_) => {
                     tracing::warn!(error = ?e, "metrics persist bug: id/payload mismatch");
                 }
                 crate::types::Error::NotFound(_) => {

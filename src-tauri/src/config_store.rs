@@ -382,10 +382,11 @@ impl ConfigStore {
     /// Returns `Ok(false)` when the stored value already matches (avoids redundant disk writes).
     ///
     /// # Errors
-    /// Returns `Error::NotFound` if `id` does not match any stored session, or if `metrics.session_id` does not match `id`.
+    /// Returns `Error::Internal` if `metrics.session_id` does not match `id` (invariant violation).
+    /// Returns `Error::NotFound` if `id` does not match any stored session.
     pub fn update_session_metrics(&self, id: &SessionId, metrics: SessionMetricsEvent) -> Result<bool, Error> {
         if metrics.session_id != *id {
-            return Err(Error::NotFound(format!(
+            return Err(Error::Internal(format!(
                 "update_session_metrics: id ({id}) does not match metrics.session_id ({})",
                 metrics.session_id
             )));
@@ -1696,7 +1697,7 @@ mod tests {
             observed_at: 0,
         };
         let err = store.update_session_metrics(&id_a, metrics).expect_err("must fail on mismatch");
-        assert!(matches!(err, Error::NotFound(_)));
+        assert!(matches!(err, Error::Internal(_)));
         assert!(err.to_string().contains("does not match"));
     }
 
