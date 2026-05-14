@@ -169,6 +169,7 @@ describe('configGet', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     };
     invokeMock.mockResolvedValueOnce(cfg);
 
@@ -199,6 +200,7 @@ describe('configSet', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     };
     invokeMock.mockResolvedValueOnce(merged);
     const patch: PartialAppConfig = { worktreePrepCommands: ['nvm use'] };
@@ -337,6 +339,7 @@ describe('workspaceSwitch', () => {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
   };
   const restoredSession: SessionView = {
     id: 'sid-restored',

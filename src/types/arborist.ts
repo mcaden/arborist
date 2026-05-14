@@ -33,6 +33,9 @@ export type WorktreeTabId = string;
 // MIRROR: src-tauri/src/types.rs::Tool
 export type Tool = 'claude' | 'copilot';
 
+// MIRROR: crates/arborist-types/src/lib.rs::ThemeMode
+export type ThemeMode = 'system' | 'light' | 'dark';
+
 // MIRROR: src-tauri/src/types.rs::SessionStatus
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'error';
 
@@ -208,6 +211,8 @@ export interface AppConfig {
    * value to `[180, 480]` on write.
    */
   sidebarWidthPx?: number;
+  /** User-chosen colour-scheme preference (Issue #151). Defaults to `'system'`. */
+  theme: ThemeMode;
 }
 
 // MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
@@ -271,6 +276,8 @@ export interface PartialAppConfig {
    * Omit to leave the persisted value alone. Issue #94.
    */
   sidebarWidthPx?: number;
+  /** Colour-scheme preference (Issue #151). Omit to leave alone. */
+  theme?: ThemeMode;
 }
 
 // MIRROR: src-tauri/src/types.rs::CustomProcessDef

@@ -182,6 +182,7 @@ describe('arborist type mirrors', () => {
         'worktreeTabs',
         'worktreeTabOrder',
         'activeWorktreeTabId',
+        'theme',
       ],
       [],
       'AppConfig',
@@ -207,6 +208,7 @@ describe('arborist type mirrors', () => {
       'worktreeTabs',
       'worktreeTabOrder',
       'activeWorktreeTabId',
+      'theme',
     ]);
     const unexpected = Object.keys(partialAppConfigFixture).filter((k) => !allowed.has(k));
     expect(unexpected, 'PartialAppConfig: fixture has keys not declared in TS mirror').toEqual([]);

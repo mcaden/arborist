@@ -24,7 +24,7 @@ import { PluginsTab } from './PluginsTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError, pickDirectory } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import { selectInstructionSetsDir, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
+import { selectInstructionSetsDir, selectTheme, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
 
 export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'about';
 
@@ -62,6 +62,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const worktreePrepCommands = useConfigStore(selectWorktreePrepCommands);
+  const theme = useConfigStore(selectTheme);
   const setConfig = useConfigStore((s) => s.set);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
@@ -308,6 +309,28 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Changing the workspace closes every open session.</p>
+              </section>
+
+              <section className="mb-4">
+                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Appearance</h3>
+                <div className="flex items-center gap-3" data-testid="settings-theme-picker">
+                  {(['system', 'light', 'dark'] as const).map((mode) => (
+                    <label key={mode} className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="radio"
+                        name="theme"
+                        value={mode}
+                        checked={theme === mode}
+                        onChange={() => void setConfig({ theme: mode })}
+                        className="accent-blue-600"
+                      />
+                      {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Choose your preferred colour scheme. &ldquo;System&rdquo; follows the OS preference.
+                </p>
               </section>
 
               <section className="mb-4">

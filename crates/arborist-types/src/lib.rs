@@ -150,6 +150,17 @@ impl std::fmt::Display for WorktreeTabId {
 // --------------------------------------------------------------------------- Enums
 // ---------------------------------------------------------------------------
 
+/// User-chosen colour-scheme preference (Issue #151). `System` follows the OS `prefers-color-scheme` media query; `Light`/`Dark` force the
+/// corresponding theme regardless of OS setting. Serialises to `"system"` / `"light"` / `"dark"` for JSON and the TS mirror.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Which AI CLI a session is bound to.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -756,6 +767,10 @@ pub struct AppConfig {
     /// Backwards-compatible add: pre-#94 configs lack the field and serde fills it with `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width_px: Option<u32>,
+    /// User-chosen colour-scheme preference (Issue #151). Defaults to `System` (follow OS). Backwards-compatible: pre-#151 configs lack the field
+    /// and serde fills it with `ThemeMode::System`.
+    #[serde(default)]
+    pub theme: ThemeMode,
 }
 
 /// Lower bound for the resizable sidebar width (CSS px). Narrow enough to still show ~12 chars of label.
@@ -783,6 +798,7 @@ impl Default for AppConfig {
             worktree_tab_order: Vec::new(),
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: ThemeMode::default(),
         }
     }
 }
@@ -951,6 +967,9 @@ pub struct PartialAppConfig {
     /// We don't expose a tri-state "clear" since the frontend always sends a concrete width; reverting to the default just sends `224`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width_px: Option<u32>,
+    /// Colour-scheme preference (Issue #151). `None` → leave alone; `Some(mode)` → set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeMode>,
 }
 
 /// serde adapter for `Option<Option<T>>`: distinguishes "absent" from "present-but-null". JSON has no native `Some(None)`, so we serialise
@@ -2025,6 +2044,7 @@ mod tests {
             worktree_tab_order: vec![],
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: ThemeMode::System,
         };
         let fixture = json!({
             "configVersion": 10,
@@ -2076,7 +2096,8 @@ mod tests {
             ],
             "worktreeTabs": [],
             "worktreeTabOrder": [],
-            "activeWorktreeTabId": null
+            "activeWorktreeTabId": null,
+            "theme": "system"
         });
         (value, fixture)
     }
@@ -2181,6 +2202,7 @@ mod tests {
             worktree_tab_order: None,
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: None,
         };
         let fixture = json!({
             "defaultInstructionSets": { "claude": "claude-default" },

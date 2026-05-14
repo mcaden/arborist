@@ -155,6 +155,7 @@ describe('App boot sequence', () => {
               worktreeTabs: [],
               worktreeTabOrder: [],
               activeWorktreeTabId: null,
+              theme: 'system',
             });
         }),
     );
@@ -274,6 +275,7 @@ describe('App boot sequence', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     });
     render(<App />);
     await waitFor(() => {

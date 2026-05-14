@@ -17,7 +17,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
-import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord } from '@/types/arborist';
+import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord, ThemeMode } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
   configVersion: 10,
@@ -36,6 +36,7 @@ const EMPTY_CONFIG: AppConfig = {
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 };
 
 export type HydrationStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -129,6 +130,7 @@ export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpen
 export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] => s.config.customProcesses;
 export const selectLastOpenSubSessions = (s: ConfigStoreState): readonly SubSessionRecord[] => s.config.lastOpenSubSessions;
 export const selectSidebarWidthPx = (s: ConfigStoreState): number | undefined => s.config.sidebarWidthPx;
+export const selectTheme = (s: ConfigStoreState): ThemeMode => s.config.theme;
 export const selectStatus = (s: ConfigStoreState): HydrationStatus => s.status;
 export const selectError = (s: ConfigStoreState): string | null => s.error;
 

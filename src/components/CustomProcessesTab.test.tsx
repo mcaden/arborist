@@ -27,6 +27,7 @@ function seedDefs(defs: CustomProcessDef[]): void {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     },
     status: 'ready',
     error: null,

@@ -48,6 +48,7 @@ function configWith(activeWorktreeTabId: WorktreeTabId | null = null): AppConfig
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId,
+    theme: 'system',
   };
 }
 
