@@ -75,7 +75,7 @@ export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element 
                 </dd>
               </>
             )}
-            {status.sourceBranch && (
+            {status.sourceBranch && status.sourceAhead != null && status.sourceBehind != null && (
               <>
                 <dt className="text-slate-500 dark:text-slate-400">Source</dt>
                 <dd className="font-mono">{status.sourceBranch}</dd>

@@ -666,9 +666,15 @@ fn push_status_file(status: &mut WorktreeGitStatus, path: String, kind: GitStatu
 // ---------------------------------------------------------------------------
 
 /// Cache for detected source branches per worktree path. The source branch rarely changes (only on remote HEAD updates
-/// or branch renames), so caching avoids 1–2 subprocess calls per dashboard poll tick. The cache maps canonical worktree
-/// paths to their detected source branch (or `None` if undetectable). Entries live for the process lifetime — acceptable
-/// since a restart or `git remote set-head` are rare events and the worst case is showing stale (but still valid) info.
+/// or branch renames), so caching avoids 1–2 subprocess calls per dashboard poll tick. The cache maps **canonicalized**
+/// worktree paths to their detected source branch (or `None` if undetectable).
+///
+/// **Lifecycle:** entries are unbounded and never invalidated within a process lifetime. This is acceptable because:
+/// - The source branch of a repo almost never changes during a session
+/// - The worst case (stale entry after `git remote set-head`) shows slightly outdated but still valid info
+/// - A process restart clears the cache naturally
+/// - Path canonicalization (via `std::fs::canonicalize` at lookup time) prevents duplicate entries from path form
+///   variations (trailing slash, symlinks, case differences on case-insensitive filesystems)
 static SOURCE_BRANCH_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Detect the repo's default/source branch by probing remotes. Returns the short branch name (e.g. `"main"`), or `None` when undetectable.
@@ -755,12 +761,12 @@ fn enrich_with_source_branch(status: &mut WorktreeGitStatus, worktree_path: &Pat
         None => return, // detached HEAD — skip source branch detection
     };
 
+    // Canonicalize the path for consistent cache keys regardless of path form (trailing slash, symlinks, case)
+    let canonical = worktree_path.canonicalize().unwrap_or_else(|_| worktree_path.to_path_buf());
+
     let source = {
         let mut cache = SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        cache
-            .entry(worktree_path.to_path_buf())
-            .or_insert_with(|| detect_source_branch(worktree_path))
-            .clone()
+        cache.entry(canonical).or_insert_with(|| detect_source_branch(worktree_path)).clone()
     };
 
     let source = match source {
@@ -1518,5 +1524,67 @@ locked migrating to slow disk
     #[test]
     fn parse_rev_list_count_garbage() {
         assert_eq!(parse_rev_list_count(b"not a number"), None);
+    }
+
+    // --- enrich_with_source_branch unit tests --- //
+
+    #[test]
+    fn enrich_skips_detached_head() {
+        let mut status = WorktreeGitStatus {
+            branch: None, // detached HEAD
+            head: Some("abc123".to_owned()),
+            ..Default::default()
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        enrich_with_source_branch(&mut status, dir.path());
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
+    }
+
+    #[test]
+    fn enrich_skips_when_on_source_branch() {
+        // Create a real git repo where the branch IS the source branch (main)
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path();
+        let _ = Command::new("git").current_dir(path).args(["init", "-b", "main"]).output();
+        let _ = Command::new("git")
+            .current_dir(path)
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .output();
+
+        let mut status = WorktreeGitStatus {
+            branch: Some("main".to_owned()),
+            ..Default::default()
+        };
+
+        // Clear cache for this path so we hit detect_source_branch fresh
+        SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+
+        enrich_with_source_branch(&mut status, path);
+        // On main with no origin remote, source_branch should be None (detection fails gracefully)
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
+    }
+
+    #[test]
+    fn enrich_sets_all_source_fields_together_or_none() {
+        // Verify the invariant: source_branch/source_ahead/source_behind are either all set or all None
+        let mut status = WorktreeGitStatus {
+            branch: Some("feature-x".to_owned()),
+            ..Default::default()
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Clear cache so fresh detection runs (which will fail on a non-git dir → graceful None)
+        SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(dir.path());
+
+        enrich_with_source_branch(&mut status, dir.path());
+
+        // All three must be None together (detection failed since it's not a git repo)
+        assert_eq!(status.source_branch, None);
+        assert_eq!(status.source_ahead, None);
+        assert_eq!(status.source_behind, None);
     }
 }
