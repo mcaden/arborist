@@ -973,7 +973,7 @@ fn symlink_dir_or_skip(target: &Path, link: &Path) -> bool {
 #[cfg(windows)]
 fn is_windows_symlink_privilege_error(e: &std::io::Error) -> bool {
     const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
-    e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
+    e.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
 }
 
 #[cfg(unix)]

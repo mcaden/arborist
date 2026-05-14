@@ -185,14 +185,15 @@ fn create_private_dir(path: &Path) -> Result<(), Error> {
     match result {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(Error::Io(e)),
+        Err(e) => Err(map_temp_permission_error(path, "create private session temp directory", e)),
     }
 }
 
 fn set_private_dir_permissions(path: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
-        fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIR_MODE))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+            .map_err(|e| map_temp_permission_error(path, "set owner-only permissions on session temp directory", e))?;
     }
     #[cfg(not(unix))]
     {
@@ -204,13 +205,25 @@ fn set_private_dir_permissions(path: &Path) -> Result<(), Error> {
 fn set_private_file_permissions(path: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
-        fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_FILE_MODE))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_FILE_MODE))
+            .map_err(|e| map_temp_permission_error(path, "set owner-only permissions on Copilot OTel file", e))?;
     }
     #[cfg(not(unix))]
     {
         let _ = path;
     }
     Ok(())
+}
+
+fn map_temp_permission_error(path: &Path, action: &str, e: io::Error) -> Error {
+    if e.kind() == io::ErrorKind::PermissionDenied {
+        Error::PermissionDenied(format!(
+            "could not {action} {}; ensure the temp path is owned by the current user or remove it: {e}",
+            path.display()
+        ))
+    } else {
+        Error::Io(e)
+    }
 }
 
 fn create_private_file_new(path: &Path) -> Result<(), Error> {
