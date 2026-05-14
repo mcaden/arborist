@@ -36,8 +36,12 @@ jobs:
           test -f website/styles.css
           test -f website/CNAME
           grep -qFx "arborist.tools" website/CNAME
-          if grep -RInE '<script|src="https?://' website; then
-            echo "::error::The Pages site must not include scripts or remote script/embed assets."
+          if grep -RInE '<script|src="https?://|href="https?://|srcset="https?://' website --include='*.html'; then
+            echo "::error::The Pages site must not include scripts or remote assets in HTML files."
+            exit 1
+          fi
+          if grep -RInE 'url\(https?://' website --include='*.css'; then
+            echo "::error::The Pages site must not load remote resources from CSS."
             exit 1
           fi
           if grep -RInE '(href|src)="/' website; then
