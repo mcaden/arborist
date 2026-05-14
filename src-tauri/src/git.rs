@@ -665,6 +665,9 @@ fn push_status_file(status: &mut WorktreeGitStatus, path: String, kind: GitStatu
 
 /// Detect the repo's default/source branch by probing remotes. Returns the short branch name (e.g. `"main"`), or `None` when undetectable.
 ///
+/// **Limitation:** only probes the `origin` remote. Repos cloned with a non-standard remote name (e.g. `upstream`) will
+/// not have source branch info detected. This is acceptable for v1 — the result gracefully degrades to `None`.
+///
 /// Strategy:
 /// 1. `git symbolic-ref refs/remotes/origin/HEAD` → strip `refs/remotes/origin/` prefix
 /// 2. Fall back: check if `refs/remotes/origin/main` exists, then `refs/remotes/origin/master`
@@ -722,13 +725,15 @@ fn rev_list_left_right_count(worktree_path: &Path, reference: &str) -> Option<(u
     parse_rev_list_count(&output.stdout)
 }
 
-/// Parse the output of `git rev-list --left-right --count` which is `<behind>\t<ahead>\n`.
+/// Parse the output of `git rev-list --left-right --count` which is `<left>\t<right>\n`.
+///
+/// In the context of `origin/<source>...HEAD`, left = commits on the reference side (behind) and right = commits on HEAD
+/// side (ahead). Returns `(ahead, behind)` — i.e. `(right, left)` — so the caller receives the semantically named pair.
 pub(crate) fn parse_rev_list_count(output: &[u8]) -> Option<(u32, u32)> {
     let text = std::str::from_utf8(output).ok()?.trim();
     let mut parts = text.split_whitespace();
     let left: u32 = parts.next()?.parse().ok()?;
     let right: u32 = parts.next()?.parse().ok()?;
-    // left = commits on the reference side (we're behind), right = commits on HEAD side (we're ahead)
     Some((right, left))
 }
 
@@ -751,8 +756,8 @@ fn enrich_with_source_branch(status: &mut WorktreeGitStatus, worktree_path: &Pat
 
     if let Some((ahead, behind)) = rev_list_left_right_count(worktree_path, &source) {
         status.source_branch = Some(source);
-        status.source_ahead = ahead;
-        status.source_behind = behind;
+        status.source_ahead = Some(ahead);
+        status.source_behind = Some(behind);
     }
 }
 

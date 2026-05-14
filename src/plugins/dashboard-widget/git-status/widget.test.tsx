@@ -31,8 +31,6 @@ describe('git-status dashboard widget', () => {
       upstream: 'origin/feature-x',
       ahead: 2,
       behind: 1,
-      sourceAhead: 0,
-      sourceBehind: 0,
       staged: 1,
       unstaged: 2,
       untracked: 3,
@@ -91,8 +89,6 @@ describe('git-status dashboard widget', () => {
       upstream: 'origin/feature-x',
       ahead: 0,
       behind: 0,
-      sourceAhead: 0,
-      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -132,8 +128,6 @@ describe('git-status dashboard widget', () => {
     resolveFirst({
       ahead: 0,
       behind: 0,
-      sourceAhead: 0,
-      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -183,8 +177,6 @@ describe('git-status dashboard widget', () => {
     bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
       ahead: 0,
       behind: 0,
-      sourceAhead: 0,
-      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -205,8 +197,6 @@ describe('git-status dashboard widget', () => {
     bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
       ahead: 0,
       behind: 0,
-      sourceAhead: 0,
-      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -238,8 +228,6 @@ describe('git-status dashboard widget', () => {
     resolveSecond({
       ahead: 0,
       behind: 0,
-      sourceAhead: 0,
-      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -265,8 +253,6 @@ describe('git-status dashboard widget', () => {
     bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
       ahead: 0,
       behind: 0,
-      sourceAhead: 0,
-      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,

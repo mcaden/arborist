@@ -595,10 +595,10 @@ export interface WorktreeGitStatus {
   behind: number;
   /** Detected source/base branch (e.g. `main`). Omitted when undetectable or when current branch IS the source. */
   sourceBranch?: string;
-  /** Commits the current branch is ahead of the source branch. `0` when source branch is not detected. */
-  sourceAhead: number;
-  /** Commits the current branch is behind the source branch. `0` when source branch is not detected. */
-  sourceBehind: number;
+  /** Commits the current branch is ahead of the source branch. Only present when `sourceBranch` is detected. */
+  sourceAhead?: number;
+  /** Commits the current branch is behind the source branch. Only present when `sourceBranch` is detected. */
+  sourceBehind?: number;
   staged: number;
   unstaged: number;
   untracked: number;

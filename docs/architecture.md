@@ -129,41 +129,41 @@ Every command must be present in all of these places:
 
 ### Commands
 
-| Command                         | Payload                         | Result                    | Purpose                                                                                      |
-| ------------------------------- | ------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------- |
-| `ping`                          | none                            | `string`                  | Command-boundary smoke check.                                                                |
-| `config_get`                    | none                            | `AppConfig`               | Load current workspace config.                                                               |
-| `config_set`                    | `PartialAppConfig`              | `AppConfig`               | Deep-merge config patch, validate, persist, and return merged config.                        |
-| `instructions_list`             | none                            | `InstructionSet[]`        | Discover instruction-set files under `instructionSetsDir`.                                   |
-| `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                |
-| `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                |
-| `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                   |
-| `session_list`                  | none                            | `SessionView[]`           | Return persisted sessions sorted for the sidebar.                                            |
-| `session_close`                 | `SessionCloseArgs`              | `SessionCloseResult`      | Kill session PTY, remove records; delete the Git worktree only after confirmed teardown.     |
-| `session_focus`                 | `SessionIdArg`                  | `void`                    | Persist active session id.                                                                   |
-| `session_resize`                | `SessionResizeArgs`             | `void`                    | Resize live PTY or trigger deferred restore spawn.                                           |
-| `session_input`                 | `SessionInputArgs`              | `void`                    | Write bytes to a session PTY.                                                                |
-| `session_restart`               | `SessionRestartArgs`            | `void`                    | Respawn from stored `composedCommand` and current measured dimensions.                       |
-| `worktrees_list`                | `repoRoot: string`              | `WorktreeInfo[]`          | List Git worktrees. Discovery failures return an empty list.                                 |
+| Command                         | Payload                         | Result                    | Purpose                                                                                                            |
+| ------------------------------- | ------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ping`                          | none                            | `string`                  | Command-boundary smoke check.                                                                                      |
+| `config_get`                    | none                            | `AppConfig`               | Load current workspace config.                                                                                     |
+| `config_set`                    | `PartialAppConfig`              | `AppConfig`               | Deep-merge config patch, validate, persist, and return merged config.                                              |
+| `instructions_list`             | none                            | `InstructionSet[]`        | Discover instruction-set files under `instructionSetsDir`.                                                         |
+| `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                                      |
+| `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                                      |
+| `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                                         |
+| `session_list`                  | none                            | `SessionView[]`           | Return persisted sessions sorted for the sidebar.                                                                  |
+| `session_close`                 | `SessionCloseArgs`              | `SessionCloseResult`      | Kill session PTY, remove records; delete the Git worktree only after confirmed teardown.                           |
+| `session_focus`                 | `SessionIdArg`                  | `void`                    | Persist active session id.                                                                                         |
+| `session_resize`                | `SessionResizeArgs`             | `void`                    | Resize live PTY or trigger deferred restore spawn.                                                                 |
+| `session_input`                 | `SessionInputArgs`              | `void`                    | Write bytes to a session PTY.                                                                                      |
+| `session_restart`               | `SessionRestartArgs`            | `void`                    | Respawn from stored `composedCommand` and current measured dimensions.                                             |
+| `worktrees_list`                | `repoRoot: string`              | `WorktreeInfo[]`          | List Git worktrees. Discovery failures return an empty list.                                                       |
 | `worktree_git_status`           | `WorktreeGitStatusArgs`         | `WorktreeGitStatus`       | Snapshot Git status for a worktree including source-branch divergence. Read failures return `error` in the result. |
-| `workspace_validate`            | `WorkspaceValidateArgs`         | `WorkspaceValidateResult` | Validate a primary-clone workspace candidate and optionally probe lock contention.           |
-| `workspace_switch`              | `WorkspaceSwitchArgs`           | `WorkspaceSwitchResult`   | Park old workspace, bind new workspace, restore new sessions, and return the new snapshot.   |
-| `worktree_create`               | `WorktreeCreateArgs`            | `WorktreeCreateResult`    | Create `<workspace>/.arborist/.worktrees/<name>` and maybe start prep.                       |
-| `worktree_prep_open_log`        | `WorktreePrepOpenLogArgs`       | `void`                    | Open a contained worktree-prep log file with the OS default handler.                         |
-| `worktree_tab_open`             | `WorktreeTabOpenArgs`           | `WorktreeTab`             | Open or create a top-level worktree tab.                                                     |
-| `worktree_tab_close`            | `WorktreeTabCloseArgs`          | `WorktreeTabCloseResult`  | Cascade-close child sessions/sub-sessions; delete the worktree only if teardown is clean.    |
-| `worktree_tab_focus`            | `WorktreeTabFocusArgs`          | `void`                    | Persist active worktree tab.                                                                 |
-| `worktree_tab_list`             | none                            | `WorktreeTab[]`           | Return persisted worktree tabs.                                                              |
-| `worktree_tab_reorder`          | `WorktreeTabReorderArgs`        | `void`                    | Replace top-level worktree tab ordering.                                                     |
-| `worktree_tab_set_active_child` | `WorktreeTabSetActiveChildArgs` | `void`                    | Persist which child, if any, is active under a worktree tab.                                 |
-| `subsession_create`             | `SubSessionCreateArgs`          | `SubSession`              | Spawn a configured terminal or application custom process under a worktree tab.              |
-| `subsession_close`              | `SubSessionCloseArgs`           | `void`                    | Close/detach/terminate a sub-session according to kind and close intent.                     |
-| `subsession_focus`              | `SubSessionIdArg`               | `void`                    | Focus application window where supported; terminal focus is frontend-only.                   |
-| `subsession_list`               | `SubSessionListArgs`            | `SubSession[]`            | List live sub-sessions, optionally filtered by parent worktree tab.                          |
-| `subsession_input`              | `SubSessionInputArgs`           | `void`                    | Write bytes to a terminal sub-session PTY.                                                   |
-| `subsession_resize`             | `SubSessionResizeArgs`          | `void`                    | Resize a terminal sub-session PTY.                                                           |
-| `subsession_relaunch`           | `SubSessionIdArg`               | `SubSession`              | Relaunch a sub-session under the same id, reusing or re-deriving its command as appropriate. |
-| `subsession_icon`               | `SubSessionIdArg`               | `string \| null`          | Best-effort app icon extraction as a data URI.                                               |
+| `workspace_validate`            | `WorkspaceValidateArgs`         | `WorkspaceValidateResult` | Validate a primary-clone workspace candidate and optionally probe lock contention.                                 |
+| `workspace_switch`              | `WorkspaceSwitchArgs`           | `WorkspaceSwitchResult`   | Park old workspace, bind new workspace, restore new sessions, and return the new snapshot.                         |
+| `worktree_create`               | `WorktreeCreateArgs`            | `WorktreeCreateResult`    | Create `<workspace>/.arborist/.worktrees/<name>` and maybe start prep.                                             |
+| `worktree_prep_open_log`        | `WorktreePrepOpenLogArgs`       | `void`                    | Open a contained worktree-prep log file with the OS default handler.                                               |
+| `worktree_tab_open`             | `WorktreeTabOpenArgs`           | `WorktreeTab`             | Open or create a top-level worktree tab.                                                                           |
+| `worktree_tab_close`            | `WorktreeTabCloseArgs`          | `WorktreeTabCloseResult`  | Cascade-close child sessions/sub-sessions; delete the worktree only if teardown is clean.                          |
+| `worktree_tab_focus`            | `WorktreeTabFocusArgs`          | `void`                    | Persist active worktree tab.                                                                                       |
+| `worktree_tab_list`             | none                            | `WorktreeTab[]`           | Return persisted worktree tabs.                                                                                    |
+| `worktree_tab_reorder`          | `WorktreeTabReorderArgs`        | `void`                    | Replace top-level worktree tab ordering.                                                                           |
+| `worktree_tab_set_active_child` | `WorktreeTabSetActiveChildArgs` | `void`                    | Persist which child, if any, is active under a worktree tab.                                                       |
+| `subsession_create`             | `SubSessionCreateArgs`          | `SubSession`              | Spawn a configured terminal or application custom process under a worktree tab.                                    |
+| `subsession_close`              | `SubSessionCloseArgs`           | `void`                    | Close/detach/terminate a sub-session according to kind and close intent.                                           |
+| `subsession_focus`              | `SubSessionIdArg`               | `void`                    | Focus application window where supported; terminal focus is frontend-only.                                         |
+| `subsession_list`               | `SubSessionListArgs`            | `SubSession[]`            | List live sub-sessions, optionally filtered by parent worktree tab.                                                |
+| `subsession_input`              | `SubSessionInputArgs`           | `void`                    | Write bytes to a terminal sub-session PTY.                                                                         |
+| `subsession_resize`             | `SubSessionResizeArgs`          | `void`                    | Resize a terminal sub-session PTY.                                                                                 |
+| `subsession_relaunch`           | `SubSessionIdArg`               | `SubSession`              | Relaunch a sub-session under the same id, reusing or re-deriving its command as appropriate.                       |
+| `subsession_icon`               | `SubSessionIdArg`               | `string \| null`          | Best-effort app icon extraction as a data URI.                                                                     |
 
 ### Events
 

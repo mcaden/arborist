@@ -435,12 +435,15 @@ pub struct WorktreeGitStatus {
     pub behind: u32,
     /// Detected source/base branch (e.g. `main`) that this branch was forked from. `None` when undetectable or when the current branch IS the
     /// source branch. Determined via `origin/HEAD` → fallback to `origin/main` / `origin/master` existence.
+    /// Only probes the `origin` remote — repos with non-standard remote names will not have source branch info.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_branch: Option<String>,
-    /// Commits the current branch is ahead of the source branch. `0` when source branch is not detected.
-    pub source_ahead: u32,
-    /// Commits the current branch is behind the source branch. `0` when source branch is not detected.
-    pub source_behind: u32,
+    /// Commits the current branch is ahead of the source branch. Only present when `source_branch` is detected.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_ahead: Option<u32>,
+    /// Commits the current branch is behind the source branch. Only present when `source_branch` is detected.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_behind: Option<u32>,
     /// Files with staged changes (non-`.` X column).
     pub staged: u32,
     /// Files with unstaged working-tree changes (non-`.` Y column on a tracked file).
