@@ -1444,8 +1444,8 @@ pub struct WorktreePrepOpenLogArgs {
 /// Settings tab (with a toggle) but hidden from the tab context menu.
 ///
 /// `command` is a single shell command string composed exactly like a session's `composedCommand`: passed to `$SHELL -c` (or `%COMSPEC% /c` on
-/// Windows) with `cwd` set to the parent session's worktree path. **The worktree path is never interpolated** into the command (see SECURITY.md)
-/// prevention).
+/// Windows) with `cwd` set to the parent session's worktree path. **The worktree path is never interpolated** into the command (see SECURITY.md
+/// for injection-prevention rationale).
 ///
 /// MIRROR: `src/types/arborist.ts::CustomProcessDef`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
