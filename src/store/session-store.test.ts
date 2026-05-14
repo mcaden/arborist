@@ -509,6 +509,28 @@ describe('adoptWorkspace', () => {
     expect(s.activity).toEqual({});
     expect(s.lastTurnEndAt).toEqual({});
   });
+
+  it('seeds metrics from lastMetrics on incoming sessions and clears prior workspace metrics', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      metrics: { old: { sessionId: 'old', inputTokens: 999, outputTokens: 111, observedAt: 1_700_000_000 } },
+    });
+
+    const incoming = [
+      makeView({
+        id: 'new1',
+        lastMetrics: { sessionId: 'new1', inputTokens: 2000, outputTokens: 500, observedAt: 1_700_000_200 },
+      }),
+      makeView({ id: 'new2' }),
+    ];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, 'new1');
+
+    const { metrics } = useSessionStore.getState();
+    expect(metrics['new1']).toEqual({ sessionId: 'new1', inputTokens: 2000, outputTokens: 500, observedAt: 1_700_000_200 });
+    expect(metrics['new2']).toBeUndefined();
+    expect(metrics['old']).toBeUndefined();
+  });
 });
 
 describe('applyStatus', () => {

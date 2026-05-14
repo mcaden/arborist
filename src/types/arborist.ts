@@ -73,6 +73,8 @@ export interface Session {
    * not exposed on `SessionView`.
    */
   aiSessionId?: string;
+  /** Last-known metrics snapshot, persisted so restore can seed the dashboard without waiting for the watcher. */
+  lastMetrics?: SessionMetricsEvent;
 }
 
 // MIRROR: src-tauri/src/types.rs::SessionView
