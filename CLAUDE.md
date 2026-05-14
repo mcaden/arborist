@@ -26,7 +26,7 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS (class dark-mode strategy), Zustand, xterm.js
 - **Backend**: Rust, Tauri v2, `portable-pty` (ConPTY on Windows), custom JSON persistence via `config_store.rs`
-- **Layout**: `src/` (frontend), `src-tauri/src/` (Rust), `crates/arborist-types/` (wire types), `instructions/` (default instruction templates), `docs/` (project docs)
+- **Layout**: `src/` (frontend), `src-tauri/src/` (Rust), `crates/arborist-types/` (wire types), `docs/` (project docs)
 
 ## Commands
 
@@ -130,7 +130,7 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 
 ### Tool-specific CLI rules (easy to get wrong)
 
-- **Claude**: inject a `--system-prompt <temp-file>` where the temp file = generated context block + selected instruction set. Temp file lives under OS-temp `arborist/<session-uuid>/` and is deleted on session close.
+- **Claude**: do **not** pass `--system-prompt` for new sessions. Claude auto-discovers `CLAUDE.md` from the worktree `cwd`.
 - **Copilot**: do **not** pass `--instructions` — it disables auto-discovery of `.github/copilot-instructions.md`.
 
 ### Code conventions

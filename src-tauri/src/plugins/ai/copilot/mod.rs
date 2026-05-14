@@ -2,7 +2,7 @@
 //!
 //! Issue #96 migrates Copilot-specific behavior behind plugin dispatch. This
 //! file defines the stable plugin identity and core metadata consumed across
-//! composition, settings, and instruction discovery paths.
+//! composition and settings paths.
 
 use crate::plugins::ai::AiPlugin;
 use crate::plugins::Plugin;
@@ -28,10 +28,6 @@ impl Plugin for CopilotPlugin {
 impl AiPlugin for CopilotPlugin {
     fn default_program(&self) -> &'static str {
         "copilot"
-    }
-
-    fn default_instruction_set_path(&self) -> &'static str {
-        "copilot-default.md"
     }
 
     fn compose(&self, inputs: &crate::compose::ComposeInputs<'_>, quoter: crate::compose::Quoter) -> (String, Vec<crate::types::TempFileSpec>) {
@@ -79,11 +75,4 @@ impl AiPlugin for CopilotPlugin {
     fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
         home.join(".copilot").join("session-state").join(ai_session_id)
     }
-
-    fn instruction_stem_prefix(&self) -> &'static str {
-        INSTRUCTION_STEM_PREFIX
-    }
 }
-
-/// Filename-stem prefix for Copilot instruction sets (`copilot-*.md`).
-pub const INSTRUCTION_STEM_PREFIX: &str = "copilot-";

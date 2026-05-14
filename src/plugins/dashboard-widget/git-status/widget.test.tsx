@@ -54,6 +54,81 @@ describe('git-status dashboard widget', () => {
     expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledWith('/repo/feature-x');
   });
 
+  it('renders source branch divergence when provided by the backend', async () => {
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      branch: 'feature-x',
+      head: 'deadbeef',
+      upstream: 'origin/feature-x',
+      ahead: 0,
+      behind: 0,
+      sourceBranch: 'main',
+      sourceAhead: 12,
+      sourceBehind: 3,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByText('main')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('worktree-dashboard-source-divergence')).toHaveTextContent(/↑12.*↓3/);
+    // Upstream ahead/behind should show "In sync" when 0/0
+    expect(screen.getByTestId('worktree-dashboard-ahead-behind')).toHaveTextContent(/In sync/);
+  });
+
+  it('shows "In sync" for upstream when ahead and behind are both zero', async () => {
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      branch: 'feature-x',
+      head: 'deadbeef',
+      upstream: 'origin/feature-x',
+      ahead: 0,
+      behind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-ahead-behind')).toHaveTextContent(/In sync/);
+    });
+  });
+
+  it('shows "In sync" for source branch divergence when sourceAhead and sourceBehind are both zero', async () => {
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      branch: 'feature-x',
+      head: 'deadbeef',
+      upstream: 'origin/feature-x',
+      ahead: 0,
+      behind: 0,
+      sourceBranch: 'main',
+      sourceAhead: 0,
+      sourceBehind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-source-divergence')).toHaveTextContent(/In sync/);
+    });
+  });
+
   it('does not dispatch overlapping requests when a poll tick or click lands before the previous call resolves', async () => {
     let resolveFirst: (v: WorktreeGitStatus) => void = () => {};
     bridgeMock.worktreeGitStatus.mockReturnValueOnce(

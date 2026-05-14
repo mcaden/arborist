@@ -7,12 +7,7 @@
 import type { AppConfig } from '../arborist';
 
 export const appConfigFixture = {
-  configVersion: 10,
-  defaultInstructionSets: {
-    claude: 'claude-default',
-    copilot: 'copilot-default',
-  },
-  instructionSetsDir: '/cfg/instructions',
+  configVersion: 11,
   workspaceRoot: '/repo',
   worktreeRoots: ['/repo'],
   worktreePrepCommands: ['npm install', 'cargo build'],

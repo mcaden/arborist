@@ -61,15 +61,35 @@ export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element 
               <>
                 <dt className="text-slate-500 dark:text-slate-400">Upstream</dt>
                 <dd className="font-mono">{status.upstream}</dd>
-              </>
-            )}
-            {(status.ahead > 0 || status.behind > 0) && (
-              <>
                 <dt className="text-slate-500 dark:text-slate-400">Ahead / behind</dt>
                 <dd data-testid="worktree-dashboard-ahead-behind">
-                  <span className="text-emerald-600 dark:text-emerald-400">↑{status.ahead}</span>
-                  <span className="mx-1 text-slate-400">·</span>
-                  <span className="text-amber-600 dark:text-amber-400">↓{status.behind}</span>
+                  {status.ahead === 0 && status.behind === 0 ? (
+                    <span className="text-slate-500 dark:text-slate-400">In sync</span>
+                  ) : (
+                    <>
+                      <span className="text-emerald-600 dark:text-emerald-400">↑{status.ahead}</span>
+                      <span className="mx-1 text-slate-400">·</span>
+                      <span className="text-amber-600 dark:text-amber-400">↓{status.behind}</span>
+                    </>
+                  )}
+                </dd>
+              </>
+            )}
+            {status.sourceBranch && status.sourceAhead != null && status.sourceBehind != null && (
+              <>
+                <dt className="text-slate-500 dark:text-slate-400">Source</dt>
+                <dd className="font-mono">{status.sourceBranch}</dd>
+                <dt className="text-slate-500 dark:text-slate-400">Divergence</dt>
+                <dd data-testid="worktree-dashboard-source-divergence">
+                  {status.sourceAhead === 0 && status.sourceBehind === 0 ? (
+                    <span className="text-slate-500 dark:text-slate-400">In sync</span>
+                  ) : (
+                    <>
+                      <span className="text-emerald-600 dark:text-emerald-400">↑{status.sourceAhead}</span>
+                      <span className="mx-1 text-slate-400">·</span>
+                      <span className="text-amber-600 dark:text-amber-400">↓{status.sourceBehind}</span>
+                    </>
+                  )}
                 </dd>
               </>
             )}
@@ -93,7 +113,7 @@ export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element 
           ) : (
             <ul
               data-testid="worktree-dashboard-git-files"
-              className="max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 font-mono text-[11px] dark:border-slate-700 dark:bg-slate-950"
+              className="themed-scrollbar max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 font-mono text-[11px] dark:border-slate-700 dark:bg-slate-950"
             >
               {status.files.map((f) => (
                 <li key={`${f.path}-${f.kind}`} className="flex items-center gap-2 truncate">

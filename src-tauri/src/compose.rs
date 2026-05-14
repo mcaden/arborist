@@ -3,18 +3,14 @@
 //! This module is **pure**: it performs no filesystem or process I/O. The caller (Phase 7's `session_create`) is responsible for:
 //!
 //! 1. Calling [`validate_worktree`] to canonicalize the user-supplied path.
-//! 2. Reading the selected instruction set file from disk.
-//! 3. Calling [`compose_command`] with the canonical worktree path and the
-//!    instruction set contents already in memory.
-//! 4. Materialising the returned [`ComposedInvocation::temp_files`] to disk
-//!    before spawning the PTY.
+//! 2. Calling [`compose_command`] with the canonical worktree path.
+//! 3. Materialising the returned legacy [`ComposedInvocation::temp_files`] to disk before spawning the PTY.
 //!
 //! Keeping composition pure makes it trivially unit-testable and lets `respawn_existing` (Phase 7) re-materialise temp files without re-running
 //! composition.
 //!
 //! Spec/design references:
 //! - label deduplication
-//! - instruction-set delivery
 //! - platform shell selection
 //! - restart/restore reuse of `composed_command`
 //! - per-tool CLI launch behavior
@@ -22,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::types::{Error, InstructionSet, SessionId, TempFileSpec, Tool};
+use crate::types::{Error, SessionId, TempFileSpec, Tool};
 
 // --------------------------------------------------------------------------- Public API
 // ---------------------------------------------------------------------------
@@ -35,8 +31,8 @@ pub struct ComposedInvocation {
     /// restore-on-launch. Issue #63 retired the `prelaunch_commands` join: those snippets now run once per worktree creation
     /// via the `worktree_prep` module, not in front of every session shell.
     pub composed_command: String,
-    /// Files the backend must write to disk before spawning the PTY. For Claude this contains exactly one entry (the `--system-prompt` file). For
-    /// Copilot this is empty.
+    /// Legacy files the backend must write to disk before spawning the PTY. Current session creation leaves this empty; persisted older sessions may
+    /// still carry temp files for restore.
     pub temp_files: Vec<TempFileSpec>,
 }
 
@@ -47,15 +43,6 @@ pub struct ComposeInputs<'a> {
     /// **Already canonicalized** by [`validate_worktree`]. Composition does not re-canonicalize and never touches disk.
     pub worktree_path: &'a Path,
     pub worktree_label: &'a str,
-    /// Optional user-curated instruction set. When `None`:
-    /// * Claude launches with no `--system-prompt` (auto-loads `CLAUDE.md` from
-    ///   `cwd`).
-    /// * Copilot ignores this field — it is launched bare regardless, and reads
-    ///   `.github/copilot-instructions.md` from `cwd`.
-    pub instruction_set: Option<&'a InstructionSet>,
-    /// In-memory contents of the selected instruction set file. The caller reads the file and enforces the size cap; compose stays
-    /// pure. Must be `Some` when [`Self::instruction_set`] is `Some`, `None` otherwise. Ignored for Copilot.
-    pub instruction_set_contents: Option<&'a str>,
     /// Optional user override for the CLI launch command. When `Some` and non-empty, replaces the bare program token (`claude` / `copilot`) in the
     /// composed command. The string is treated as a verbatim shell snippet — *not* a single quoted token — so users can put extra arguments in it
     /// (e.g. `"npx claude --model sonnet"`). Empty strings behave the same as `None` (use the default).
@@ -68,7 +55,7 @@ pub struct ComposeInputs<'a> {
 ///
 /// | Tool    | CLI                                              | Temp file |
 /// |---------|--------------------------------------------------|-----------|
-/// | Claude  | `claude --system-prompt <quoted-temp-file-path>` | yes       |
+/// | Claude  | `claude`                                         | no        |
 /// | Copilot | `copilot` (bare; interactive mode is the default) | no        |
 ///
 /// **Worktree handling**: the worktree path is *never* interpolated into the composed command. In both cases the real `cwd` for `portable-pty` is set
@@ -420,43 +407,9 @@ pub fn platform_shell() -> PlatformShell {
 // --------------------------------------------------------------------------- Per-tool builders
 // ---------------------------------------------------------------------------
 
-fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
-    format!(
-        "You are operating in Git worktree **{label}** at {path}.",
-        label = label,
-        path = worktree_path.display(),
-    )
-}
-
-pub(crate) fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+pub(crate) fn build_claude(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command);
-
-    // No user instruction set: launch plain `claude`. The agent still auto-discovers `CLAUDE.md` from its `cwd` (the worktree). Skipping
-    // `--system-prompt` keeps the launch surface minimal and lets the agent derive its location from `pwd`/`git` without us having to fabricate a
-    // worktree-context system prompt.
-    let Some(contents) = inputs.instruction_set_contents else {
-        return (program, Vec::new());
-    };
-
-    let dir = session_temp_dir(&inputs.session_id);
-    let temp_path = dir.join("system-prompt.md");
-
-    let header = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
-    let body = format!("{header}\n---\n{contents}", header = header, contents = contents,);
-
-    let cli_cmd = format!(
-        "{program} --system-prompt {quoted}",
-        program = program,
-        quoted = quoter(&temp_path.to_string_lossy()),
-    );
-
-    (
-        cli_cmd,
-        vec![TempFileSpec {
-            path: temp_path,
-            contents: body,
-        }],
-    )
+    (program, Vec::new())
 }
 
 pub(crate) fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
@@ -492,7 +445,6 @@ fn cli_program_for_tool(tool: Tool, config_override: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::InstructionSetId;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use std::fs;
@@ -504,24 +456,12 @@ mod tests {
         SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))
     }
 
-    fn instr_set(tool: Tool) -> InstructionSet {
-        InstructionSet {
-            id: InstructionSetId::new("set-1"),
-            name: "Set 1".into(),
-            tool,
-            file_path: PathBuf::from("/some/instructions.md"),
-            is_default: true,
-        }
-    }
-
-    fn inputs<'a>(tool: Tool, worktree: &'a Path, label: &'a str, is: Option<&'a InstructionSet>, body: Option<&'a str>) -> ComposeInputs<'a> {
+    fn inputs<'a>(tool: Tool, worktree: &'a Path, label: &'a str) -> ComposeInputs<'a> {
         ComposeInputs {
             session_id: fixed_id(),
             tool,
             worktree_path: worktree,
             worktree_label: label,
-            instruction_set: is,
-            instruction_set_contents: body,
             cli_launch_command: None,
         }
     }
@@ -536,21 +476,10 @@ mod tests {
     #[test]
     fn claude_compose_basic() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\repos\\my-feature" } else { "/repos/my-feature" });
-        let is = instr_set(Tool::Claude);
-        let body = "# Instructions\nBe helpful.\n";
-        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", Some(&is), Some(body))).expect("compose");
+        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature")).expect("compose");
 
-        let expected_path = session_temp_dir(&fixed_id()).join("system-prompt.md");
-        let quoted = host_quote(&expected_path.to_string_lossy());
-        assert_eq!(r.composed_command, format!("claude --system-prompt {quoted}"));
-
-        assert_eq!(r.temp_files.len(), 1);
-        assert_eq!(r.temp_files[0].path, expected_path);
-        assert!(r.temp_files[0]
-            .contents
-            .starts_with("You are operating in Git worktree **my-feature** at "));
-        assert!(r.temp_files[0].contents.ends_with(body));
-        assert!(r.temp_files[0].contents.contains("\n---\n"));
+        assert_eq!(r.composed_command, "claude");
+        assert!(r.temp_files.is_empty());
 
         // Worktree path must not leak into the composed command for Claude.
         assert!(!r.composed_command.contains(&*wt.to_string_lossy()));
@@ -558,45 +487,12 @@ mod tests {
         assert!(!r.composed_command.contains("cd "));
     }
 
-    #[test]
-    fn claude_temp_path_is_quoted_when_it_contains_a_space() {
-        // Force a temp path with a space by overriding TMPDIR (Unix) / TEMP (Windows) — but env-var hacks are messy under parallel tests. Instead,
-        // exercise the quoter directly on the kind of path we'd build, and assert the composed command would contain the quoted form for such a path.
-        let space_path = if cfg!(windows) {
-            "C:\\Users\\Some User\\AppData\\Local\\Temp\\arborist\\x\\system-prompt.md"
-        } else {
-            "/tmp/Some User/arborist/x/system-prompt.md"
-        };
-        let q = host_quote(space_path);
-        // Either POSIX single-quoted or cmd double-quoted — both contain the relevant quote character.
-        if cfg!(windows) {
-            assert!(q.starts_with('"') && q.ends_with('"'));
-        } else {
-            assert!(q.starts_with('\'') && q.ends_with('\''));
-            // Round-trip: nothing inside is an unescaped single quote.
-            let inner = &q[1..q.len() - 1];
-            assert!(!inner.contains('\''));
-        }
-    }
-
-    #[test]
-    fn claude_compose_without_instruction_set_drops_system_prompt() {
-        let wt = PathBuf::from(if cfg!(windows) { "C:\\repos\\my-feature" } else { "/repos/my-feature" });
-        let r = compose_command(&inputs(Tool::Claude, &wt, "my-feature", None, None)).expect("compose");
-
-        assert_eq!(r.composed_command, "claude");
-        assert!(r.temp_files.is_empty());
-        // Worktree path is supplied as `cwd` by the PTY pool, never via the command string.
-        assert!(!r.composed_command.contains(&*wt.to_string_lossy()));
-    }
-
     // -- composition: Copilot -------------------------------------------
 
     #[test]
     fn copilot_compose_basic() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let is = instr_set(Tool::Copilot);
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt", Some(&is), Some("ignored"))).expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "wt")).expect("compose");
 
         // Modern `copilot` starts in interactive mode by default. The legacy `--interactive <string>` flag was removed and now triggers a "too many
         // arguments" error from the CLI itself, so we spawn it bare and rely on `cwd`-based discovery for repo guidance.
@@ -612,8 +508,7 @@ mod tests {
     #[test]
     fn copilot_compose_does_not_leak_worktree_path_when_path_contains_spaces() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\my repos\\feature" } else { "/my repos/feature" });
-        let is = instr_set(Tool::Copilot);
-        let r = compose_command(&inputs(Tool::Copilot, &wt, "feature", Some(&is), Some(""))).expect("compose");
+        let r = compose_command(&inputs(Tool::Copilot, &wt, "feature")).expect("compose");
         // Bare `copilot` — no worktree path, no `--interactive`, regardless of how spicy the path looks. This is the regression test for the
         // pre-removal behaviour where we used to interpolate the path into a quoted `--interactive` argument.
         assert_eq!(r.composed_command, "copilot");
@@ -624,18 +519,17 @@ mod tests {
     #[test]
     fn claude_compose_uses_cli_launch_command_override() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let is = instr_set(Tool::Claude);
-        let mut i = inputs(Tool::Claude, &wt, "wt", Some(&is), Some("body"));
+        let mut i = inputs(Tool::Claude, &wt, "wt");
         i.cli_launch_command = Some("npx claude --model sonnet");
         let r = compose_command(&i).expect("compose");
-        // Override is inserted verbatim in place of the bare `claude` token; the `--system-prompt` flag is still appended.
-        assert!(r.composed_command.starts_with("npx claude --model sonnet --system-prompt "));
+        assert_eq!(r.composed_command, "npx claude --model sonnet");
+        assert!(r.temp_files.is_empty());
     }
 
     #[test]
     fn copilot_compose_uses_cli_launch_command_override() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
-        let mut i = inputs(Tool::Copilot, &wt, "wt", None, None);
+        let mut i = inputs(Tool::Copilot, &wt, "wt");
         i.cli_launch_command = Some("gh copilot");
         let r = compose_command(&i).expect("compose");
         assert_eq!(r.composed_command, "gh copilot");
@@ -645,7 +539,7 @@ mod tests {
     fn empty_or_whitespace_override_falls_back_to_default() {
         let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
         for s in [Some(""), Some("   "), None] {
-            let mut i = inputs(Tool::Copilot, &wt, "wt", None, None);
+            let mut i = inputs(Tool::Copilot, &wt, "wt");
             i.cli_launch_command = s;
             let r = compose_command(&i).expect("compose");
             assert_eq!(r.composed_command, "copilot", "override={:?}", s);
@@ -662,8 +556,8 @@ mod tests {
     }
 
     #[test]
-    fn with_resume_appends_after_system_prompt() {
-        let base = "claude --system-prompt /tmp/x.txt";
+    fn with_resume_appends_after_existing_flags() {
+        let base = "claude --model sonnet";
         let out = with_resume(base, Tool::Claude, "uuid-1");
         assert_eq!(out, format!("{base} --resume uuid-1"), "resume must be appended after existing flags");
     }

@@ -23,9 +23,8 @@ use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
-    ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets,
-    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeInfo, WorktreeTab,
-    WorktreeTabAppClosePolicy, WorktreeTabId,
+    ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, PartialAppConfig, SessionCreateArgs, SessionId, SessionStatus,
+    SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeInfo, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabId,
 };
 use arborist_lib::window_focus::RecordingFocuser;
 use portable_pty::{ExitStatus, PtySize};
@@ -315,9 +314,7 @@ struct Harness {
     app_spawner: FakeAppSpawner,
     sub_events: Arc<CapturedSubEvents>,
     config_dir: TempDir,
-    _instructions_dir: TempDir,
     worktree: TempDir,
-    instruction_id: InstructionSetId,
     shell_def_id: CustomProcessDefId,
     app_def_id: CustomProcessDefId,
     worktree_tab_id: WorktreeTabId,
@@ -329,11 +326,7 @@ fn build_harness() -> Harness {
 
 fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let config_dir = TempDir::new().unwrap();
-    let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
-
-    let instruction_id = InstructionSetId("claude-default".into());
-    std::fs::write(instructions_dir.path().join("claude-default.md"), "# Claude\nbe helpful").unwrap();
 
     let shell_def_id = CustomProcessDefId("shell".into());
     let shell_def = CustomProcessDef {
@@ -359,11 +352,6 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let store = ConfigStore::open(config_dir.path()).unwrap();
     store
         .save_config(PartialAppConfig {
-            instruction_sets_dir: Some(instructions_dir.path().to_path_buf()),
-            default_instruction_sets: Some(PartialDefaultInstructionSets {
-                claude: Some(instruction_id.clone()),
-                copilot: None,
-            }),
             custom_processes: Some(vec![shell_def, app_def]),
             ..Default::default()
         })
@@ -435,9 +423,7 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         app_spawner,
         sub_events,
         config_dir,
-        _instructions_dir: instructions_dir,
         worktree,
-        instruction_id,
         shell_def_id,
         app_def_id,
         worktree_tab_id,
@@ -450,7 +436,6 @@ fn create_parent(h: &Harness) -> arborist_lib::types::SessionView {
         SessionCreateArgs {
             tool: Tool::Claude,
             worktree_path: h.worktree.path().to_path_buf(),
-            instruction_set_id: Some(h.instruction_id.clone()),
             cols: 80,
             rows: 24,
         },
@@ -464,7 +449,6 @@ fn create_copilot_parent(h: &Harness) -> arborist_lib::types::SessionView {
         SessionCreateArgs {
             tool: Tool::Copilot,
             worktree_path: h.worktree.path().to_path_buf(),
-            instruction_set_id: None,
             cols: 80,
             rows: 24,
         },

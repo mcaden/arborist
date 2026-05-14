@@ -206,7 +206,7 @@ export function CustomProcessesTab({ onClose }: CustomProcessesTabProps): JSX.El
         processes.
       </p>
 
-      <div className="-mx-1 flex-1 space-y-3 overflow-y-auto px-1">
+      <div className="themed-scrollbar -mx-1 flex-1 space-y-3 overflow-y-auto px-1">
         {rows.length === 0 ? (
           <p
             data-testid="custom-processes-empty"

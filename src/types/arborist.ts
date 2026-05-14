@@ -22,9 +22,6 @@ export type SubSessionId = string;
 // `open-folder`, `vscode`.
 export type CustomProcessDefId = string;
 
-// MIRROR: src-tauri/src/types.rs::InstructionSetId
-export type InstructionSetId = string;
-
 // MIRROR: src-tauri/src/types.rs::WorktreeTabId
 // Stable identifier for a WorktreeTab. Backed by a UUID v4 on the Rust side;
 // distinct from SessionId/SubSessionId at the type level.
@@ -59,7 +56,6 @@ export interface Session {
   worktreePath: string;
   worktreeName: string;
   label: string;
-  instructionSetId?: InstructionSetId;
   composedCommand: string;
   status: SessionStatus;
   pid?: number;
@@ -83,7 +79,6 @@ export interface SessionView {
   worktreePath: string;
   worktreeName: string;
   label: string;
-  instructionSetId?: InstructionSetId;
   status: SessionStatus;
   pid?: number;
   createdAt: number;
@@ -115,21 +110,6 @@ export interface WorktreeTab {
   iconId: number;
 }
 
-// MIRROR: src-tauri/src/types.rs::InstructionSet
-export interface InstructionSet {
-  id: InstructionSetId;
-  name: string;
-  tool: Tool;
-  filePath: string;
-  isDefault: boolean;
-}
-
-// MIRROR: src-tauri/src/types.rs::DefaultInstructionSets
-export interface DefaultInstructionSets {
-  claude: InstructionSetId;
-  copilot: InstructionSetId;
-}
-
 // MIRROR: crates/arborist-types/src/lib.rs::AiLaunchCommands
 // Per-AI-plugin CLI launch overrides + backend-managed icon cache.
 export interface AiLaunchCommands {
@@ -159,8 +139,6 @@ export interface PluginSettings {
 // MIRROR: src-tauri/src/types.rs::AppConfig
 export interface AppConfig {
   configVersion: number;
-  defaultInstructionSets: DefaultInstructionSets;
-  instructionSetsDir: string;
   /**
    * Active workspace root: the single git repository the app operates
    * within. `null` until the user picks one in the first-boot picker
@@ -210,12 +188,6 @@ export interface AppConfig {
   sidebarWidthPx?: number;
 }
 
-// MIRROR: src-tauri/src/types.rs::PartialDefaultInstructionSets
-export interface PartialDefaultInstructionSets {
-  claude?: InstructionSetId;
-  copilot?: InstructionSetId;
-}
-
 // MIRROR: crates/arborist-types/src/lib.rs::PartialAiLaunchCommands
 export interface PartialAiLaunchCommands {
   commands?: Record<string, string>;
@@ -240,8 +212,6 @@ export interface PartialPluginSettings {
 // string to set.
 export interface PartialAppConfig {
   configVersion?: number;
-  defaultInstructionSets?: PartialDefaultInstructionSets;
-  instructionSetsDir?: string;
   /**
    * Tri-state: omit to leave alone; `null` to clear; string to set. The
    * backend canonicalizes the path and rejects relative values with
@@ -593,6 +563,12 @@ export interface WorktreeGitStatus {
   upstream?: string;
   ahead: number;
   behind: number;
+  /** Detected source/base branch (e.g. `main`). Omitted when undetectable or when current branch IS the source. */
+  sourceBranch?: string;
+  /** Commits the current branch is ahead of the source branch. Only present when `sourceBranch` is detected. */
+  sourceAhead?: number;
+  /** Commits the current branch is behind the source branch. Only present when `sourceBranch` is detected. */
+  sourceBehind?: number;
   staged: number;
   unstaged: number;
   untracked: number;

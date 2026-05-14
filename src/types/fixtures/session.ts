@@ -20,7 +20,6 @@ export const sessionFixture = {
   worktreePath: '/repo/feature-x',
   worktreeName: 'feature-x',
   label: 'feature-x',
-  instructionSetId: 'claude-default',
   composedCommand: 'claude --system-prompt /tmp/arborist/abc/sp.md',
   status: 'running',
   pid: 12345,

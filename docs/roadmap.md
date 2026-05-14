@@ -19,9 +19,9 @@ This page tracks known gaps and follow-up work. It is not a promise of delivery 
 | Stale worktree recovery | Deleted worktrees are detected, but guided recovery actions could be clearer.                                                             |
 | Metrics identity        | Claude metrics can be ambiguous when multiple sessions share one worktree; hook-based authoritative mapping remains a future improvement. |
 | Application focus       | Launcher wrappers and Wayland limitations make app focus best-effort. Better owner discovery can improve this per platform.               |
-| Instruction management  | Users manage instruction files on disk. An in-app editor remains out of scope for v1 but is a natural later feature.                      |
+| Instruction management  | Users manage CLI-native repo instruction files on disk. In-app editing remains out of scope for v1 but could be revisited later.          |
 
-## Public open-source readiness
+## Public project operations
 
 | Area              | Gap                                                                                                            |
 | ----------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -37,5 +37,4 @@ This page tracks known gaps and follow-up work. It is not a promise of delivery 
 - Public plugin API.
 - Built-in chat UI.
 - Automatic updates.
-- OS code signing and notarization.
 - Package-manager distribution.

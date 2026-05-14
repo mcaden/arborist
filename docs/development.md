@@ -106,6 +106,10 @@ Do not bypass hooks on `main`. If you must use `--no-verify` on a personal WIP b
 
 The Rust workflow is approval-gated because it is heavier and multi-platform. Reviewers should ensure it ran against the head SHA they approved.
 
+Workflow `uses:` dependencies are pinned to full commit SHAs. Each pin keeps an inline comment with the intended upstream action ref, and Dependabot is
+configured to open weekly `github-actions` update PRs. Review those PRs like code changes: confirm the new SHA belongs to the commented upstream ref,
+keep the comment accurate, and run the relevant workflow before merging.
+
 ## Debugging
 
 ### Frontend

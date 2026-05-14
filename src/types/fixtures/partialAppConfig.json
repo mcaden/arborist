@@ -1,5 +1,4 @@
 {
-  "defaultInstructionSets": { "claude": "claude-default" },
   "worktreeRoots": ["/repo"],
   "customProcesses": [],
   "lastOpenSubSessions": []

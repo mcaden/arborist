@@ -20,7 +20,7 @@ use arborist_lib::pty_pool::{
     DEFAULT_PTY_SIZE, OUTPUT_CHANNEL_CAPACITY,
 };
 use arborist_lib::session_temp::{ensure_session_temp_dir, prepare_copilot_otel_file, remove_copilot_otel_file, remove_session_temp_dir};
-use arborist_lib::types::{InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool};
+use arborist_lib::types::{Session, SessionId, SessionStatus, TempFileSpec, Tool};
 use portable_pty::{ExitStatus, PtySize};
 use uuid::Uuid;
 
@@ -41,7 +41,6 @@ fn make_session(workdir: &Path) -> Session {
         worktree_path: workdir.to_path_buf(),
         worktree_name: "test".into(),
         label: "test".into(),
-        instruction_set_id: Some(InstructionSetId("default".into())),
         composed_command: composed,
         status: SessionStatus::Starting,
         pid: None,
@@ -369,7 +368,6 @@ fn make_copilot_session(workdir: &Path) -> Session {
         worktree_path: workdir.to_path_buf(),
         worktree_name: "test".into(),
         label: "test".into(),
-        instruction_set_id: None,
         // Composed command can be anything — the FakeSpawner doesn't run it. We just need pool.spawn to reach the spawner with the env populated.
         composed_command: "true".into(),
         status: SessionStatus::Starting,
