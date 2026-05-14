@@ -25,6 +25,7 @@ const SAMPLE: AppConfig = {
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 };
 
 function resetStore(): void {
@@ -44,6 +45,7 @@ function resetStore(): void {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     },
     status: 'idle',
     error: null,

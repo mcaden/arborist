@@ -18,12 +18,14 @@
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
+import type { ThemeMode } from '@/types/arborist';
+
 import { CustomProcessesTab } from './CustomProcessesTab';
 import { PluginsTab } from './PluginsTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import { selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
+import { selectTheme, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
 
 export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'about';
 
@@ -60,10 +62,12 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
 export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDialogProps): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
   const worktreePrepCommands = useConfigStore(selectWorktreePrepCommands);
+  const theme = useConfigStore(selectTheme);
   const setConfig = useConfigStore((s) => s.set);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(worktreePrepCommands));
+  const [themeInput, setThemeInput] = useState<ThemeMode>(theme);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -130,9 +134,12 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   useEffect(() => {
     setCmdsInput(commandsToText(worktreePrepCommands));
   }, [worktreePrepCommands]);
+  useEffect(() => {
+    setThemeInput(theme);
+  }, [theme]);
 
   const parsedCmds = textToCommands(cmdsInput);
-  const dirty = !arraysEqual(parsedCmds, worktreePrepCommands);
+  const dirty = !arraysEqual(parsedCmds, worktreePrepCommands) || themeInput !== theme;
 
   const handleSave = useCallback(async () => {
     setSubmitError(null);
@@ -140,8 +147,10 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     try {
       const patch: {
         worktreePrepCommands?: string[];
+        theme?: ThemeMode;
       } = {};
       if (!arraysEqual(parsedCmds, worktreePrepCommands)) patch.worktreePrepCommands = parsedCmds;
+      if (themeInput !== theme) patch.theme = themeInput;
       if (Object.keys(patch).length > 0) await setConfig(patch);
       onClose();
     } catch (err) {
@@ -150,7 +159,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     } finally {
       setSaving(false);
     }
-  }, [parsedCmds, worktreePrepCommands, setConfig, onClose]);
+  }, [parsedCmds, worktreePrepCommands, themeInput, theme, setConfig, onClose]);
 
   const handleWorkspaceConfirm = useCallback(async (path: string) => {
     await changeWorkspace(path);
@@ -292,6 +301,33 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Changing the workspace closes every open session.</p>
+              </section>
+
+              <section className="mb-4">
+                <fieldset>
+                  <legend className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Appearance</legend>
+                  <div className="flex items-center gap-3" data-testid="settings-theme-picker">
+                    {(['system', 'light', 'dark'] as const).map((mode) => (
+                      <label key={mode} className="flex items-center gap-1.5 text-xs">
+                        <input
+                          type="radio"
+                          name="theme"
+                          value={mode}
+                          checked={themeInput === mode}
+                          onChange={() => {
+                            setSubmitError(null);
+                            setThemeInput(mode);
+                          }}
+                          className="accent-blue-600"
+                        />
+                        {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Choose your preferred colour scheme. &ldquo;System&rdquo; follows the OS preference.
+                  </p>
+                </fieldset>
               </section>
 
               <section className="mb-4">

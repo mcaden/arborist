@@ -31,6 +31,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
     ...overrides,
   };
 }

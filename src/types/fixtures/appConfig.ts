@@ -52,4 +52,5 @@ export const appConfigFixture = {
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 } as const satisfies AppConfig;

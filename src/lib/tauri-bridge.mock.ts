@@ -77,6 +77,7 @@ const defaultAppConfig = (): AppConfig => ({
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 });
 
 export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
