@@ -1,14 +1,15 @@
-// Status indicator glyphs for the sidebar — one Nerd Font codicon per
+// Status indicator glyphs for the sidebar — one Nerd Font glyph per
 // [`DisplayStatus`] so the right-hand status column reads as fast as a
 // row of text. Replaces the inline SVGs that lived here previously,
 // piggy-backing on the bundled `CaskaydiaCove NF` font (added in #61)
 // so we don't ship a second icon library.
 //
-// Codicons live in the U+EA60–U+EC1E PUA range and are guaranteed to be
-// present in any Nerd Font v3.x build. See
+// Most states use Codicons; `awaiting` uses Material Design's sleep glyph
+// because it reads more clearly as "waiting" than the available Codicons.
+// Both sets are present in any Nerd Font v3.x build. See
 // https://www.nerdfonts.com/cheat-sheet for the upstream catalogue;
-// each glyph below cites the upstream `nf-cod-…` name as a lookup key
-// for future swaps.
+// each glyph below cites the upstream `nf-…` name as a lookup key for
+// future swaps.
 //
 // The component renders a plain `<span>`. The caller owns sizing
 // (`text-*`), colour (`text-{colour}-{shade}`) and animation
@@ -26,7 +27,7 @@ interface StatusIconProps {
 }
 
 interface StatusMeta {
-  /** Single-codepoint Nerd Font codicon glyph (U+EA60–U+EC1E PUA range). */
+  /** Single-codepoint Nerd Font glyph. */
   glyph: string;
   /** Stable kebab-case suffix appended to `status-icon-` for the test id. */
   testIdSuffix: string;
@@ -46,14 +47,14 @@ interface StatusMeta {
 // and `runningTool` cases predate this swap; preserved verbatim so any
 // existing assertion against the previous testid keeps working.
 const STATUS_META = {
-  starting: { glyph: '\ueb19', testIdSuffix: 'starting' }, // nf-cod-loading — partial-ring spinner (pairs with animate-spin)
+  starting: { glyph: '\uea77', testIdSuffix: 'starting' }, // nf-cod-sync — startup/restart spinner (pairs with animate-spin)
   working: { glyph: '\uec10', testIdSuffix: 'working' }, // nf-cod-sparkle — "model is generating"
-  awaiting: { glyph: '\uea6b', testIdSuffix: 'awaiting' }, // nf-cod-comment — speech bubble: agent is parked at its prompt
+  awaiting: { glyph: '\u{f04b2}', testIdSuffix: 'awaiting' }, // nf-md-sleep — sleeping agent parked at its prompt
   attention: { glyph: '\ueaa2', testIdSuffix: 'attention' }, // nf-cod-bell — matches OSC 9 (legacy notify or `9;2;`) / OSC 777;notify semantics; standalone BEL and OSC 9;4 progress are ignored
-  awaitingPermission: { glyph: '\uea75', testIdSuffix: 'awaiting-permission' }, // nf-cod-lock — agent is blocked on a permission decision
-  runningTool: { glyph: '\ueb6d', testIdSuffix: 'running-tool' }, // nf-cod-tools — agent invoked a tool
+  awaitingPermission: { glyph: '\ueb53', testIdSuffix: 'awaiting-permission' }, // nf-cod-shield — agent is blocked on a permission decision
+  runningTool: { glyph: '\ueaf8', testIdSuffix: 'running-tool' }, // nf-cod-gear — agent invoked a tool/process
   thinking: { glyph: '\uea7c', testIdSuffix: 'thinking' }, // nf-cod-ellipsis — assistant turn in flight (pairs with animate-pulse)
-  exited: { glyph: '\uead7', testIdSuffix: 'exited' }, // nf-cod-debug_stop — terminal-state filled square
+  exited: { glyph: '\uead0', testIdSuffix: 'exited' }, // nf-cod-debug_disconnect — terminal session ended/disconnected
   error: { glyph: '\uea87', testIdSuffix: 'error' }, // nf-cod-error — circle with bang
 } as const satisfies Record<Exclude<DisplayStatus, 'idle'>, StatusMeta>;
 
@@ -67,7 +68,7 @@ const STATUS_META = {
 // from the `sans` stack so reorganising the body font can't break icon
 // rendering, and intentionally without a generic fallback so a missing
 // glyph renders as tofu instead of silently picking up a system-font
-// substitute that lacks the codicon PUA codepoints.
+// substitute that lacks the Nerd Font PUA codepoints.
 const BASE_CLASSES = 'inline-block w-[1em] text-center font-icon leading-none';
 
 export function StatusIcon({ status, className, title }: StatusIconProps): JSX.Element | null {
