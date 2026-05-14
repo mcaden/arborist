@@ -924,6 +924,8 @@ fn cleanup_orphans_skips_uuid_symlink_and_preserves_target() {
     let link = session_temp_dir(&link_id);
     let victim = tempfile::tempdir().unwrap();
     std::fs::write(victim.path().join("keep.txt"), b"keep").unwrap();
+    let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    set_mtime(victim.path(), two_hours_ago);
 
     if !symlink_dir_or_skip(victim.path(), &link) {
         return;
