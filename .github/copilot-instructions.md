@@ -2,12 +2,12 @@
 
 ## Repository status
 
-This repo currently contains **only design documents** — no source code, build, lint, or test tooling exists yet. The authoritative specs live in:
+This repo contains the Arborist Tauri/React application. The authoritative specs live in:
 
 - `dev/docs/SPEC.md` — product requirements (functional + non-functional)
 - `dev/docs/DESIGN.md` — architecture, data model, command/event API, directory layout
 
-Read both before proposing implementation work. When the codebase is scaffolded, update this file with real build/test/lint commands.
+Read both before proposing structural implementation work.
 
 This repo has a remote at `origin` -> `https://github.com/mcaden/arborist.git`. Agents may commit, push feature branches, and open pull requests. Do not push directly to `main` and do not force-push shared branches; land changes through PRs.
 
@@ -68,7 +68,7 @@ Defined in Rust with `serde`, mirrored as TypeScript types in the frontend. Thre
 
 ## Out of scope for v1 (don't implement)
 
-Built-in chat UI, remote/SSH worktrees, plugin system, multi-window, in-app instruction-file editor (SPEC §7).
+Built-in chat UI, remote/SSH worktrees, multi-window, in-app instruction-file editor (SPEC §7).
 
 ---
 

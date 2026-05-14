@@ -156,7 +156,11 @@ export function SidebarTab({
             openPermissions={openPermissions}
           />
         </span>
-        <MetricsLine metrics={session.status === 'running' ? metrics : undefined} tool={session.tool} isActive={isActive} />
+        <MetricsLine
+          metrics={session.status === 'running' ? metrics : undefined}
+          contextMetricsLimitTooltipSuffix={registry.aiById(session.tool)?.contextMetricsLimitTooltipSuffix ?? ''}
+          isActive={isActive}
+        />
       </button>
       <button
         type="button"
@@ -204,11 +208,11 @@ export function SidebarTab({
 
 interface MetricsLineProps {
   metrics: SessionMetrics | undefined;
-  tool: Tool;
+  contextMetricsLimitTooltipSuffix: string;
   isActive: boolean;
 }
 
-function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element {
+function MetricsLine({ metrics, contextMetricsLimitTooltipSuffix, isActive }: MetricsLineProps): JSX.Element {
   const colour = isActive ? 'text-sky-800/80 dark:text-sky-200/80' : 'text-slate-500 dark:text-slate-400';
 
   if (!metrics) {
@@ -239,11 +243,10 @@ function MetricsLine({ metrics, tool, isActive }: MetricsLineProps): JSX.Element
 
   const longParts: string[] = [];
   if (typeof metrics.contextTokensUsed === 'number' && typeof metrics.contextTokensLimit === 'number') {
-    const suffix =
-      tool === 'copilot'
-        ? ' (Copilot-reported; excludes its system-prompt + tool overhead)'
-        : ' (model nominal max; includes harness overhead in usage)';
-    longParts.push(`Context ${metrics.contextTokensUsed.toLocaleString()} / ` + `${metrics.contextTokensLimit.toLocaleString()} tokens${suffix}`);
+    longParts.push(
+      `Context ${metrics.contextTokensUsed.toLocaleString()} / ` +
+        `${metrics.contextTokensLimit.toLocaleString()} tokens${contextMetricsLimitTooltipSuffix}`,
+    );
   }
   if (typeof metrics.inputTokens === 'number' && typeof metrics.outputTokens === 'number') {
     longParts.push(`Session totals: ${metrics.inputTokens.toLocaleString()} in, ` + `${metrics.outputTokens.toLocaleString()} out`);

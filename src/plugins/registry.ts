@@ -38,6 +38,8 @@ export interface AiPlugin extends Plugin {
   defaultProgram: string;
   /** Filename of the built-in instruction-set markdown under `instructions/` (e.g. `"claude-default.md"`). */
   defaultInstructionSetPath: string;
+  /** Tooltip copy explaining how this plugin reports context-window limits. */
+  contextMetricsLimitTooltipSuffix: string;
   /** SVG icon component for the plugin's launcher / tab chrome. */
   Icon: ComponentType<{ className?: string }>;
 }

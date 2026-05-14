@@ -22,6 +22,7 @@ describe('PluginRegistryProvider / useRegistry', () => {
       displayName: 'Claude',
       defaultProgram: 'claude',
       defaultInstructionSetPath: 'claude-default.md',
+      contextMetricsLimitTooltipSuffix: 'model nominal max',
       Icon: () => null,
     });
     r.registerWidget({ id: 'git-status', displayName: 'Git', order: 0, Component: () => null });
