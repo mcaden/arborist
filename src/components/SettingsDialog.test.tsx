@@ -8,6 +8,7 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+import type { PluginSettings } from '@/types/arborist';
 
 function seedConfig(
   overrides: Partial<{
@@ -15,17 +16,19 @@ function seedConfig(
     instructionSetsDir: string;
     worktreePrepCommands: string[];
     aiLaunchCommands: { commands: Record<string, string>; iconDataUris: Record<string, string | null> };
+    pluginSettings: PluginSettings;
   }> = {},
 ): void {
   useConfigStore.setState({
     config: {
-      configVersion: 9,
+      configVersion: 10,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: overrides.instructionSetsDir ?? '/cfg/instr',
       workspaceRoot: overrides.workspaceRoot ?? '/work',
       worktreeRoots: [],
       worktreePrepCommands: overrides.worktreePrepCommands ?? [],
       aiLaunchCommands: overrides.aiLaunchCommands ?? { commands: {}, iconDataUris: {} },
+      pluginSettings: overrides.pluginSettings ?? { ai: {}, customProcess: {}, dashboardWidget: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -58,13 +61,14 @@ afterEach(() => {
   // Reset config store between tests by re-seeding the empty default.
   useConfigStore.setState({
     config: {
-      configVersion: 9,
+      configVersion: 10,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -186,17 +190,26 @@ describe('SettingsDialog', () => {
     seedConfig();
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-panel-plugins')).toBeNull();
     expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
     expect(screen.queryByTestId('settings-panel-about')).toBeNull();
     expect(screen.getByTestId('settings-tab-general')).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
+    expect(screen.getByTestId('settings-panel-plugins')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+    expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
+    expect(screen.queryByTestId('settings-panel-about')).toBeNull();
+    expect(screen.getByTestId('settings-tab-plugins')).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(screen.getByTestId('settings-tab-custom-processes'));
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+    expect(screen.queryByTestId('settings-panel-plugins')).toBeNull();
     expect(screen.queryByTestId('settings-panel-about')).toBeNull();
     expect(screen.getByTestId('settings-tab-custom-processes')).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(screen.getByTestId('settings-tab-about'));
     expect(screen.getByTestId('settings-panel-about')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+    expect(screen.queryByTestId('settings-panel-plugins')).toBeNull();
     expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
     expect(screen.getByTestId('settings-tab-about')).toHaveAttribute('aria-selected', 'true');
   });
@@ -212,10 +225,14 @@ describe('SettingsDialog', () => {
     seedConfig();
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     const generalTab = screen.getByTestId('settings-tab-general');
+    const pluginsTab = screen.getByTestId('settings-tab-plugins');
     const customTab = screen.getByTestId('settings-tab-custom-processes');
     const aboutTab = screen.getByTestId('settings-tab-about');
     generalTab.focus();
     fireEvent.keyDown(generalTab, { key: 'ArrowRight' });
+    expect(pluginsTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-plugins')).toBeInTheDocument();
+    fireEvent.keyDown(pluginsTab, { key: 'ArrowRight' });
     expect(customTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     fireEvent.keyDown(customTab, { key: 'ArrowRight' });
@@ -225,6 +242,9 @@ describe('SettingsDialog', () => {
     expect(customTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     fireEvent.keyDown(customTab, { key: 'ArrowLeft' });
+    expect(pluginsTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-plugins')).toBeInTheDocument();
+    fireEvent.keyDown(pluginsTab, { key: 'ArrowLeft' });
     expect(generalTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
   });
@@ -242,9 +262,10 @@ describe('SettingsDialog', () => {
     seedConfig({ aiLaunchCommands: { commands: { claude: 'npx claude', copilot: '' }, iconDataUris: {} } });
     const onClose = vi.fn();
     renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
 
-    const claudeInput = screen.getByTestId('settings-launch-claude') as HTMLInputElement;
-    const copilotInput = screen.getByTestId('settings-launch-copilot') as HTMLInputElement;
+    const claudeInput = screen.getByTestId('plugin-ai-claude-launch-command') as HTMLInputElement;
+    const copilotInput = screen.getByTestId('plugin-ai-copilot-launch-command') as HTMLInputElement;
     expect(claudeInput.value).toBe('npx claude');
     expect(copilotInput.value).toBe('');
     expect(copilotInput.placeholder).toBe('copilot');
@@ -252,26 +273,38 @@ describe('SettingsDialog', () => {
     fireEvent.change(claudeInput, { target: { value: 'claude --model sonnet' } });
     fireEvent.change(copilotInput, { target: { value: 'gh copilot' } });
     await act(async () => {
-      screen.getByRole('button', { name: /^save$/i }).click();
+      screen.getByTestId('plugins-save').click();
     });
 
     expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      aiLaunchCommands: { commands: { claude: 'claude --model sonnet', copilot: 'gh copilot' } },
+      pluginSettings: {
+        ai: {
+          claude: { settings: { launchCommand: 'claude --model sonnet' } },
+          copilot: { settings: { launchCommand: 'gh copilot' } },
+        },
+      },
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('clearing an AI launch command persists empty string (revert to default)', async () => {
-    seedConfig({ aiLaunchCommands: { commands: { claude: 'npx claude', copilot: '' }, iconDataUris: {} } });
+    seedConfig({
+      pluginSettings: {
+        ai: { claude: { settings: { launchCommand: 'npx claude' } } },
+        customProcess: {},
+        dashboardWidget: {},
+      },
+    });
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
-    const claudeInput = screen.getByTestId('settings-launch-claude') as HTMLInputElement;
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
+    const claudeInput = screen.getByTestId('plugin-ai-claude-launch-command') as HTMLInputElement;
     fireEvent.change(claudeInput, { target: { value: '   ' } });
     await act(async () => {
-      screen.getByRole('button', { name: /^save$/i }).click();
+      screen.getByTestId('plugins-save').click();
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
-      aiLaunchCommands: { commands: { claude: '' } },
+      pluginSettings: { ai: { claude: { settings: { launchCommand: '' } } } },
     });
   });
 });

@@ -88,6 +88,14 @@ Success looks like:
 | CP-06 | Terminal sub-sessions are restored by respawn. Application sub-sessions restore as exited/greyed and relaunch on user action.                     |
 | CP-07 | Cascading close must not silently leak failed terminal sub-session teardown; errors are reported in the close result.                             |
 
+### Built-in plugins
+
+| ID    | Requirement                                                                                                                                       |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BP-01 | Settings must expose a Plugins tab where registered built-in plugins can be enabled or disabled by kind.                                          |
+| BP-02 | Disabled AI plugins must not appear as new-session launch actions; disabled dashboard widgets must not render on the worktree dashboard.          |
+| BP-03 | Plugin-owned settings must be associated with the matching plugin entry. AI CLI launch command overrides belong to the Claude/Copilot plugin row. |
+
 ### Persistence and recovery
 
 | ID   | Requirement                                                                                                                               |

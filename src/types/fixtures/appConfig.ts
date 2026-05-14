@@ -7,7 +7,7 @@
 import type { AppConfig } from '../arborist';
 
 export const appConfigFixture = {
-  configVersion: 9,
+  configVersion: 10,
   defaultInstructionSets: {
     claude: 'claude-default',
     copilot: 'copilot-default',
@@ -17,11 +17,20 @@ export const appConfigFixture = {
   worktreeRoots: ['/repo'],
   worktreePrepCommands: ['npm install', 'cargo build'],
   aiLaunchCommands: {
-    commands: {
-      claude: 'npx claude',
-      copilot: '',
-    },
+    commands: {},
     iconDataUris: {},
+  },
+  pluginSettings: {
+    ai: {
+      claude: {
+        enabled: true,
+        settings: {
+          launchCommand: 'npx claude',
+        },
+      },
+    },
+    customProcess: {},
+    dashboardWidget: {},
   },
   lastOpenSessions: ['550e8400-e29b-41d4-a716-446655440000'],
   tabOrder: ['550e8400-e29b-41d4-a716-446655440000'],

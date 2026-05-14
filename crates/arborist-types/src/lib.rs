@@ -506,7 +506,12 @@ pub struct DefaultInstructionSets {
 /// * `9` — generalized `ai_launch_commands` to plugin-keyed maps:
 ///   `{ commands: { "<plugin-id>": "<command>" }, iconDataUris: { "<plugin-id>": "<data-uri>" } }`.
 ///   Legacy `claude` / `copilot` fixed fields are migrated in-place on load.
-pub const CONFIG_VERSION_CURRENT: u32 = 9;
+/// * `10` — added `plugin_settings`, the plugin-keyed home for enable flags and user-editable plugin settings. AI launch command overrides moved to
+///   `pluginSettings.ai[pluginId].settings.launchCommand`; `ai_launch_commands.commands` is retained only as legacy input compatibility.
+pub const CONFIG_VERSION_CURRENT: u32 = 10;
+
+/// Setting key used by AI plugins for the user-editable CLI launch override.
+pub const AI_LAUNCH_COMMAND_SETTING: &str = "launchCommand";
 
 /// Per-AI-plugin CLI launch command override.
 ///
@@ -552,6 +557,91 @@ impl AiLaunchCommands {
     #[must_use]
     pub fn icon_data_uri_for_tool(&self, tool: Tool) -> Option<&str> {
         self.icon_data_uri_for_id(tool.as_id())
+    }
+}
+
+/// Persisted value for a plugin-defined setting.
+///
+/// Kept deliberately small for v1: the renderer currently needs text values for AI launch commands, plus bool/list headroom for near-term plugin
+/// settings without string-encoding structured state.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PluginSettingValue {
+    String(String),
+    Bool(bool),
+    StringList(Vec<String>),
+}
+
+impl PluginSettingValue {
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            Self::Bool(_) | Self::StringList(_) => None,
+        }
+    }
+}
+
+/// Persisted settings for one plugin registration.
+///
+/// `enabled = None` means "use the plugin's default-enabled policy"; built-ins default to enabled unless their descriptor says otherwise.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub settings: BTreeMap<String, PluginSettingValue>,
+}
+
+impl PluginSettingState {
+    #[must_use]
+    pub fn is_enabled(&self, default_enabled: bool) -> bool {
+        self.enabled.unwrap_or(default_enabled)
+    }
+}
+
+/// User-controlled enable flags and settings grouped by plugin kind.
+///
+/// The kind buckets intentionally avoid global-id collisions: an AI plugin and a custom-process integration may both use the same stable id without
+/// sharing settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettings {
+    #[serde(default)]
+    pub ai: BTreeMap<String, PluginSettingState>,
+    #[serde(default)]
+    pub custom_process: BTreeMap<String, PluginSettingState>,
+    #[serde(default)]
+    pub dashboard_widget: BTreeMap<String, PluginSettingState>,
+}
+
+impl PluginSettings {
+    #[must_use]
+    pub fn ai_enabled(&self, plugin_id: &str, default_enabled: bool) -> bool {
+        self.ai.get(plugin_id).map_or(default_enabled, |state| state.is_enabled(default_enabled))
+    }
+
+    #[must_use]
+    pub fn custom_process_enabled(&self, plugin_id: &str, default_enabled: bool) -> bool {
+        self.custom_process
+            .get(plugin_id)
+            .map_or(default_enabled, |state| state.is_enabled(default_enabled))
+    }
+
+    #[must_use]
+    pub fn dashboard_widget_enabled(&self, plugin_id: &str, default_enabled: bool) -> bool {
+        self.dashboard_widget
+            .get(plugin_id)
+            .map_or(default_enabled, |state| state.is_enabled(default_enabled))
+    }
+
+    #[must_use]
+    pub fn ai_launch_command_for_id(&self, plugin_id: &str) -> Option<&str> {
+        self.ai
+            .get(plugin_id)
+            .and_then(|state| state.settings.get(AI_LAUNCH_COMMAND_SETTING))
+            .and_then(PluginSettingValue::as_str)
     }
 }
 
@@ -623,9 +713,13 @@ pub struct AppConfig {
     /// bumps the version stamp and rewrites the file.
     #[serde(default)]
     pub worktree_prep_commands: Vec<String>,
-    /// Per-agent CLI launch override. Empty fields fall back to the hardcoded defaults (`claude` / `copilot`). Added in `configVersion = 4`.
+    /// Legacy AI launch command input plus backend-managed icon cache. The command source of truth moved to `plugin_settings` in configVersion 10.
     #[serde(default)]
     pub ai_launch_commands: AiLaunchCommands,
+    /// Per-plugin enable flags and user-editable settings. Added in `configVersion = 10`; AI launch command overrides live under
+    /// `pluginSettings.ai[pluginId].settings.launchCommand`.
+    #[serde(default)]
+    pub plugin_settings: PluginSettings,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
     /// ID of the most recently focused session. Persisted by `session_focus` and consulted by Phase 8+ on launch to decide which tab to show active.
@@ -679,6 +773,7 @@ impl Default for AppConfig {
             worktree_roots: Vec::new(),
             worktree_prep_commands: Vec::new(),
             ai_launch_commands: AiLaunchCommands::default(),
+            plugin_settings: PluginSettings::default(),
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
             active_session_id: None,
@@ -688,6 +783,51 @@ impl Default for AppConfig {
             worktree_tab_order: Vec::new(),
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+        }
+    }
+}
+
+impl AppConfig {
+    #[must_use]
+    pub fn ai_plugin_enabled_for_tool(&self, tool: Tool) -> bool {
+        self.plugin_settings.ai_enabled(tool.as_id(), true)
+    }
+
+    #[must_use]
+    pub fn ai_launch_command_for_id(&self, plugin_id: &str) -> &str {
+        self.plugin_settings
+            .ai_launch_command_for_id(plugin_id)
+            .unwrap_or_else(|| self.ai_launch_commands.command_for_id(plugin_id))
+    }
+
+    #[must_use]
+    pub fn ai_launch_command_for_tool(&self, tool: Tool) -> &str {
+        self.ai_launch_command_for_id(tool.as_id())
+    }
+
+    /// Set the source-of-truth AI launch command setting and invalidate the cached launcher icon if the effective command changed.
+    pub fn set_ai_launch_command(&mut self, plugin_id: String, command: String) {
+        let changed = self.ai_launch_command_for_id(&plugin_id) != command.as_str();
+        self.plugin_settings
+            .ai
+            .entry(plugin_id.clone())
+            .or_default()
+            .settings
+            .insert(AI_LAUNCH_COMMAND_SETTING.to_owned(), PluginSettingValue::String(command));
+        self.ai_launch_commands.commands.remove(&plugin_id);
+        if changed {
+            self.ai_launch_commands.icon_data_uris.remove(&plugin_id);
+        }
+    }
+
+    pub fn migrate_legacy_ai_launch_commands_to_plugin_settings(&mut self) {
+        let commands = std::mem::take(&mut self.ai_launch_commands.commands);
+        for (plugin_id, command) in commands {
+            let state = self.plugin_settings.ai.entry(plugin_id).or_default();
+            state
+                .settings
+                .entry(AI_LAUNCH_COMMAND_SETTING.to_owned())
+                .or_insert(PluginSettingValue::String(command));
         }
     }
 }
@@ -740,6 +880,28 @@ impl<'de> Deserialize<'de> for PartialAiLaunchCommands {
     }
 }
 
+/// Patch for one plugin's persisted settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialPluginSettingState {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub settings: BTreeMap<String, PluginSettingValue>,
+}
+
+/// Patch for plugin settings grouped by plugin kind. Missing kind buckets and missing plugin ids are left untouched.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialPluginSettings {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub ai: BTreeMap<String, PartialPluginSettingState>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub custom_process: BTreeMap<String, PartialPluginSettingState>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub dashboard_widget: BTreeMap<String, PartialPluginSettingState>,
+}
+
 /// Patch over [`AppConfig`]: every field optional so callers can update one key at a time. Phase 4 deep-merges this into the persisted config.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -759,6 +921,8 @@ pub struct PartialAppConfig {
     pub worktree_prep_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ai_launch_commands: Option<PartialAiLaunchCommands>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub plugin_settings: Option<PartialPluginSettings>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_open_sessions: Option<Vec<SessionId>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1608,6 +1772,10 @@ pub enum Error {
     #[error("invalid custom process def: {0}")]
     InvalidCustomProcessDef(String),
 
+    /// A plugin settings patch failed validation (for example, a text-only setting received a boolean value).
+    #[error("invalid plugin settings: {0}")]
+    InvalidPluginSettings(String),
+
     /// A required external tool (e.g. `wmctrl` for Linux window focus, `code` for the VS Code launcher) is not on `PATH`. The payload is the missing
     /// tool's name so the frontend can surface a hint.
     #[error("tool missing: {0}")]
@@ -1660,6 +1828,7 @@ impl Error {
             Self::InstructionFileMissing(_) => "InstructionFileMissing",
             Self::ToolMismatch(_) => "ToolMismatch",
             Self::InvalidCustomProcessDef(_) => "InvalidCustomProcessDef",
+            Self::InvalidPluginSettings(_) => "InvalidPluginSettings",
             Self::ToolMissing(_) => "ToolMissing",
             Self::NotApplicable(_) => "NotApplicable",
             Self::PermissionDenied(_) => "PermissionDenied",
@@ -1804,7 +1973,7 @@ mod tests {
 
     fn app_config_fixture() -> (AppConfig, Value) {
         let value = AppConfig {
-            config_version: 9,
+            config_version: 10,
             default_instruction_sets: DefaultInstructionSets {
                 claude: InstructionSetId::new("claude-default"),
                 copilot: InstructionSetId::new("copilot-default"),
@@ -1814,8 +1983,19 @@ mod tests {
             worktree_roots: vec![PathBuf::from("/repo")],
             worktree_prep_commands: vec!["npm install".to_owned()],
             ai_launch_commands: AiLaunchCommands {
-                commands: BTreeMap::from([("claude".to_owned(), "npx claude".to_owned()), ("copilot".to_owned(), String::new())]),
+                commands: BTreeMap::new(),
                 icon_data_uris: BTreeMap::new(),
+            },
+            plugin_settings: PluginSettings {
+                ai: BTreeMap::from([(
+                    "claude".to_owned(),
+                    PluginSettingState {
+                        enabled: Some(true),
+                        settings: BTreeMap::from([(AI_LAUNCH_COMMAND_SETTING.to_owned(), PluginSettingValue::String("npx claude".to_owned()))]),
+                    },
+                )]),
+                custom_process: BTreeMap::new(),
+                dashboard_widget: BTreeMap::new(),
             },
             last_open_sessions: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             tab_order: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
@@ -1844,7 +2024,7 @@ mod tests {
             sidebar_width_px: None,
         };
         let fixture = json!({
-            "configVersion": 9,
+            "configVersion": 10,
             "defaultInstructionSets": {
                 "claude": "claude-default",
                 "copilot": "copilot-default"
@@ -1854,11 +2034,20 @@ mod tests {
             "worktreeRoots": ["/repo"],
             "worktreePrepCommands": ["npm install"],
             "aiLaunchCommands": {
-                "commands": {
-                    "claude": "npx claude",
-                    "copilot": ""
-                },
+                "commands": {},
                 "iconDataUris": {}
+            },
+            "pluginSettings": {
+                "ai": {
+                    "claude": {
+                        "enabled": true,
+                        "settings": {
+                            "launchCommand": "npx claude"
+                        }
+                    }
+                },
+                "customProcess": {},
+                "dashboardWidget": {}
             },
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
             "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
@@ -1969,6 +2158,17 @@ mod tests {
             worktree_roots: Some(vec![PathBuf::from("/repo")]),
             worktree_prep_commands: None,
             ai_launch_commands: None,
+            plugin_settings: Some(PartialPluginSettings {
+                ai: BTreeMap::from([(
+                    "claude".to_owned(),
+                    PartialPluginSettingState {
+                        enabled: Some(false),
+                        settings: BTreeMap::from([(AI_LAUNCH_COMMAND_SETTING.to_owned(), PluginSettingValue::String("npx claude".to_owned()))]),
+                    },
+                )]),
+                custom_process: BTreeMap::new(),
+                dashboard_widget: BTreeMap::new(),
+            }),
             last_open_sessions: None,
             tab_order: None,
             active_session_id: None,
@@ -1981,7 +2181,17 @@ mod tests {
         };
         let fixture = json!({
             "defaultInstructionSets": { "claude": "claude-default" },
-            "worktreeRoots": ["/repo"]
+            "worktreeRoots": ["/repo"],
+            "pluginSettings": {
+                "ai": {
+                    "claude": {
+                        "enabled": false,
+                        "settings": {
+                            "launchCommand": "npx claude"
+                        }
+                    }
+                }
+            }
         });
         (value, fixture)
     }
@@ -2250,6 +2460,7 @@ mod tests {
         );
         assert_eq!(Error::ToolMismatch("x".into()).code(), "ToolMismatch");
         assert_eq!(Error::InvalidCustomProcessDef("x".into()).code(), "InvalidCustomProcessDef");
+        assert_eq!(Error::InvalidPluginSettings("x".into()).code(), "InvalidPluginSettings");
         assert_eq!(Error::ToolMissing("wmctrl".into()).code(), "ToolMissing");
         assert_eq!(Error::NotApplicable("no PTY".into()).code(), "NotApplicable");
         assert_eq!(Error::PermissionDenied("Accessibility".into()).code(), "PermissionDenied");

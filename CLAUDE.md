@@ -126,7 +126,7 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 - **`PtySpawner` trait** — production uses `PortablePtySpawner`; tests inject `FakePtySpawner`
 - **`GitRunner` trait** — production uses `RealGitRunner`; tests inject canned porcelain output
 - **`tauri-bridge.mock.ts`** — frontend tests mock the entire bridge module via `vi.mock('@/lib/tauri-bridge', ...)`
-- **`arborist-test-child` binary** — PTY integration tests use this instead of real `claude`/`copilot`. Tests redirect compose output to it via `AppConfig.ai_launch_commands.claude/copilot` (Rust integration tests set the field directly through `PartialAppConfig`; the Linux e2e harness uses the boot CLI flags `--ai-launch-claude=<path>` / `--ai-launch-copilot=<path>`)
+- **`arborist-test-child` binary** — PTY integration tests use this instead of real `claude`/`copilot`. Tests redirect compose output to it via `pluginSettings.ai[pluginId].settings.launchCommand` (Rust integration tests set the field directly through `PartialAppConfig`; the Linux e2e harness uses the boot CLI flags `--ai-launch-claude=<path>` / `--ai-launch-copilot=<path>`)
 
 ### Tool-specific CLI rules (easy to get wrong)
 

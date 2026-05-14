@@ -11,13 +11,14 @@ import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 import { useConfigStore } from './config-store';
 
 const SAMPLE: AppConfig = {
-  configVersion: 9,
+  configVersion: 10,
   defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
   instructionSetsDir: '/cfg/instr',
   workspaceRoot: null,
   worktreeRoots: ['/repo'],
   worktreePrepCommands: ['nvm use'],
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
+  pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -31,13 +32,14 @@ const SAMPLE: AppConfig = {
 function resetStore(): void {
   useConfigStore.setState({
     config: {
-      configVersion: 9,
+      configVersion: 10,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,

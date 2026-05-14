@@ -7,6 +7,7 @@
 // HMR and Fast Refresh behave predictably.
 
 export * from './registry';
+export * from './settings';
 export { PluginRegistryProvider } from './registry-provider';
 export { useRegistry } from './use-registry';
 export { createBuiltinsRegistry } from './builtins';

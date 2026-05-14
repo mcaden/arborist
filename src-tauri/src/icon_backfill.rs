@@ -37,7 +37,7 @@ pub fn backfill_icons(cfg: &mut AppConfig, cache: &IconCache, fallback_cwd: &Pat
         if cfg.ai_launch_commands.has_icon_cache_entry_for_id(plugin_id) {
             continue;
         }
-        let launch_command = cfg.ai_launch_commands.command_for_id(plugin_id);
+        let launch_command = cfg.ai_launch_command_for_id(plugin_id);
         if let Some(uri) = resolve_ai_icon(builtin.plugin.default_program(), launch_command, fallback_cwd, cache) {
             cfg.ai_launch_commands.icon_data_uris.insert(plugin_id.to_owned(), Some(uri));
             changed = true;

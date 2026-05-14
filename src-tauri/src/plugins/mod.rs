@@ -41,6 +41,11 @@ pub trait Plugin: Send + Sync + 'static {
 
     /// Human-readable plugin name surfaced in the UI (settings list, error messages, etc.).
     fn display_name(&self) -> &'static str;
+
+    /// Default availability when `AppConfig.plugin_settings` has no explicit entry for this plugin.
+    fn default_enabled(&self) -> bool {
+        true
+    }
 }
 
 /// Reason a `register_*` call failed. The registry rejects duplicate ids rather than panicking so the host can surface a clear error if a future

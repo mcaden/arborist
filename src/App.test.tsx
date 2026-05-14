@@ -139,13 +139,14 @@ describe('App boot sequence', () => {
         new Promise((resolve) => {
           resolveCfg = () =>
             resolve({
-              configVersion: 9,
+              configVersion: 10,
               defaultInstructionSets: { claude: '', copilot: '' },
               instructionSetsDir: '',
               workspaceRoot: '/mock/workspace',
               worktreeRoots: [],
               worktreePrepCommands: [],
               aiLaunchCommands: { commands: {}, iconDataUris: {} },
+              pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
               lastOpenSessions: [],
               tabOrder: [],
               activeSessionId: null,
@@ -257,13 +258,14 @@ describe('App boot sequence', () => {
 
   it('shows the WorkspacePicker on first boot when workspaceRoot is null', async () => {
     configGet.mockResolvedValueOnce({
-      configVersion: 9,
+      configVersion: 10,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,

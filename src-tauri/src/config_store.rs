@@ -46,7 +46,8 @@ use tracing::{debug, warn};
 use crate::store_layout::StoreLayout;
 use crate::types::{
     AppConfig, AppError, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, InstructionSet, InstructionSetId, PartialAppConfig,
-    PartialDefaultInstructionSets, Session, SessionId, SessionStatus, SubSessionRecord, Tool, WorktreeTab, WorktreeTabId, CONFIG_VERSION_CURRENT,
+    PartialDefaultInstructionSets, PartialPluginSettingState, PartialPluginSettings, PluginSettingState, Session, SessionId, SessionStatus,
+    SubSessionRecord, Tool, WorktreeTab, WorktreeTabId, AI_LAUNCH_COMMAND_SETTING, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -242,6 +243,11 @@ impl ConfigStore {
         // and matches the order tabs appear in the sidebar.
         if cfg.config_version < 8 || cfg.worktree_tabs.iter().any(|t| t.icon_id == 0) {
             migrate_v6_to_v7(&mut cfg);
+        }
+        // v9→v10: AI launch command overrides moved under plugin settings. Also sweep any non-empty legacy commands map regardless of version so a
+        // hand-edited current config self-heals into the single source-of-truth field at load time.
+        if cfg.config_version < 10 || !cfg.ai_launch_commands.commands.is_empty() {
+            cfg.migrate_legacy_ai_launch_commands_to_plugin_settings();
         }
         if cfg.config_version < CONFIG_VERSION_CURRENT {
             cfg.config_version = CONFIG_VERSION_CURRENT;
@@ -636,13 +642,11 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     }
     if let Some(launch) = patch.ai_launch_commands {
         for (plugin_id, command) in launch.commands {
-            // Clear cached icon when the command changes — re-resolution will
-            // re-populate it from a post-save backfill pass.
-            if cfg.ai_launch_commands.command_for_id(&plugin_id) != command.as_str() {
-                cfg.ai_launch_commands.icon_data_uris.remove(&plugin_id);
-            }
-            cfg.ai_launch_commands.commands.insert(plugin_id, command);
+            cfg.set_ai_launch_command(plugin_id, command);
         }
+    }
+    if let Some(plugin_settings) = patch.plugin_settings {
+        merge_plugin_settings(cfg, plugin_settings)?;
     }
     if let Some(s) = patch.last_open_sessions {
         cfg.last_open_sessions = s;
@@ -690,6 +694,49 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
         cfg.sidebar_width_px = Some(width.clamp(crate::types::SIDEBAR_WIDTH_MIN_PX, crate::types::SIDEBAR_WIDTH_MAX_PX));
     }
     Ok(())
+}
+
+fn merge_plugin_settings(cfg: &mut AppConfig, patch: PartialPluginSettings) -> Result<(), Error> {
+    merge_ai_plugin_settings(cfg, patch.ai)?;
+    merge_plugin_kind_settings(&mut cfg.plugin_settings.custom_process, patch.custom_process);
+    merge_plugin_kind_settings(&mut cfg.plugin_settings.dashboard_widget, patch.dashboard_widget);
+    Ok(())
+}
+
+fn merge_ai_plugin_settings(cfg: &mut AppConfig, patch: BTreeMap<String, PartialPluginSettingState>) -> Result<(), Error> {
+    for (plugin_id, state) in patch {
+        if let Some(enabled) = state.enabled {
+            cfg.plugin_settings.ai.entry(plugin_id.clone()).or_default().enabled = Some(enabled);
+        }
+        for (setting_id, value) in state.settings {
+            if setting_id == AI_LAUNCH_COMMAND_SETTING {
+                let Some(command) = value.as_str() else {
+                    return Err(Error::InvalidPluginSettings(format!(
+                        "pluginSettings.ai[{plugin_id}].settings.{AI_LAUNCH_COMMAND_SETTING} must be a string"
+                    )));
+                };
+                cfg.set_ai_launch_command(plugin_id.clone(), command.to_owned());
+            } else {
+                cfg.plugin_settings
+                    .ai
+                    .entry(plugin_id.clone())
+                    .or_default()
+                    .settings
+                    .insert(setting_id, value);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn merge_plugin_kind_settings(target: &mut BTreeMap<String, PluginSettingState>, patch: BTreeMap<String, PartialPluginSettingState>) {
+    for (plugin_id, state) in patch {
+        let entry = target.entry(plugin_id).or_default();
+        if let Some(enabled) = state.enabled {
+            entry.enabled = Some(enabled);
+        }
+        entry.settings.extend(state.settings);
+    }
 }
 
 /// Reject obviously-invalid [`CustomProcessDef`] lists at the `config_set` boundary so corrupt state can't reach the runtime.
@@ -1730,11 +1777,55 @@ mod tests {
             })
             .expect("patch");
 
-        assert_eq!(after.ai_launch_commands.commands.get(&plugin_id).map(String::as_str), Some("new-cmd"));
+        assert_eq!(after.ai_launch_command_for_id(&plugin_id), "new-cmd");
+        assert!(
+            !after.ai_launch_commands.commands.contains_key(&plugin_id),
+            "legacy commands map is read-only compatibility; new writes must land in pluginSettings"
+        );
         assert!(
             !after.ai_launch_commands.icon_data_uris.contains_key(&plugin_id),
             "changed command must invalidate cached icon for re-resolution",
         );
+    }
+
+    #[test]
+    fn save_config_plugin_settings_deep_merges_and_invalidates_ai_icon() {
+        let td = TempDir::new().expect("td");
+        let store = ConfigStore::open(td.path()).expect("open");
+        let plugin_id = "claude".to_owned();
+
+        store
+            .save_config_with(PartialAppConfig::default(), |cfg| {
+                cfg.set_ai_launch_command(plugin_id.clone(), "old-cmd".to_owned());
+                cfg.ai_launch_commands
+                    .icon_data_uris
+                    .insert(plugin_id.clone(), Some("data:image/png;base64,OLD".to_owned()));
+                true
+            })
+            .expect("seed prior command+icon");
+
+        let after = store
+            .save_config(PartialAppConfig {
+                plugin_settings: Some(PartialPluginSettings {
+                    ai: BTreeMap::from([(
+                        plugin_id.clone(),
+                        PartialPluginSettingState {
+                            enabled: Some(false),
+                            settings: BTreeMap::from([(
+                                AI_LAUNCH_COMMAND_SETTING.to_owned(),
+                                crate::types::PluginSettingValue::String("new-cmd".to_owned()),
+                            )]),
+                        },
+                    )]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .expect("patch");
+
+        assert!(!after.ai_plugin_enabled_for_tool(Tool::Claude));
+        assert_eq!(after.ai_launch_command_for_id(&plugin_id), "new-cmd");
+        assert!(!after.ai_launch_commands.icon_data_uris.contains_key(&plugin_id));
     }
 
     #[test]

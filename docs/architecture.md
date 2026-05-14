@@ -113,7 +113,7 @@ Rust wire/persistence type must update the TypeScript mirror in the same commit.
 | `PartialAppConfig` | Request payload         | Yes              | Deep-merge patch for `config_set`.                                                                    |
 | `AppError`         | Command error payload   | Yes              | Stable `{ code, message }` shape for frontend branching.                                              |
 
-Current `AppConfig.configVersion` is `9`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
+Current `AppConfig.configVersion` is `10`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
 
 ## Command and event contract
 
@@ -198,11 +198,14 @@ reviewed capability before frontend code can invoke it.
 Arborist has an internal plugin registry, not a public plugin marketplace. Built-ins register through `plugins::build_registry()` on the Rust side and
 `createBuiltinsRegistry()` on the frontend side.
 
-| Plugin family     | Examples                    | Notes                                                                |
-| ----------------- | --------------------------- | -------------------------------------------------------------------- |
-| AI tools          | Claude, Copilot             | Tool ids match `Tool::as_id()` and `aiLaunchCommands.commands` keys. |
-| Custom processes  | Shell, open folder, VS Code | Seeded definitions are user-editable and user-deletable.             |
-| Dashboard widgets | AI usage, Git status        | Render worktree dashboard data.                                      |
+| Plugin family     | Examples                    | Notes                                                                                                     |
+| ----------------- | --------------------------- | --------------------------------------------------------------------------------------------------------- |
+| AI tools          | Claude, Copilot             | Tool ids match `Tool::as_id()`. Launch overrides live in `pluginSettings.ai.<id>.settings.launchCommand`. |
+| Custom processes  | Shell, open folder, VS Code | Seeded definitions are user-editable and user-deletable; plugin toggles control built-in integrations.    |
+| Dashboard widgets | AI usage, Git status        | Render worktree dashboard data and can be enabled/disabled through `pluginSettings.dashboardWidget`.      |
+
+`pluginSettings` is grouped by plugin family (`ai`, `customProcess`, `dashboardWidget`) so stable ids can overlap across families without sharing
+state. `enabled` is optional; omission means "use the plugin descriptor default".
 
 ## Invariants
 

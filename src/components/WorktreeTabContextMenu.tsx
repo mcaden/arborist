@@ -14,7 +14,7 @@ import { createPortal } from 'react-dom';
 
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError } from '@/lib/tauri-bridge';
-import { useRegistry } from '@/plugins';
+import { pluginEnabled, useRegistry } from '@/plugins';
 import { useEnabledCustomProcesses, useConfigStore } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
 import { useSubSessionActions } from '@/store/sub-session-store';
@@ -39,7 +39,11 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   const sessionActions = useSessionActions();
   const subActions = useSubSessionActions();
   const registry = useRegistry();
-  const aiPlugins = useMemo(() => registry.ai(), [registry]);
+  const pluginSettings = useConfigStore((s) => s.config.pluginSettings);
+  const aiPlugins = useMemo(
+    () => registry.ai().filter((plugin) => pluginEnabled(pluginSettings, 'ai', plugin.id, plugin.defaultEnabled ?? true)),
+    [registry, pluginSettings],
+  );
   const customProcesses = useEnabledCustomProcesses();
   const aiIconDataUris = useConfigStore((s) => s.config.aiLaunchCommands.iconDataUris);
 

@@ -5,6 +5,7 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { PluginRegistryProvider, createBuiltinsRegistry, createRegistry, type DashboardWidgetPlugin } from '@/plugins';
+import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { WorktreeTab, WorktreeTabId } from '@/types/arborist';
@@ -46,6 +47,11 @@ beforeEach(() => {
   bridgeMock.resetBridgeMocks();
   useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: false });
   useSessionStore.setState({ sessions: [], activeId: undefined, isHydrated: false });
+  useConfigStore.setState((s) => ({
+    config: { ...s.config, pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} } },
+    status: 'ready',
+    error: null,
+  }));
 });
 
 afterEach(() => {
@@ -125,6 +131,26 @@ describe('WorktreeDashboard', () => {
     renderDashboard(registry);
 
     expect(screen.getAllByTestId(/^widget-/).map((n) => n.textContent)).toEqual(['first', 'second', 'third']);
+  });
+
+  it('hides disabled AI plugins and dashboard widgets', () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    useConfigStore.setState((s) => ({
+      config: {
+        ...s.config,
+        pluginSettings: {
+          ai: { copilot: { enabled: false, settings: {} } },
+          customProcess: {},
+          dashboardWidget: { 'ai-usage': { enabled: false, settings: {} } },
+        },
+      },
+    }));
+
+    renderDashboard();
+
+    expect(screen.getByTestId('worktree-dashboard-launch-claude')).toBeInTheDocument();
+    expect(screen.queryByTestId('worktree-dashboard-launch-copilot')).toBeNull();
+    expect(screen.queryByTestId('worktree-dashboard-ai-usage')).toBeNull();
   });
 
   it('renders nothing when the tab has been removed underneath us', () => {

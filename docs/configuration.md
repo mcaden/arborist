@@ -59,7 +59,7 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 
 ```json
 {
-  "configVersion": 9,
+  "configVersion": 10,
   "defaultInstructionSets": {
     "claude": "claude-default",
     "copilot": "copilot-default"
@@ -71,6 +71,14 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
   "aiLaunchCommands": {
     "commands": {},
     "iconDataUris": {}
+  },
+  "pluginSettings": {
+    "ai": {
+      "claude": { "settings": { "launchCommand": "" } },
+      "copilot": { "settings": { "launchCommand": "" } }
+    },
+    "customProcess": {},
+    "dashboardWidget": {}
   },
   "lastOpenSessions": [],
   "tabOrder": [],
@@ -87,19 +95,20 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 
 ## Important fields
 
-| Field                                                     | Notes                                                                                                                    |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                  |
-| `instructionSetsDir`                                      | Absolute directory scanned for instruction-set Markdown files. Relative paths are rejected on write and cleared on load. |
-| `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                             |
-| `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                  |
-| `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                      |
-| `aiLaunchCommands.commands`                               | Plugin id to CLI command override. Missing or empty means use the plugin default.                                        |
-| `aiLaunchCommands.iconDataUris`                           | Backend-managed icon cache. Frontend patches do not write this map.                                                      |
-| `lastOpenSessions`, `tabOrder`, `activeSessionId`         | AI session restore and focus state. Managed by the app.                                                                  |
-| `worktreeTabs`, `worktreeTabOrder`, `activeWorktreeTabId` | Top-level sidebar state. Managed by the app.                                                                             |
-| `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                |
-| `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                             |
+| Field                                                     | Notes                                                                                                                           |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                         |
+| `instructionSetsDir`                                      | Absolute directory scanned for instruction-set Markdown files. Relative paths are rejected on write and cleared on load.        |
+| `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                                    |
+| `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                         |
+| `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                             |
+| `pluginSettings`                                          | Per-plugin enable flags and plugin-owned settings. AI launch overrides live at `pluginSettings.ai.<id>.settings.launchCommand`. |
+| `aiLaunchCommands.commands`                               | Legacy input compatibility for AI launch overrides. Migrated into `pluginSettings` on load or save.                             |
+| `aiLaunchCommands.iconDataUris`                           | Backend-managed icon cache. Frontend patches do not write this map.                                                             |
+| `lastOpenSessions`, `tabOrder`, `activeSessionId`         | AI session restore and focus state. Managed by the app.                                                                         |
+| `worktreeTabs`, `worktreeTabOrder`, `activeWorktreeTabId` | Top-level sidebar state. Managed by the app.                                                                                    |
+| `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                       |
+| `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                                    |
 
 ## Instruction-set discovery
 
@@ -121,11 +130,12 @@ returns the raw user config.
 
 Supported overlay fields:
 
-| Field                       | Behavior                                                                               |
-| --------------------------- | -------------------------------------------------------------------------------------- |
-| `defaultInstructionSets`    | Overrides default instruction-set ids for the repo.                                    |
-| `aiLaunchCommands.commands` | Overrides plugin launch commands for the repo. Cached icon data remains machine-local. |
-| `worktreePrepCommands`      | Overrides prep commands for worktrees created in the repo.                             |
+| Field                                        | Behavior                                                                                  |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `defaultInstructionSets`                     | Overrides default instruction-set ids for the repo.                                       |
+| `pluginSettings.ai.*.settings.launchCommand` | Overrides AI plugin launch commands for the repo. Cached icon data remains machine-local. |
+| `aiLaunchCommands.commands`                  | Legacy alias for repo AI launch command overrides.                                        |
+| `worktreePrepCommands`                       | Overrides prep commands for worktrees created in the repo.                                |
 
 Malformed overlay files are logged and ignored so a repository typo does not block local work.
 

@@ -11,13 +11,14 @@ import type { CustomProcessDef } from '@/types/arborist';
 function seedDefs(defs: CustomProcessDef[]): void {
   useConfigStore.setState({
     config: {
-      configVersion: 9,
+      configVersion: 10,
       defaultInstructionSets: { claude: '', copilot: '' },
       instructionSetsDir: '',
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
