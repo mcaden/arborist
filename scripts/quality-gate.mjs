@@ -24,6 +24,9 @@ if (!isMainThread) {
   const results = runPipelineSync(workerData.steps);
   parentPort.postMessage(results);
   parentPort.close();
+  // Halt: prevent fall-through into main-thread code.
+  // parentPort.close() ensures the message is flushed before exit.
+  process.exit(0);
 }
 
 // ─── Main thread ──────────────────────────────────────────────────────────────
