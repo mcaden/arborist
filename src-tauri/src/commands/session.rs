@@ -26,7 +26,7 @@ use tracing::{debug, info, warn};
 use crate::compose::{self, ComposeInputs};
 use crate::config_store::{discover_instructions, list_instructions_for, ConfigStore, MAX_INSTRUCTION_FILE_BYTES};
 use crate::git::{GitRunner, RealGitRunner};
-use crate::pty_pool::{cleanup_orphans, PtyPool, PtySink};
+use crate::pty_pool::{cleanup_orphans, KillOutcome, PtyPool, PtySink};
 use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
     AppError, Error, InstructionSet, PartialAppConfig, Session, SessionCloseResult, SessionCreateArgs, SessionId, SessionInputArgs,
@@ -609,9 +609,24 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
     };
 
     // 1. Best-effort kill (NotFound from the pool is fine — the session may have
-    //    exited on its own already).
+    //    exited on its own already). If reaping is unconfirmed, keep closing the
+    //    session record for UI convergence, but never proceed to destructive
+    //    worktree deletion: the possible orphan may still hold files or cwd under
+    //    that directory.
+    let mut teardown_error: Option<String> = None;
     if ctx.pool.contains(&id) {
-        ctx.pool.kill(&id).await.map_err(AppError::from)?;
+        match ctx.pool.kill(&id).await.map_err(AppError::from)? {
+            KillOutcome::Reaped => {}
+            KillOutcome::Unconfirmed { pid } => {
+                let msg = format!("session process kill was unconfirmed for pid {pid}; process may still be alive");
+                warn!(
+                    session_id = %id,
+                    pid,
+                    "session close: PTY kill issued but reap unconfirmed; refusing worktree deletion if requested",
+                );
+                teardown_error = Some(msg);
+            }
+        }
     }
 
     // 2. Belt-and-braces temp-dir cleanup. `pool.kill` also does this when the
@@ -648,10 +663,22 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
     //    from the store at this point, so deletion failure must NOT fail the
     //    overall close (that would leave the frontend unable to converge on a "tab
     //    gone" state). Surface the error in the result instead.
-    let mut result = SessionCloseResult::default();
+    let mut result = SessionCloseResult {
+        teardown_error,
+        ..SessionCloseResult::default()
+    };
     match worktree_intent {
         WorktreeDeleteIntent::Path(wt) => {
-            if let Err(error) = delete_worktree_after_close(ctx, &format!("session {id}"), &wt, &cfg_after.workspace_root) {
+            if let Some(teardown_error) = &result.teardown_error {
+                let msg = format!("refusing to delete worktree because {teardown_error}");
+                warn!(
+                    session_id = %id,
+                    worktree_path = %wt.display(),
+                    error = %msg,
+                    "worktree deletion refused after unconfirmed session close",
+                );
+                result.worktree_delete_error = Some(msg);
+            } else if let Err(error) = delete_worktree_after_close(ctx, &format!("session {id}"), &wt, &cfg_after.workspace_root) {
                 warn!(
                     session_id = %id,
                     worktree_path = %wt.display(),

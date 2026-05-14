@@ -116,8 +116,9 @@ export interface SessionCloseArgs {
 }
 
 /**
- * Result of `session_close`. The session record + PTY are always torn
- * down on success; if the user opted into worktree deletion and the
+ * Result of `session_close`. The session record is removed on success; if
+ * PTY teardown was unconfirmed, `teardownError` is populated and worktree
+ * deletion is refused. If the user opted into worktree deletion and the
  * `git worktree remove` step failed, that failure is reported here as a
  * warning string instead of as a hard error so the UI can converge on a
  * "tab gone" state regardless.
@@ -125,6 +126,7 @@ export interface SessionCloseArgs {
  * MIRROR: `src-tauri/src/types.rs::SessionCloseResult`.
  */
 export interface SessionCloseResult {
+  teardownError?: string | null;
   worktreeDeleteError: string | null;
 }
 

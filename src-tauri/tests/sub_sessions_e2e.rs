@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,12 +16,14 @@ use arborist_lib::commands::session::{session_create_impl, AppContext};
 use arborist_lib::commands::subsession::{
     close_for_worktree_tab_impl, restore_all_sub_sessions_impl, subsession_close_impl, subsession_create_impl, subsession_relaunch_impl,
 };
+use arborist_lib::commands::worktree_tab::worktree_tab_close_impl;
 use arborist_lib::config_store::ConfigStore;
+use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
     ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets,
-    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeTab,
+    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeInfo, WorktreeTab,
     WorktreeTabAppClosePolicy, WorktreeTabId,
 };
 use arborist_lib::window_focus::RecordingFocuser;
@@ -229,6 +231,40 @@ impl AppKiller for FakeAppKiller {
     }
 }
 
+#[derive(Default)]
+struct RecordingGitRunner {
+    removes: Mutex<Vec<(PathBuf, PathBuf)>>,
+}
+
+impl RecordingGitRunner {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+impl GitRunner for RecordingGitRunner {
+    fn list_worktrees(&self, _: &Path) -> Result<Vec<WorktreeInfo>, arborist_lib::types::Error> {
+        Ok(vec![])
+    }
+
+    fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, arborist_lib::types::Error> {
+        Ok(Some(path.to_path_buf()))
+    }
+
+    fn create_worktree(&self, repo_root: &Path, relative_path: &Path, _branch: &str) -> Result<PathBuf, arborist_lib::types::Error> {
+        Ok(repo_root.join(relative_path))
+    }
+
+    fn remove_worktree(&self, repo_root: &Path, worktree_path: &Path) -> Result<(), arborist_lib::types::Error> {
+        self.removes.lock().unwrap().push((repo_root.to_path_buf(), worktree_path.to_path_buf()));
+        Ok(())
+    }
+
+    fn git_status(&self, _worktree_path: &Path) -> Result<arborist_lib::types::WorktreeGitStatus, arborist_lib::types::Error> {
+        Ok(arborist_lib::types::WorktreeGitStatus::default())
+    }
+}
+
 // --------------------------------------------------------------------------- Capturing sinks
 // ---------------------------------------------------------------------------
 
@@ -273,6 +309,7 @@ struct Harness {
     ctx: Arc<AppContext>,
     sub_ctx: Arc<arborist_lib::sub_sessions::SubAppContext>,
     sub_pool: Arc<SubPtyPool>,
+    parent_spawner_flags: SpawnerFlags,
     sub_spawner_flags: SpawnerFlags,
     app_spawner: FakeAppSpawner,
     sub_events: Arc<CapturedSubEvents>,
@@ -286,6 +323,10 @@ struct Harness {
 }
 
 fn build_harness() -> Harness {
+    build_harness_with_git(Arc::new(arborist_lib::git::RealGitRunner) as Arc<dyn GitRunner>)
+}
+
+fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let config_dir = TempDir::new().unwrap();
     let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
@@ -348,13 +389,14 @@ fn build_harness() -> Harness {
         .unwrap();
 
     let parent_spawner = Arc::new(FakeSpawner::new());
+    let parent_spawner_flags = parent_spawner.flags();
     let parent_pool = Arc::new(PtyPool::new(parent_spawner.clone() as Arc<dyn PtySpawner>));
     let parent_sink = make_parent_sink(store.clone());
     let ctx = Arc::new(AppContext::new(
         parent_pool,
         store.clone(),
         parent_sink,
-        Arc::new(arborist_lib::git::RealGitRunner),
+        git,
         Arc::new(|_| {}),
         Arc::new(|_, _| {}),
         Arc::new(|_, _| {}),
@@ -387,6 +429,7 @@ fn build_harness() -> Harness {
         ctx,
         sub_ctx,
         sub_pool,
+        parent_spawner_flags,
         sub_spawner_flags,
         app_spawner,
         sub_events,
@@ -469,6 +512,51 @@ async fn cascade_kills_terminal_subs_and_prunes_persistence() {
     assert!(!h.sub_pool.contains(&sub_b.id), "sub_b still in pool");
     assert!(h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).is_empty(), "store not pruned");
     assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty(), "persistence not pruned");
+}
+
+#[tokio::test]
+async fn worktree_tab_close_refuses_delete_when_child_session_kill_is_unconfirmed() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    h.ctx
+        .store()
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(h.worktree.path().parent().unwrap().to_path_buf())),
+            ..Default::default()
+        })
+        .unwrap();
+    let parent = create_parent(&h);
+    h.parent_spawner_flags.kill_fails.store(true, Ordering::SeqCst);
+
+    let result = worktree_tab_close_impl(
+        &h.ctx,
+        Arc::clone(&h.sub_ctx),
+        h.worktree_tab_id,
+        true,
+        WorktreeTabAppClosePolicy::Terminate,
+    )
+    .await
+    .expect("worktree tab close should converge even when child teardown is unconfirmed");
+
+    assert!(
+        result
+            .child_errors
+            .iter()
+            .any(|msg| msg.contains(&parent.id.to_string()) && msg.contains("unconfirmed")),
+        "child teardown warning should be returned, got {:?}",
+        result.child_errors,
+    );
+    let delete_error = result
+        .worktree_delete_error
+        .expect("worktree deletion should be refused when a child may still be alive");
+    assert!(
+        delete_error.contains("refusing to delete worktree") && delete_error.contains("child teardown") && delete_error.contains("unconfirmed"),
+        "unexpected delete error: {delete_error}",
+    );
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "git worktree remove must not run after unconfirmed child teardown"
+    );
 }
 
 #[tokio::test]

@@ -139,7 +139,7 @@ Every command must be present in all of these places:
 | `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                |
 | `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                   |
 | `session_list`                  | none                            | `SessionView[]`           | Return persisted sessions sorted for the sidebar.                                            |
-| `session_close`                 | `SessionCloseArgs`              | `SessionCloseResult`      | Kill session PTY, remove records, and optionally remove the Git worktree.                    |
+| `session_close`                 | `SessionCloseArgs`              | `SessionCloseResult`      | Kill session PTY, remove records; delete the Git worktree only after confirmed teardown.     |
 | `session_focus`                 | `SessionIdArg`                  | `void`                    | Persist active session id.                                                                   |
 | `session_resize`                | `SessionResizeArgs`             | `void`                    | Resize live PTY or trigger deferred restore spawn.                                           |
 | `session_input`                 | `SessionInputArgs`              | `void`                    | Write bytes to a session PTY.                                                                |
@@ -151,7 +151,7 @@ Every command must be present in all of these places:
 | `worktree_create`               | `WorktreeCreateArgs`            | `WorktreeCreateResult`    | Create `<workspace>/.arborist/.worktrees/<name>` and maybe start prep.                       |
 | `worktree_prep_open_log`        | `WorktreePrepOpenLogArgs`       | `void`                    | Open a contained worktree-prep log file with the OS default handler.                         |
 | `worktree_tab_open`             | `WorktreeTabOpenArgs`           | `WorktreeTab`             | Open or create a top-level worktree tab.                                                     |
-| `worktree_tab_close`            | `WorktreeTabCloseArgs`          | `WorktreeTabCloseResult`  | Cascade-close child sessions/sub-sessions and optionally remove the worktree.                |
+| `worktree_tab_close`            | `WorktreeTabCloseArgs`          | `WorktreeTabCloseResult`  | Cascade-close child sessions/sub-sessions; delete the worktree only if teardown is clean.    |
 | `worktree_tab_focus`            | `WorktreeTabFocusArgs`          | `void`                    | Persist active worktree tab.                                                                 |
 | `worktree_tab_list`             | none                            | `WorktreeTab[]`           | Return persisted worktree tabs.                                                              |
 | `worktree_tab_reorder`          | `WorktreeTabReorderArgs`        | `void`                    | Replace top-level worktree tab ordering.                                                     |

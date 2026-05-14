@@ -182,7 +182,17 @@ pub async fn worktree_tab_close_impl(
         // `acquire_switch_read`, which checks `AppContext::switch_pending` independently of guard ownership and would reject mid-cascade if a
         // workspace switch were queued in the gap, leaving the parent worktree tab removed below but the child session record still present.
         match super::session::session_close_locked(ctx, *sid, false).await {
-            Ok(_) => {}
+            Ok(result) => {
+                if let Some(teardown_error) = result.teardown_error {
+                    warn!(
+                        worktree_tab_id = %id,
+                        session_id = %sid,
+                        error = %teardown_error,
+                        "worktree tab close: child session teardown unconfirmed",
+                    );
+                    child_errors.push(format!("session {sid}: {teardown_error}"));
+                }
+            }
             Err(e) => {
                 warn!(session_id = %sid, error = %e.message, "worktree tab close: child session close failed");
                 child_errors.push(format!("session {sid}: {}", e.message));
@@ -213,7 +223,19 @@ pub async fn worktree_tab_close_impl(
     let mut worktree_delete_error: Option<String> = None;
     if delete_worktree {
         let label = format!("worktree-tab {id}");
-        if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root) {
+        if !child_errors.is_empty() {
+            let msg = format!(
+                "refusing to delete worktree because child teardown reported errors: {}",
+                child_errors.join("; ")
+            );
+            warn!(
+                worktree_tab_id = %id,
+                worktree_path = %tab_path.display(),
+                error = %msg,
+                "worktree deletion refused after worktree tab close",
+            );
+            worktree_delete_error = Some(msg);
+        } else if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root) {
             warn!(
                 worktree_tab_id = %id,
                 worktree_path = %tab_path.display(),

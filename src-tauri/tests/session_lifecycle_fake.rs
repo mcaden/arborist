@@ -52,6 +52,7 @@ struct SpawnerState {
 
 struct FakeSpawner {
     state: Mutex<SpawnerState>,
+    kill_fails: Arc<AtomicBool>,
 }
 
 impl FakeSpawner {
@@ -61,7 +62,12 @@ impl FakeSpawner {
                 next_pid: 9000,
                 ..SpawnerState::default()
             }),
+            kill_fails: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn set_kill_fails(&self, value: bool) {
+        self.kill_fails.store(value, Ordering::SeqCst);
     }
 }
 
@@ -90,7 +96,10 @@ impl PtySpawner for FakeSpawner {
             writer: Box::new(WriteCapture),
             resize: Arc::new(NoopResize),
             waiter: Box::new(BlockingWaiter { eof: Arc::clone(&eof) }),
-            killer: Arc::new(EofKiller { eof }),
+            killer: Arc::new(EofKiller {
+                eof,
+                fail: Arc::clone(&self.kill_fails),
+            }),
         })
     }
 }
@@ -127,10 +136,14 @@ impl PtyResize for NoopResize {
 
 struct EofKiller {
     eof: Arc<AtomicBool>,
+    fail: Arc<AtomicBool>,
 }
 impl PtyKiller for EofKiller {
     fn kill(&self) -> Result<(), arborist_lib::types::Error> {
         self.eof.store(true, Ordering::Relaxed);
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(arborist_lib::types::Error::PtyKillFailed("injected kill failure".into()));
+        }
         Ok(())
     }
 }
@@ -863,6 +876,42 @@ async fn close_with_delete_worktree_invokes_git_runner_remove() {
     );
     // Session record is gone regardless.
     assert!(session_list_impl(&h.ctx).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn close_with_delete_worktree_refuses_git_remove_when_kill_unconfirmed() {
+    let git = RecordingGitRunner::new();
+    let h = build_harness_with_git(git.clone() as Arc<dyn GitRunner>);
+    let ws_root = h.worktree.path().parent().unwrap().to_path_buf();
+    h.ctx
+        .store()
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(ws_root)),
+            ..Default::default()
+        })
+        .unwrap();
+    let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
+    h.spawner.set_kill_fails(true);
+
+    let result = session_close_impl(&h.ctx, view.id, true)
+        .await
+        .expect("close itself should succeed so the UI can converge");
+
+    let teardown = result.teardown_error.expect("unconfirmed kill should be reported");
+    assert!(teardown.contains("unconfirmed"), "unexpected teardown error: {teardown}");
+    let delete_error = result.worktree_delete_error.expect("delete should be refused when kill is unconfirmed");
+    assert!(
+        delete_error.contains("refusing to delete worktree") && delete_error.contains("unconfirmed"),
+        "unexpected delete error: {delete_error}",
+    );
+    assert!(
+        git.removes.lock().unwrap().is_empty(),
+        "git worktree remove must not run when the PTY may still be alive in that worktree"
+    );
+    assert!(
+        session_list_impl(&h.ctx).unwrap().is_empty(),
+        "session record should still be removed for close convergence"
+    );
 }
 
 #[tokio::test]
