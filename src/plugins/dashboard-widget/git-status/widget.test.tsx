@@ -31,6 +31,8 @@ describe('git-status dashboard widget', () => {
       upstream: 'origin/feature-x',
       ahead: 2,
       behind: 1,
+      sourceAhead: 0,
+      sourceBehind: 0,
       staged: 1,
       unstaged: 2,
       untracked: 3,
@@ -52,6 +54,58 @@ describe('git-status dashboard widget', () => {
     expect(screen.getByTestId('worktree-dashboard-count-conflicted')).toHaveTextContent('0');
     expect(screen.getByTestId('worktree-dashboard-ahead-behind')).toHaveTextContent(/↑2.*↓1/);
     expect(bridgeMock.worktreeGitStatus).toHaveBeenCalledWith('/repo/feature-x');
+  });
+
+  it('renders source branch divergence when provided by the backend', async () => {
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      branch: 'feature-x',
+      head: 'deadbeef',
+      upstream: 'origin/feature-x',
+      ahead: 0,
+      behind: 0,
+      sourceBranch: 'main',
+      sourceAhead: 12,
+      sourceBehind: 3,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByText('main')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('worktree-dashboard-source-divergence')).toHaveTextContent(/↑12.*↓3/);
+    // Upstream ahead/behind should show "In sync" when 0/0
+    expect(screen.getByTestId('worktree-dashboard-ahead-behind')).toHaveTextContent(/In sync/);
+  });
+
+  it('shows "In sync" for upstream when ahead and behind are both zero', async () => {
+    bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
+      branch: 'feature-x',
+      head: 'deadbeef',
+      upstream: 'origin/feature-x',
+      ahead: 0,
+      behind: 0,
+      sourceAhead: 0,
+      sourceBehind: 0,
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      conflicted: 0,
+      files: [],
+      filesTruncated: false,
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-ahead-behind')).toHaveTextContent(/In sync/);
+    });
   });
 
   it('does not dispatch overlapping requests when a poll tick or click lands before the previous call resolves', async () => {
@@ -78,6 +132,8 @@ describe('git-status dashboard widget', () => {
     resolveFirst({
       ahead: 0,
       behind: 0,
+      sourceAhead: 0,
+      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -127,6 +183,8 @@ describe('git-status dashboard widget', () => {
     bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
       ahead: 0,
       behind: 0,
+      sourceAhead: 0,
+      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -147,6 +205,8 @@ describe('git-status dashboard widget', () => {
     bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
       ahead: 0,
       behind: 0,
+      sourceAhead: 0,
+      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -178,6 +238,8 @@ describe('git-status dashboard widget', () => {
     resolveSecond({
       ahead: 0,
       behind: 0,
+      sourceAhead: 0,
+      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,
@@ -203,6 +265,8 @@ describe('git-status dashboard widget', () => {
     bridgeMock.worktreeGitStatus.mockResolvedValueOnce({
       ahead: 0,
       behind: 0,
+      sourceAhead: 0,
+      sourceBehind: 0,
       staged: 0,
       unstaged: 0,
       untracked: 0,

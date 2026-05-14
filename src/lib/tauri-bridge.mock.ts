@@ -93,6 +93,8 @@ export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() => 
 const defaultGitStatus = (): WorktreeGitStatus => ({
   ahead: 0,
   behind: 0,
+  sourceAhead: 0,
+  sourceBehind: 0,
   staged: 0,
   unstaged: 0,
   untracked: 0,

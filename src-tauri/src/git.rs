@@ -266,7 +266,9 @@ impl GitRunner for RealGitRunner {
                 ..Default::default()
             });
         }
-        Ok(parse_status_v2(&output.stdout))
+        let mut status = parse_status_v2(&output.stdout);
+        enrich_with_source_branch(&mut status, worktree_path);
+        Ok(status)
     }
 }
 
@@ -656,6 +658,102 @@ fn push_status_file(status: &mut WorktreeGitStatus, path: String, kind: GitStatu
         kind,
         status: xy.to_owned(),
     });
+}
+
+// --------------------------------------------------------------------------- Source branch detection
+// ---------------------------------------------------------------------------
+
+/// Detect the repo's default/source branch by probing remotes. Returns the short branch name (e.g. `"main"`), or `None` when undetectable.
+///
+/// Strategy:
+/// 1. `git symbolic-ref refs/remotes/origin/HEAD` → strip `refs/remotes/origin/` prefix
+/// 2. Fall back: check if `refs/remotes/origin/main` exists, then `refs/remotes/origin/master`
+///
+/// This is best-effort — if none of the above work, we simply omit source branch info from the status.
+fn detect_source_branch(worktree_path: &Path) -> Option<String> {
+    // Try symbolic-ref first (set by `git clone`)
+    if let Ok(output) = git_command()
+        .current_dir(worktree_path)
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .output()
+    {
+        if output.status.success() {
+            let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // Output is like "origin/main" — strip the remote prefix
+            if let Some(branch) = refname.strip_prefix("origin/") {
+                if !branch.is_empty() {
+                    return Some(branch.to_owned());
+                }
+            }
+        }
+    }
+
+    // Fallback: check if origin/main or origin/master exists
+    for candidate in &["main", "master"] {
+        let ref_path = format!("refs/remotes/origin/{candidate}");
+        if let Ok(output) = git_command()
+            .current_dir(worktree_path)
+            .args(["rev-parse", "--verify", "--quiet", &ref_path])
+            .output()
+        {
+            if output.status.success() {
+                return Some((*candidate).to_owned());
+            }
+        }
+    }
+
+    None
+}
+
+/// Get the ahead/behind counts between HEAD and a reference branch using `git rev-list --left-right --count`.
+/// Returns `(ahead, behind)` or `None` on failure.
+fn rev_list_left_right_count(worktree_path: &Path, reference: &str) -> Option<(u32, u32)> {
+    let range = format!("origin/{reference}...HEAD");
+    let output = git_command()
+        .current_dir(worktree_path)
+        .args(["rev-list", "--left-right", "--count", &range])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_rev_list_count(&output.stdout)
+}
+
+/// Parse the output of `git rev-list --left-right --count` which is `<behind>\t<ahead>\n`.
+pub(crate) fn parse_rev_list_count(output: &[u8]) -> Option<(u32, u32)> {
+    let text = std::str::from_utf8(output).ok()?.trim();
+    let mut parts = text.split_whitespace();
+    let left: u32 = parts.next()?.parse().ok()?;
+    let right: u32 = parts.next()?.parse().ok()?;
+    // left = commits on the reference side (we're behind), right = commits on HEAD side (we're ahead)
+    Some((right, left))
+}
+
+/// Enrich a `WorktreeGitStatus` with source branch divergence info. Best-effort: failures are silently ignored.
+fn enrich_with_source_branch(status: &mut WorktreeGitStatus, worktree_path: &Path) {
+    let current_branch = match &status.branch {
+        Some(b) => b.clone(),
+        None => return, // detached HEAD — skip source branch detection
+    };
+
+    let source = match detect_source_branch(worktree_path) {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Skip if we're ON the source branch (showing 0/0 relative to self is noise)
+    if current_branch == source {
+        return;
+    }
+
+    if let Some((ahead, behind)) = rev_list_left_right_count(worktree_path, &source) {
+        status.source_branch = Some(source);
+        status.source_ahead = ahead;
+        status.source_behind = behind;
+    }
 }
 
 #[cfg(test)]
@@ -1365,5 +1463,36 @@ locked migrating to slow disk
         let s = runner.git_status(&missing).expect("graceful degradation");
         assert!(s.error.as_deref().unwrap_or("").contains("does not exist"));
         assert_eq!(WorktreeGitStatus { error: None, ..s.clone() }, WorktreeGitStatus::default());
+    }
+
+    // --- parse_rev_list_count unit tests --- //
+
+    #[test]
+    fn parse_rev_list_count_typical() {
+        // Output format: "<left>\t<right>\n" where left = behind, right = ahead
+        let output = b"3\t12\n";
+        assert_eq!(parse_rev_list_count(output), Some((12, 3)));
+    }
+
+    #[test]
+    fn parse_rev_list_count_zeros() {
+        let output = b"0\t0\n";
+        assert_eq!(parse_rev_list_count(output), Some((0, 0)));
+    }
+
+    #[test]
+    fn parse_rev_list_count_no_trailing_newline() {
+        let output = b"5\t7";
+        assert_eq!(parse_rev_list_count(output), Some((7, 5)));
+    }
+
+    #[test]
+    fn parse_rev_list_count_empty() {
+        assert_eq!(parse_rev_list_count(b""), None);
+    }
+
+    #[test]
+    fn parse_rev_list_count_garbage() {
+        assert_eq!(parse_rev_list_count(b"not a number"), None);
     }
 }
