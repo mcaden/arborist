@@ -2,9 +2,12 @@
 name = "arborist"
 version = "0.1.0"
 edition = "2021"
-description = "Arborist — multi-session manager for AI coding CLIs"
-authors = ["Arborist contributors"]
+description = "Cross-platform desktop app for managing AI coding-assistant sessions across Git worktrees."
+authors = ["Aaron Moore", "Arborist contributors"]
 license = "MIT"
+repository = "https://github.com/mcaden/arborist"
+homepage = "https://arborist.tools"
+readme = "../README.md"
 publish = false
 default-run = "arborist"
 
