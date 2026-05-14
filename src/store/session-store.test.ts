@@ -17,7 +17,6 @@ function makeView(overrides: Partial<SessionView> & Pick<SessionView, 'id'>): Se
     worktreePath: `/repo/${overrides.id}`,
     worktreeName: overrides.id,
     label: overrides.id,
-    instructionSetId: 'default-claude',
     status: 'running',
     createdAt: 1_700_000_000_000,
     tabIndex: 0,
@@ -88,7 +87,6 @@ describe('create', () => {
     const view = await useSessionStore.getState().actions.create({
       tool: 'claude',
       worktreePath: '/repo/new',
-      instructionSetId: 'd',
       cols: 80,
       rows: 24,
     });
@@ -97,7 +95,6 @@ describe('create', () => {
     expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
       tool: 'claude',
       worktreePath: '/repo/new',
-      instructionSetId: 'd',
       cols: 80,
       rows: 24,
     });

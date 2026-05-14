@@ -21,7 +21,6 @@ function makeView(): SessionView {
     worktreePath: '/repo/x',
     worktreeName: 'x',
     label: 'x',
-    instructionSetId: 'default-claude',
     status: 'running',
     createdAt: 1_700_000_000,
     tabIndex: 0,

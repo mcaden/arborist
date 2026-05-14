@@ -7,8 +7,7 @@
 //   General           — workspace root (delegates to the existing
 //                       WorkspacePicker so the park-old-sessions
 //                       invariant lives in one place — see
-//                       `lib/workspace-switch.ts`), instruction sets
-//                       directory (path picker), worktree prep commands
+//                       `lib/workspace-switch.ts`), worktree prep commands
 //                       (one shell command per line).
 //   Plugins           — enable/disable plugins and edit plugin-owned
 //                       settings such as AI launch commands.
@@ -24,9 +23,9 @@ import type { ThemeMode } from '@/types/arborist';
 import { CustomProcessesTab } from './CustomProcessesTab';
 import { PluginsTab } from './PluginsTab';
 import { WorkspacePicker } from './WorkspacePicker';
-import { formatError, pickDirectory } from '@/lib/tauri-bridge';
+import { formatError } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
-import { selectInstructionSetsDir, selectTheme, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
+import { selectTheme, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
 
 export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'about';
 
@@ -62,13 +61,11 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
 
 export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDialogProps): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
-  const instructionSetsDir = useConfigStore(selectInstructionSetsDir);
   const worktreePrepCommands = useConfigStore(selectWorktreePrepCommands);
   const theme = useConfigStore(selectTheme);
   const setConfig = useConfigStore((s) => s.set);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
-  const [instrInput, setInstrInput] = useState<string>(instructionSetsDir);
   const [cmdsInput, setCmdsInput] = useState<string>(commandsToText(worktreePrepCommands));
   const [themeInput, setThemeInput] = useState<ThemeMode>(theme);
   const [saving, setSaving] = useState(false);
@@ -135,9 +132,6 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   // Re-sync local edit buffers if the persisted config changes underfoot
   // (e.g. via the workspace-change flow we delegate to WorkspacePicker).
   useEffect(() => {
-    setInstrInput(instructionSetsDir);
-  }, [instructionSetsDir]);
-  useEffect(() => {
     setCmdsInput(commandsToText(worktreePrepCommands));
   }, [worktreePrepCommands]);
   useEffect(() => {
@@ -145,26 +139,16 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   }, [theme]);
 
   const parsedCmds = textToCommands(cmdsInput);
-  const dirty = instrInput !== instructionSetsDir || !arraysEqual(parsedCmds, worktreePrepCommands) || themeInput !== theme;
-
-  const handleBrowseInstructions = useCallback(async () => {
-    const picked = await pickDirectory();
-    if (picked) {
-      setSubmitError(null);
-      setInstrInput(picked);
-    }
-  }, []);
+  const dirty = !arraysEqual(parsedCmds, worktreePrepCommands) || themeInput !== theme;
 
   const handleSave = useCallback(async () => {
     setSubmitError(null);
     setSaving(true);
     try {
       const patch: {
-        instructionSetsDir?: string;
         worktreePrepCommands?: string[];
         theme?: ThemeMode;
       } = {};
-      if (instrInput !== instructionSetsDir) patch.instructionSetsDir = instrInput;
       if (!arraysEqual(parsedCmds, worktreePrepCommands)) patch.worktreePrepCommands = parsedCmds;
       if (themeInput !== theme) patch.theme = themeInput;
       if (Object.keys(patch).length > 0) await setConfig(patch);
@@ -175,7 +159,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
     } finally {
       setSaving(false);
     }
-  }, [instrInput, instructionSetsDir, parsedCmds, worktreePrepCommands, themeInput, theme, setConfig, onClose]);
+  }, [parsedCmds, worktreePrepCommands, themeInput, theme, setConfig, onClose]);
 
   const handleWorkspaceConfirm = useCallback(async (path: string) => {
     await changeWorkspace(path);
@@ -296,7 +280,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={generalPanelId}
               aria-labelledby={generalTabId}
               data-testid="settings-panel-general"
-              className="min-h-0 flex-1 overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-y-auto pr-2"
             >
               <section className="mb-4">
                 <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Workspace</h3>
@@ -341,35 +325,6 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
                     Choose your preferred colour scheme. &ldquo;System&rdquo; follows the OS preference.
                   </p>
                 </fieldset>
-              </section>
-
-              <section className="mb-4">
-                <label
-                  htmlFor="settings-instr-dir"
-                  className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
-                >
-                  Instruction sets directory
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="settings-instr-dir"
-                    type="text"
-                    value={instrInput}
-                    onChange={(e) => {
-                      setSubmitError(null);
-                      setInstrInput(e.target.value);
-                    }}
-                    placeholder="(absolute path)"
-                    className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handleBrowseInstructions()}
-                    className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
-                  >
-                    Browse…
-                  </button>
-                </div>
               </section>
 
               <section className="mb-4">
@@ -431,7 +386,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={pluginsPanelId}
               aria-labelledby={pluginsTabId}
               data-testid="settings-panel-plugins"
-              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
             >
               <PluginsTab onClose={onClose} />
             </div>
@@ -441,7 +396,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={customProcessesPanelId}
               aria-labelledby={customProcessesTabId}
               data-testid="settings-panel-custom-processes"
-              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
             >
               <CustomProcessesTab onClose={onClose} />
             </div>
@@ -451,7 +406,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               id={aboutPanelId}
               aria-labelledby={aboutTabId}
               data-testid="settings-panel-about"
-              className="min-h-0 flex-1 overflow-y-auto pr-2"
+              className="themed-scrollbar min-h-0 flex-1 overflow-y-auto pr-2"
             >
               <section className="space-y-3 text-xs leading-5 text-slate-600 dark:text-slate-300">
                 <p data-testid="settings-about-attribution">

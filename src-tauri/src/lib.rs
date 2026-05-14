@@ -31,10 +31,9 @@ pub mod worktree_icon;
 pub mod worktree_prep;
 
 pub use types::{
-    AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
-    SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionMetricsEvent, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
-    WorktreeInfo, CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, Error, PartialAppConfig, Session, SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionMetricsEvent,
+    SessionOutputEvent, SessionResizeArgs, SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs,
+    WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeInfo, CONFIG_VERSION_CURRENT,
 };
 
 use tracing_appender::non_blocking::WorkerGuard;
@@ -351,7 +350,6 @@ pub fn run() {
             commands::ping,
             commands::config_get,
             commands::config_set,
-            commands::instructions_list,
             commands::dialog_pick_directory,
             commands::session_create,
             commands::session_list,

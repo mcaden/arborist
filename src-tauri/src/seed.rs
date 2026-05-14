@@ -389,7 +389,7 @@ mod tests {
             &canonical_layout.settings_path(),
             &serde_json::json!({
                 "configVersion": 4,
-                "instructionSetsDir": "/x",
+                "worktreePrepCommands": ["pnpm install"],
                 "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
                 "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
                 "activeSessionId": "550e8400-e29b-41d4-a716-446655440000",
@@ -421,8 +421,8 @@ mod tests {
             "activeSessionId must be stripped from branch-seeded config"
         );
         assert_eq!(
-            obj.get("instructionSetsDir").and_then(|v| v.as_str()),
-            Some("/x"),
+            obj.get("worktreePrepCommands").and_then(|v| v.as_array()).map(Vec::len),
+            Some(1),
             "non-session fields must survive the strip"
         );
         assert_eq!(
@@ -449,7 +449,7 @@ mod tests {
             &serde_json::json!({
                 "configVersion": 4,
                 "workspaceRoot": workspace_canon.as_path().to_string_lossy(),
-                "instructionSetsDir": "/y",
+                "worktreePrepCommands": ["pnpm install"],
                 "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440001"],
                 "tabOrder": ["550e8400-e29b-41d4-a716-446655440001"],
                 "activeSessionId": "550e8400-e29b-41d4-a716-446655440001",
@@ -465,7 +465,7 @@ mod tests {
         assert!(!obj.contains_key("lastOpenSessions"));
         assert!(!obj.contains_key("tabOrder"));
         assert!(!obj.contains_key("activeSessionId"));
-        assert_eq!(obj.get("instructionSetsDir").and_then(|v| v.as_str()), Some("/y"));
+        assert_eq!(obj.get("worktreePrepCommands").and_then(|v| v.as_array()).map(Vec::len), Some(1));
         assert_eq!(
             obj.get("workspaceRoot").and_then(|v| v.as_str()),
             Some(workspace_canon.as_path().to_string_lossy().as_ref()),

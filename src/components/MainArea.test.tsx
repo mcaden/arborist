@@ -59,7 +59,6 @@ function makeSession(id: string, label = id): SessionView {
     worktreePath: `/wt/${id}`,
     worktreeName: id,
     label,
-    instructionSetId: 'default',
     status: 'running',
     createdAt: 0,
     tabIndex: 0,

@@ -41,7 +41,7 @@ A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude 
 - **Shell**: Tauri v2 (Rust backend, OS WebView frontend) — *not* Electron
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS, Zustand, xterm.js
 - **Backend**: Rust, `portable-pty` for cross-platform PTY (ConPTY on Windows), custom JSON persistence via `config_store.rs`
-- **Layout**: `src/` (frontend), `src-tauri/` (Rust), `crates/arborist-types/` (wire types), `instructions/` (default instruction templates), `docs/` (project docs)
+- **Layout**: `src/` (frontend), `src-tauri/` (Rust), `crates/arborist-types/` (wire types), `docs/` (project docs)
 
 ## Architectural conventions (read `docs/architecture.md` and `docs/runtime-flows.md` before changing)
 
@@ -57,9 +57,8 @@ A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude 
 | | Claude | Copilot |
 |---|---|---|
 | Repo instructions | Auto-loaded from `cwd` (`CLAUDE.md`). Don't pass it. | Auto-loaded from `cwd` (`.github/copilot-instructions.md`). Don't pass `--instructions` — it would disable auto-discovery. |
-| Worktree context | `--system-prompt <temp-file>` where the temp file = generated context block + selected instruction set contents | Not injected — agent derives location from `pwd`/`git` (PTY pool sets `cwd` to the worktree) |
-| Temp file | Yes, under OS-temp `arborist/<session-uuid>/`; **deleted on session close** | None |
-| Instruction set selection | Concatenated into the temp file | Not passed; Copilot uses its own discovery |
+| Worktree context | Derived by the CLI from `pwd`/`git` because the PTY pool sets `cwd` to the worktree. | Same. |
+| Temp file | None for new sessions. Legacy restored sessions may still rematerialize persisted `tempFiles`. | None |
 
 ## Data model
 
@@ -128,7 +127,7 @@ Match `docs/architecture.md#backend-modules`. One concern per file. `commands/mo
 
 ### Types & serde
 - One canonical Rust definition per wire type in `crates/arborist-types/src/lib.rs`. Use `#[serde(rename_all = "camelCase")]` so Rust uses snake_case and the wire/TS uses camelCase.
-- Newtype wrappers for IDs (`SessionId(Uuid)`, `InstructionSetId(String)`) — prevents passing the wrong ID into the wrong function.
+- Newtype wrappers for IDs (`SessionId(Uuid)`, `WorktreeTabId(Uuid)`) — prevents passing the wrong ID into the wrong function.
 
 ### Testing
 Rust-specific principles (procedural detail — test layout, fixtures, virtual-time setup — lives in the `quality-workflow-gate` skill):

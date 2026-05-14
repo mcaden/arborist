@@ -22,6 +22,7 @@
     "dev": "node scripts/tauri-dev.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "website:dev": "node scripts/serve-website.mjs",
     "vite": "vite",
     "tauri": "tauri",
     "tauri:dev": "node scripts/tauri-dev.mjs",

@@ -34,10 +34,10 @@ at the repository root using GitHub's conventional filenames.
 
 ## Operations and references
 
-| Document                            | Use it for                                                                                     |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------- |
-| [configuration](./configuration.md) | App-data layout, config fields, repo overlays, instruction discovery, and quarantine recovery. |
-| [worktrees](./worktrees.md)         | Workspace-root requirements, `.arborist/.worktrees/`, validation, and deletion behavior.       |
+| Document                            | Use it for                                                                               |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| [configuration](./configuration.md) | App-data layout, config fields, repo overlays, and quarantine recovery.                  |
+| [worktrees](./worktrees.md)         | Workspace-root requirements, `.arborist/.worktrees/`, validation, and deletion behavior. |
 
 ## Documentation policy
 

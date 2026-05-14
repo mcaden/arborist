@@ -32,9 +32,7 @@ function makeTab(id: WorktreeTabId, overrides: Partial<WorktreeTab> = {}): Workt
 
 function configWith(activeWorktreeTabId: WorktreeTabId | null = null): AppConfig {
   return {
-    configVersion: 10,
-    defaultInstructionSets: { claude: '', copilot: '' },
-    instructionSetsDir: '/cfg/instr',
+    configVersion: 11,
     workspaceRoot: null,
     worktreeRoots: [],
     worktreePrepCommands: [],
