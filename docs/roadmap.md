@@ -21,7 +21,7 @@ This page tracks known gaps and follow-up work. It is not a promise of delivery 
 | Application focus       | Launcher wrappers and Wayland limitations make app focus best-effort. Better owner discovery can improve this per platform.               |
 | Instruction management  | Users manage instruction files on disk. An in-app editor remains out of scope for v1 but is a natural later feature.                      |
 
-## Public open-source readiness
+## Public project operations
 
 | Area              | Gap                                                                                                            |
 | ----------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -37,5 +37,4 @@ This page tracks known gaps and follow-up work. It is not a promise of delivery 
 - Public plugin API.
 - Built-in chat UI.
 - Automatic updates.
-- OS code signing and notarization.
 - Package-manager distribution.

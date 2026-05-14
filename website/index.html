@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arborist - Manage AI coding-assistant sessions across Git worktrees</title>
+    <meta name="description" content="Arborist is a cross-platform Tauri desktop app for developers using local Git worktrees and AI coding CLIs." />
+    <meta name="theme-color" content="#0f766e" />
+    <link rel="canonical" href="https://arborist.tools/" />
+    <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="./site.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Arborist" />
+    <meta property="og:title" content="Arborist - Manage AI coding-assistant sessions across Git worktrees" />
+    <meta
+      property="og:description"
+      content="A cross-platform Tauri desktop app for keeping worktree-scoped Claude CLI, GitHub Copilot CLI, terminal, and custom-process sessions organized."
+    />
+    <meta property="og:url" content="https://arborist.tools/" />
+    <meta property="og:image" content="https://arborist.tools/assets/social-card.svg" />
+    <meta property="og:image:alt" content="Arborist social card" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Arborist - Manage AI coding-assistant sessions across Git worktrees" />
+    <meta name="twitter:description" content="A cross-platform Tauri desktop app for keeping local Git worktree sessions organized and restorable." />
+    <meta name="twitter:image" content="https://arborist.tools/assets/social-card.svg" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="./" aria-label="Arborist home">
+          <img src="./assets/favicon.svg" width="36" height="36" alt="" />
+          <span>Arborist</span>
+        </a>
+        <div class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#install">Install</a>
+          <a href="#run-from-source">Run from source</a>
+          <a href="#docs">Docs</a>
+          <a href="https://github.com/mcaden/arborist">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div>
+          <p class="eyebrow">Public desktop app for local developer workflows</p>
+          <h1 id="hero-title">Arborist</h1>
+          <p class="hero-copy">
+            Manage AI coding-assistant sessions across Git worktrees. Arborist is a cross-platform Tauri desktop app for developers using local Git
+            worktrees, Claude CLI, GitHub Copilot CLI, terminals, and configured custom processes.
+          </p>
+          <div class="cta-row" aria-label="Primary calls to action">
+            <a class="button primary" href="https://github.com/mcaden/arborist/releases">Download from GitHub Releases</a>
+            <a class="button secondary" href="#run-from-source">Run from source</a>
+            <a class="button secondary" href="https://github.com/mcaden/arborist/blob/main/docs/index.md">Read the docs</a>
+          </div>
+        </div>
+        <figure class="hero-card">
+          <img
+            src="./assets/arborist-app-shell.svg"
+            width="1200"
+            height="760"
+            alt="Static illustration of the Arborist app shell showing worktree tabs, child AI sessions, and a terminal pane."
+          />
+          <figcaption>Static interface illustration based on the current Arborist shell, sidebar, and terminal workflow.</figcaption>
+        </figure>
+      </section>
+
+      <section class="page-section" aria-labelledby="value-title">
+        <div class="section-heading">
+          <h2 id="value-title">One workspace, many focused sessions.</h2>
+          <p>
+            Arborist keeps multiple worktree-scoped Claude CLI, GitHub Copilot CLI, terminal, and custom-process sessions organized and restorable
+            without replacing the tools you already use.
+          </p>
+        </div>
+        <div class="grid three">
+          <article class="card">
+            <h3>Worktree-scoped context</h3>
+            <p>Each session runs from the selected worktree path, so prompts, shells, and tools operate in the right checkout.</p>
+          </article>
+          <article class="card">
+            <h3>Persistent PTYs</h3>
+            <p>Every terminal-backed session owns a PTY in the Rust backend and continues running across sidebar tab switches.</p>
+          </article>
+          <article class="card">
+            <h3>CLI-native by design</h3>
+            <p>Arborist launches external tools and preserves their chat, auth, and update flows instead of becoming another chat UI.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="features" class="page-section" aria-labelledby="features-title">
+        <div class="section-heading">
+          <h2 id="features-title">Key features</h2>
+          <p>Built around local Git worktrees, safe process launch, and long-running assistant sessions.</p>
+        </div>
+        <ul class="feature-list">
+          <li><strong>Workspace-first model:</strong> one app instance binds to one primary Git clone.</li>
+          <li><strong>Managed worktree tabs:</strong> Arborist-created worktrees live under <code>&lt;repo&gt;/.arborist/.worktrees/</code>.</li>
+          <li><strong>AI sessions:</strong> launch Claude CLI and GitHub Copilot CLI from a worktree context.</li>
+          <li><strong>Custom processes:</strong> run shells, editors, file browsers, and other configured commands.</li>
+          <li><strong>Restore on launch:</strong> open worktree tabs and terminal-backed sessions are persisted and restored.</li>
+          <li>
+            <strong>Safe command composition:</strong> worktree paths are passed as process <code>cwd</code>, not interpolated into shell strings.
+          </li>
+          <li><strong>No credential storage:</strong> authentication remains with the invoked CLIs and tools.</li>
+          <li><strong>Cross-platform target:</strong> Windows, macOS, and Linux desktop builds.</li>
+        </ul>
+      </section>
+
+      <section id="install" class="page-section" aria-labelledby="install-title">
+        <div class="section-heading">
+          <h2 id="install-title">Install and runtime requirements</h2>
+          <p>Signed packaged builds are published on GitHub Releases. Source builds remain available for contributors and maintainers.</p>
+        </div>
+        <div class="grid two">
+          <article class="card">
+            <h3>Download builds</h3>
+            <p>
+              Use the <a href="https://github.com/mcaden/arborist/releases">GitHub Releases page</a> for signed installers, release notes, and
+              downloadable artifacts for supported platforms.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Runtime requirements</h3>
+            <ul class="plain-list">
+              <li><code>git</code> on <code>PATH</code>.</li>
+              <li>At least one authenticated AI CLI for AI sessions: Claude CLI or GitHub Copilot CLI.</li>
+              <li>Windows WebView2 runtime if it is not already installed.</li>
+              <li>Optional Linux <code>wmctrl</code> for X11 application sub-tab focusing.</li>
+            </ul>
+          </article>
+        </div>
+        <div class="callout" role="note" aria-label="Release trust and signing status">
+          <h3>Release trust and signing status</h3>
+          <p>
+            Release artifacts are OS-signed and notarized where each platform supports it. Published release assets include GitHub build attestations
+            and can be verified with
+            <code>gh attestation verify &lt;downloaded-file&gt; --repo mcaden/arborist</code>.
+          </p>
+        </div>
+      </section>
+
+      <section id="run-from-source" class="page-section" aria-labelledby="source-title">
+        <div class="section-heading">
+          <h2 id="source-title">Contributor path</h2>
+          <p>
+            Public contribution guidance lives in <a href="https://github.com/mcaden/arborist/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.
+            Development and testing docs cover the full setup, but the shortest source-run path is:
+          </p>
+        </div>
+        <pre><code>git clone https://github.com/mcaden/arborist.git
+cd arborist
+nvm use
+pnpm install
+pnpm dev</code></pre>
+        <div class="grid two">
+          <article class="card">
+            <h3>Project workflow</h3>
+            <p>
+              Use GitHub issue templates for bugs and feature requests, follow the support policy for help, and report security vulnerabilities
+              through the private security process.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Read next</h3>
+            <p>
+              See <a href="https://github.com/mcaden/arborist/blob/main/docs/development.md">development</a> and
+              <a href="https://github.com/mcaden/arborist/blob/main/docs/testing.md">testing</a> docs for prerequisites, verification commands, and
+              test seams.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="docs" class="page-section" aria-labelledby="docs-title">
+        <div class="section-heading">
+          <h2 id="docs-title">Curated documentation links</h2>
+          <p>The website is a public landing page. Detailed engineering docs stay in the repository.</p>
+        </div>
+        <div class="docs-grid">
+          <a class="doc-link" href="https://github.com/mcaden/arborist#readme"><strong>README</strong><span>Project overview and setup.</span></a>
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/product.md"
+            ><strong>Product contract</strong><span>Scope and requirements.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/architecture.md"
+            ><strong>Architecture</strong><span>Codebase map and API.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/runtime-flows.md"
+            ><strong>Runtime flows</strong><span>Boot and session flows.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/configuration.md"
+            ><strong>Configuration</strong><span>Config and store layout.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/worktrees.md"
+            ><strong>Worktrees</strong><span>Workspace rules.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/development.md"
+            ><strong>Development</strong><span>Local workflow.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/testing.md"
+            ><strong>Testing</strong><span>Quality and test seams.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/releasing.md"
+            ><strong>Releasing</strong><span>Artifacts and attestations.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/CONTRIBUTING.md"
+            ><strong>Contributing</strong><span>Contributor workflow.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/SECURITY.md"
+            ><strong>Security</strong><span>Disclosure and boundaries.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/SUPPORT.md"
+            ><strong>Support</strong><span>Where to get help.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/docs/roadmap.md"
+            ><strong>Roadmap</strong><span>Known gaps and plans.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/issues/new/choose"
+            ><strong>Issue templates</strong><span>Bug and feature forms.</span></a
+          >
+          <a class="doc-link" href="https://github.com/mcaden/arborist/blob/main/CODE_OF_CONDUCT.md"
+            ><strong>Code of conduct</strong><span>Community expectations.</span></a
+          >
+        </div>
+      </section>
+
+      <section class="page-section" aria-labelledby="metadata-title">
+        <div class="section-heading">
+          <h2 id="metadata-title">Project metadata and trust</h2>
+          <p>Arborist is a public open-source project with signed releases and explicit support boundaries.</p>
+        </div>
+        <div class="metadata">
+          <dl>
+            <dt>License</dt>
+            <dd>MIT</dd>
+            <dt>Repository</dt>
+            <dd><a href="https://github.com/mcaden/arborist">https://github.com/mcaden/arborist</a></dd>
+            <dt>Website</dt>
+            <dd><a href="https://arborist.tools">https://arborist.tools</a></dd>
+            <dt>Status</dt>
+            <dd>Public open-source desktop app for local Git worktree and AI CLI workflows.</dd>
+            <dt>Distribution</dt>
+            <dd>Signed installers are distributed through GitHub Releases; package-manager distribution and automatic updates are not supported.</dd>
+          </dl>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Arborist is maintained at <a href="https://github.com/mcaden/arborist">github.com/mcaden/arborist</a>.</p>
+    </footer>
+  </body>
+</html>

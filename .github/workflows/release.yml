@@ -154,11 +154,10 @@ jobs:
           releaseBody: |
             See the assets below to download installers for your platform.
 
-            **Note:** these builds are not OS code-signed (no Apple
-            notarization or Authenticode signature), so each OS will show a
-            one-time warning on first launch. See the
+            These builds are OS-signed and notarized where each platform
+            supports it. See the
             [README](https://github.com/${{ github.repository }}#install) for
-            first-run instructions on macOS, Windows, and Linux.
+            install instructions on macOS, Windows, and Linux.
 
             Every published asset has a Sigstore-signed
             [GitHub build attestation](https://github.com/${{ github.repository }}/attestations).

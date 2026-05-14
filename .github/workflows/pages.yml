@@ -1,0 +1,54 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/configure-pages@v5
+
+      - name: Validate static website
+        run: |
+          set -euo pipefail
+          test -f website/index.html
+          test -f website/styles.css
+          test -f website/CNAME
+          grep -qFx "arborist.tools" website/CNAME
+          if grep -RInE '<script|src="https?://' website; then
+            echo "::error::The Pages site must not include scripts or remote script/embed assets."
+            exit 1
+          fi
+          if grep -RInE '(href|src)="/' website; then
+            echo "::error::Use relative asset URLs so the mcaden.github.io/arborist fallback works."
+            exit 1
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
