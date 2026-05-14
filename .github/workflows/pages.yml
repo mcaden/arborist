@@ -40,6 +40,10 @@ jobs:
             echo "::error::The Pages site must not include scripts or remote resource-loading attributes."
             exit 1
           fi
+          if grep -RinE '\bon[a-z]+\s*=' website --include='*.html'; then
+            echo "::error::The Pages site must not include inline event handlers."
+            exit 1
+          fi
           if grep -RInE '<link[^>]+(stylesheet|preload|icon|manifest)[^>]+href="https?://' website --include='*.html'; then
             echo "::error::The Pages site must not load remote stylesheets, fonts, or icons."
             exit 1
