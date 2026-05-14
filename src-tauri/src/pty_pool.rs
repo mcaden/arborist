@@ -27,13 +27,13 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, CommandBuilder, ExitStatus, PtySize};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 use crate::activity::{ActivityEvent, ActivityScanner, TICK_INTERVAL};
 use crate::compose::{self, platform_shell};
@@ -900,17 +900,12 @@ impl PtyPool {
         let env = compose::env_for_tool(session.tool, &session.id);
         let prep = crate::plugins::ai::spawn_prep(session.tool, &session.id);
         if prep.ensure_temp_dir {
-            let dir = compose::session_temp_dir(&session.id);
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                debug!(session_id = %session.id, error = %e, dir = %dir.display(), "session temp dir create failed");
-            }
+            crate::session_temp::ensure_session_temp_dir(&session.id)?;
         }
-        for stale in prep.stale_files {
-            match std::fs::remove_file(&stale) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    debug!(session_id = %session.id, path = %stale.display(), error = %e, "stale session file removal failed");
+        for reset in prep.reset_files {
+            match reset {
+                crate::plugins::ai::SpawnPrepFile::CopilotOtel => {
+                    crate::session_temp::prepare_copilot_otel_file(&session.id)?;
                 }
             }
         }
@@ -1122,11 +1117,8 @@ impl PtyPool {
         };
 
         // 6. Delete the per-session temp dir.
-        let dir = compose::session_temp_dir(id);
-        if dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&dir) {
-                debug!(session_id = %id, dir = %dir.display(), error = %e, "remove_dir_all failed");
-            }
+        if let Err(e) = crate::session_temp::remove_session_temp_dir(id) {
+            warn!(session_id = %id, error = %e, "hardened session temp dir removal failed");
         }
 
         // 7. Decide on the outcome. The kill **was** issued in step 3 regardless of
@@ -1277,47 +1269,7 @@ fn pty_wait_loop(id: SessionId, waiter: Box<dyn PtyWaiter>, sink: PtySink, kille
 /// Restore-safety: a stale-mtime dir whose UUID **is** still persisted is **kept**, so a Phase 7 restart never races temp-file deletion against
 /// rematerialisation.
 pub fn cleanup_orphans(persisted_session_ids: &[SessionId]) -> Result<usize, Error> {
-    let root = compose::session_temp_dir(&SessionId::new());
-    let scan_root = root
-        .parent()
-        .ok_or_else(|| Error::Internal("session temp dir has no parent".into()))?
-        .to_path_buf();
-
-    if !scan_root.exists() {
-        return Ok(0);
-    }
-
-    let persisted: std::collections::HashSet<String> = persisted_session_ids.iter().map(|id| id.0.to_string()).collect();
-
-    let now = SystemTime::now();
-    let mut deleted = 0usize;
-    for entry in std::fs::read_dir(&scan_root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        // Only touch UUID-named dirs — don't accidentally nuke unrelated siblings.
-        if uuid::Uuid::parse_str(name).is_err() {
-            continue;
-        }
-        if persisted.contains(name) {
-            continue;
-        }
-        let mtime = entry.metadata().and_then(|m| m.modified()).unwrap_or(now);
-        let age = now.duration_since(mtime).unwrap_or(Duration::ZERO);
-        if age >= ORPHAN_AGE_THRESHOLD {
-            if let Err(e) = std::fs::remove_dir_all(&path) {
-                warn!(dir = %path.display(), error = %e, "cleanup_orphans: remove_dir_all failed");
-            } else {
-                deleted += 1;
-            }
-        }
-    }
-    Ok(deleted)
+    crate::session_temp::cleanup_orphan_session_temp_dirs(persisted_session_ids, ORPHAN_AGE_THRESHOLD)
 }
 
 // --------------------------------------------------------------------------- Tests (unit-level — integration tests live in tests/pty_pool.rs)

@@ -19,6 +19,7 @@ use arborist_lib::pty_pool::{
     cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET,
     DEFAULT_PTY_SIZE, OUTPUT_CHANNEL_CAPACITY,
 };
+use arborist_lib::session_temp::{ensure_session_temp_dir, prepare_copilot_otel_file, remove_session_temp_dir};
 use arborist_lib::types::{InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool};
 use portable_pty::{ExitStatus, PtySize};
 use uuid::Uuid;
@@ -381,7 +382,7 @@ fn make_copilot_session(workdir: &Path) -> Session {
 }
 
 #[test]
-fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
+fn pool_spawn_prep_injects_otel_env_and_resets_stale_file_for_copilot() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_copilot_session(dir.path());
 
@@ -410,9 +411,10 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
     assert_eq!(env.get("COPILOT_OTEL_ENABLED"), Some(&std::ffi::OsString::from("true")));
     assert_eq!(env.get("OTEL_BSP_SCHEDULE_DELAY"), Some(&std::ffi::OsString::from("1000")));
 
-    // Assert: the temp dir still exists, and the stale file is gone.
+    // Assert: the temp dir still exists, and the stale file was reset to an empty owner-only exporter target.
     assert!(temp.exists(), "session temp dir must exist after prep");
-    assert!(!stale.exists(), "stale otel.jsonl must be removed before spawn");
+    assert!(stale.exists(), "otel.jsonl must be recreated before spawn");
+    assert_eq!(std::fs::read(&stale).unwrap(), b"", "stale otel.jsonl must be empty before spawn");
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();
@@ -421,6 +423,46 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
     // is the Copilot equivalent of the system-prompt.md cleanup covered by `kill_terminates_child_and_removes_entry_and_temp_dir`, and is the
     // regression assertion for the temp-cleanup-verify todo.
     assert!(!temp.exists(), "session_temp_dir must be removed by kill: {}", temp.display(),);
+}
+
+#[cfg(unix)]
+#[test]
+fn prepare_copilot_otel_file_uses_owner_only_unix_modes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let id = SessionId::new();
+    let path = prepare_copilot_otel_file(&id).expect("prepare otel file");
+    let root = arborist_lib::compose::session_temp_root();
+    let dir = session_temp_dir(&id);
+
+    assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
+    remove_session_temp_dir(&id).expect("cleanup");
+}
+
+#[test]
+fn prepare_copilot_otel_file_refuses_symlinked_otel_path() {
+    let id = SessionId::new();
+    let dir = ensure_session_temp_dir(&id).expect("session temp dir");
+    let otel = copilot_otel_path(&id);
+    let victim_dir = tempfile::tempdir().unwrap();
+    let victim = victim_dir.path().join("victim.jsonl");
+    std::fs::write(&victim, b"do-not-touch").unwrap();
+
+    if !symlink_file_or_skip(&victim, &otel) {
+        remove_session_temp_dir(&id).ok();
+        return;
+    }
+
+    let err = prepare_copilot_otel_file(&id).expect_err("symlinked otel path must be refused");
+    assert!(format!("{err}").contains("refusing"), "unexpected error: {err}");
+    assert_eq!(std::fs::read(&victim).unwrap(), b"do-not-touch");
+
+    remove_file_symlink(&otel);
+    remove_session_temp_dir(&id).expect("cleanup session temp dir");
+    assert!(!dir.exists(), "cleanup should remove the now-empty session temp dir");
 }
 
 #[test]
@@ -825,6 +867,102 @@ fn cleanup_orphans_deletes_only_unpersisted_stale_dirs() {
     // Cleanup test fixtures.
     std::fs::remove_dir_all(&young).ok();
     std::fs::remove_dir_all(&persisted).ok();
+}
+
+#[test]
+fn remove_session_temp_dir_refuses_symlink_child_and_preserves_target() {
+    let id = SessionId::new();
+    let dir = ensure_session_temp_dir(&id).expect("session temp dir");
+    let victim = tempfile::tempdir().unwrap();
+    std::fs::write(victim.path().join("keep.txt"), b"keep").unwrap();
+    let link = dir.join("linked-victim");
+
+    if !symlink_dir_or_skip(victim.path(), &link) {
+        remove_session_temp_dir(&id).ok();
+        return;
+    }
+
+    let err = remove_session_temp_dir(&id).expect_err("session temp cleanup must refuse symlink children");
+    assert!(format!("{err}").contains("refusing"), "unexpected error: {err}");
+    assert!(
+        victim.path().join("keep.txt").exists(),
+        "cleanup followed a symlink and touched the victim"
+    );
+
+    remove_dir_symlink(&link);
+    remove_session_temp_dir(&id).expect("cleanup after removing symlink");
+}
+
+#[test]
+fn cleanup_orphans_skips_uuid_symlink_and_preserves_target() {
+    let anchor = SessionId::new();
+    ensure_session_temp_dir(&anchor).expect("create root");
+    remove_session_temp_dir(&anchor).expect("remove anchor");
+
+    let link_id = SessionId::new();
+    let link = session_temp_dir(&link_id);
+    let victim = tempfile::tempdir().unwrap();
+    std::fs::write(victim.path().join("keep.txt"), b"keep").unwrap();
+
+    if !symlink_dir_or_skip(victim.path(), &link) {
+        return;
+    }
+
+    let _deleted = cleanup_orphans(&[]).expect("cleanup orphans");
+    assert!(victim.path().join("keep.txt").exists(), "orphan cleanup followed a UUID symlink");
+    assert!(link.exists(), "UUID symlink should be skipped, not removed");
+
+    remove_dir_symlink(&link);
+}
+
+#[cfg(unix)]
+fn symlink_file_or_skip(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).expect("create file symlink");
+    true
+}
+
+#[cfg(windows)]
+fn symlink_file_or_skip(target: &Path, link: &Path) -> bool {
+    match std::os::windows::fs::symlink_file(target, link) {
+        Ok(()) => true,
+        Err(e) if is_windows_symlink_privilege_error(&e) => false,
+        Err(e) => panic!("create file symlink: {e}"),
+    }
+}
+
+fn remove_file_symlink(link: &Path) {
+    std::fs::remove_file(link).expect("remove file symlink");
+}
+
+#[cfg(unix)]
+fn symlink_dir_or_skip(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).expect("create dir symlink");
+    true
+}
+
+#[cfg(windows)]
+fn symlink_dir_or_skip(target: &Path, link: &Path) -> bool {
+    match std::os::windows::fs::symlink_dir(target, link) {
+        Ok(()) => true,
+        Err(e) if is_windows_symlink_privilege_error(&e) => false,
+        Err(e) => panic!("create dir symlink: {e}"),
+    }
+}
+
+#[cfg(windows)]
+fn is_windows_symlink_privilege_error(e: &std::io::Error) -> bool {
+    const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+    e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
+}
+
+#[cfg(unix)]
+fn remove_dir_symlink(link: &Path) {
+    std::fs::remove_file(link).expect("remove dir symlink");
+}
+
+#[cfg(windows)]
+fn remove_dir_symlink(link: &Path) {
+    std::fs::remove_dir(link).expect("remove dir symlink");
 }
 
 #[cfg(windows)]

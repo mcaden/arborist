@@ -198,9 +198,19 @@ pub fn validate_worktree(path: &Path) -> Result<PathBuf, Error> {
 /// Phase 6's `cleanup_orphans` walks `<os-temp>/arborist/` and removes child directories whose UUID does not match a known session, so this scheme
 /// must stay stable.
 #[must_use]
-pub fn session_temp_dir(id: &SessionId) -> PathBuf {
+pub fn session_temp_root() -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push("arborist");
+    p
+}
+
+/// Deterministic per-session temp directory: `<os-temp>/arborist/<uuid>/`.
+///
+/// Phase 6's `cleanup_orphans` walks `<os-temp>/arborist/` and removes child directories whose UUID does not match a known session, so this scheme
+/// must stay stable.
+#[must_use]
+pub fn session_temp_dir(id: &SessionId) -> PathBuf {
+    let mut p = session_temp_root();
     p.push(id.0.to_string());
     p
 }
