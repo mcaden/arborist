@@ -994,7 +994,15 @@ Frontend ↔ backend communication uses Tauri's typed command/event system. Comm
 are invoked from the frontend via `invoke()`; events are pushed from the Rust backend
 via `app_handle.emit()` and received in the frontend via `listen()`.
 
-All commands are gated by Tauri capability declarations in `capabilities/main.json`.
+All commands are gated by Tauri capability declarations in `capabilities/main.json`. The main window capability grants only Arborist's
+application-defined command permissions plus `core:event:allow-listen` / `core:event:allow-unlisten` for event subscriptions; broad plugin
+permissions such as dialog, shell, store, and filesystem access are intentionally absent. The native directory picker is exposed through the
+Rust `dialog_pick_directory` command above rather than through `@tauri-apps/plugin-dialog`.
+Plugin crates can still be registered as planned extension points; the capability file is the WebView exposure boundary.
+
+The bundled production WebView runs with an explicit CSP in `src-tauri/tauri.conf.json`: bundled scripts/assets only, inline styles only for React
+dynamic styles and xterm.js, `data:` images for OS-extracted icons, local fonts, and `connect-src` limited to Tauri IPC (`ipc:` and
+`http://ipc.localhost`). Development has a separate `devCsp` that additionally permits the local Vite/HMR server.
 
 ### Commands (Frontend → Rust)
 

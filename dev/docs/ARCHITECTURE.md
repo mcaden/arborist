@@ -135,16 +135,30 @@ Every `#[tauri::command]` callable from the WebView is gated by an entry
 in `src-tauri/capabilities/main.json` referencing a permission file in
 `src-tauri/permissions/`. The current capability set:
 
-| Permission              | Gates                                                                  |
-| ----------------------- | ---------------------------------------------------------------------- |
-| `core:default`          | Built-in core APIs (clipboard, window, etc).                            |
-| `allow-ping`            | `ping` (smoke / health command).                                        |
-| `allow-config`          | `config_get`, `config_set`.                                             |
-| `allow-instructions`    | `instructions_list`.                                                    |
-| `allow-session`         | `session_create`, `session_list`, `session_close`, `session_focus`, `session_resize`, `session_input`, `session_restart`. |
-| `allow-frontend-ready`  | `frontend_ready`.                                                       |
-| `allow-worktrees-list`  | `worktrees_list`.                                                       |
-| `allow-dialog-pick-directory` | `dialog_pick_directory` (used by `pickDirectory` for the New-Session "Browse…" fallback). |
+| Permission                         | Gates                                                                                                      |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `core:event:allow-listen`          | Frontend subscriptions to backend events via the bridge.                                                   |
+| `core:event:allow-unlisten`        | Cleanup for bridge event subscriptions.                                                                    |
+| `allow-ping`                       | `ping` (smoke / health command).                                                                           |
+| `allow-config`                     | `config_get`, `config_set`.                                                                                |
+| `allow-instructions`               | `instructions_list`.                                                                                       |
+| `allow-session`                    | `session_create`, `session_list`, `session_close`, `session_focus`, `session_resize`, `session_input`, `session_restart`. |
+| `allow-frontend-ready`             | `frontend_ready`.                                                                                          |
+| `allow-worktrees-list`             | `worktrees_list`.                                                                                          |
+| `allow-worktree-git-status`        | `worktree_git_status`.                                                                                     |
+| `allow-workspace-validate`         | `workspace_validate`.                                                                                      |
+| `allow-workspace-switch`           | `workspace_switch`.                                                                                        |
+| `allow-worktree-create`            | `worktree_create`.                                                                                         |
+| `allow-worktree-prep-open-log`     | `worktree_prep_open_log`.                                                                                  |
+| `allow-subsession`                 | `subsession_create`, `subsession_close`, `subsession_focus`, `subsession_list`, `subsession_input`, `subsession_resize`, `subsession_relaunch`. |
+| `allow-subsession-icon`            | `subsession_icon`.                                                                                         |
+| `allow-worktree-tab`               | `worktree_tab_open`, `worktree_tab_close`, `worktree_tab_focus`, `worktree_tab_list`, `worktree_tab_reorder`, `worktree_tab_set_active_child`. |
+| `allow-dialog-pick-directory`      | `dialog_pick_directory` (used by `pickDirectory` for the New-Session "Browse…" fallback).                  |
+
+Broad built-in/plugin grants such as `core:default`, dialog, shell, store, and filesystem permissions are intentionally not granted. Plugin crates may
+still be registered for planned surfaces, but registration alone does not expose commands to the WebView; any future plugin command must get a narrow,
+reviewed capability before frontend code can invoke it. Native dialogs and file opening are mediated by narrow Rust commands that validate paths and
+payloads at the command boundary.
 
 The structural test in `src-tauri/tests/capability_gating.rs` keeps the
 capability JSON, the `permissions/*.toml` files, and the registered
