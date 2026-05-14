@@ -64,7 +64,7 @@ pub struct ComposeInputs<'a> {
 
 /// Compose the shell command for a session.
 ///
-/// Implements the per-tool launch table documented in docs/architecture.md:
+/// Mirrors the launch composition rules in docs/runtime-flows.md#opening-a-worktree-tab-and-launching-an-ai-session:
 ///
 /// | Tool    | CLI                                              | Temp file |
 /// |---------|--------------------------------------------------|-----------|

@@ -582,7 +582,7 @@ async fn lifecycle_handlers_refuse_while_switch_write_held() {
 
 /// `session_resize_impl` is the one gated handler that does **not** surface `WorkspaceSwitchInProgress` to the UI — it returns `Ok(())` silently and
 /// lets the next `ResizeObserver` event correct dimensions after the switch completes. Without this contract a flurry of resizes during a switch
-/// would spam error toasts (see docs/runtime-flows.md#workspace-switch).
+/// would spam error toasts (see docs/runtime-flows.md#workspace-switching).
 #[tokio::test]
 async fn resize_silently_skips_while_switch_write_held() {
     let h = build_harness();

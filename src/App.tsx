@@ -263,7 +263,7 @@ function ReadyApp(): JSX.Element {
 // Split out so the focus-management `useEffect` only mounts under the
 // `workspaceRoot` branch (the picker branch returns early above and
 // must not register the trap). Two layers gate input while a
-// transactional workspace switch is in flight (see docs/runtime-flows.md#workspace-switch -
+// transactional workspace switch is in flight (see docs/runtime-flows.md#workspace-switching -
 // inputs received mid-switch would land against ambiguous state):
 //
 // 1. The underlying app root gets `aria-busy` and `inert`. `inert`

@@ -218,7 +218,7 @@ A change is mergeable when **all** of these hold:
 1. New/changed behavior has direct test coverage that fails without the change.
 2. `pnpm run lint`, `pnpm test`, `cargo clippy -D warnings`, `cargo test` all pass locally.
 3. No `// @ts-ignore`, `any`, `.unwrap()`, `.expect()`, `console.log`, or `dbg!()` added without justification in a code comment.
-4. If a Rust struct in `types.rs` changed, its TS mirror changed in the same commit.
+4. If a Rust struct in `crates/arborist-types/src/lib.rs` changed, its TS mirror changed in the same commit.
 
 ## Common pitfalls (don't repeat)
 

@@ -370,7 +370,7 @@ describe('workspaceSwitch', () => {
   });
 
   it('forwards the no-op shape (config + sessions still populated from the unchanged store)', async () => {
-    // Per docs/runtime-flows.md#workspace-switch, even on the no-op fast path the backend
+    // Per docs/runtime-flows.md#workspace-switching, even on the no-op fast path the backend
     // returns the *current* (unchanged) `config` + `sessions` so the
     // wire payload is non-nullable and the frontend can short-circuit
     // adoption purely on the `noOp` flag — no branchy "field-missing"

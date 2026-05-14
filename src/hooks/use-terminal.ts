@@ -41,7 +41,7 @@
 //   coalesced through a single `rAF` so a sleep→wake that fires multiple
 //   events still only does one refit pass.
 //
-//   Workspace-switch safety (see docs/runtime-flows.md#workspace-switch):
+//   Workspace-switch safety (see docs/runtime-flows.md#workspace-switching):
 //   `workspace_switch` parks every session in the outgoing workspace
 //   (PTY killed, persisted record preserved) and inline-restores the new
 //   workspace's sessions under a write barrier. The session-store
