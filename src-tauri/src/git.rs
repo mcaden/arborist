@@ -13,9 +13,11 @@
 //! ```
 //! Blocks are separated by blank lines; the very first one is the main worktree.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tracing::{debug, warn};
@@ -663,6 +665,12 @@ fn push_status_file(status: &mut WorktreeGitStatus, path: String, kind: GitStatu
 // --------------------------------------------------------------------------- Source branch detection
 // ---------------------------------------------------------------------------
 
+/// Cache for detected source branches per worktree path. The source branch rarely changes (only on remote HEAD updates
+/// or branch renames), so caching avoids 1–2 subprocess calls per dashboard poll tick. The cache maps canonical worktree
+/// paths to their detected source branch (or `None` if undetectable). Entries live for the process lifetime — acceptable
+/// since a restart or `git remote set-head` are rare events and the worst case is showing stale (but still valid) info.
+static SOURCE_BRANCH_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Detect the repo's default/source branch by probing remotes. Returns the short branch name (e.g. `"main"`), or `None` when undetectable.
 ///
 /// **Limitation:** only probes the `origin` remote. Repos cloned with a non-standard remote name (e.g. `upstream`) will
@@ -738,13 +746,24 @@ pub(crate) fn parse_rev_list_count(output: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Enrich a `WorktreeGitStatus` with source branch divergence info. Best-effort: failures are silently ignored.
+///
+/// Uses [`SOURCE_BRANCH_CACHE`] to avoid re-running source branch detection on every poll tick. Only the `rev-list`
+/// count (a single fast subprocess) runs on each call; the detection probes are amortized to once per worktree path.
 fn enrich_with_source_branch(status: &mut WorktreeGitStatus, worktree_path: &Path) {
     let current_branch = match &status.branch {
         Some(b) => b.clone(),
         None => return, // detached HEAD — skip source branch detection
     };
 
-    let source = match detect_source_branch(worktree_path) {
+    let source = {
+        let mut cache = SOURCE_BRANCH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache
+            .entry(worktree_path.to_path_buf())
+            .or_insert_with(|| detect_source_branch(worktree_path))
+            .clone()
+    };
+
+    let source = match source {
         Some(s) => s,
         None => return,
     };
