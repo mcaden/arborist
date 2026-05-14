@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mcaden/arborist/security/advisories/new
+    about: Report vulnerabilities privately. Do not post exploit details publicly.
+  - name: Support guide
+    url: https://github.com/mcaden/arborist/blob/main/SUPPORT.md
+    about: See where to file bugs, feature requests, install problems, and contribution questions.
+  - name: Roadmap
+    url: https://github.com/mcaden/arborist/blob/main/docs/roadmap.md
+    about: Check known gaps and planned follow-up areas before opening a feature request.

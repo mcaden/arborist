@@ -4,15 +4,21 @@ Arborist is an open-source project maintained on a best-effort basis.
 
 ## Where to get help
 
-| Need                    | Where to go                                                          |
-| ----------------------- | -------------------------------------------------------------------- |
-| Bug report              | Open a GitHub issue with reproduction steps and environment details. |
-| Feature request         | Open a GitHub issue describing the workflow and expected behavior.   |
-| Security vulnerability  | Follow [SECURITY](SECURITY.md); do not post details publicly.        |
-| Contribution question   | Comment on the issue or PR you are working from.                     |
-| Release/install problem | Open an issue with OS, artifact name, and first-run error text.      |
+| Need                    | Where to go                                                     |
+| ----------------------- | --------------------------------------------------------------- |
+| Bug report              | Open a GitHub issue with the bug report template.               |
+| Feature request         | Open a GitHub issue with the feature request template.          |
+| Security vulnerability  | Follow [SECURITY](SECURITY.md); do not post details publicly.   |
+| Contribution question   | Comment on the issue or PR you are working from.                |
+| Release/install problem | Open an issue with OS, artifact name, and first-run error text. |
 
 If GitHub Discussions are enabled in the future, general usage questions may move there. Until then, issues are the public support channel.
+
+Start here:
+
+- [New bug report](https://github.com/mcaden/arborist/issues/new?template=bug_report.yml)
+- [New feature request](https://github.com/mcaden/arborist/issues/new?template=feature_request.yml)
+- [Private vulnerability report](https://github.com/mcaden/arborist/security/advisories/new)
 
 ## What maintainers need
 

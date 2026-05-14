@@ -23,12 +23,12 @@ This page tracks known gaps and follow-up work. It is not a promise of delivery 
 
 ## Public open-source readiness
 
-| Area              | Gap                                                                                                     |
-| ----------------- | ------------------------------------------------------------------------------------------------------- |
-| Community files   | Root community-health files now follow GitHub naming conventions; keep them linked from the docs index. |
-| Issue templates   | Public bug/feature/security templates would make triage easier.                                         |
-| Governance        | As contributor volume grows, document maintainer roles and decision process.                            |
-| Dependency review | Add automated dependency and supply-chain review appropriate for public PRs.                            |
+| Area              | Gap                                                                                                            |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| Community files   | Root community-health files now follow GitHub naming conventions; keep them linked from the docs index.        |
+| Long-form docs    | Architecture/workflow rewrite follow-ups are tracked in [#106](https://github.com/mcaden/arborist/issues/106). |
+| Governance        | As contributor volume grows, document maintainer roles and decision process.                                   |
+| Dependency review | Add automated dependency and supply-chain review appropriate for public PRs.                                   |
 
 ## Longer-term ideas
 

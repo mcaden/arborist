@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest a workflow or user experience improvement for Arborist.
+title: '[Feature]: '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing a feature idea. Please focus on the user workflow and avoid including private repository details.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and the roadmap for similar work.
+          required: true
+        - label: This request does not include secrets, tokens, private logs, or exploit details.
+          required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: User workflow
+      description: What are you trying to do in Arborist?
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current limitation
+      description: What is hard, missing, confusing, or unsafe today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the outcome you want, not only an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Include workarounds or other designs you considered.
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Impact areas
+      description: Select any areas this might affect.
+      options:
+        - label: User-facing workflow or UI
+        - label: Workspace or worktree behavior
+        - label: AI session launch behavior
+        - label: Custom processes or sub-sessions
+        - label: Configuration or persisted data
+        - label: Command/event API
+        - label: Documentation
+        - label: Security, privacy, or process-safety expectations

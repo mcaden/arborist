@@ -16,8 +16,8 @@ Read:
 ## Issue workflow
 
 - Search existing issues before opening a new one.
-- Use a bug report for reproducible broken behavior.
-- Use a feature request for new behavior or user experience changes.
+- Use the GitHub bug report template for reproducible broken behavior.
+- Use the GitHub feature request template for new behavior or user experience changes.
 - Do not post secrets, tokens, private repository paths, logs with credentials, or exploit details in public issues.
 - Security issues should follow [SECURITY](SECURITY.md), not the public issue tracker.
 
@@ -35,6 +35,7 @@ Good bug reports include:
 - Do not push directly to `main`.
 - Do not force-push shared branches.
 - Keep PRs focused. Split unrelated changes.
+- Fill out the PR template, including linked issues and any checks or manual smoke coverage.
 - Include tests for new or changed behavior.
 - Update docs when behavior, configuration, commands, events, or workflows change.
 - For PR titles created by automation in this repository, prefix the worktree or branch name in square brackets.
