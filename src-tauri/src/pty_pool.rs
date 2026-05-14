@@ -212,6 +212,8 @@ impl PtySpawner for PortablePtySpawner {
         let killer = Arc::new(PortableKiller {
             inner: Mutex::new(killer_inner),
             pid,
+            #[cfg(windows)]
+            root_creation_time: windows_process_tree::process_creation_time(pid),
         });
         let waiter = Box::new(PortableWaiter { child });
 
@@ -257,12 +259,14 @@ impl PtyWaiter for PortableWaiter {
 struct PortableKiller {
     inner: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     pid: u32,
+    #[cfg(windows)]
+    root_creation_time: Option<u64>,
 }
 
 impl PtyKiller for PortableKiller {
     fn kill(&self) -> Result<(), Error> {
         #[cfg(windows)]
-        let tree_kill_result = windows_process_tree::kill_process_tree(self.pid);
+        let tree_kill_result = windows_process_tree::kill_process_tree(self.pid, self.root_creation_time);
 
         {
             let mut guard = self.inner.lock().map_err(|_| Error::PtyKillFailed("killer mutex poisoned".into()))?;
@@ -372,10 +376,14 @@ mod windows_process_tree {
         fn CloseHandle(object: Handle) -> Bool;
     }
 
-    pub(super) fn kill_process_tree(root_pid: u32) -> Result<(), Error> {
+    pub(super) fn kill_process_tree(root_pid: u32, expected_root_creation_time: Option<u64>) -> Result<(), Error> {
         let entries =
             snapshot_process_parent_pairs().map_err(|e| Error::PtyKillFailed(format!("process tree snapshot failed for pid {root_pid}: {e}")))?;
-        let descendants = descendant_pids_deepest_first(root_pid, &entries);
+        let Some(root_creation_time) = validated_root_creation_time(root_pid, expected_root_creation_time, &entries) else {
+            return Ok(());
+        };
+
+        let descendants = descendant_pids_deepest_first(root_pid, root_creation_time, &entries);
         let mut first_error: Option<(u32, io::Error)> = None;
 
         for pid in descendants.into_iter().chain(std::iter::once(root_pid)) {
@@ -451,7 +459,13 @@ mod windows_process_tree {
         }
     }
 
-    fn process_creation_time(pid: u32) -> Option<u64> {
+    fn validated_root_creation_time(root_pid: u32, expected_root_creation_time: Option<u64>, entries: &[ProcessSnapshotEntry]) -> Option<u64> {
+        let expected = expected_root_creation_time?;
+        let actual = entries.iter().find(|entry| entry.pid == root_pid).and_then(|entry| entry.creation_time)?;
+        (actual == expected).then_some(actual)
+    }
+
+    pub(super) fn process_creation_time(pid: u32) -> Option<u64> {
         // SAFETY: OpenProcess accepts any PID and returns NULL for stale/invalid ones; no pointers are dereferenced.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
@@ -476,11 +490,7 @@ mod windows_process_tree {
         }
     }
 
-    fn descendant_pids_deepest_first(root_pid: u32, entries: &[ProcessSnapshotEntry]) -> Vec<u32> {
-        let Some(root_created_at) = entries.iter().find(|entry| entry.pid == root_pid).and_then(|entry| entry.creation_time) else {
-            return Vec::new();
-        };
-
+    fn descendant_pids_deepest_first(root_pid: u32, root_created_at: u64, entries: &[ProcessSnapshotEntry]) -> Vec<u32> {
         let mut children_by_parent: HashMap<u32, Vec<ProcessSnapshotEntry>> = HashMap::new();
         for entry in entries {
             if entry.pid != root_pid && entry.creation_time.is_some() {
@@ -573,7 +583,7 @@ mod windows_process_tree {
 
     #[cfg(test)]
     mod tests {
-        use super::{descendant_pids_deepest_first, ProcessSnapshotEntry};
+        use super::{descendant_pids_deepest_first, validated_root_creation_time, ProcessSnapshotEntry};
         use pretty_assertions::assert_eq;
 
         fn entry(pid: u32, parent_pid: u32, creation_time: u64) -> ProcessSnapshotEntry {
@@ -597,7 +607,7 @@ mod windows_process_tree {
                 entry(20, 2, 170),
             ];
 
-            assert_eq!(descendant_pids_deepest_first(10, &entries), vec![99, 14, 13, 11, 15, 12]);
+            assert_eq!(descendant_pids_deepest_first(10, 100, &entries), vec![99, 14, 13, 11, 15, 12]);
         }
 
         #[test]
@@ -610,12 +620,13 @@ mod windows_process_tree {
                 entry(13, 12, 130),
             ];
 
-            assert_eq!(descendant_pids_deepest_first(10, &entries), vec![11]);
+            assert_eq!(descendant_pids_deepest_first(10, 100, &entries), vec![11]);
         }
 
         #[test]
-        fn descendant_pids_skip_when_root_creation_time_is_unknown() {
+        fn root_creation_validation_rejects_missing_unknown_or_reused_root() {
             let entries = [
+                entry(9, 1, 90),
                 ProcessSnapshotEntry {
                     pid: 10,
                     parent_pid: 1,
@@ -624,7 +635,10 @@ mod windows_process_tree {
                 entry(11, 10, 110),
             ];
 
-            assert_eq!(descendant_pids_deepest_first(10, &entries), Vec::<u32>::new());
+            assert_eq!(validated_root_creation_time(10, Some(100), &entries), None);
+            assert_eq!(validated_root_creation_time(11, None, &entries), None);
+            assert_eq!(validated_root_creation_time(11, Some(100), &entries), None);
+            assert_eq!(validated_root_creation_time(11, Some(110), &entries), Some(110));
         }
     }
 }

@@ -77,39 +77,55 @@ fn parse_grandchild_pid(output: &str) -> Option<u32> {
 }
 
 #[cfg(windows)]
-struct PidCleanupGuard {
-    pid: u32,
+type Handle = *mut std::ffi::c_void;
+#[cfg(windows)]
+const PROCESS_TERMINATE: u32 = 0x0001;
+#[cfg(windows)]
+const SYNCHRONIZE: u32 = 0x0010_0000;
+#[cfg(windows)]
+const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
+    fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
+    fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
+    fn CloseHandle(object: Handle) -> i32;
 }
 
 #[cfg(windows)]
-impl PidCleanupGuard {
-    fn new(pid: u32) -> Self {
-        Self { pid }
+struct ProcessCleanupGuard {
+    handle: Handle,
+}
+
+#[cfg(windows)]
+impl ProcessCleanupGuard {
+    fn new(pid: u32) -> Option<Self> {
+        // SAFETY: OpenProcess accepts stale PIDs and returns NULL; no pointers are dereferenced.
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            None
+        } else {
+            Some(Self { handle })
+        }
     }
 }
 
 #[cfg(windows)]
-impl Drop for PidCleanupGuard {
+impl Drop for ProcessCleanupGuard {
     fn drop(&mut self) {
-        terminate_pid_best_effort(self.pid);
+        // SAFETY: handle was opened while the child PID was known to be alive and is closed exactly once here. Keeping the handle avoids PID-reuse
+        // cleanup hazards if the test fails before the normal pool.kill path reaps the process.
+        unsafe {
+            TerminateProcess(self.handle, 1);
+            CloseHandle(self.handle);
+        }
     }
 }
 
 #[cfg(windows)]
 fn is_pid_running(pid: u32) -> bool {
-    use std::ffi::c_void;
-
-    type Handle = *mut c_void;
-    const SYNCHRONIZE: u32 = 0x0010_0000;
-    const WAIT_TIMEOUT: u32 = 0x0000_0102;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
-        fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
-        fn CloseHandle(object: Handle) -> i32;
-    }
-
     // SAFETY: OpenProcess accepts stale PIDs and returns NULL; no pointers are dereferenced.
     let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
     if handle.is_null() {
@@ -122,32 +138,6 @@ fn is_pid_running(pid: u32) -> bool {
         CloseHandle(handle);
     }
     wait == WAIT_TIMEOUT
-}
-
-#[cfg(windows)]
-fn terminate_pid_best_effort(pid: u32) {
-    use std::ffi::c_void;
-
-    type Handle = *mut c_void;
-    const PROCESS_TERMINATE: u32 = 0x0001;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
-        fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
-        fn CloseHandle(object: Handle) -> i32;
-    }
-
-    // SAFETY: best-effort cleanup for a PID this test spawned; invalid/stale PIDs return NULL.
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if handle.is_null() {
-        return;
-    }
-    // SAFETY: handle is valid and opened with PROCESS_TERMINATE.
-    unsafe {
-        TerminateProcess(handle, 1);
-        CloseHandle(handle);
-    }
 }
 
 /// Construct a `(sink, recordings)` pair where output and status updates are pushed into shared `Vec`s for inspection.
@@ -955,11 +945,11 @@ fn kill_terminates_shell_descendants_on_windows() {
         panic!("test child did not report grandchild pid; output was {:?}", outs.lock().unwrap());
     };
     let grandchild_pid = parse_grandchild_pid(&output).expect("predicate already confirmed pid is present");
-    let _cleanup = PidCleanupGuard::new(grandchild_pid);
     assert!(
         is_pid_running(grandchild_pid),
         "grandchild pid {grandchild_pid} should be running before kill"
     );
+    let _cleanup = ProcessCleanupGuard::new(grandchild_pid).expect("open cleanup handle for spawned grandchild");
 
     let outcome = rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
 

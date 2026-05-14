@@ -21,7 +21,7 @@
 //! prevents `tauri build` from trying to copy this helper into the AppImage / .deb / .app bundle. Do not move this file back into `src/bin/`.
 
 use std::io::{self, BufRead, Write};
-use std::process::ExitCode;
+use std::process::{Child, ExitCode};
 use std::time::Duration;
 
 fn main() -> ExitCode {
@@ -95,13 +95,14 @@ fn spawn_grandchild(marker_path: Option<&std::ffi::OsString>) -> ExitCode {
         Ok(exe) => exe,
         Err(_) => return ExitCode::from(2),
     };
-    let child = match std::process::Command::new(exe).arg("--hold").spawn() {
+    let mut child = match std::process::Command::new(exe).arg("--hold").spawn() {
         Ok(child) => child,
         Err(_) => return ExitCode::from(2),
     };
     if let Some(marker_path) = marker_path {
         let marker_path = std::path::PathBuf::from(marker_path);
         if std::fs::write(&marker_path, child.id().to_string()).is_err() {
+            terminate_spawned_child(&mut child);
             return ExitCode::from(2);
         }
     }
@@ -109,13 +110,20 @@ fn spawn_grandchild(marker_path: Option<&std::ffi::OsString>) -> ExitCode {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if writeln!(out, "ARBORIST-TEST-CHILD GRANDCHILD {}", child.id()).is_err() {
+        terminate_spawned_child(&mut child);
         return ExitCode::from(2);
     }
     if out.flush().is_err() {
+        terminate_spawned_child(&mut child);
         return ExitCode::from(2);
     }
 
     loop {
         std::thread::sleep(Duration::from_secs(60));
     }
+}
+
+fn terminate_spawned_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
