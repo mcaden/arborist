@@ -312,25 +312,27 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               </section>
 
               <section className="mb-4">
-                <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Appearance</h3>
-                <div className="flex items-center gap-3" data-testid="settings-theme-picker">
-                  {(['system', 'light', 'dark'] as const).map((mode) => (
-                    <label key={mode} className="flex items-center gap-1.5 text-xs">
-                      <input
-                        type="radio"
-                        name="theme"
-                        value={mode}
-                        checked={theme === mode}
-                        onChange={() => void setConfig({ theme: mode })}
-                        className="accent-blue-600"
-                      />
-                      {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}
-                    </label>
-                  ))}
-                </div>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Choose your preferred colour scheme. &ldquo;System&rdquo; follows the OS preference.
-                </p>
+                <fieldset>
+                  <legend className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Appearance</legend>
+                  <div className="flex items-center gap-3" data-testid="settings-theme-picker">
+                    {(['system', 'light', 'dark'] as const).map((mode) => (
+                      <label key={mode} className="flex items-center gap-1.5 text-xs">
+                        <input
+                          type="radio"
+                          name="theme"
+                          value={mode}
+                          checked={theme === mode}
+                          onChange={() => void setConfig({ theme: mode })}
+                          className="accent-blue-600"
+                        />
+                        {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Choose your preferred colour scheme. &ldquo;System&rdquo; follows the OS preference.
+                  </p>
+                </fieldset>
               </section>
 
               <section className="mb-4">

@@ -87,28 +87,32 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
   "lastOpenSubSessions": [],
   "worktreeTabs": [],
   "worktreeTabOrder": [],
-  "activeWorktreeTabId": null
+  "activeWorktreeTabId": null,
+  "theme": "system"
 }
 ```
 
 `sidebarWidthPx` is optional. When present, the backend clamps it to the supported range.
 
+`theme` defaults to `"system"` (follow OS preference). Other accepted values: `"light"`, `"dark"`.
+
 ## Important fields
 
-| Field                                                     | Notes                                                                                                                           |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                         |
-| `instructionSetsDir`                                      | Absolute directory scanned for instruction-set Markdown files. Relative paths are rejected on write and cleared on load.        |
-| `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                                    |
-| `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                         |
-| `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                             |
-| `pluginSettings`                                          | Per-plugin enable flags and plugin-owned settings. AI launch overrides live at `pluginSettings.ai.<id>.settings.launchCommand`. |
-| `aiLaunchCommands.commands`                               | Legacy input compatibility for AI launch overrides. Migrated into `pluginSettings` on load or save.                             |
-| `aiLaunchCommands.iconDataUris`                           | Backend-managed icon cache. Frontend patches do not write this map.                                                             |
-| `lastOpenSessions`, `tabOrder`, `activeSessionId`         | AI session restore and focus state. Managed by the app.                                                                         |
-| `worktreeTabs`, `worktreeTabOrder`, `activeWorktreeTabId` | Top-level sidebar state. Managed by the app.                                                                                    |
-| `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                       |
-| `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                                    |
+| Field                                                     | Notes                                                                                                                                       |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                                     |
+| `instructionSetsDir`                                      | Absolute directory scanned for instruction-set Markdown files. Relative paths are rejected on write and cleared on load.                    |
+| `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                                                |
+| `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                                     |
+| `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                                         |
+| `pluginSettings`                                          | Per-plugin enable flags and plugin-owned settings. AI launch overrides live at `pluginSettings.ai.<id>.settings.launchCommand`.             |
+| `aiLaunchCommands.commands`                               | Legacy input compatibility for AI launch overrides. Migrated into `pluginSettings` on load or save.                                         |
+| `aiLaunchCommands.iconDataUris`                           | Backend-managed icon cache. Frontend patches do not write this map.                                                                         |
+| `lastOpenSessions`, `tabOrder`, `activeSessionId`         | AI session restore and focus state. Managed by the app.                                                                                     |
+| `worktreeTabs`, `worktreeTabOrder`, `activeWorktreeTabId` | Top-level sidebar state. Managed by the app.                                                                                                |
+| `theme`                                                   | Colour-scheme preference: `"system"` (default, follows OS), `"light"`, or `"dark"`. No config version bump — absent defaults to `"system"`. |
+| `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                                   |
+| `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                                                |
 
 ## Instruction-set discovery
 
