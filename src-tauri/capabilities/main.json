@@ -8,7 +8,6 @@
     "core:event:allow-unlisten",
     "allow-ping",
     "allow-config",
-    "allow-instructions",
     "allow-session",
     "allow-frontend-ready",
     "allow-worktrees-list",

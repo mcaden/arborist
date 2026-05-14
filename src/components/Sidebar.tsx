@@ -326,7 +326,7 @@ export function Sidebar(): JSX.Element {
     >
       <WorkspaceIndicator />
       <NewSessionButton buttonRef={newSessionButtonRef} />
-      <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1">
+      <ul className="themed-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1">
         {groups.map((group) => {
           if (group.tabId === null) {
             // Synthetic orphan group — no header; just render the sessions so they remain reachable. Boot self-heal will open a

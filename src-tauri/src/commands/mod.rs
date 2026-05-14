@@ -1,6 +1,6 @@
 //! Tauri command handlers.
 //!
-//! Phase 3 introduced `ping`; Phase 4 added `config_get`/`config_set` and `instructions_list`; Phase 7 adds the full session lifecycle plus the
+//! Phase 3 introduced `ping`; Phase 4 added `config_get`/`config_set`; Phase 7 adds the full session lifecycle plus the
 //! `frontend_ready` gate. The actual business logic for session commands lives in the [`session`] submodule as `*_impl` free functions taking
 //! [`session::AppContext`]; the `#[tauri::command]` wrappers below are
 //! intentionally thin so that integration tests can drive the same code paths directly.
@@ -20,14 +20,14 @@ use std::sync::{Arc, RwLock};
 
 use tauri::{Emitter, Manager};
 
-use crate::config_store::{list_instructions_for, ConfigStore};
+use crate::config_store::ConfigStore;
 use crate::sub_sessions::SubAppContext;
 use crate::types::{
-    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
-    SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
-    SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs,
-    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab,
-    WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
+    AppConfig, AppError, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs,
+    SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession, SubSessionCloseArgs,
+    SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult,
+    WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs,
+    WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -92,14 +92,6 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
 /// default; OS temp is the last resort. Absolute commands (`C:\Program Files\...`, `/usr/bin/...`) ignore this entirely.
 fn backfill_cwd(cfg: &AppConfig) -> std::path::PathBuf {
     cfg.workspace_root.clone().filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir)
-}
-
-/// Discovers and returns the list of [`InstructionSet`]s available under the configured `instructionSetsDir`.
-#[tauri::command]
-pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionSet>, AppError> {
-    let ctx = ctx_of(&app)?;
-    let cfg = ctx.store().load_config();
-    list_instructions_for(&cfg)
 }
 
 fn pick_directory_native() -> Option<String> {

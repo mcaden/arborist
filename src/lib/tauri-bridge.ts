@@ -21,8 +21,6 @@ export type { AppErrorLike } from '@/lib/tauri-error';
 
 import type {
   AppConfig,
-  InstructionSet,
-  InstructionSetId,
   PartialAppConfig,
   SessionId,
   SessionOutputEvent,
@@ -71,7 +69,6 @@ import type {
 export interface SessionCreateArgs {
   tool: Tool;
   worktreePath: string;
-  instructionSetId?: InstructionSetId;
   /**
    * Initial PTY dimensions in character cells. Required: the backend
    * opens the child PTY at exactly this size so the CLI's first paint
@@ -226,9 +223,7 @@ export function frontendReady(): Promise<void> {
 }
 
 /**
- * Returns the persisted [`AppConfig`]. Path fields are canonicalized by the
- * backend; missing instruction-set IDs are silently rewritten to the
- * discovered default for the relevant tool.
+ * Returns the persisted [`AppConfig`]. Path fields are canonicalized by the backend, and invalid persisted values are sanitized on load.
  */
 export function configGet(): Promise<AppConfig> {
   return invoke<AppConfig>('config_get');
@@ -248,15 +243,6 @@ export function configGet(): Promise<AppConfig> {
  */
 export function configSet(partial: PartialAppConfig): Promise<AppConfig> {
   return invoke<AppConfig>('config_set', { partial });
-}
-
-/**
- * Discovers and returns the list of [`InstructionSet`]s under the configured
- * `instructionSetsDir`. Files exceeding 1 MiB or escaping the directory via
- * symlink are skipped.
- */
-export function instructionsList(): Promise<InstructionSet[]> {
-  return invoke<InstructionSet[]>('instructions_list');
 }
 
 /**

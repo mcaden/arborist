@@ -17,21 +17,8 @@
 //!
 //! ## Path safety (`save_config`)
 //!
-//! * Relative paths in `instructionSetsDir` or `worktreeRoots[]` are rejected
-//!   with [`Error::InvalidPath`].
-//! * The keys of `worktreePrelaunchCommands` (canonicalized worktree paths) are
-//!   also rejected if relative.
-//! * Instruction file paths supplied via the (currently unused) override path
-//!   must canonicalize *inside* `instructionSetsDir`.
-//!
-//! ## Instruction discovery (`discover_instructions`)
-//!
-//! `*.md` files in `instructionSetsDir` are loaded; each candidate is canonicalized and asserted to lie inside the canonical `instructionSetsDir`
-//! (defence against symlinks pointing outside). Files larger than 1 MiB are skipped + warned. Filenames prefixed with `claude-` and `copilot-` are
-//! bound to those tools respectively; everything else is ignored. The discovered "default" per tool is `<tool>-default.md` if it exists, else the
-//! first alphabetical match for that tool prefix. The
-//! [`InstructionSetId`] for each set is its filename stem (e.g.
-//! `claude-default`).
+//! * Relative paths in `workspaceRoot` or `worktreeRoots[]` are rejected with [`Error::InvalidPath`].
+//! * The keys of `worktreePrelaunchCommands` (canonicalized worktree paths) are also rejected if relative.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -45,16 +32,13 @@ use tracing::{debug, warn};
 
 use crate::store_layout::StoreLayout;
 use crate::types::{
-    AppConfig, AppError, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, InstructionSet, InstructionSetId, PartialAppConfig,
-    PartialDefaultInstructionSets, PartialPluginSettingState, PartialPluginSettings, PluginSettingState, Session, SessionId, SessionMetricsEvent,
-    SessionStatus, SubSessionRecord, Tool, WorktreeTab, WorktreeTabId, AI_LAUNCH_COMMAND_SETTING, CONFIG_VERSION_CURRENT,
+    AppConfig, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, PartialAppConfig, PartialPluginSettingState,
+    PartialPluginSettings, PluginSettingState, Session, SessionId, SessionMetricsEvent, SessionStatus, SubSessionRecord, Tool, WorktreeTab,
+    WorktreeTabId, AI_LAUNCH_COMMAND_SETTING, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
 const SESSIONS_FILENAME: &str = "sessions.json";
-
-/// Maximum size (in bytes) of a single instruction file. Files exceeding this cap are skipped during discovery (defence in depth).
-pub const MAX_INSTRUCTION_FILE_BYTES: u64 = 1024 * 1024;
 
 // --------------------------------------------------------------------------- ConfigStore
 // ---------------------------------------------------------------------------
@@ -146,14 +130,11 @@ impl ConfigStore {
     ///
     /// * Quarantines and returns defaults if the file is missing or
     ///   unparseable.
-    /// * Canonicalizes `instructionSetsDir` and each `worktreeRoots[]`,
-    ///   dropping (with a warning) any entry that no longer points at an
-    ///   existing directory.
+    /// * Canonicalizes `workspaceRoot` and each `worktreeRoots[]`, dropping
+    ///   (with a warning) any entry that no longer points at an existing
+    ///   directory.
     /// * Drops per-worktree override keys whose paths don't canonicalize to an
     ///   existing directory (logged warning).
-    /// * If `defaultInstructionSets.{claude|copilot}` references an ID that
-    ///   isn't in the discovered instruction set list, falls back to the
-    ///   discovered default for that tool.
     pub fn load_config(&self) -> AppConfig {
         let path = self.config_path();
         let raw = match fs::read_to_string(&path) {
@@ -255,32 +236,6 @@ impl ConfigStore {
         sanitize_loaded_custom_processes(&mut cfg.custom_processes);
         sanitize_loaded_sub_session_records(&mut cfg.last_open_sub_sessions, &cfg.custom_processes, &cfg.worktree_tabs);
         validate_loaded_config(&mut cfg);
-
-        // Validate default instruction set IDs against the *discovered* set. Skip validation entirely if we don't have an instructionSetsDir
-        // configured — there's nothing to validate against and we'd otherwise clobber legitimate IDs that haven't yet been observed.
-        if !cfg.instruction_sets_dir.as_os_str().is_empty() {
-            let discovered = discover_instructions(&cfg.instruction_sets_dir).unwrap_or_default();
-            let known_ids: BTreeSet<InstructionSetId> = discovered.iter().map(|i| i.id.clone()).collect();
-            let claude_default = discovered.iter().find(|i| i.tool == Tool::Claude && i.is_default).map(|i| i.id.clone());
-            let copilot_default = discovered.iter().find(|i| i.tool == Tool::Copilot && i.is_default).map(|i| i.id.clone());
-
-            if !cfg.default_instruction_sets.claude.as_str().is_empty() && !known_ids.contains(&cfg.default_instruction_sets.claude) {
-                warn!(
-                    code = "ConfigQuarantined",
-                    missing = %cfg.default_instruction_sets.claude,
-                    "defaultInstructionSets.claude not found in discovered sets; falling back",
-                );
-                cfg.default_instruction_sets.claude = claude_default.unwrap_or_default();
-            }
-            if !cfg.default_instruction_sets.copilot.as_str().is_empty() && !known_ids.contains(&cfg.default_instruction_sets.copilot) {
-                warn!(
-                    code = "ConfigQuarantined",
-                    missing = %cfg.default_instruction_sets.copilot,
-                    "defaultInstructionSets.copilot not found in discovered sets; falling back",
-                );
-                cfg.default_instruction_sets.copilot = copilot_default.unwrap_or_default();
-            }
-        }
 
         cfg
     }
@@ -508,8 +463,7 @@ fn migrate_copilot_composed_commands(sessions: &mut BTreeMap<SessionId, Session>
 
 fn validate_loaded_config(cfg: &mut AppConfig) {
     // Clamp a hand-edited `sidebar_width_px` into [180, 480]. The patch path in `merge_partial` already clamps frontend-driven writes; this load-time
-    // pass is the self-heal for a user who hand-edited `config.json` directly (the existing custom_processes / instruction-set validation a few lines
-    // down follow the same "normalize on load" pattern).
+    // pass is the self-heal for a user who hand-edited `config.json` directly.
     if let Some(width) = cfg.sidebar_width_px {
         let clamped = width.clamp(crate::types::SIDEBAR_WIDTH_MIN_PX, crate::types::SIDEBAR_WIDTH_MAX_PX);
         if clamped != width {
@@ -521,30 +475,6 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
                 "sidebarWidthPx was outside [180, 480]; clamped on load",
             );
             cfg.sidebar_width_px = Some(clamped);
-        }
-    }
-
-    // Canonicalize instructionSetsDir. An empty path = "no directory yet configured" and is left as-is.
-    if !cfg.instruction_sets_dir.as_os_str().is_empty() {
-        match dunce::canonicalize(&cfg.instruction_sets_dir) {
-            Ok(p) if p.is_dir() => cfg.instruction_sets_dir = p,
-            Ok(p) => {
-                warn!(
-                    code = "InvalidPath",
-                    path = %p.display(),
-                    "instructionSetsDir is not a directory; clearing",
-                );
-                cfg.instruction_sets_dir = PathBuf::new();
-            }
-            Err(e) => {
-                warn!(
-                    code = "InvalidPath",
-                    path = %cfg.instruction_sets_dir.display(),
-                    error = %e,
-                    "instructionSetsDir could not be canonicalized; clearing",
-                );
-                cfg.instruction_sets_dir = PathBuf::new();
-            }
         }
     }
 
@@ -605,30 +535,6 @@ fn validate_loaded_config(cfg: &mut AppConfig) {
 fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Error> {
     if let Some(v) = patch.config_version {
         cfg.config_version = v;
-    }
-    if let Some(d) = patch.default_instruction_sets {
-        let PartialDefaultInstructionSets { claude, copilot } = d;
-        if let Some(c) = claude {
-            cfg.default_instruction_sets.claude = c;
-        }
-        if let Some(c) = copilot {
-            cfg.default_instruction_sets.copilot = c;
-        }
-    }
-    if let Some(dir) = patch.instruction_sets_dir {
-        // Empty string = "clear the directory" (revert to the unconfigured default). Otherwise the path must be absolute and exist.
-        if dir.as_os_str().is_empty() {
-            cfg.instruction_sets_dir = PathBuf::new();
-        } else {
-            if dir.is_relative() {
-                return Err(Error::InvalidPath(format!("instructionSetsDir must be absolute, got {}", dir.display())));
-            }
-            let canon = dunce::canonicalize(&dir).map_err(|e| Error::InvalidPath(format!("{}: {e}", dir.display())))?;
-            if !canon.is_dir() {
-                return Err(Error::InvalidPath(format!("instructionSetsDir is not a directory: {}", canon.display())));
-            }
-            cfg.instruction_sets_dir = canon;
-        }
     }
     // workspace_root is tri-state like active_session_id: absent → leave alone; Some(None) → clear; Some(Some(path)) → set after validating it is an
     // absolute, existing directory.
@@ -851,155 +757,6 @@ fn quarantine(path: &Path) -> Option<PathBuf> {
             None
         }
     }
-}
-
-// --------------------------------------------------------------------------- Instruction discovery
-// ---------------------------------------------------------------------------
-
-/// Scan `dir` for `*.md` files and return the discovered [`InstructionSet`] list. Returns `Err` only if `dir` itself can't be read; per-file errors
-/// are logged and the offending file is skipped.
-///
-/// The returned list is sorted by `file_path` so the per-tool default selection (`<tool>-default.md` if present, else first alphabetical with the
-/// right prefix) is deterministic.
-pub fn discover_instructions(dir: &Path) -> Result<Vec<InstructionSet>, Error> {
-    if dir.as_os_str().is_empty() {
-        return Ok(Vec::new());
-    }
-    let canon_dir = match dunce::canonicalize(dir) {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(
-                code = "InvalidPath",
-                dir = %dir.display(),
-                error = %e,
-                "instructionSetsDir cannot be canonicalized; returning empty list",
-            );
-            return Ok(Vec::new());
-        }
-    };
-    if !canon_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut sets: Vec<InstructionSet> = Vec::new();
-    let entries = fs::read_dir(&canon_dir).map_err(Error::Io)?;
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                warn!(error = %e, "failed to read directory entry");
-                continue;
-            }
-        };
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
-            continue;
-        };
-
-        // Symlink defence — canonicalize and confirm we're still inside canon_dir.
-        let canon = match dunce::canonicalize(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "failed to canonicalize candidate");
-                continue;
-            }
-        };
-        if !canon.starts_with(&canon_dir) {
-            warn!(
-                code = "InvalidPath",
-                path = %canon.display(),
-                base = %canon_dir.display(),
-                "instruction file canonicalizes outside instructionSetsDir; skipping",
-            );
-            continue;
-        }
-
-        let meta = match fs::metadata(&canon) {
-            Ok(m) => m,
-            Err(e) => {
-                warn!(path = %canon.display(), error = %e, "failed to stat candidate");
-                continue;
-            }
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        if meta.len() > MAX_INSTRUCTION_FILE_BYTES {
-            warn!(
-                code = "InvalidPath",
-                path = %canon.display(),
-                size = meta.len(),
-                cap = MAX_INSTRUCTION_FILE_BYTES,
-                "instruction file exceeds 1 MiB cap; skipping",
-            );
-            continue;
-        }
-
-        let Some(tool) = Tool::ALL
-            .iter()
-            .copied()
-            .find(|t| stem.starts_with(crate::plugins::ai::instruction_stem_prefix(*t)))
-        else {
-            // Files not matching a registered AI plugin prefix are ignored —
-            // the prefix convention is documented in docs/configuration.md.
-            continue;
-        };
-
-        let name = humanize_stem(&stem);
-        sets.push(InstructionSet {
-            id: InstructionSetId::new(stem),
-            name,
-            tool,
-            file_path: canon,
-            is_default: false, // assigned below
-        });
-    }
-
-    sets.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-
-    for tool in Tool::ALL {
-        let preferred = crate::plugins::ai::plugin_for_tool(tool).default_instruction_set_path();
-        mark_defaults(&mut sets, tool, preferred);
-    }
-
-    Ok(sets)
-}
-
-fn humanize_stem(stem: &str) -> String {
-    // "claude-default" → "Claude default"; mostly a UX nicety. Kept simple — this is not a translation layer.
-    let mut chars = stem.replace(['-', '_'], " ");
-    if let Some(c) = chars.get_mut(0..1) {
-        c.make_ascii_uppercase();
-    }
-    chars
-}
-
-fn mark_defaults(sets: &mut [InstructionSet], tool: Tool, preferred_filename: &str) {
-    let preferred_idx = sets
-        .iter()
-        .position(|s| s.tool == tool && filename_matches(&s.file_path, preferred_filename));
-    let chosen = preferred_idx.or_else(|| sets.iter().position(|s| s.tool == tool));
-    if let Some(idx) = chosen {
-        sets[idx].is_default = true;
-    }
-}
-
-fn filename_matches(path: &Path, filename: &str) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.eq_ignore_ascii_case(filename))
-}
-
-// --------------------------------------------------------------------------- Tauri command surface helpers
-// ---------------------------------------------------------------------------
-
-/// Public helper used by the `instructions_list` Tauri command. Wraps
-/// [`discover_instructions`] and converts the inner error to [`AppError`].
-pub fn list_instructions_for(cfg: &AppConfig) -> Result<Vec<InstructionSet>, AppError> {
-    discover_instructions(&cfg.instruction_sets_dir).map_err(AppError::from)
 }
 
 // --------------------------------------------------------------------------- Built-in custom-process defs (configVersion 3→4 seeding)
@@ -1482,18 +1239,9 @@ mod tests {
     use super::*;
     use crate::types::{CustomProcessDef, CustomProcessDefId, CustomProcessKind, SessionStatus, SubSessionId, SubSessionRecord, TempFileSpec};
     use pretty_assertions::assert_eq;
-    use std::fs::{self, File};
-    use std::io::Write;
+    use std::fs;
     use tempfile::TempDir;
     use uuid::Uuid;
-
-    fn touch(path: &Path, contents: &str) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("mkdir");
-        }
-        let mut f = File::create(path).expect("create");
-        f.write_all(contents.as_bytes()).expect("write");
-    }
 
     fn canon(p: &Path) -> PathBuf {
         dunce::canonicalize(p).expect("canon")
@@ -1506,7 +1254,6 @@ mod tests {
             worktree_path: dir.to_path_buf(),
             worktree_name: label.to_owned(),
             label: label.to_owned(),
-            instruction_set_id: Some(InstructionSetId::new("claude-default")),
             composed_command: format!("claude {label}"),
             status: SessionStatus::Running,
             pid: Some(42),
@@ -1519,78 +1266,6 @@ mod tests {
             ai_session_id: None,
             last_metrics: None,
         }
-    }
-
-    // ----- discover_instructions ----------------------------------------
-
-    #[test]
-    fn discovery_picks_named_defaults() {
-        let dir = TempDir::new().expect("td");
-        touch(&dir.path().join("claude-default.md"), "c");
-        touch(&dir.path().join("claude-other.md"), "x");
-        touch(&dir.path().join("copilot-default.md"), "p");
-
-        let sets = discover_instructions(dir.path()).expect("ok");
-        let claude_default = sets.iter().find(|s| s.tool == Tool::Claude && s.is_default).expect("claude default");
-        assert_eq!(claude_default.id.as_str(), "claude-default");
-        let copilot_default = sets.iter().find(|s| s.tool == Tool::Copilot && s.is_default).expect("copilot default");
-        assert_eq!(copilot_default.id.as_str(), "copilot-default");
-        assert_eq!(sets.len(), 3);
-    }
-
-    #[test]
-    fn discovery_falls_back_to_first_alphabetical_when_no_named_default() {
-        let dir = TempDir::new().expect("td");
-        touch(&dir.path().join("claude-other.md"), "x");
-        touch(&dir.path().join("claude-zeta.md"), "y");
-
-        let sets = discover_instructions(dir.path()).expect("ok");
-        let default = sets.iter().find(|s| s.is_default).expect("a default exists");
-        assert_eq!(default.id.as_str(), "claude-other");
-    }
-
-    #[test]
-    fn discovery_skips_oversized_files() {
-        let dir = TempDir::new().expect("td");
-        let big = dir.path().join("claude-default.md");
-        let mut f = File::create(&big).expect("create");
-        let chunk = vec![b'x'; 1024];
-        // Write 1 MiB + 1 byte so we cross the cap.
-        for _ in 0..1024 {
-            f.write_all(&chunk).expect("write");
-        }
-        f.write_all(b"x").expect("write last");
-        f.sync_all().expect("sync");
-        drop(f);
-
-        let sets = discover_instructions(dir.path()).expect("ok");
-        assert!(sets.is_empty(), "oversized file must be skipped, got {sets:?}",);
-    }
-
-    #[test]
-    fn discovery_skips_files_without_known_prefix() {
-        let dir = TempDir::new().expect("td");
-        touch(&dir.path().join("readme.md"), "x");
-        touch(&dir.path().join("notes.md"), "x");
-
-        let sets = discover_instructions(dir.path()).expect("ok");
-        assert!(sets.is_empty(), "no claude-/copilot- prefix → ignored");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn discovery_rejects_symlink_pointing_outside_dir() {
-        use std::os::unix::fs::symlink;
-        let outside = TempDir::new().expect("outer");
-        let target = outside.path().join("claude-evil.md");
-        touch(&target, "x");
-
-        let dir = TempDir::new().expect("inner");
-        let link = dir.path().join("claude-default.md");
-        symlink(&target, &link).expect("symlink");
-
-        let sets = discover_instructions(dir.path()).expect("ok");
-        assert!(sets.is_empty(), "symlink escaping instructionSetsDir must be skipped, got {sets:?}",);
     }
 
     // ----- ConfigStore: load/save ---------------------------------------
@@ -1667,58 +1342,6 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("sessions.json.bad-"))
             .collect();
         assert!(badfiles.is_empty(), "try_load_sessions must not produce quarantine files");
-    }
-
-    #[test]
-    fn save_config_rejects_relative_instruction_dir() {
-        let td = TempDir::new().expect("td");
-        let store = ConfigStore::open(td.path()).expect("open");
-        let patch = PartialAppConfig {
-            instruction_sets_dir: Some(PathBuf::from("relative/path")),
-            ..Default::default()
-        };
-        let err = store.save_config(patch).expect_err("rejected");
-        assert!(matches!(err, Error::InvalidPath(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn save_config_canonicalizes_instruction_dir() {
-        let td = TempDir::new().expect("td");
-        let store_dir = td.path().join("store");
-        let inst_dir = td.path().join("instr");
-        fs::create_dir_all(&inst_dir).expect("mkdir");
-        let store = ConfigStore::open(&store_dir).expect("open");
-        let patch = PartialAppConfig {
-            instruction_sets_dir: Some(inst_dir.clone()),
-            ..Default::default()
-        };
-        let cfg = store.save_config(patch).expect("ok");
-        assert_eq!(cfg.instruction_sets_dir, canon(&inst_dir));
-        assert_eq!(cfg.config_version, CONFIG_VERSION_CURRENT);
-    }
-
-    #[test]
-    fn save_config_accepts_empty_instruction_dir_as_clear() {
-        let td = TempDir::new().expect("td");
-        let store_dir = td.path().join("store");
-        let inst_dir = td.path().join("instr");
-        fs::create_dir_all(&inst_dir).expect("mkdir");
-        let store = ConfigStore::open(&store_dir).expect("open");
-        // First set a non-empty dir...
-        store
-            .save_config(PartialAppConfig {
-                instruction_sets_dir: Some(inst_dir.clone()),
-                ..Default::default()
-            })
-            .expect("set");
-        // ...then clear it with an empty PathBuf.
-        let cfg = store
-            .save_config(PartialAppConfig {
-                instruction_sets_dir: Some(PathBuf::new()),
-                ..Default::default()
-            })
-            .expect("clear");
-        assert!(cfg.instruction_sets_dir.as_os_str().is_empty());
     }
 
     #[test]
@@ -1854,74 +1477,11 @@ mod tests {
     }
 
     #[test]
-    fn default_instruction_sets_deep_merges() {
-        let td = TempDir::new().expect("td");
-        let store = ConfigStore::open(td.path()).expect("open");
-        store
-            .save_config(PartialAppConfig {
-                default_instruction_sets: Some(PartialDefaultInstructionSets {
-                    claude: Some(InstructionSetId::new("claude-default")),
-                    copilot: Some(InstructionSetId::new("copilot-default")),
-                }),
-                ..Default::default()
-            })
-            .expect("ok");
-
-        let after = store
-            .save_config(PartialAppConfig {
-                default_instruction_sets: Some(PartialDefaultInstructionSets {
-                    claude: Some(InstructionSetId::new("claude-other")),
-                    copilot: None,
-                }),
-                ..Default::default()
-            })
-            .expect("ok");
-        assert_eq!(after.default_instruction_sets.claude.as_str(), "claude-other");
-        assert_eq!(
-            after.default_instruction_sets.copilot.as_str(),
-            "copilot-default",
-            "copilot must survive when only claude is patched",
-        );
-    }
-
-    #[test]
-    fn missing_default_instruction_id_falls_back_to_discovered_default() {
-        let td = TempDir::new().expect("td");
-        let inst = td.path().join("instr");
-        fs::create_dir_all(&inst).expect("mkdir");
-        touch(&inst.join("claude-default.md"), "c");
-        touch(&inst.join("copilot-default.md"), "p");
-
-        let store = ConfigStore::open(td.path().join("store")).expect("open");
-        // Hand-write a config.json that points at a non-existent claude ID and the real instructionSetsDir.
-        let canon_inst = canon(&inst);
-        let raw = serde_json::json!({
-            "configVersion": 1,
-            "defaultInstructionSets": {
-                "claude": "ghost",
-                "copilot": "copilot-default"
-            },
-            "instructionSetsDir": canon_inst.to_string_lossy(),
-            "worktreeRoots": [],
-            "prelaunchCommands": [],
-            "worktreePrelaunchCommands": {},
-            "lastOpenSessions": [],
-            "tabOrder": []
-        });
-        fs::write(store.config_path(), serde_json::to_vec_pretty(&raw).expect("ser")).expect("write");
-
-        let cfg = store.load_config();
-        assert_eq!(cfg.default_instruction_sets.claude.as_str(), "claude-default");
-    }
-
-    #[test]
     fn load_v4_config_drops_legacy_prelaunch_fields() {
         let td = TempDir::new().expect("td");
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
             "configVersion": 4,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [],
             "prelaunchCommands": ["nvm use", "source .env"],
             "worktreePrelaunchCommands": {
@@ -2269,8 +1829,6 @@ mod tests {
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
             "configVersion": 1,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [],
             "prelaunchCommands": [],
             "worktreePrelaunchCommands": {},
@@ -2359,8 +1917,6 @@ mod tests {
         let store = ConfigStore::open(&store_dir).expect("open");
         let raw = serde_json::json!({
             "configVersion": 2,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [repo.to_string_lossy()],
             "prelaunchCommands": [],
             "worktreePrelaunchCommands": {},
@@ -2385,8 +1941,6 @@ mod tests {
         let store = ConfigStore::open(&store_dir).expect("open");
         let raw = serde_json::json!({
             "configVersion": 2,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [r1.to_string_lossy(), r2.to_string_lossy()],
             "prelaunchCommands": [],
             "worktreePrelaunchCommands": {},
@@ -2410,8 +1964,6 @@ mod tests {
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
             "configVersion": 3,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2459,8 +2011,6 @@ mod tests {
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
             "configVersion": 3,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2513,8 +2063,6 @@ mod tests {
         let store = ConfigStore::open(td.path()).expect("open");
         let raw = serde_json::json!({
             "configVersion": 4,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2582,8 +2130,6 @@ mod tests {
 
         let cfg_raw = serde_json::json!({
             "configVersion": 4,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2632,8 +2178,6 @@ mod tests {
 
         let cfg_raw = serde_json::json!({
             "configVersion": 4,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2676,8 +2220,6 @@ mod tests {
 
         let cfg_raw = serde_json::json!({
             "configVersion": 4,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2725,8 +2267,6 @@ mod tests {
 
         let cfg_raw = serde_json::json!({
             "configVersion": 4,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2773,8 +2313,6 @@ mod tests {
         // v6 JSON: explicitly omit `iconId` on A and B (defaults to 0 via serde) and pin C to 5 so we can assert it's preserved.
         let cfg_raw = serde_json::json!({
             "configVersion": 6,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2817,8 +2355,6 @@ mod tests {
         let tab_orphan = WorktreeTabId::new();
         let cfg_raw = serde_json::json!({
             "configVersion": 6,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -2857,8 +2393,6 @@ mod tests {
         let corrupted = WorktreeTabId::new();
         let cfg_raw = serde_json::json!({
             "configVersion": 7,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "workspaceRoot": null,
             "worktreeRoots": [],
             "prelaunchCommands": [],
@@ -3128,8 +2662,6 @@ mod tests {
         let path = td.path().join("config.json");
         let raw = serde_json::json!({
             "configVersion": CONFIG_VERSION_CURRENT,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [],
             "lastOpenSessions": [],
             "tabOrder": [],
@@ -3143,8 +2675,6 @@ mod tests {
         // And the under-bound direction.
         let raw_low = serde_json::json!({
             "configVersion": CONFIG_VERSION_CURRENT,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [],
             "lastOpenSessions": [],
             "tabOrder": [],
@@ -3171,8 +2701,6 @@ mod tests {
         let path = td.path().join("config.json");
         let future = serde_json::json!({
             "configVersion": CONFIG_VERSION_CURRENT + 1,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [],
             "prelaunchCommands": [],
             "worktreePrelaunchCommands": {},
@@ -3203,8 +2731,6 @@ mod tests {
         // Hand-craft a v4 config with one valid, one empty-command, one duplicate-id def. Sanitize on load should keep only the first valid one.
         let crafted = serde_json::json!({
             "configVersion": CONFIG_VERSION_CURRENT,
-            "defaultInstructionSets": { "claude": "", "copilot": "" },
-            "instructionSetsDir": "",
             "worktreeRoots": [],
             "prelaunchCommands": [],
             "worktreePrelaunchCommands": {},

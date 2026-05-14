@@ -2,7 +2,7 @@
 //!
 //! Issue #96 migrates Claude-specific behavior behind plugin dispatch. This file
 //! defines the stable plugin identity and core metadata consumed across
-//! composition, settings, and instruction discovery paths.
+//! composition and settings paths.
 
 use crate::plugins::ai::AiPlugin;
 use crate::plugins::Plugin;
@@ -28,10 +28,6 @@ impl Plugin for ClaudePlugin {
 impl AiPlugin for ClaudePlugin {
     fn default_program(&self) -> &'static str {
         "claude"
-    }
-
-    fn default_instruction_set_path(&self) -> &'static str {
-        "claude-default.md"
     }
 
     fn compose(&self, inputs: &crate::compose::ComposeInputs<'_>, quoter: crate::compose::Quoter) -> (String, Vec<crate::types::TempFileSpec>) {
@@ -75,11 +71,4 @@ impl AiPlugin for ClaudePlugin {
             .join(crate::session_metrics::encode_cwd(worktree_path))
             .join(format!("{ai_session_id}.jsonl"))
     }
-
-    fn instruction_stem_prefix(&self) -> &'static str {
-        INSTRUCTION_STEM_PREFIX
-    }
 }
-
-/// Filename-stem prefix for Claude instruction sets (`claude-*.md`).
-pub const INSTRUCTION_STEM_PREFIX: &str = "claude-";

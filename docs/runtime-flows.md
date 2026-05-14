@@ -109,8 +109,7 @@ sequenceDiagram
 
 Launch composition:
 
-- Claude without an instruction set launches as bare `claude`.
-- Claude with an instruction set gets `--system-prompt <temp-file>`, where the temp file includes Arborist context and the instruction content.
+- Claude launches bare as `claude`; repository-level `CLAUDE.md` discovery is handled by the CLI from the worktree `cwd`.
 - Copilot launches bare as `copilot`; Arborist does not pass `--instructions`.
 - Custom AI launch commands replace the program token and are stored by plugin id.
 
