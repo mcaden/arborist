@@ -23,12 +23,14 @@ at the repository root using GitHub's conventional filenames.
 
 ## Public project docs
 
-| Document                                 | Use it for                                                                         |
-| ---------------------------------------- | ---------------------------------------------------------------------------------- |
-| [CONTRIBUTING](../CONTRIBUTING.md)       | Branch, PR, review, coding, and acceptance-gate expectations.                      |
-| [SECURITY](../SECURITY.md)               | Responsible disclosure, threat model, security boundaries, and supported versions. |
-| [SUPPORT](../SUPPORT.md)                 | Where public users should ask questions, file bugs, and request features.          |
-| [CODE_OF_CONDUCT](../CODE_OF_CONDUCT.md) | Conduct expectations and enforcement process for the public project.               |
+| Document                                           | Use it for                                                                         |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| [CONTRIBUTING](../CONTRIBUTING.md)                 | Branch, PR, review, coding, and acceptance-gate expectations.                      |
+| [SECURITY](../SECURITY.md)                         | Responsible disclosure, threat model, security boundaries, and supported versions. |
+| [SUPPORT](../SUPPORT.md)                           | Where public users should ask questions, file bugs, and request features.          |
+| [CODE_OF_CONDUCT](../CODE_OF_CONDUCT.md)           | Conduct expectations and enforcement process for the public project.               |
+| [Issue templates](../.github/ISSUE_TEMPLATE)       | Public bug and feature request forms for GitHub issues.                            |
+| [PR template](../.github/pull_request_template.md) | Pull request summary, issue-link, check, and smoke-test checklist.                 |
 
 ## Operations and references
 
@@ -42,5 +44,6 @@ at the repository root using GitHub's conventional filenames.
 - Keep long-form documentation under `docs/`.
 - Use lowercase filenames for project docs.
 - Use GitHub's conventional root filenames for community-health docs: `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, and `CODE_OF_CONDUCT.md`.
+- Keep GitHub issue and pull request templates under `.github/` so the community profile can discover them.
 - Use Mermaid for diagrams in active docs.
 - Keep source comments brief; link to stable doc anchors for deeper design context.

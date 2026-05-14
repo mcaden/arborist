@@ -21,12 +21,13 @@ Arborist is pre-1.0 and preparing for public open-source use. Expect active chan
 - **Restore on launch:** open sessions are restored from persisted records.
 - **Safe command composition:** worktree paths are passed as process `cwd`, not interpolated into shell commands.
 
-## Install
+## Install for users
 
-Pre-built installers are published on the [Releases page](https://github.com/mcaden/arborist/releases).
+Arborist has not published a stable release yet. When prerelease installers are available, download them from the
+[Releases page](https://github.com/mcaden/arborist/releases). Until then, use the contributor setup below to run Arborist locally.
 
-Release artifacts are not OS code-signed, so first launch may show Windows SmartScreen or macOS Gatekeeper warnings. Published assets should have
-GitHub build attestations:
+Release artifacts are not OS code-signed unless a release note says otherwise, so first launch may show Windows SmartScreen or macOS Gatekeeper
+warnings. Published assets should have GitHub build attestations:
 
 ```sh
 gh attestation verify <downloaded-file> --repo mcaden/arborist
@@ -35,14 +36,14 @@ gh attestation verify <downloaded-file> --repo mcaden/arborist
 Runtime requirements:
 
 - `git` on `PATH`.
-- At least one AI CLI for AI sessions: Claude CLI or GitHub Copilot CLI.
+- At least one authenticated AI CLI for AI sessions: Claude CLI or GitHub Copilot CLI. Arborist does not handle CLI sign-in.
 - Windows WebView2 runtime, if not already present.
 
 Optional runtime dependency:
 
 - Linux X11 application-sub-tab focusing uses `wmctrl`. Wayland focus is unsupported by design; launched applications still run.
 
-## Build from source
+## Run from source for contributors
 
 Prerequisites are covered in [docs/development.md](docs/development.md).
 
@@ -53,6 +54,8 @@ nvm use
 pnpm install
 pnpm dev
 ```
+
+`pnpm dev` starts a local development build. To create a local desktop bundle instead, run `pnpm tauri:build`.
 
 Common verification commands:
 
@@ -88,7 +91,8 @@ Long-form project docs live under [docs](docs/index.md). GitHub community-health
 
 ## Contributing
 
-Public contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Please read [SECURITY.md](SECURITY.md) before reporting a vulnerability.
+Public contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Use the GitHub issue templates for bugs and feature requests, and read
+[SECURITY.md](SECURITY.md) before reporting a vulnerability.
 
 ## License
 

@@ -1,0 +1,97 @@
+name: Bug report
+description: Report reproducible broken behavior in Arborist.
+title: '[Bug]: '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Arborist. Do not include secrets, tokens, private logs, or exploit details.
+        Security vulnerabilities should use private reporting instead of a public issue.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues for a matching report.
+          required: true
+        - label: I removed secrets, tokens, private repository names, and credential-bearing logs.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Arborist version or commit
+      description: Use the release version, tag, or commit SHA.
+      placeholder: v0.1.0 or abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - Release installer
+        - Development build with pnpm dev
+        - Local bundle with pnpm tauri:build
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux X11
+        - Linux Wayland
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: workspace
+    attributes:
+      label: Workspace shape
+      description: Describe the primary clone, managed worktree, or manually opened worktree shape without private paths.
+      placeholder: Primary clone with Arborist-managed worktree under .arborist/.worktrees/example
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Workspace or Git worktree
+        - Claude session
+        - Copilot session
+        - Terminal custom process
+        - Application custom process
+        - Settings or configuration
+        - Release or installation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps are best.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Redact secrets, private paths, transcript content, and repository remotes.
+      render: text

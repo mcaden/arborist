@@ -14,7 +14,7 @@ Do not open a public issue with exploit details, secrets, tokens, private logs, 
 
 Preferred reporting path:
 
-1. Use GitHub private vulnerability reporting for this repository when it is enabled.
+1. Use [GitHub private vulnerability reporting](https://github.com/mcaden/arborist/security/advisories/new) for this repository when it is enabled.
 2. If private reporting is not available, contact the repository maintainers through a non-public channel listed on the repository owner profile and
    ask where to send details.
 3. Publicly file only a minimal placeholder if there is no private channel, and omit exploit details until a maintainer responds.
