@@ -14,14 +14,14 @@
 //! build (the capability JSON is baked into the binary via `tauri::generate_context!` at compile time). Rather than ship a fake test that looks
 //! meaningful but isn't, we settle for a structural assertion on the checked-in capability file:
 //!
-//! * `core:default` is present (the catch-all for built-in core APIs).
+//! * Only the needed core event commands are present for frontend `listen()` cleanup.
 //! * `allow-ping` is present (the permission that gates the `ping` application
 //!   command).
 //! * The corresponding `permissions/allow-ping.toml` file exists and declares
 //!   `commands.allow = ["ping"]`.
 //!
-//! Together these prove (a) the production build will accept `ping` invocations, and (b) deleting either the capability entry or the permission file
-//! fails CI rather than silently breaking the WebView.
+//! Together these prove (a) the production build will accept `ping` invocations, (b) deleting either the capability entry or the permission file
+//! fails CI rather than silently breaking the WebView, and (c) capability broadening is reviewed explicitly.
 //!
 //! When `tauri::test` grows ergonomic capability overrides, replace the structural assertions below with a true negative round-trip. Tracked
 //! informally as a Phase-3 follow-up.
@@ -33,7 +33,7 @@ fn manifest_dir() -> PathBuf {
 }
 
 #[test]
-fn main_capability_allows_core_default_and_ping() {
+fn main_capability_allows_required_commands_only() {
     let path = manifest_dir().join("capabilities").join("main.json");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
@@ -46,8 +46,16 @@ fn main_capability_allows_core_default_and_ping() {
     let identifiers: Vec<&str> = permissions.iter().filter_map(|p| p.as_str()).collect();
 
     assert!(
-        identifiers.contains(&"core:default"),
-        "main capability must include core:default; got {identifiers:?}",
+        identifiers.contains(&"core:event:allow-listen"),
+        "main capability must allow event listen so bridge subscribers can attach; got {identifiers:?}",
+    );
+    assert!(
+        identifiers.contains(&"core:event:allow-unlisten"),
+        "main capability must allow event unlisten so bridge subscribers can clean up; got {identifiers:?}",
+    );
+    assert!(
+        !identifiers.contains(&"core:default"),
+        "main capability must not grant core:default; add only the specific core commands the frontend uses: {identifiers:?}",
     );
     assert!(
         identifiers.contains(&"allow-ping"),
@@ -94,10 +102,6 @@ fn main_capability_allows_core_default_and_ping() {
         "main capability must include allow-dialog-pick-directory so pickDirectory is callable; got {identifiers:?}",
     );
     assert!(
-        identifiers.contains(&"dialog:allow-open"),
-        "main capability must include dialog:allow-open so plugin dialog open is callable; got {identifiers:?}",
-    );
-    assert!(
         identifiers.contains(&"allow-subsession-icon"),
         "main capability must include allow-subsession-icon so subsession_icon is callable; got {identifiers:?}",
     );
@@ -112,6 +116,68 @@ fn main_capability_allows_core_default_and_ping() {
     assert!(
         identifiers.contains(&"allow-worktree-git-status"),
         "main capability must include allow-worktree-git-status so worktree_git_status is callable; got {identifiers:?}",
+    );
+}
+
+#[test]
+fn main_capability_does_not_grant_unused_plugin_permissions() {
+    let path = manifest_dir().join("capabilities").join("main.json");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
+    let permissions = value
+        .get("permissions")
+        .and_then(|p| p.as_array())
+        .expect("`permissions` must be an array");
+    let identifiers: Vec<&str> = permissions.iter().filter_map(|p| p.as_str()).collect();
+
+    for forbidden in ["dialog:", "store:", "shell:", "fs:"] {
+        assert!(
+            identifiers.iter().all(|id| !id.starts_with(forbidden)),
+            "main capability should not grant unused `{forbidden}` plugin permissions; got {identifiers:?}",
+        );
+    }
+}
+
+#[test]
+fn tauri_config_declares_explicit_production_csp() {
+    let path = manifest_dir().join("tauri.conf.json");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
+    let csp = value.pointer("/app/security/csp").expect("app.security.csp must exist");
+
+    assert!(!csp.is_null(), "production CSP must be explicit, not null");
+
+    let csp_text = csp.to_string();
+    for directive in [
+        "default-src",
+        "script-src",
+        "style-src",
+        "img-src",
+        "font-src",
+        "connect-src",
+        "object-src",
+        "base-uri",
+        "form-action",
+        "frame-ancestors",
+    ] {
+        assert!(csp_text.contains(directive), "production CSP must declare `{directive}`; got {csp_text}");
+    }
+
+    let connect_src = csp
+        .get("connect-src")
+        .and_then(|v| v.as_array())
+        .expect("production CSP connect-src must be a source list")
+        .iter()
+        .map(|v| v.as_str().expect("connect-src entries must be strings"))
+        .collect::<Vec<_>>();
+    assert_eq!(connect_src, vec!["ipc:", "http://ipc.localhost"]);
+    assert!(
+        !csp_text.contains("http://localhost"),
+        "production CSP must not allow the Vite dev server: {csp_text}"
+    );
+    assert!(
+        !csp_text.contains("ws://localhost"),
+        "production CSP must not allow Vite HMR sockets: {csp_text}"
     );
 }
 

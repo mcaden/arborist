@@ -182,10 +182,14 @@ Every command must be present in all of these places:
 
 Tauri v2 rejects frontend invokes without capability permissions. `src-tauri/capabilities/main.json` currently grants:
 
-`core:default`, `allow-ping`, `allow-config`, `allow-instructions`, `allow-session`, `allow-frontend-ready`, `allow-worktrees-list`,
-`allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`, `allow-worktree-create`,
-`allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, `allow-dialog-pick-directory`, and
-`dialog:allow-open`.
+`core:event:allow-listen`, `core:event:allow-unlisten`, `allow-ping`, `allow-config`, `allow-instructions`, `allow-session`,
+`allow-frontend-ready`, `allow-worktrees-list`, `allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`,
+`allow-worktree-create`, `allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, and
+`allow-dialog-pick-directory`.
+
+Broad built-in/plugin grants such as `core:default`, dialog, shell, store, and filesystem permissions are intentionally not granted. Plugin crates may
+still be registered for planned surfaces, but registration alone does not expose commands to the WebView; any future plugin command must get a narrow,
+reviewed capability before frontend code can invoke it.
 
 `src-tauri/tests/capability_gating.rs` keeps the command wrappers, permission files, and capability JSON in sync.
 
@@ -218,3 +222,7 @@ Arborist has an internal plugin registry, not a public plugin marketplace. Built
 Arborist runs user-configured shell commands and external CLIs on the user's machine. That is intentional power, not a sandbox. The main security
 boundary is preventing Arborist from accidentally turning paths, config, or workspace metadata into unsafe shell text. See [SECURITY](../SECURITY.md)
 for disclosure and threat-model details.
+
+The bundled production WebView uses the explicit CSP in `src-tauri/tauri.conf.json`: bundled scripts/assets only, inline styles for React dynamic
+styles and xterm.js, `data:` images for OS-extracted icons, local fonts, and `connect-src` limited to Tauri IPC (`ipc:` and
+`http://ipc.localhost`). Development has a separate `devCsp` that additionally permits the local Vite/HMR server.

@@ -37,12 +37,19 @@ Arborist trusts the local user and the workspace they choose, but it still prote
 | Area                       | Security expectation                                                                                                           |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Credentials                | Arborist must not store CLI credentials, API keys, access tokens, or passwords. Claude/Copilot auth belongs to those tools.    |
+| WebView content            | Production loads bundled assets with an explicit CSP. Remote network fetches are not required for normal operation.            |
+| Tauri command access       | WebView privileges are limited by `src-tauri/capabilities/main.json`; plugin registration alone does not expose commands.      |
 | Shell command construction | User paths are canonicalized and worktree paths are passed as `cwd`, not interpolated into command strings.                    |
 | Config                     | Config writes are atomic; corrupt config is quarantined rather than partially loaded.                                          |
 | Workspace isolation        | Each `(branch, workspace)` store is protected by an advisory lock to avoid concurrent writes from multiple Arborist instances. |
 | File opening               | Worktree-prep logs are opened only after containment checks under the app-data log directory.                                  |
 | External processes         | Custom processes are user-configured commands. They run with the user's privileges and are not sandboxed.                      |
 | Telemetry parsing          | Arborist reads local CLI transcript/telemetry files for metrics. It should not upload this data.                               |
+
+The production CSP in `src-tauri/tauri.conf.json` allows local scripts, local fonts/assets, `data:` images for OS-extracted icons, inline styles
+required by React/xterm rendering, and Tauri IPC only. The main window capability grants only the app-defined commands Arborist uses plus the core
+event listen/unlisten permissions needed for backend events. Broad filesystem, shell, store, and dialog plugin permissions are not granted. Plugin
+crates may still be registered for planned extension surfaces, but the WebView cannot invoke their commands without a narrow capability grant.
 
 ## Out of scope security guarantees
 
