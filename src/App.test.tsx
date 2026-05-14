@@ -419,8 +419,6 @@ describe('App dark mode', () => {
     mediaMatches = false; // OS says light
     configGet.mockResolvedValue({
       configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
       workspaceRoot: '/mock/workspace',
       worktreeRoots: [],
       worktreePrepCommands: [],
