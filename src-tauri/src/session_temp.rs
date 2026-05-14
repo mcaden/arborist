@@ -54,7 +54,25 @@ pub fn prepare_copilot_otel_file(id: &SessionId) -> Result<PathBuf, Error> {
 
 /// Remove the exact Copilot OTel JSONL file for a session, if present.
 pub fn remove_copilot_otel_file(id: &SessionId) -> Result<bool, Error> {
+    let root = compose::session_temp_root();
+    let root_meta = match fs::symlink_metadata(&root) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    reject_special_or_non_dir(&root, &root_meta)?;
+    set_private_dir_permissions(&root)?;
+
     let dir = compose::session_temp_dir(id);
+    let dir_meta = match fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    validate_session_dir_path(id, &dir)?;
+    reject_special_or_non_dir(&dir, &dir_meta)?;
+    set_private_dir_permissions(&dir)?;
+
     let path = compose::copilot_otel_path(id);
     validate_copilot_otel_path(id, &path, &dir)?;
     remove_regular_file_no_follow(&path)

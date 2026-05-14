@@ -19,7 +19,7 @@ use arborist_lib::pty_pool::{
     cleanup_orphans, ChildCommand, PortablePtySpawner, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild, ANSI_FULL_RESET,
     DEFAULT_PTY_SIZE, OUTPUT_CHANNEL_CAPACITY,
 };
-use arborist_lib::session_temp::{ensure_session_temp_dir, prepare_copilot_otel_file, remove_session_temp_dir};
+use arborist_lib::session_temp::{ensure_session_temp_dir, prepare_copilot_otel_file, remove_copilot_otel_file, remove_session_temp_dir};
 use arborist_lib::types::{InstructionSetId, Session, SessionId, SessionStatus, TempFileSpec, Tool};
 use portable_pty::{ExitStatus, PtySize};
 use uuid::Uuid;
@@ -463,6 +463,29 @@ fn prepare_copilot_otel_file_refuses_symlinked_otel_path() {
     remove_file_symlink(&otel);
     remove_session_temp_dir(&id).expect("cleanup session temp dir");
     assert!(!dir.exists(), "cleanup should remove the now-empty session temp dir");
+}
+
+#[test]
+fn remove_copilot_otel_file_refuses_symlinked_session_temp_dir() {
+    let anchor = SessionId::new();
+    ensure_session_temp_dir(&anchor).expect("create temp root");
+    remove_session_temp_dir(&anchor).expect("remove anchor dir");
+
+    let id = SessionId::new();
+    let link = session_temp_dir(&id);
+    let victim = tempfile::tempdir().unwrap();
+    let victim_file = victim.path().join("otel.jsonl");
+    std::fs::write(&victim_file, b"do-not-touch").unwrap();
+
+    if !symlink_dir_or_skip(victim.path(), &link) {
+        return;
+    }
+
+    let err = remove_copilot_otel_file(&id).expect_err("symlinked session temp dir must be refused");
+    assert!(format!("{err}").contains("refusing"), "unexpected error: {err}");
+    assert_eq!(std::fs::read(&victim_file).unwrap(), b"do-not-touch");
+
+    remove_dir_symlink(&link);
 }
 
 #[test]
