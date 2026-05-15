@@ -177,10 +177,12 @@ fn append_line(path: &std::path::Path, line: &str) -> std::io::Result<()> {
         match try_append_locked(path, line) {
             Ok(()) => return Ok(()),
             Err(e) => {
-                let retryable = matches!(
-                    e.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                );
+                // `PermissionDenied` is treated as retryable *only on Windows*, where it surfaces as the sharing-violation ERROR_ACCESS_DENIED
+                // described in the comment above and clears as soon as the prior handle finalises. On Unix-like platforms `PermissionDenied`
+                // virtually always means an actual mode/owner problem (unwritable temp dir, SELinux/AppArmor block) that retrying won't fix; the
+                // 450 ms budget there is wasted, and worse, it delays Claude's tool/turn progression by that much per failing hook fire.
+                let retryable_perm_denied = cfg!(windows) && matches!(e.kind(), std::io::ErrorKind::PermissionDenied);
+                let retryable = retryable_perm_denied || matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted);
                 if !retryable || attempt == ATTEMPTS - 1 {
                     return Err(e);
                 }
