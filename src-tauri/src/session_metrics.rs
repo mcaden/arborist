@@ -163,13 +163,27 @@ impl MetricsRegistry {
         };
         match join {
             Ok(handle) => {
-                // For tools that arm an activity-events tailer (Copilot today, Claude once the hook helper is wired), dispatch through
-                // `activity_events_kind` to resolve the per-tool tailer flavour + path. The watcher thread is spawned with the same `running` flag
-                // and parked in `extra_joins` so `stop` / `stop_and_join` / `stop_all_and_join` tear down everything together.
+                // For tools that arm an activity-events tailer (Copilot today, Claude when the hook helper was wired in at compose time), dispatch
+                // through `activity_events_kind` to resolve the per-tool tailer flavour + path. The watcher thread is spawned with the same
+                // `running` flag and parked in `extra_joins` so `stop` / `stop_and_join` / `stop_all_and_join` tear down everything together.
+                //
+                // Gating note: when the plugin advertises a per-session settings file via `settings_file_path` (i.e. Claude), we additionally
+                // require that file to exist on disk before spawning the watcher. The settings file is what teaches the AI process to fire hooks
+                // into our JSONL — its absence means hook integration was never wired (helper binary missing at boot, partial install, legacy
+                // sessions persisted before this code landed) so no events will ever arrive. Spawning a watcher anyway would park a per-session
+                // polling thread on a file that the world will never write to.
                 let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
                 if crate::plugins::ai::starts_activity_events_watcher(tool) {
+                    let hook_integration_disabled = match crate::plugins::ai::settings_file_path(tool, &session_id) {
+                        Some(p) => !p.exists(),
+                        None => false,
+                    };
                     let home_opt = home_dir();
-                    let kind = crate::plugins::ai::activity_events_kind(tool, session_id, home_opt.as_deref(), ai_session_id.as_deref());
+                    let kind = if hook_integration_disabled {
+                        None
+                    } else {
+                        crate::plugins::ai::activity_events_kind(tool, session_id, home_opt.as_deref(), ai_session_id.as_deref())
+                    };
                     if let Some(kind) = kind {
                         let events_running = Arc::clone(&running);
                         let events_emit = Arc::clone(&activity_emit);

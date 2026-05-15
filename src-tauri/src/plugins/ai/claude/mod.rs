@@ -68,7 +68,9 @@ impl AiPlugin for ClaudePlugin {
         _ai_session_id: Option<&str>,
     ) -> Option<crate::plugins::ai::ActivityEventsKind> {
         // Claude's hook tailer reads a per-session file under the session temp dir — no dependency on the home dir or the AI session id, so we
-        // produce a kind unconditionally. The hook helper materialises the file on the first fire even if the user never types a message.
+        // produce the kind whenever we're called. The caller in `session_metrics::MetricsRegistry::start` gates on `settings_file_path` existing
+        // on disk before invoking us, so when this path is followed the helper was wired in at compose time and the JSONL will be populated by
+        // Claude's first hook fire (even if the user never types a message).
         Some(crate::plugins::ai::ActivityEventsKind::ClaudeHookEventsJsonl(
             crate::claude_hook_events::hook_events_path(&session_id),
         ))

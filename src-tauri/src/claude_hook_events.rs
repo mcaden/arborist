@@ -59,7 +59,7 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// `claude-settings.json`. Deleted with the rest of the session temp tree on close.
 #[must_use]
 pub fn hook_events_path(session_id: &SessionId) -> PathBuf {
-    crate::compose::session_temp_dir(session_id).join("hook-events.jsonl")
+    crate::compose::session_temp_dir(session_id).join(crate::session_temp::CLAUDE_HOOK_EVENTS_FILE_NAME)
 }
 
 /// Callback shape mirrors [`crate::pty_pool::ActivityCb`] so production can wire the same emitter that already broadcasts on `session://activity`.

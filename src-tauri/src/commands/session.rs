@@ -453,8 +453,10 @@ fn default_structured_command(tool: Tool, temp_files: &[crate::types::TempFileSp
         Tool::Claude => {
             // Map each known temp file to its flag. Filename is load-bearing because compose may produce different temp files in different
             // configurations: `claude-settings.json` (when the `arborist-claude-hook` sidecar is locatable) or a legacy `system-prompt.md` from
-            // sessions persisted before the instruction-set feature was removed. Unknown filenames are silently ignored — the shell-fallback
-            // `composed_command` will still pick them up if needed.
+            // sessions persisted before the instruction-set feature was removed. Unknown filenames are silently ignored — when
+            // `structured_command` is in use (every Claude session created by this code path), the PTY pool spawns from the structured argv and
+            // ignores `composed_command` entirely, so any unmapped temp file would never be referenced on the command line. Adding a new temp-file
+            // category therefore requires adding a match arm here (and ideally a compose-level test) alongside the producer in `compose.rs`.
             let mut args = Vec::new();
             for temp in temp_files {
                 let name = temp.path.file_name().and_then(|s| s.to_str());
