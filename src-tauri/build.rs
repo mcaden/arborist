@@ -88,10 +88,23 @@ fn sanitize_branch(raw: &str) -> String {
 fn ensure_frontend_dist() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo provides CARGO_MANIFEST_DIR"));
     let dist_dir = manifest_dir.join("..").join("dist");
-    if !dist_dir.exists() {
+
+    if dist_dir.exists() {
+        if !dist_dir.is_dir() {
+            panic!("expected frontend dist path to be a directory: {}", dist_dir.display());
+        }
+    } else {
         std::fs::create_dir_all(&dist_dir).expect("create dist/ stub directory");
-        let index = dist_dir.join("index.html");
-        std::fs::write(&index, "<!doctype html><html><head></head><body></body></html>\n").expect("write dist/index.html stub");
+    }
+
+    let index = dist_dir.join("index.html");
+    if index.exists() {
+        if !index.is_file() {
+            panic!("expected frontend dist entry to be a file: {}", index.display());
+        }
+    } else {
+        std::fs::write(&index, "<!doctype html><html><head></head><body></body></html>\n")
+            .expect("write dist/index.html stub");
     }
 }
 
