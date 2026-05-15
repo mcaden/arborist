@@ -16,19 +16,23 @@
 // (rubber-duck critique). It does NOT fire on the entering-exited edge
 // because that would erase the very output the user wants to read.
 
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 const clearMock = vi.fn();
+const attachMock = vi.fn();
+const detachMock = vi.fn();
+const focusMock = vi.fn();
+const refitMock = vi.fn();
 
 vi.mock('@/hooks/use-terminal', () => ({
   useSubTerminal: () => ({
-    attach: vi.fn(),
-    detach: vi.fn(),
-    focus: vi.fn(),
-    refit: vi.fn(),
+    attach: attachMock,
+    detach: detachMock,
+    focus: focusMock,
+    refit: refitMock,
     clear: clearMock,
   }),
 }));
@@ -71,9 +75,22 @@ function id(suffix: string): SubSessionId {
   return ('22222222-2222-2222-2222-2222222222' + suffix) as SubSessionId;
 }
 
+/** Flush pending microtasks and requestAnimationFrame callbacks inside an act() boundary. */
+async function flushEffects(): Promise<void> {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
 beforeEach(() => {
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => setTimeout(() => cb(performance.now()), 0));
+  vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
   bridgeMock.resetBridgeMocks();
   clearMock.mockReset();
+  attachMock.mockReset();
+  detachMock.mockReset();
+  focusMock.mockReset();
+  refitMock.mockReset();
   useSubSessionStore.setState({
     subSessions: [],
     statusMessages: {},
@@ -83,104 +100,127 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('SubTerminalView', () => {
-  it('renders no exited bar while the sub-session is running', () => {
+  it('renders no exited bar while the sub-session is running', async () => {
     const sub = makeSub({ id: id('01'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(screen.queryByRole('status', { name: /sub-session ended/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /relaunch/i })).not.toBeInTheDocument();
   });
 
-  it('shows the exited bar (non-dialog) when the sub-session has exited', () => {
+  it('shows the exited bar (non-dialog) when the sub-session has exited', async () => {
     const sub = makeSub({ id: id('02'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(screen.getByRole('status', { name: /sub-session ended/i })).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /relaunch/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument();
   });
 
-  it('shows error-flavoured copy when the sub-session is in error state', () => {
+  it('shows error-flavoured copy when the sub-session is in error state', async () => {
     const sub = makeSub({ id: id('03'), label: 'Shell', status: 'error', pid: undefined });
     useSubSessionStore.setState({
       subSessions: [sub],
       statusMessages: { [sub.id]: 'spawn failed: ENOENT' },
     });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(screen.getByRole('status', { name: /sub-session ended/i })).toBeInTheDocument();
     expect(screen.getByText(/ended with an error/i)).toBeInTheDocument();
   });
 
-  it('does NOT clear the terminal on the running → exited transition (preserves final scrollback)', () => {
-    const sub = makeSub({ id: id('04'), status: 'running', pid: 100 });
+  /**
+   * Shared setup for status-transition tests: renders with an initial status,
+   * transitions to `targetStatus`, and returns the clear mock for assertion.
+   */
+  async function renderAndTransition(
+    idSuffix: string,
+    initial: { status: SubSession['status']; pid?: number },
+    targetStatus: SubSession['status'],
+  ): Promise<void> {
+    const sub = makeSub({ id: id(idSuffix), status: initial.status, pid: initial.pid });
     useSubSessionStore.setState({ subSessions: [sub] });
     const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(clearMock).not.toHaveBeenCalled();
-    useSubSessionStore.setState({
-      subSessions: [withStatus(sub, 'exited')],
+    await act(async () => {
+      useSubSessionStore.setState({
+        subSessions: [withStatus(sub, targetStatus)],
+      });
+      await new Promise((r) => setTimeout(r, 0));
     });
     rerender(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
+  }
+
+  it('does NOT clear the terminal on the running → exited transition (preserves final scrollback)', async () => {
+    await renderAndTransition('04', { status: 'running', pid: 100 }, 'exited');
     expect(clearMock).not.toHaveBeenCalled();
   });
 
-  it('clears the terminal on the exited → starting transition (defends against late stray bytes)', () => {
-    const sub = makeSub({ id: id('05'), status: 'exited', pid: undefined });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
-    expect(clearMock).not.toHaveBeenCalled();
-    useSubSessionStore.setState({
-      subSessions: [withStatus(sub, 'starting')],
-    });
-    rerender(<SubTerminalView subSessionId={sub.id} isActive />);
+  it('clears the terminal on the exited → starting transition (defends against late stray bytes)', async () => {
+    await renderAndTransition('05', { status: 'exited' }, 'starting');
     expect(clearMock).toHaveBeenCalledTimes(1);
   });
 
-  it('clicking Relaunch in the bar calls subSessionRelaunch with the sub id', () => {
+  it('clicking Relaunch in the bar calls subSessionRelaunch with the sub id', async () => {
     const sub = makeSub({ id: id('06'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    screen.getByRole('button', { name: /relaunch/i }).click();
+    await flushEffects();
+    await act(async () => {
+      screen.getByRole('button', { name: /relaunch/i }).click();
+    });
     expect(bridgeMock.subSessionRelaunch).toHaveBeenCalledWith(sub.id);
   });
 
-  it('clicking Close in the bar calls subSessionClose with default tabOnly intent', () => {
+  it('clicking Close in the bar calls subSessionClose with default tabOnly intent', async () => {
     const sub = makeSub({ id: id('07'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     screen.getByRole('button', { name: /^close$/i }).click();
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
+    await act(async () => {});
   });
 
-  it('dims the terminal pane content (opacity-50) when the sub has exited', () => {
+  it('dims the terminal pane content (opacity-50) when the sub has exited', async () => {
     const sub = makeSub({ id: id('08'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).toContain('opacity-50');
   });
 
-  it('dims the terminal pane content (opacity-50) when the sub is in error state', () => {
+  it('dims the terminal pane content (opacity-50) when the sub is in error state', async () => {
     const sub = makeSub({ id: id('09'), status: 'error', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).toContain('opacity-50');
   });
 
-  it('does NOT dim the terminal pane content while the sub is running', () => {
+  it('does NOT dim the terminal pane content while the sub is running', async () => {
     const sub = makeSub({ id: id('0a'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).not.toContain('opacity-50');
   });
 
-  it('does NOT dim the terminal pane content while the sub is starting', () => {
+  it('does NOT dim the terminal pane content while the sub is starting', async () => {
     const sub = makeSub({ id: id('0b'), status: 'starting' });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).not.toContain('opacity-50');
   });
 });

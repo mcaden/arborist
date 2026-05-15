@@ -1,6 +1,6 @@
 // Behavioural tests for `SidebarSubTab`.
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -93,7 +93,7 @@ describe('SidebarSubTab', () => {
     expect(bridgeMock.sessionFocus).not.toHaveBeenCalled();
   });
 
-  it('close button on a terminal sub-tab invokes subSessionClose with default intent and stops propagation', () => {
+  it('close button on a terminal sub-tab invokes subSessionClose with default intent and stops propagation', async () => {
     const sub = makeSub({ id: id('04') });
     useSubSessionStore.setState({ subSessions: [sub] });
 
@@ -102,6 +102,7 @@ describe('SidebarSubTab', () => {
 
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
     expect(bridgeMock.subSessionFocus).not.toHaveBeenCalled();
+    await act(async () => {});
   });
 
   it('close button on a running application sub-tab opens the close-confirm dialog (no immediate close)', () => {
@@ -120,7 +121,7 @@ describe('SidebarSubTab', () => {
     expect(useSubSessionStore.getState().pendingClose).toBe(sub.id);
   });
 
-  it('close button on an already-exited application sub-tab closes immediately (no dialog)', () => {
+  it('close button on an already-exited application sub-tab closes immediately (no dialog)', async () => {
     const sub = makeSub({
       id: id('04c'),
       kind: 'application',
@@ -134,6 +135,7 @@ describe('SidebarSubTab', () => {
 
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
     expect(useSubSessionStore.getState().pendingClose).toBeUndefined();
+    await act(async () => {});
   });
 
   it('uses role=button (not role=tab) so it stays out of the sidebar tablist roving-tabindex model', () => {
@@ -171,7 +173,9 @@ describe('SidebarSubTab', () => {
     expect(button).toHaveAttribute('aria-current', 'page');
     expect(button).toHaveClass('bg-sky-100');
 
-    useWorktreeTabStore.setState({ activeId: null });
+    act(() => {
+      useWorktreeTabStore.setState({ activeId: null });
+    });
     rerender(<SidebarSubTab subSessionId={sub.id} />);
 
     expect(screen.getByRole('button', { name: sub.label })).not.toHaveAttribute('aria-current');
@@ -284,7 +288,7 @@ describe('SidebarSubTab', () => {
     expect(useSubSessionStore.getState().pendingClose).toBe(sub.id);
   });
 
-  it('Close item on a terminal sub-tab closes immediately', () => {
+  it('Close item on a terminal sub-tab closes immediately', async () => {
     const sub = makeSub({ id: id('10') });
     useSubSessionStore.setState({ subSessions: [sub] });
 
@@ -293,5 +297,6 @@ describe('SidebarSubTab', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /close/i }));
 
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
+    await act(async () => {});
   });
 });

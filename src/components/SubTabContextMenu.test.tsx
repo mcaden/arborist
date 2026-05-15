@@ -1,7 +1,7 @@
 // Behavioural tests for `SubTabContextMenu` — the ⋮-button menu for
 // sub-session tabs introduced alongside issue #49.
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -79,7 +79,7 @@ describe('SubTabContextMenu', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('Close on a terminal sub-session calls subSessionClose immediately', () => {
+  it('Close on a terminal sub-session calls subSessionClose immediately', async () => {
     const sub = makeSub({ id: id('03'), kind: 'terminal' });
     useSubSessionStore.setState({ subSessions: [sub] });
     const onClose = vi.fn();
@@ -89,6 +89,7 @@ describe('SubTabContextMenu', () => {
 
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
     expect(onClose).toHaveBeenCalled();
+    await act(async () => {});
   });
 
   it('Close on a running application sub-session uses requestClose (confirm dialog), not immediate close', () => {
@@ -104,7 +105,7 @@ describe('SubTabContextMenu', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('Close on an exited application sub-session closes immediately (no dialog)', () => {
+  it('Close on an exited application sub-session closes immediately (no dialog)', async () => {
     const sub = makeSub({ id: id('05'), kind: 'application', status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
 
@@ -113,6 +114,7 @@ describe('SubTabContextMenu', () => {
 
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
     expect(useSubSessionStore.getState().pendingClose).toBeUndefined();
+    await act(async () => {});
   });
 
   it('Escape dismisses the menu', () => {
