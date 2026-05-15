@@ -101,6 +101,7 @@ Hooks live under `.husky/`. Bypassing with `--no-verify` is allowed only for bra
 
 - **pre-commit**:
   - `lint-staged` runs `eslint --fix` + Prettier on staged JS/TS
+  - **Re-stage safety net**: after lint-staged, any fully-staged file that acquired new unstaged changes (indicating the fix was written to disk but not re-staged) is automatically re-added to the index. Partially-staged files are warned but not auto-staged (to avoid committing unintended hunks).
   - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on the Rust workspace if any `.rs` file is staged
 - **pre-push**:
   - `pnpm test --run` (vitest in CI mode)
