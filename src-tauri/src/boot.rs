@@ -656,6 +656,11 @@ pub fn boot_select_workspace(
 ///
 /// Propagates a `WorkspaceRootPersist` error if the config write fails (boot must abort in that case — see
 /// [`ensure_workspace_root_in_config`] docs). The hint write is non-fatal.
+///
+/// **Orphaned directories on failure:** if `ensure_workspace_root_in_config` fails, the workspace directory created by `bind_workspace` (including
+/// seed files written by `initialise_workspace_dir`) remains on disk. This is intentional — the directories are idempotent and will be reused on the
+/// next successful bind of the same (branch, workspace) tuple. Cleaning them up would add complexity without functional benefit and risks racing with
+/// a concurrent same-tuple start that won the seed lock.
 fn finalize_binding(binding: WorkspaceBinding, app_data_dir: &Path, branch: &str) -> Result<Option<WorkspaceBinding>, BootError> {
     if let Err(source) = ensure_workspace_root_in_config(&binding.store, &binding.workspace_root) {
         return Err(BootError::WorkspaceRootPersist {
@@ -1498,5 +1503,33 @@ mod tests {
 
         let result = boot_select_workspace_from_picker_inner(&app_data, "main", &YesRunner, prompt, |_| {});
         assert!(result.unwrap().is_none(), "cancel should return Ok(None)");
+    }
+
+    #[test]
+    fn picker_loop_persist_failure_propagates() {
+        let td = TempDir::new().unwrap();
+        let app_data = td.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let ws = td.path().join("workspace");
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+
+        // Pre-create the storage layout's config.json as a directory so the post-bind save fails (same technique as
+        // boot_aborts_when_workspace_root_persist_fails).
+        let canon_ws = crate::store_layout::CanonicalPath::canonicalise(&ws).unwrap();
+        let layout = StoreRoot::new(&app_data, "main").for_workspace(&canon_ws);
+        std::fs::create_dir_all(layout.workspace_dir()).unwrap();
+        std::fs::create_dir_all(layout.settings_path()).unwrap();
+
+        let prompt = |_branch: &str| -> Option<PathBuf> { Some(ws.clone()) };
+
+        let err = boot_select_workspace_from_picker_inner(&app_data, "main", &YesRunner, prompt, |_| {})
+            .expect_err("picker loop must propagate persist failure");
+
+        match err {
+            BootError::WorkspaceRootPersist { dir, source: _ } => {
+                assert_eq!(dir, layout.workspace_dir());
+            }
+            other => panic!("expected WorkspaceRootPersist, got {other:?}"),
+        }
     }
 }
