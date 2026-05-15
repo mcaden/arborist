@@ -1,7 +1,7 @@
 {
   "name": "arborist",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Cross-platform desktop app for managing AI coding-assistant sessions across Git worktrees.",
   "license": "MIT",
   "author": "Aaron Moore",
@@ -16,6 +16,9 @@
     "url": "https://github.com/mcaden/arborist/issues"
   },
   "homepage": "https://arborist.tools",
+  "engines": {
+    "node": ">=21.2.0"
+  },
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
@@ -47,7 +50,8 @@
     "e2e:macos:build": "bash dev/e2e/macos/scripts/run.sh build",
     "e2e:macos": "bash dev/e2e/macos/scripts/run.sh e2e",
     "e2e:macos:shell": "bash dev/e2e/macos/scripts/run.sh shell",
-    "e2e:macos:status": "bash dev/e2e/macos/scripts/run.sh status"
+    "e2e:macos:status": "bash dev/e2e/macos/scripts/run.sh status",
+    "release:prep": "node scripts/release-prep.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

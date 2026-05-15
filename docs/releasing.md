@@ -3,17 +3,19 @@
 Arborist releases are built by the manual `Release` GitHub Actions workflow from an existing tag on `main`. The workflow uploads artifacts to a draft
 GitHub Release and generates GitHub build attestations.
 
+## Version convention
+
+The version in manifests on `main` is always the **upcoming** release version. When you're ready to release, the `release:prep` script tags the current
+HEAD (closing out that version), then branches to bump manifests to the next development version and opens a PR.
+
 ## Release prerequisites
 
-- The release commit is merged to `main`.
-- The tag already exists on the repository and is reachable from `main`.
-- Version numbers match in:
+- All manifests on `main` agree on the version to be released:
   - `package.json`
   - `src-tauri/tauri.conf.json`
   - `src-tauri/Cargo.toml`
   - `crates/arborist-types/Cargo.toml`
-
-After changing the Rust crate version, run a Cargo command that updates `Cargo.lock` if needed.
+- The working tree is clean and you're on `main`.
 
 ## Metadata policy
 
@@ -57,27 +59,58 @@ updates because signed installers are distributed through GitHub Releases.
 
 ## Cut a release
 
-1. Land the version bump through PR.
-2. Update `CHANGELOG.md`.
-3. Tag the merge commit:
+```sh
+git checkout main
+git pull
+pnpm run release:prep 0.1.3
+```
+
+If the script fails _after_ the tag was pushed (e.g. network blip during the bump PR), replay only the bump:
+
+```sh
+pnpm run release:prep --skip-tag 0.1.3
+```
+
+The script:
+
+1. Reads the current version from manifests (e.g. `0.1.2`) — this is the version being released.
+2. Validates: on `main`, clean tree, tag `v0.1.2` doesn't exist, all 4 manifests agree.
+3. Tags current HEAD as `v0.1.2` and pushes the tag (no commits to `main`).
+4. Creates branch `chore/bump-0.1.3`, bumps all manifests to `0.1.3`, commits, pushes, opens a PR.
+5. Returns to `main`.
+
+After the script completes, trigger the release build:
+
+```sh
+gh workflow run release.yml -f tag=v0.1.2
+```
+
+Then merge the version-bump PR once CI passes.
+
+<details>
+<summary>Manual steps (if not using release:prep)</summary>
+
+1. Ensure the version in manifests on `main` is the version you want to release (the repo convention keeps the _upcoming_ version in code).
+2. Tag the HEAD commit:
 
    ```sh
    git checkout main
    git pull
-   git tag v0.1.1
-   git push origin v0.1.1
+   git tag -a v0.1.2 -m "Release v0.1.2"
+   git push origin v0.1.2
    ```
 
-4. Trigger **Actions -> Release -> Run workflow** from `main` and provide the tag.
-5. Review the draft release and artifacts.
-6. Smoke-test installers on clean machines or VMs.
-7. Publish the draft release.
+3. Trigger **Actions -> Release -> Run workflow** from `main` and provide the tag.
+4. Create a branch from `main`, bump all 4 manifests to the next version (e.g. `0.1.3`), run `cargo update -p arborist -p arborist-types`, commit, push,
+   and open a PR targeting `main`.
 
-CLI equivalent for the workflow dispatch:
+</details>
 
-```sh
-gh workflow run release.yml -f tag=v0.1.1
-```
+## After the workflow runs
+
+1. Review the draft release and artifacts.
+2. Smoke-test installers on clean machines or VMs.
+3. Publish the draft release.
 
 ## Artifacts
 
