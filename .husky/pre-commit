@@ -1,8 +1,39 @@
 #!/usr/bin/env sh
 
+# --- JS/TS lint-staged with re-stage safety net ---
+# lint-staged runs eslint --fix + prettier --write, which should re-stage fixes.
+# On Windows (and some partial-staging edge cases) the fix can land in the
+# working tree without being re-staged, so the commit ships unfixed code.
+# Fix: after lint-staged, re-stage fully-staged files that acquired new diffs.
+
+# Identify files that are fully staged (in index, NO pre-existing unstaged changes).
+# These are safe to re-stage unconditionally after lint-staged fixes them.
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+UNSTAGED_BEFORE=$(git diff --name-only)
+
+# Files that are fully staged = staged AND not in the unstaged list
+FULLY_STAGED=""
+if [ -n "$STAGED_FILES" ]; then
+  FULLY_STAGED=$(echo "$STAGED_FILES" | while read -r f; do
+    if [ -n "$f" ] && ! echo "$UNSTAGED_BEFORE" | grep -qxF "$f"; then
+      echo "$f"
+    fi
+  done)
+fi
+
 pnpm exec lint-staged || exit 1
 
-# Run Rust formatting + clippy only when Rust files are staged.
+# Re-stage fully-staged files where lint-staged wrote fixes but failed to stage them.
+if [ -n "$FULLY_STAGED" ]; then
+  echo "$FULLY_STAGED" | while read -r file; do
+    if [ -n "$file" ] && ! git diff --quiet -- "$file" 2>/dev/null; then
+      echo "[husky] Re-staging lint fix for fully-staged file: $file"
+      git add -- "$file"
+    fi
+  done
+fi
+
+# --- Rust checks (staged .rs files only) ---
 RS_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.rs$' || true)
 if [ -n "$RS_STAGED" ]; then
   echo "[husky] Rust files staged — running cargo fmt --check and clippy"
