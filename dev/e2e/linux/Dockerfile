@@ -64,8 +64,6 @@ COPY src-tauri/icons/ src-tauri/icons/
 COPY src/ src/
 COPY src-tauri/src/ src-tauri/src/
 COPY index.html tsconfig.json vite.config.ts vitest.config.ts postcss.config.js tailwind.config.js .prettierrc.json ./
-# Instructions dir (needed at runtime for instruction-set tests)
-COPY instructions/ instructions/
 
 # Build the frontend (needed before any cargo build — tauri::generate_context!()
 # requires ../dist to exist)
@@ -164,7 +162,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 COPY --from=builder /usr/local/cargo/bin/tauri-driver /usr/local/bin/tauri-driver
 COPY --from=builder /opt/arborist /opt/arborist
 COPY --from=builder /usr/local/bin/arborist-test-child /usr/local/bin/arborist-test-child
-COPY --from=builder /build/instructions /opt/arborist-instructions
 
 # Install WebdriverIO deps via pnpm (matches the rest of the repo — root
 # package.json pins `packageManager: pnpm@10.33.0` and the canonical lockfile
