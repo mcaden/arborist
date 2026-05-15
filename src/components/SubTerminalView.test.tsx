@@ -136,37 +136,37 @@ describe('SubTerminalView', () => {
     expect(screen.getByText(/ended with an error/i)).toBeInTheDocument();
   });
 
-  it('does NOT clear the terminal on the running → exited transition (preserves final scrollback)', async () => {
-    const sub = makeSub({ id: id('04'), status: 'running', pid: 100 });
+  /**
+   * Shared setup for status-transition tests: renders with an initial status,
+   * transitions to `targetStatus`, and returns the clear mock for assertion.
+   */
+  async function renderAndTransition(
+    idSuffix: string,
+    initial: { status: SubSession['status']; pid?: number },
+    targetStatus: SubSession['status'],
+  ): Promise<void> {
+    const sub = makeSub({ id: id(idSuffix), status: initial.status, pid: initial.pid });
     useSubSessionStore.setState({ subSessions: [sub] });
     const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
     await flushEffects();
     expect(clearMock).not.toHaveBeenCalled();
     await act(async () => {
       useSubSessionStore.setState({
-        subSessions: [withStatus(sub, 'exited')],
+        subSessions: [withStatus(sub, targetStatus)],
       });
       await new Promise((r) => setTimeout(r, 0));
     });
     rerender(<SubTerminalView subSessionId={sub.id} isActive />);
     await flushEffects();
+  }
+
+  it('does NOT clear the terminal on the running → exited transition (preserves final scrollback)', async () => {
+    await renderAndTransition('04', { status: 'running', pid: 100 }, 'exited');
     expect(clearMock).not.toHaveBeenCalled();
   });
 
   it('clears the terminal on the exited → starting transition (defends against late stray bytes)', async () => {
-    const sub = makeSub({ id: id('05'), status: 'exited', pid: undefined });
-    useSubSessionStore.setState({ subSessions: [sub] });
-    const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await flushEffects();
-    expect(clearMock).not.toHaveBeenCalled();
-    await act(async () => {
-      useSubSessionStore.setState({
-        subSessions: [withStatus(sub, 'starting')],
-      });
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    rerender(<SubTerminalView subSessionId={sub.id} isActive />);
-    await flushEffects();
+    await renderAndTransition('05', { status: 'exited' }, 'starting');
     expect(clearMock).toHaveBeenCalledTimes(1);
   });
 
