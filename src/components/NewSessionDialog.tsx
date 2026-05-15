@@ -38,6 +38,19 @@ function deriveLabel(path: string): string {
   return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }
 
+function ExistingEmptyState({ allAlreadyOpen }: { allAlreadyOpen: boolean }): JSX.Element {
+  if (allAlreadyOpen) {
+    return (
+      <p className="mb-2 text-sm text-slate-500">All worktrees are already open — create one in the New tab, or use Browse for a path elsewhere.</p>
+    );
+  }
+  return (
+    <p className="mb-2 text-sm text-slate-500">
+      No worktrees found in <span className="font-mono">.arborist/.worktrees/</span> — create one in the New tab, or use Browse for a path elsewhere.
+    </p>
+  );
+}
+
 export function NewSessionDialog(): JSX.Element | null {
   const isOpen = useNewSessionDialog((s) => s.isOpen);
   const close = useNewSessionDialog((s) => s.close);
@@ -300,16 +313,7 @@ export function NewSessionDialog(): JSX.Element | null {
               {worktreesLoading ? (
                 <p className="text-sm text-slate-500">Loading...</p>
               ) : availableWorktrees.length === 0 ? (
-                <p className="mb-2 text-sm text-slate-500">
-                  {worktrees.length > 0 ? (
-                    'All worktrees are already open — create one in the New tab, or use Browse for a path elsewhere.'
-                  ) : (
-                    <>
-                      No worktrees found in <span className="font-mono">.arborist/.worktrees/</span> — create one in the New tab, or use Browse for a
-                      path elsewhere.
-                    </>
-                  )}
-                </p>
+                <ExistingEmptyState allAlreadyOpen={worktrees.length > 0} />
               ) : (
                 <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
                   {availableWorktrees.map((w) => (

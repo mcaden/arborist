@@ -26,7 +26,7 @@ function normalize(p: string): string {
   // Preserve root paths: `/`, `C:/`, `//server` — stripping their trailing
   // slash would change semantics (empty string or `C:` = CWD on that drive).
   if (slashed === '/') return '/';
-  if (/^[A-Za-z]:\/$/i.test(slashed)) return slashed;
+  if (/^[A-Za-z]:\/$/.test(slashed)) return slashed;
   // Strip trailing slashes without regex quantifiers (avoids SonarCloud ReDoS false positive).
   let end = slashed.length;
   while (end > 0 && slashed[end - 1] === '/') end--;

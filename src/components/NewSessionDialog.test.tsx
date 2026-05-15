@@ -174,10 +174,10 @@ describe('NewSessionDialog', () => {
 
   it('filters with normalized paths (different separators/casing)', async () => {
     // Simulate Windows paths where git reports backslashes but the tab stores forward slashes.
-    const winRoot = 'C:\\repos\\arborist';
-    const wtPath = `${winRoot}\\.arborist\\.worktrees\\feature`;
+    const winRoot = String.raw`C:\repos\arborist`;
+    const wtPath = String.raw`${winRoot}\.arborist\.worktrees\feature`;
     const tabPath = 'C:/repos/arborist/.arborist/.worktrees/feature';
-    const otherPath = `${winRoot}\\.arborist\\.worktrees\\other`;
+    const otherPath = String.raw`${winRoot}\.arborist\.worktrees\other`;
     bridgeMock.worktreesList.mockResolvedValue([makeWt(wtPath, 'feature'), makeWt(otherPath, 'other')]);
     useWorktreeTabStore.setState({ tabs: [makeTab(tabPath)], activeId: 'tab-feature', isHydrated: true });
     useConfigStore.setState({ config: defaultConfig({ workspaceRoot: winRoot }), status: 'ready', error: null });

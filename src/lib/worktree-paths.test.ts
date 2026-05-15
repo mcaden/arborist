@@ -58,11 +58,11 @@ describe('pathsEqual', () => {
   });
 
   it('matches with mixed separators', () => {
-    expect(pathsEqual('C:\\repos\\arborist', 'C:/repos/arborist')).toBe(true);
+    expect(pathsEqual(String.raw`C:\repos\arborist`, 'C:/repos/arborist')).toBe(true);
   });
 
   it('matches Windows paths case-insensitively', () => {
-    expect(pathsEqual('C:\\Repos\\Arborist', 'c:/repos/arborist')).toBe(true);
+    expect(pathsEqual(String.raw`C:\Repos\Arborist`, 'c:/repos/arborist')).toBe(true);
   });
 
   it('compares posix paths case-sensitively', () => {
@@ -78,7 +78,7 @@ describe('pathsEqual', () => {
   });
 
   it('handles UNC paths case-insensitively', () => {
-    expect(pathsEqual('\\\\Server\\Share\\project', '\\\\server\\share\\project')).toBe(true);
+    expect(pathsEqual(String.raw`\\Server\Share\project`, String.raw`\\server\share\project`)).toBe(true);
   });
 
   it('handles root paths correctly', () => {
