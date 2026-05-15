@@ -78,7 +78,26 @@ fn sanitize_branch(raw: &str) -> String {
         .collect()
 }
 
+/// Ensure the frontend `dist/` directory exists with a minimal placeholder.
+///
+/// `tauri_build::build()` expects `frontendDist` (configured as `../dist`) to
+/// be present. In production the `beforeBuildCommand` runs `pnpm run build`
+/// first, but during `cargo test` or ad-hoc `cargo build` the directory may
+/// not exist yet. Creating a stub avoids a hard failure without affecting
+/// production bundles.
+fn ensure_frontend_dist() {
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo provides CARGO_MANIFEST_DIR"));
+    let dist_dir = manifest_dir.join("..").join("dist");
+    if !dist_dir.exists() {
+        std::fs::create_dir_all(&dist_dir).expect("create dist/ stub directory");
+        let index = dist_dir.join("index.html");
+        std::fs::write(&index, "<!doctype html><html><head></head><body></body></html>\n").expect("write dist/index.html stub");
+    }
+}
+
 fn main() {
+    ensure_frontend_dist();
+
     let branch = sanitize_branch(&detect_branch());
 
     // Bake the branch into a generated file under OUT_DIR; lib.rs reads it via
