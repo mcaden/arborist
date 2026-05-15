@@ -26,7 +26,7 @@ pnpm exec lint-staged || exit 1
 # Re-stage fully-staged files where lint-staged wrote fixes but failed to stage them.
 if [ -n "$FULLY_STAGED" ]; then
   echo "$FULLY_STAGED" | while read -r file; do
-    if [ -n "$file" ] && [ -n "$(git diff -- "$file" 2>/dev/null)" ]; then
+    if [ -n "$file" ] && ! git diff --quiet -- "$file" 2>/dev/null; then
       echo "[husky] Re-staging lint fix for fully-staged file: $file"
       git add -- "$file"
     fi
