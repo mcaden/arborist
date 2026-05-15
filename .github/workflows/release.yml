@@ -199,12 +199,16 @@ jobs:
             build-essential
 
       # macOS: `brew install llvm` provides a recent `lld` that the workspace
-      # `.cargo/config.toml` invokes via `clang -fuse-ld=lld`.
+      # `.cargo/config.toml` invokes via `clang -fuse-ld=lld`. Set CC/CXX so
+      # cargo uses LLVM's clang (which knows where its own lld lives).
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         run: |
           brew install llvm
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          echo "${LLVM_BIN}" >> "$GITHUB_PATH"
+          echo "CC=${LLVM_BIN}/clang" >> "$GITHUB_ENV"
+          echo "CXX=${LLVM_BIN}/clang++" >> "$GITHUB_ENV"
 
       - run: pnpm install --frozen-lockfile
 
