@@ -8,21 +8,24 @@
 import { spawn, type ChildProcess } from "child_process";
 import { createConnection, type Socket } from "net";
 import { existsSync } from "fs";
+import { homedir } from "os";
 import { resolve } from "path";
 
 let tauriDriver: ChildProcess | null = null;
 let shuttingDown = false;
 
+const HOME = process.env.HOME ?? homedir();
+
 // Locate the .app bundle — check 9P shared mount first, fallback to ~/arborist
 const SHARED_BUNDLE = "/Volumes/shared/target/release/bundle/macos/Arborist.app";
-const LOCAL_BUNDLE = resolve(process.env.HOME ?? "~", "arborist/target/release/bundle/macos/Arborist.app");
+const LOCAL_BUNDLE = resolve(HOME, "arborist/target/release/bundle/macos/Arborist.app");
 const APP_BINARY = existsSync(SHARED_BUNDLE)
   ? `${SHARED_BUNDLE}/Contents/MacOS/Arborist`
   : `${LOCAL_BUNDLE}/Contents/MacOS/Arborist`;
 
 // Locate arborist-test-child
 const SHARED_TEST_CHILD = "/Volumes/shared/target/release/arborist-test-child";
-const LOCAL_TEST_CHILD = resolve(process.env.HOME ?? "~", "arborist/target/release/arborist-test-child");
+const LOCAL_TEST_CHILD = resolve(HOME, "arborist/target/release/arborist-test-child");
 const TEST_CHILD = existsSync(SHARED_TEST_CHILD) ? SHARED_TEST_CHILD : LOCAL_TEST_CHILD;
 
 const TEST_WORKSPACE = "/tmp/arborist-test-workspace";
@@ -93,7 +96,7 @@ export const config: WebdriverIO.Config = {
   beforeSession: () => {
     // On macOS, tauri-driver uses SafariDriver under the hood.
     // It must be installed via: cargo install tauri-cli (provides tauri-driver)
-    const driverPath = resolve(process.env.HOME ?? "~", ".cargo/bin/tauri-driver");
+    const driverPath = resolve(HOME, ".cargo/bin/tauri-driver");
 
     tauriDriver = spawn(driverPath, ["--port", String(DRIVER_PORT)], {
       stdio: [null, process.stdout, process.stderr],

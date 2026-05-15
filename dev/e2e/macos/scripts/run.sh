@@ -36,21 +36,21 @@ MACOS_USER="${MACOS_USER:-arborist}"
 MACOS_PASS="${MACOS_PASS:-arborist}"
 MACOS_HOST="localhost"
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p ${MACOS_SSH_PORT}"
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p "${MACOS_SSH_PORT}")
 export SSHPASS="${MACOS_PASS}"
 
 # ---- helpers ----------------------------------------------------------------
 
 ssh_cmd() {
-  sshpass -e ssh ${SSH_OPTS} "${MACOS_USER}@${MACOS_HOST}" "$@"
+  sshpass -e ssh "${SSH_OPTS[@]}" "${MACOS_USER}@${MACOS_HOST}" "$@"
 }
 
 scp_to_vm() {
-  sshpass -e scp ${SSH_OPTS} "$1" "${MACOS_USER}@${MACOS_HOST}:$2"
+  sshpass -e scp "${SSH_OPTS[@]}" "$1" "${MACOS_USER}@${MACOS_HOST}:$2"
 }
 
 rsync_to_vm() {
-  sshpass -e rsync -e "ssh ${SSH_OPTS}" "$@"
+  sshpass -e rsync -e "ssh ${SSH_OPTS[*]}" "$@"
 }
 
 check_deps() {
@@ -72,23 +72,23 @@ check_deps() {
 
 wait_for_vm() {
   echo "[macos-e2e] Waiting for macOS VM SSH at ${MACOS_HOST}:${MACOS_SSH_PORT}..."
-  local tries=0
-  local max_tries=180  # 3 minutes
+  local timeout_secs=180
+  local start_time=$SECONDS
 
-  while ! sshpass -e ssh ${SSH_OPTS} -o ConnectTimeout=2 "${MACOS_USER}@${MACOS_HOST}" "echo ok" >/dev/null 2>&1; do
-    tries=$((tries + 1))
-    if [ $tries -ge $max_tries ]; then
-      echo "[macos-e2e] ERROR: VM not reachable after ${max_tries}s" >&2
+  while ! sshpass -e ssh "${SSH_OPTS[@]}" -o ConnectTimeout=2 "${MACOS_USER}@${MACOS_HOST}" "echo ok" >/dev/null 2>&1; do
+    local elapsed=$(( SECONDS - start_time ))
+    if [ $elapsed -ge $timeout_secs ]; then
+      echo "[macos-e2e] ERROR: VM not reachable after ${elapsed}s" >&2
       echo "[macos-e2e] Is the VM running? Try: docker compose -f dev/e2e/macos/docker-compose.yml up -d" >&2
       echo "[macos-e2e] Is the VM provisioned? See dev/e2e/macos/README.md" >&2
       exit 1
     fi
-    if [ $((tries % 15)) -eq 0 ]; then
-      echo "[macos-e2e]   ...still waiting (${tries}s elapsed)"
+    if [ $(( elapsed % 15 )) -lt 2 ] && [ $elapsed -gt 0 ]; then
+      echo "[macos-e2e]   ...still waiting (${elapsed}s elapsed)"
     fi
     sleep 1
   done
-  echo "[macos-e2e] VM is reachable"
+  echo "[macos-e2e] VM is reachable ($(( SECONDS - start_time ))s)"
 }
 
 sync_source() {
@@ -178,7 +178,7 @@ run_e2e() {
   }
 }
 EOF'
-  ssh_cmd 'cd ~/e2e-specs && npm install 2>/dev/null'
+  ssh_cmd 'cd ~/e2e-specs && npm install'
 
   # Run the e2e tests
   echo "[macos-e2e] Running WebdriverIO specs..."
@@ -196,13 +196,13 @@ run_shell() {
   echo "[macos-e2e] Opening interactive SSH session..."
   echo "[macos-e2e] Source at: ~/arborist (after sync)"
   echo ""
-  exec sshpass -e ssh ${SSH_OPTS} -t "${MACOS_USER}@${MACOS_HOST}"
+  exec sshpass -e ssh "${SSH_OPTS[@]}" -t "${MACOS_USER}@${MACOS_HOST}"
 }
 
 run_status() {
   check_deps
   echo "[macos-e2e] Checking VM status..."
-  if sshpass -e ssh ${SSH_OPTS} -o ConnectTimeout=3 "${MACOS_USER}@${MACOS_HOST}" "echo ok" >/dev/null 2>&1; then
+  if sshpass -e ssh "${SSH_OPTS[@]}" -o ConnectTimeout=3 "${MACOS_USER}@${MACOS_HOST}" "echo ok" >/dev/null 2>&1; then
     echo "[macos-e2e] ✓ VM is running and SSH is reachable"
     ssh_cmd "sw_vers 2>/dev/null || echo '(sw_vers not available)'"
   else

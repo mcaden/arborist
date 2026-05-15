@@ -44,8 +44,9 @@ services:
     cap_add:
       - NET_ADMIN
     ports:
-      # SSH: sickcodes QEMU hostfwd 10022 → host 50922
-      - "50922:10022"
+      # SSH: sickcodes QEMU hostfwd 10022; dockurr exposes 22 directly.
+      # MACOS_SSH_CONTAINER_PORT lets callers switch (default 10022 for sickcodes).
+      - "50922:${MACOS_SSH_CONTAINER_PORT:-10022}"
       # Web viewer (dockurr only)
       - "8006:8006"
       # VNC

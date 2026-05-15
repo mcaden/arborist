@@ -100,7 +100,8 @@ pnpm e2e:macos:down
 
 Switch images:
 ```bash
-MACOS_IMAGE=dockurr/macos MACOS_SSH_PORT=50922 pnpm e2e:macos:vm
+# dockurr/macos exposes SSH on port 22 (after enabling), not 10022
+MACOS_IMAGE=dockurr/macos MACOS_SSH_CONTAINER_PORT=22 pnpm e2e:macos:vm
 ```
 
 ## First-Time VM Setup
