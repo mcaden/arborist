@@ -40,7 +40,14 @@
     "e2e:linux": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm e2e",
     "e2e:linux:rust": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm rust",
     "e2e:linux:vitest": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm vitest",
-    "e2e:linux:shell": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm shell"
+    "e2e:linux:shell": "docker compose -f dev/e2e/linux/docker-compose.yml run --rm shell",
+    "e2e:macos:vm": "docker compose -f dev/e2e/macos/docker-compose.yml up -d",
+    "e2e:macos:down": "docker compose -f dev/e2e/macos/docker-compose.yml down",
+    "e2e:macos:provision": "bash dev/e2e/macos/scripts/run.sh provision",
+    "e2e:macos:build": "bash dev/e2e/macos/scripts/run.sh build",
+    "e2e:macos": "bash dev/e2e/macos/scripts/run.sh e2e",
+    "e2e:macos:shell": "bash dev/e2e/macos/scripts/run.sh shell",
+    "e2e:macos:status": "bash dev/e2e/macos/scripts/run.sh status"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
