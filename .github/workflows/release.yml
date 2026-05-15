@@ -176,9 +176,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-stable-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-release-${{ matrix.platform.rust-targets || 'default' }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-stable-cargo-
+            ${{ runner.os }}-release-${{ matrix.platform.rust-targets || 'default' }}-cargo-
 
       # Tauri's Linux build needs system libraries (must match ci.yml). `lld`
       # + `clang` are required by the workspace `.cargo/config.toml` for the
@@ -217,14 +217,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          artifacts=$(find target/release/bundle -type f \( \
+          # Account for --target placing bundles in target/<triple>/release/bundle/
+          search_dirs=()
+          if [ -d "target/release/bundle" ]; then
+            search_dirs+=("target/release/bundle")
+          fi
+          for d in target/*/release/bundle; do
+            [ -d "$d" ] && search_dirs+=("$d")
+          done
+          if [ ${#search_dirs[@]} -eq 0 ]; then
+            echo "::error::No bundle directories found under target/"
+            exit 1
+          fi
+          artifacts=$(find "${search_dirs[@]}" -type f \( \
             -name "*.msi" -o -name "*.exe" -o -name "*.nsis.zip" \
             -o -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" \
             -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \
             -o -name "*.AppImage.tar.gz" -o -name "*.AppImage.tar.gz.sig" \
           \) | jq -R -s -c 'split("\n") | map(select(length > 0))')
           if [ "$(echo "$artifacts" | jq length)" -eq 0 ]; then
-            echo "::error::No Tauri release artifacts found in target/release/bundle"
+            echo "::error::No Tauri release artifacts found"
             exit 1
           fi
           echo "artifactPaths=${artifacts}" >> "$GITHUB_OUTPUT"
@@ -235,9 +247,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.verify.outputs.tag }}
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
         run: |
           set -euo pipefail
-          echo '${{ steps.tauri.outputs.artifactPaths }}' | jq -r '.[]' | while IFS= read -r f; do
+          echo "$ARTIFACT_PATHS" | jq -r '.[]' | while IFS= read -r f; do
             echo "Uploading: $f"
             gh release upload "$TAG" "$f" --clobber
           done
