@@ -24,6 +24,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { BootTreeAnimation } from '@/components/BootTreeAnimation';
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
 import { Sidebar } from '@/components/Sidebar';
@@ -86,8 +87,9 @@ function BootSplash(): JSX.Element {
     <div
       role="status"
       aria-live="polite"
-      className="flex h-full w-full items-center justify-center bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-200"
+      className="flex h-full w-full flex-col items-center justify-center gap-6 bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-200"
     >
+      <BootTreeAnimation />
       <p className="text-sm">Loading Arborist…</p>
     </div>
   );

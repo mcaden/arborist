@@ -56,3 +56,108 @@ body {
 .themed-scrollbar:where(.dark, .dark *)::-webkit-scrollbar-thumb:hover {
   background-color: #64748b; /* slate-500 */
 }
+
+/* === Boot tree animation === */
+
+/* Gentle trunk sway */
+@keyframes boot-tree-sway {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(1.5deg);
+  }
+  75% {
+    transform: rotate(-1.5deg);
+  }
+}
+
+/* Leaf cluster flutter — slightly more movement than trunk */
+@keyframes boot-tree-flutter {
+  0%,
+  100% {
+    transform: rotate(0deg) scale(1);
+  }
+  30% {
+    transform: rotate(2deg) scale(1.02);
+  }
+  70% {
+    transform: rotate(-1.5deg) scale(0.98);
+  }
+}
+
+/* Root node pulse */
+@keyframes boot-tree-pulse {
+  0%,
+  100% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.boot-tree {
+  transform-origin: 100px 135px; /* base of trunk */
+  animation: boot-tree-sway 5s ease-in-out infinite;
+}
+
+.boot-tree__cluster--top {
+  transform-origin: 100px 32px;
+  animation: boot-tree-flutter 4s ease-in-out infinite;
+}
+.boot-tree__cluster--left-upper {
+  transform-origin: 72px 42px;
+  animation: boot-tree-flutter 4.5s ease-in-out 0.3s infinite;
+}
+.boot-tree__cluster--right-upper {
+  transform-origin: 128px 42px;
+  animation: boot-tree-flutter 4.2s ease-in-out 0.6s infinite;
+}
+.boot-tree__cluster--left-mid {
+  transform-origin: 58px 62px;
+  animation: boot-tree-flutter 4.8s ease-in-out 0.9s infinite;
+}
+.boot-tree__cluster--right-mid {
+  transform-origin: 142px 62px;
+  animation: boot-tree-flutter 4.3s ease-in-out 1.2s infinite;
+}
+.boot-tree__cluster--left-lower {
+  transform-origin: 50px 82px;
+  animation: boot-tree-flutter 5s ease-in-out 0.5s infinite;
+}
+.boot-tree__cluster--right-lower {
+  transform-origin: 150px 82px;
+  animation: boot-tree-flutter 4.7s ease-in-out 0.8s infinite;
+}
+
+.boot-tree__nodes circle {
+  animation: boot-tree-pulse 3s ease-in-out infinite;
+}
+.boot-tree__nodes circle:nth-child(2n) {
+  animation-delay: 0.5s;
+}
+.boot-tree__nodes circle:nth-child(3n) {
+  animation-delay: 1s;
+}
+.boot-tree__nodes circle:nth-child(5n) {
+  animation-delay: 1.5s;
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .boot-tree,
+  .boot-tree__cluster--top,
+  .boot-tree__cluster--left-upper,
+  .boot-tree__cluster--right-upper,
+  .boot-tree__cluster--left-mid,
+  .boot-tree__cluster--right-mid,
+  .boot-tree__cluster--left-lower,
+  .boot-tree__cluster--right-lower,
+  .boot-tree__nodes circle {
+    animation: none;
+  }
+}
