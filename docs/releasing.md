@@ -65,6 +65,12 @@ git pull
 pnpm run release:prep 0.1.3
 ```
 
+If the script fails _after_ the tag was pushed (e.g. network blip during the bump PR), replay only the bump:
+
+```sh
+pnpm run release:prep --skip-tag 0.1.3
+```
+
 The script:
 
 1. Reads the current version from manifests (e.g. `0.1.2`) — this is the version being released.
@@ -84,7 +90,7 @@ Then merge the version-bump PR once CI passes.
 <details>
 <summary>Manual steps (if not using release:prep)</summary>
 
-1. Ensure the version in manifests on `main` is the version you want to release.
+1. Ensure the version in manifests on `main` is the version you want to release (the repo convention keeps the _upcoming_ version in code).
 2. Tag the HEAD commit:
 
    ```sh
@@ -95,13 +101,16 @@ Then merge the version-bump PR once CI passes.
    ```
 
 3. Trigger **Actions -> Release -> Run workflow** from `main` and provide the tag.
-4. Create a PR to bump manifests to the next version.
+4. Create a branch from `main`, bump all 4 manifests to the next version (e.g. `0.1.3`), run `cargo update -p arborist -p arborist-types`, commit, push,
+   and open a PR targeting `main`.
 
 </details>
 
-5. Review the draft release and artifacts.
-6. Smoke-test installers on clean machines or VMs.
-7. Publish the draft release.
+## After the workflow runs
+
+1. Review the draft release and artifacts.
+2. Smoke-test installers on clean machines or VMs.
+3. Publish the draft release.
 
 ## Artifacts
 
