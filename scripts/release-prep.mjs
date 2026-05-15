@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 /**
- * release-prep.mjs — Bump version across all manifest files, commit, tag, and push.
+ * release-prep.mjs — Tag the current version on main and open a PR to bump to the next version.
+ *
+ * The repo follows a "next version in code" convention: the version in manifests on main
+ * is always the UPCOMING release. Running this script "closes out" that version by tagging,
+ * then branches to bump manifests to the next version and opens a PR.
  *
  * Usage:
- *   node scripts/release-prep.mjs <version>
- *   pnpm run release:prep 0.1.2
+ *   node scripts/release-prep.mjs <next-version>
+ *   pnpm run release:prep 0.1.3
  *
- * The version argument should be a bare semver (no "v" prefix). The script will:
- *  1. Validate the version string
- *  2. Update package.json, src-tauri/Cargo.toml, crates/arborist-types/Cargo.toml, src-tauri/tauri.conf.json
- *  3. Run `cargo update -p arborist -p arborist-types` to update Cargo.lock
- *  4. Commit the changes
- *  5. Create an annotated tag `v<version>`
- *  6. Push the commit and tag to origin
+ * The <next-version> is the version that will follow the current release. The script will:
+ *  1. Read the current version from manifests (this is the version being released)
+ *  2. Validate: on main, clean tree, tag doesn't exist, all 4 manifests agree
+ *  3. Tag current HEAD as `v<current>` and push the tag
+ *  4. Create branch `chore/bump-<next>`, bump all manifests to <next-version>
+ *  5. Commit, push, and open a PR for the version bump
  *
  * Requires Node.js >= 21.2 (uses import.meta.dirname).
  */
@@ -23,25 +26,64 @@ import { resolve } from 'node:path';
 
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
 
-const version = process.argv[2];
-if (!version) {
-  console.error('Usage: node scripts/release-prep.mjs <version>');
-  console.error('Example: node scripts/release-prep.mjs 0.1.2');
+const nextVersion = process.argv[2];
+if (!nextVersion) {
+  console.error('Usage: node scripts/release-prep.mjs <next-version>');
+  console.error('Example: pnpm run release:prep 0.1.3');
+  console.error('\nThis tags the current version in manifests and opens a PR to bump to <next-version>.');
   process.exit(1);
 }
 
-if (!SEMVER_RE.test(version)) {
-  console.error(`Invalid semver: "${version}". Expected format: X.Y.Z or X.Y.Z-prerelease`);
+if (!SEMVER_RE.test(nextVersion)) {
+  console.error(`Invalid semver: "${nextVersion}". Expected format: X.Y.Z or X.Y.Z-prerelease`);
   process.exit(1);
 }
 
-const tag = `v${version}`;
+const root = resolve(import.meta.dirname, '..');
+const exec = (cmd, opts = {}) => execSync(cmd, { cwd: root, encoding: 'utf8', ...opts }).trim();
 
-// --- Preflight checks (all before any file modification) ---
+// --- Read current version from manifests ---
 
-// Check for uncommitted changes
+const currentVersion = JSON.parse(readFileSync(resolve(root, 'src-tauri/tauri.conf.json'), 'utf8')).version;
+const tag = `v${currentVersion}`;
+
+// Validate all 4 manifests agree
+const manifests = [
+  { path: 'package.json', version: JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version },
+  { path: 'src-tauri/tauri.conf.json', version: currentVersion },
+  {
+    path: 'src-tauri/Cargo.toml',
+    version: readFileSync(resolve(root, 'src-tauri/Cargo.toml'), 'utf8').match(/^version\s*=\s*"([^"]+)"/m)?.[1],
+  },
+  {
+    path: 'crates/arborist-types/Cargo.toml',
+    version: readFileSync(resolve(root, 'crates/arborist-types/Cargo.toml'), 'utf8').match(/^version\s*=\s*"([^"]+)"/m)?.[1],
+  },
+];
+
+const mismatches = manifests.filter((m) => m.version !== currentVersion);
+if (mismatches.length > 0) {
+  console.error('Version mismatch across manifests:');
+  for (const m of manifests) {
+    console.error(`  ${m.path}: ${m.version}${m.version !== currentVersion ? ' ← MISMATCH' : ''}`);
+  }
+  console.error('\nAll manifests must agree before releasing. Fix manually and retry.');
+  process.exit(1);
+}
+
+if (nextVersion === currentVersion) {
+  console.error(`Next version (${nextVersion}) is the same as current version (${currentVersion}). Nothing to do.`);
+  process.exit(1);
+}
+
+console.log(`Current version: ${currentVersion} (will be tagged as ${tag})`);
+console.log(`Next version:    ${nextVersion} (will be the PR bump target)\n`);
+
+// --- Preflight checks ---
+
+// Clean working tree
 try {
-  const status = execSync('git status --porcelain', { encoding: 'utf8' }).trim();
+  const status = exec('git status --porcelain');
   if (status) {
     console.error('Working tree is dirty. Commit or stash changes before running release-prep.');
     process.exit(1);
@@ -51,86 +93,90 @@ try {
   process.exit(1);
 }
 
-// Ensure we're on main to prevent accidental releases from feature branches
-const root = resolve(import.meta.dirname, '..');
-const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: root, encoding: 'utf8' }).trim();
+// Must be on main
+const branch = exec('git rev-parse --abbrev-ref HEAD');
 if (branch !== 'main') {
   console.error(`Current branch is '${branch}', but releases must be cut from 'main'.`);
-  console.error('Switch to main and try again, or use --allow-branch to override.');
-  if (!process.argv.includes('--allow-branch')) {
-    process.exit(1);
-  }
-  console.warn('⚠ --allow-branch override: proceeding on non-main branch.');
+  process.exit(1);
 }
 
-// Check that the tag doesn't already exist (locally or on origin)
+// Tag must not exist locally or on origin
 try {
-  execSync(`git rev-parse --verify refs/tags/${tag}`, { stdio: 'pipe' });
+  exec(`git rev-parse --verify refs/tags/${tag}`);
   console.error(`Tag ${tag} already exists locally. Delete it first or choose a different version.`);
   process.exit(1);
 } catch {
-  // Tag doesn't exist locally — check remote
-  const remote = execSync(`git ls-remote --tags origin refs/tags/${tag}`, { encoding: 'utf8' }).trim();
+  const remote = exec(`git ls-remote --tags origin refs/tags/${tag}`);
   if (remote) {
     console.error(`Tag ${tag} already exists on origin. Delete it first or choose a different version.`);
     process.exit(1);
   }
 }
 
-// --- Update version files ---
+// --- Step 1: Tag current HEAD and push tag ---
 
+console.log(`Tagging ${tag} on main...\n`);
+execSync(`git tag -a "${tag}" -m "Release ${tag}"`, { cwd: root });
+execSync(`git push origin refs/tags/${tag}`, { cwd: root, stdio: 'inherit' });
+console.log(`\n✅ Tag ${tag} pushed.\n`);
+
+// --- Step 2: Branch, bump to next version, push, open PR ---
+
+const bumpBranch = `chore/bump-${nextVersion}`;
+console.log(`Creating branch '${bumpBranch}' for next-version bump...\n`);
+
+execSync(`git checkout -b "${bumpBranch}"`, { cwd: root, stdio: 'pipe' });
+
+// Bump all manifests to nextVersion
 function updateJson(relPath, key) {
   const filePath = resolve(root, relPath);
   const content = readFileSync(filePath, 'utf8');
   const json = JSON.parse(content);
-  const old = json[key];
-  json[key] = version;
-  // Preserve formatting: detect indent from original file
+  json[key] = nextVersion;
   const indent = content.match(/^(\s+)"/m)?.[1] || '  ';
   writeFileSync(filePath, JSON.stringify(json, null, indent) + '\n');
-  console.log(`  ${relPath}: ${old} → ${version}`);
+  console.log(`  ${relPath}: ${currentVersion} → ${nextVersion}`);
 }
 
 function updateCargoToml(relPath) {
   const filePath = resolve(root, relPath);
   const content = readFileSync(filePath, 'utf8');
-  const updated = content.replace(/^(version\s*=\s*")([^"]+)(")/m, `$1${version}$3`);
+  const updated = content.replace(/^(version\s*=\s*")([^"]+)(")/m, `$1${nextVersion}$3`);
   if (updated === content) {
     console.error(`  ${relPath}: no version field found!`);
     process.exit(1);
   }
-  const old = content.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
   writeFileSync(filePath, updated);
-  console.log(`  ${relPath}: ${old} → ${version}`);
+  console.log(`  ${relPath}: ${currentVersion} → ${nextVersion}`);
 }
-
-console.log(`\nBumping to ${version}:\n`);
 
 updateJson('package.json', 'version');
 updateJson('src-tauri/tauri.conf.json', 'version');
 updateCargoToml('src-tauri/Cargo.toml');
 updateCargoToml('crates/arborist-types/Cargo.toml');
 
-// Update only workspace crate entries in Cargo.lock (avoids upgrading transitive deps)
+// Update Cargo.lock for workspace crates only
 console.log('\n  Updating Cargo.lock (workspace crates only)...');
 execSync('cargo update -p arborist -p arborist-types', { cwd: root, stdio: 'pipe' });
 
-// --- Git operations ---
-
-// Detect no-op (e.g. re-running after a partial failure with the same version)
-const diff = execSync('git status --porcelain', { cwd: root, encoding: 'utf8' }).trim();
-if (!diff) {
-  console.error(`\nNo changes to commit — manifests already at ${version}. Nothing to release.`);
-  process.exit(1);
-}
-
-console.log(`\nCommitting and tagging ${tag}...\n`);
-
+// Commit and push
 execSync('git add -A', { cwd: root });
-execSync(`git commit -m "chore: release ${tag}"`, { cwd: root, stdio: 'inherit' });
-execSync(`git tag -a "${tag}" -m "Release ${tag}"`, { cwd: root });
+execSync(`git commit -m "chore: bump version to ${nextVersion}"`, { cwd: root, stdio: 'inherit' });
+execSync(`git push origin "${bumpBranch}"`, { cwd: root, stdio: 'inherit' });
 
-console.log(`\nPushing to origin...\n`);
-execSync(`git push origin HEAD --follow-tags`, { cwd: root, stdio: 'inherit' });
+// Open PR
+console.log('\nOpening PR...\n');
+const prTitle = `chore: bump version to ${nextVersion}`;
+const prBody = `Automated version bump following the ${tag} release.\\n\\nBumps all manifests to ${nextVersion} in preparation for the next development cycle.`;
+execSync(`gh pr create --title "${prTitle}" --body "${prBody}" --base main --head "${bumpBranch}"`, {
+  cwd: root,
+  stdio: 'inherit',
+});
 
-console.log(`\n✅ Done! Tag ${tag} pushed. Trigger the Release workflow from the Actions tab.`);
+// Return to main
+execSync('git checkout main', { cwd: root, stdio: 'pipe' });
+
+console.log(`\n✅ Done!`);
+console.log(`   • Tagged ${tag} and pushed to origin`);
+console.log(`   • Opened PR to bump to ${nextVersion}`);
+console.log(`   • Trigger the Release workflow: gh workflow run release.yml -f tag=${tag}`);

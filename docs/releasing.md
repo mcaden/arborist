@@ -3,17 +3,19 @@
 Arborist releases are built by the manual `Release` GitHub Actions workflow from an existing tag on `main`. The workflow uploads artifacts to a draft
 GitHub Release and generates GitHub build attestations.
 
+## Version convention
+
+The version in manifests on `main` is always the **upcoming** release version. When you're ready to release, the `release:prep` script tags the current
+HEAD (closing out that version), then branches to bump manifests to the next development version and opens a PR.
+
 ## Release prerequisites
 
-- The release commit is merged to `main`.
-- The tag already exists on the repository and is reachable from `main`.
-- Version numbers match in:
+- All manifests on `main` agree on the version to be released:
   - `package.json`
   - `src-tauri/tauri.conf.json`
   - `src-tauri/Cargo.toml`
   - `crates/arborist-types/Cargo.toml`
-
-The `pnpm run release:prep <version>` script handles all of the above automatically. If bumping manually, run `cargo update -p arborist -p arborist-types` after changing the Rust crate versions to update `Cargo.lock` without upgrading unrelated transitive dependencies.
+- The working tree is clean and you're on `main`.
 
 ## Metadata policy
 
@@ -57,39 +59,42 @@ updates because signed installers are distributed through GitHub Releases.
 
 ## Cut a release
 
-The automated way (recommended):
-
 ```sh
 git checkout main
 git pull
-pnpm run release:prep 0.1.2
+pnpm run release:prep 0.1.3
 ```
 
-This bumps all version files, updates `Cargo.lock`, commits, tags, and pushes in one step. It validates that you're on `main` and that the tag doesn't already exist locally or on origin.
+The script:
+1. Reads the current version from manifests (e.g. `0.1.2`) — this is the version being released.
+2. Validates: on `main`, clean tree, tag `v0.1.2` doesn't exist, all 4 manifests agree.
+3. Tags current HEAD as `v0.1.2` and pushes the tag (no commits to `main`).
+4. Creates branch `chore/bump-0.1.3`, bumps all manifests to `0.1.3`, commits, pushes, opens a PR.
+5. Returns to `main`.
 
-> **Note:** The script commits the version bump directly to `main` and pushes without a PR. This is intentional for release mechanics — the commit is a pure version bump with no behavioral changes. If your workflow requires PR review for every commit to `main`, use the manual path below instead.
-
-After the script completes, update `CHANGELOG.md` in a follow-up commit if desired, then trigger the workflow:
+After the script completes, trigger the release build:
 
 ```sh
 gh workflow run release.yml -f tag=v0.1.2
 ```
 
+Then merge the version-bump PR once CI passes.
+
 <details>
 <summary>Manual steps (if not using release:prep)</summary>
 
-1. Land the version bump through PR.
-2. Update `CHANGELOG.md`.
-3. Tag the merge commit:
+1. Ensure the version in manifests on `main` is the version you want to release.
+2. Tag the HEAD commit:
 
    ```sh
    git checkout main
    git pull
-   git tag v0.1.2
+   git tag -a v0.1.2 -m "Release v0.1.2"
    git push origin v0.1.2
    ```
 
-4. Trigger **Actions -> Release -> Run workflow** from `main` and provide the tag.
+3. Trigger **Actions -> Release -> Run workflow** from `main` and provide the tag.
+4. Create a PR to bump manifests to the next version.
 
 </details>
 
