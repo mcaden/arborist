@@ -789,7 +789,7 @@ describe('applyMetrics', () => {
 });
 
 describe('applyStatus + applyMetrics interaction', () => {
-  it('clears stale metrics when a session transitions back to starting (restart)', () => {
+  it('preserves metrics when a session transitions to starting (restore)', () => {
     useSessionStore.setState({
       sessions: [makeView({ id: 'a' })],
       metrics: {
@@ -798,7 +798,7 @@ describe('applyStatus + applyMetrics interaction', () => {
     });
     const evt: SessionStatusEvent = { sessionId: 'a', status: 'starting' };
     useSessionStore.getState().actions.applyStatus(evt);
-    expect(useSessionStore.getState().metrics['a']).toBeUndefined();
+    expect(useSessionStore.getState().metrics['a']).toBeDefined();
   });
 
   it('preserves metrics across non-starting status transitions', () => {
@@ -811,6 +811,41 @@ describe('applyStatus + applyMetrics interaction', () => {
     const evt: SessionStatusEvent = { sessionId: 'a', status: 'running' };
     useSessionStore.getState().actions.applyStatus(evt);
     expect(useSessionStore.getState().metrics['a']).toBeDefined();
+  });
+});
+
+describe('prepareForRestart', () => {
+  it('clears stale metrics and turn markers for the restarted session', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      metrics: {
+        a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
+        b: { sessionId: 'b', contextUsedPct: 30, observedAt: 2 },
+      },
+      lastTurnEndAt: { a: 100, b: 200 },
+      lastTurnDurationMs: { a: 5000, b: 3000 },
+    });
+    useSessionStore.getState().actions.prepareForRestart('a');
+    const state = useSessionStore.getState();
+    expect(state.metrics['a']).toBeUndefined();
+    expect(state.metrics['b']).toBeDefined();
+    expect(state.lastTurnEndAt['a']).toBeUndefined();
+    expect(state.lastTurnEndAt['b']).toBe(200);
+    expect(state.lastTurnDurationMs['a']).toBeUndefined();
+    expect(state.lastTurnDurationMs['b']).toBe(3000);
+  });
+
+  it('is a no-op when the session has no cached metrics or turn markers', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      metrics: {},
+      lastTurnEndAt: {},
+      lastTurnDurationMs: {},
+    });
+    const before = useSessionStore.getState();
+    useSessionStore.getState().actions.prepareForRestart('a');
+    const after = useSessionStore.getState();
+    expect(after.metrics).toBe(before.metrics);
   });
 });
 

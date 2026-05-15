@@ -103,8 +103,7 @@ fn ensure_frontend_dist() {
             panic!("expected frontend dist entry to be a file: {}", index.display());
         }
     } else {
-        std::fs::write(&index, "<!doctype html><html><head></head><body></body></html>\n")
-            .expect("write dist/index.html stub");
+        std::fs::write(&index, "<!doctype html><html><head></head><body></body></html>\n").expect("write dist/index.html stub");
     }
 }
 
