@@ -9,10 +9,12 @@
  * The version argument should be a bare semver (no "v" prefix). The script will:
  *  1. Validate the version string
  *  2. Update package.json, src-tauri/Cargo.toml, crates/arborist-types/Cargo.toml, src-tauri/tauri.conf.json
- *  3. Run `cargo generate-lockfile` to update Cargo.lock
+ *  3. Run `cargo update -p arborist -p arborist-types` to update Cargo.lock
  *  4. Commit the changes
  *  5. Create an annotated tag `v<version>`
  *  6. Push the commit and tag to origin
+ *
+ * Requires Node.js >= 21.2 (uses import.meta.dirname).
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -47,13 +49,18 @@ try {
   process.exit(1);
 }
 
-// Check that the tag doesn't already exist
+// Check that the tag doesn't already exist (locally or on origin)
 try {
   execSync(`git rev-parse --verify refs/tags/${tag}`, { stdio: 'pipe' });
-  console.error(`Tag ${tag} already exists. Delete it first or choose a different version.`);
+  console.error(`Tag ${tag} already exists locally. Delete it first or choose a different version.`);
   process.exit(1);
 } catch {
-  // Tag doesn't exist — good
+  // Tag doesn't exist locally — check remote
+  const remote = execSync(`git ls-remote --tags origin refs/tags/${tag}`, { encoding: 'utf8' }).trim();
+  if (remote) {
+    console.error(`Tag ${tag} already exists on origin. Delete it first or choose a different version.`);
+    process.exit(1);
+  }
 }
 
 const root = resolve(import.meta.dirname, '..');
@@ -92,11 +99,22 @@ updateJson('src-tauri/tauri.conf.json', 'version');
 updateCargoToml('src-tauri/Cargo.toml');
 updateCargoToml('crates/arborist-types/Cargo.toml');
 
-// Update Cargo.lock
-console.log('\n  Updating Cargo.lock...');
-execSync('cargo generate-lockfile', { cwd: root, stdio: 'pipe' });
+// Update only workspace crate entries in Cargo.lock (avoids upgrading transitive deps)
+console.log('\n  Updating Cargo.lock (workspace crates only)...');
+execSync('cargo update -p arborist -p arborist-types', { cwd: root, stdio: 'pipe' });
 
 // --- Git operations ---
+
+// Ensure we're on main to prevent accidental releases from feature branches
+const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: root, encoding: 'utf8' }).trim();
+if (branch !== 'main') {
+  console.error(`Current branch is '${branch}', but releases must be cut from 'main'.`);
+  console.error('Switch to main and try again, or use --allow-branch to override.');
+  if (!process.argv.includes('--allow-branch')) {
+    process.exit(1);
+  }
+  console.warn('⚠ --allow-branch override: proceeding on non-main branch.');
+}
 
 console.log(`\nCommitting and tagging ${tag}...\n`);
 

@@ -13,7 +13,7 @@ GitHub Release and generates GitHub build attestations.
   - `src-tauri/Cargo.toml`
   - `crates/arborist-types/Cargo.toml`
 
-After changing the Rust crate version, run a Cargo command that updates `Cargo.lock` if needed.
+The `pnpm run release:prep <version>` script handles all of the above automatically. If bumping manually, run `cargo update -p arborist -p arborist-types` after changing the Rust crate versions to update `Cargo.lock` without upgrading unrelated transitive dependencies.
 
 ## Metadata policy
 
@@ -57,6 +57,25 @@ updates because signed installers are distributed through GitHub Releases.
 
 ## Cut a release
 
+The automated way (recommended):
+
+```sh
+git checkout main
+git pull
+pnpm run release:prep 0.1.2
+```
+
+This bumps all version files, updates `Cargo.lock`, commits, tags, and pushes in one step. It validates that you're on `main` and that the tag doesn't already exist locally or on origin.
+
+After the script completes, update `CHANGELOG.md` in a follow-up commit if desired, then trigger the workflow:
+
+```sh
+gh workflow run release.yml -f tag=v0.1.2
+```
+
+<details>
+<summary>Manual steps (if not using release:prep)</summary>
+
 1. Land the version bump through PR.
 2. Update `CHANGELOG.md`.
 3. Tag the merge commit:
@@ -64,20 +83,17 @@ updates because signed installers are distributed through GitHub Releases.
    ```sh
    git checkout main
    git pull
-   git tag v0.1.1
-   git push origin v0.1.1
+   git tag v0.1.2
+   git push origin v0.1.2
    ```
 
 4. Trigger **Actions -> Release -> Run workflow** from `main` and provide the tag.
+
+</details>
+
 5. Review the draft release and artifacts.
 6. Smoke-test installers on clean machines or VMs.
 7. Publish the draft release.
-
-CLI equivalent for the workflow dispatch:
-
-```sh
-gh workflow run release.yml -f tag=v0.1.1
-```
 
 ## Artifacts
 

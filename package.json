@@ -16,6 +16,9 @@
     "url": "https://github.com/mcaden/arborist/issues"
   },
   "homepage": "https://arborist.tools",
+  "engines": {
+    "node": ">=21.2.0"
+  },
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
