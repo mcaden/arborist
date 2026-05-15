@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
-import { isInsideWorktreesDir } from '@/lib/worktree-paths';
+import { isInsideWorktreesDir, pathsEqual } from '@/lib/worktree-paths';
 import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
@@ -149,8 +149,7 @@ export function NewSessionDialog(): JSX.Element | null {
 
   // Filter out worktrees that are already loaded as tabs.
   const availableWorktrees = useMemo(() => {
-    const loadedPaths = new Set(openTabs.map((t) => t.path));
-    return worktrees.filter((w) => !loadedPaths.has(w.path));
+    return worktrees.filter((w) => !openTabs.some((t) => pathsEqual(t.path, w.path)));
   }, [worktrees, openTabs]);
 
   const onCreateWorktree = async (): Promise<void> => {

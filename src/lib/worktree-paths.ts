@@ -17,7 +17,7 @@ function isWindowsLikePath(p: string): boolean {
 }
 
 /** Normalize separators to `/` and strip trailing slashes. */
-function normalize(p: string): string {
+export function normalize(p: string): string {
   // Replacing backslashes globally is safe enough for our purpose:
   // backslashes in literal POSIX file names are rare, and the inputs to
   // this helper come from `git worktree list --porcelain` and our own
@@ -47,4 +47,17 @@ export function isInsideWorktreesDir(root: string, child: string): boolean {
     return cl.startsWith(pl) && cl.length > pl.length;
   }
   return c.startsWith(prefix) && c.length > prefix.length;
+}
+
+/**
+ * Cross-platform path equality: normalizes separators, trims trailing
+ * slashes, and case-folds on Windows-like paths.
+ */
+export function pathsEqual(a: string, b: string): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (isWindowsLikePath(na) || isWindowsLikePath(nb)) {
+    return na.toLowerCase() === nb.toLowerCase();
+  }
+  return na === nb;
 }

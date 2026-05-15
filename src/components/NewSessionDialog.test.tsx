@@ -172,6 +172,27 @@ describe('NewSessionDialog', () => {
     expect(screen.queryByRole('button', { name: /feature/i })).not.toBeInTheDocument();
   });
 
+  it('filters with normalized paths (different separators/casing)', async () => {
+    // Simulate Windows paths where git reports backslashes but the tab stores forward slashes.
+    const winRoot = 'C:\\repos\\arborist';
+    const wtPath = `${winRoot}\\.arborist\\.worktrees\\feature`;
+    const tabPath = 'C:/repos/arborist/.arborist/.worktrees/feature';
+    const otherPath = `${winRoot}\\.arborist\\.worktrees\\other`;
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(wtPath, 'feature'), makeWt(otherPath, 'other')]);
+    useWorktreeTabStore.setState({ tabs: [makeTab(tabPath)], activeId: 'tab-feature', isHydrated: true });
+    useConfigStore.setState({ config: defaultConfig({ workspaceRoot: winRoot }), status: 'ready', error: null });
+
+    render(<NewSessionDialog />);
+    openDialog();
+    await screen.findByRole('heading', { name: /add worktree/i });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
+
+    // "feature" should be filtered even though separators differ.
+    expect(await screen.findByRole('button', { name: /other/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /feature/i })).not.toBeInTheDocument();
+  });
+
   it('shows all-open message when every worktree is already loaded', async () => {
     const featurePath = `${REPO_ROOT}/.arborist/.worktrees/feature`;
     bridgeMock.worktreesList.mockResolvedValue([makeWt(REPO_ROOT, 'main', true), makeWt(featurePath, 'feature')]);

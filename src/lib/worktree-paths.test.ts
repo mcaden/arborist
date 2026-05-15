@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isInsideWorktreesDir } from './worktree-paths';
+import { isInsideWorktreesDir, pathsEqual } from './worktree-paths';
 
 // Path layout per issue #71: linked worktrees live under
 // `<root>/.arborist/.worktrees/<name>` rather than the legacy
@@ -49,5 +49,31 @@ describe('isInsideWorktreesDir', () => {
 
   it('handles UNC paths case-insensitively', () => {
     expect(isInsideWorktreesDir('\\\\server\\Share', '\\\\Server\\share\\.arborist\\.worktrees\\foo')).toBe(true);
+  });
+});
+
+describe('pathsEqual', () => {
+  it('matches identical posix paths', () => {
+    expect(pathsEqual('/repo/.worktrees/foo', '/repo/.worktrees/foo')).toBe(true);
+  });
+
+  it('matches with mixed separators', () => {
+    expect(pathsEqual('C:\\repos\\arborist', 'C:/repos/arborist')).toBe(true);
+  });
+
+  it('matches Windows paths case-insensitively', () => {
+    expect(pathsEqual('C:\\Repos\\Arborist', 'c:/repos/arborist')).toBe(true);
+  });
+
+  it('compares posix paths case-sensitively', () => {
+    expect(pathsEqual('/Repo/foo', '/repo/foo')).toBe(false);
+  });
+
+  it('ignores trailing slashes', () => {
+    expect(pathsEqual('/repo/foo/', '/repo/foo')).toBe(true);
+  });
+
+  it('rejects different paths', () => {
+    expect(pathsEqual('/repo/foo', '/repo/bar')).toBe(false);
   });
 });
