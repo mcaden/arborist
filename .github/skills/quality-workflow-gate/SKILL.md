@@ -54,6 +54,31 @@ auto-fixing, parallelism, and context-efficient output automatically.
 Use individual commands only for inner-loop iteration or debugging
 specific failures.
 
+### Agent-optimized variants (minimize context usage)
+
+When running commands as an AI agent (not a human in a terminal),
+use these flags to suppress verbose success output and only surface
+failures. This keeps token usage low and avoids flooding context with
+hundreds of lines of passing-test output.
+
+| Purpose | Command |
+|---------|---------|
+| Full gate (preferred) | `pnpm gate` (already context-efficient) |
+| Frontend gate only | `pnpm gate:fe` |
+| Rust gate only | `pnpm gate:rust` |
+| Rust build only | `cargo build --quiet` |
+| Rust tests | `cargo test --workspace --features test-helpers --quiet` |
+| Rust clippy | `cargo clippy --workspace --all-targets --features test-helpers --quiet -- -D warnings` |
+| Vitest | `pnpm test --run --reporter=dot` |
+| TypeScript typecheck | `pnpm exec tsc --noEmit 2>&1 \| Select-Object -Last 3` (Windows) or `… \| tail -3` (Unix) |
+
+**Rules for agents:**
+- **Always use `--quiet` for `cargo build`, `cargo test`, and `cargo clippy`** — they print full output only on failure, which is all you need.
+- **Always use `--reporter=dot` for vitest** — prints one char per test, full output only on failure.
+- **Pipe lint output through a filter** when running standalone: `pnpm run lint 2>&1 | Select-String "error|warning|✖|problem"` (Windows) or `… | grep -E 'error|warning|✖|problem'` (Unix).
+- **For `pnpm run build`** (Vite production build): pipe to `Select-Object -Last 5` / `tail -5` to get just the summary line.
+- **Prefer `pnpm gate`** over individual commands — it already suppresses success output and only reports failures (last 80 lines max).
+
 ## 3. Inner-loop setup (one-time per contributor)
 
 Run continuously while coding so type/lint/test feedback hits in <5 s:
