@@ -70,9 +70,52 @@ jobs:
           fi
           echo "Tag ${TAG} (${tag_sha}) is on main — proceeding."
 
+  prepare-release:
+    name: Create draft release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
+        with:
+          ref: refs/tags/${{ needs.verify.outputs.tag }}
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping creation."
+          else
+            cat <<'EOF' > /tmp/release-notes.md
+          See the assets below to download installers for your platform.
+
+          These builds are OS-signed and notarized where each platform
+          supports it. See the
+          [README](https://github.com/REPO_PLACEHOLDER#install) for
+          install instructions on macOS, Windows, and Linux.
+
+          Every published asset has a Sigstore-signed
+          [GitHub build attestation](https://github.com/REPO_PLACEHOLDER/attestations).
+          Verify a downloaded file with the GitHub CLI:
+
+          ```sh
+          gh attestation verify <file> --repo REPO_PLACEHOLDER
+          ```
+          EOF
+            sed -i "s|REPO_PLACEHOLDER|${REPO}|g" /tmp/release-notes.md
+            gh release create "$TAG" \
+              --draft \
+              --title "Arborist ${TAG}" \
+              --notes-file /tmp/release-notes.md
+          fi
+
   build:
     name: Build (${{ matrix.platform.name }})
-    needs: verify
+    needs: [verify, prepare-release]
     permissions:
       contents: write
       # Required by actions/attest-build-provenance to mint a short-lived
@@ -111,14 +154,31 @@ jobs:
           node-version: '22'
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          targets: ${{ matrix.platform.rust-targets }}
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # Swatinem/rust-cache@v2
+      - name: Add Rust targets
+        if: matrix.platform.rust-targets != ''
+        shell: bash
+        run: |
+          for target in $(echo "${{ matrix.platform.rust-targets }}" | tr ',' ' '); do
+            rustup target add "$target"
+          done
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # actions/cache@v4.2.3
         with:
-          workspaces: . -> target
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-stable-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-stable-cargo-
 
       # Tauri's Linux build needs system libraries (must match ci.yml). `lld`
       # + `clang` are required by the workspace `.cargo/config.toml` for the
@@ -148,48 +208,52 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # tauri-apps/tauri-action@v0
+      - name: Build Tauri app
+        shell: bash
+        run: pnpm tauri build ${{ matrix.platform.args }}
+
+      - name: Find release artifacts
         id: tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts=$(find target/release/bundle -type f \( \
+            -name "*.msi" -o -name "*.exe" -o -name "*.nsis.zip" \
+            -o -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" \
+            -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \
+            -o -name "*.AppImage.tar.gz" -o -name "*.AppImage.tar.gz.sig" \
+          \) | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          if [ "$(echo "$artifacts" | jq length)" -eq 0 ]; then
+            echo "::error::No Tauri release artifacts found in target/release/bundle"
+            exit 1
+          fi
+          echo "artifactPaths=${artifacts}" >> "$GITHUB_OUTPUT"
+          echo "Found $(echo "$artifacts" | jq length) artifact(s)"
+
+      - name: Upload artifacts to release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ needs.verify.outputs.tag }}
-          releaseName: 'Arborist ${{ needs.verify.outputs.tag }}'
-          releaseBody: |
-            See the assets below to download installers for your platform.
-
-            These builds are OS-signed and notarized where each platform
-            supports it. See the
-            [README](https://github.com/${{ github.repository }}#install) for
-            install instructions on macOS, Windows, and Linux.
-
-            Every published asset has a Sigstore-signed
-            [GitHub build attestation](https://github.com/${{ github.repository }}/attestations).
-            Verify a downloaded file with the GitHub CLI:
-
-            ```sh
-            gh attestation verify <file> --repo ${{ github.repository }}
-            ```
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.platform.args }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo '${{ steps.tauri.outputs.artifactPaths }}' | jq -r '.[]' | while IFS= read -r f; do
+            echo "Uploading: $f"
+            gh release upload "$TAG" "$f" --clobber
+          done
 
       # Generate a Sigstore-signed SLSA build provenance attestation for
-      # every artifact tauri-action produced. Each matrix job attests only
-      # the artifacts it built; together the three jobs cover every
-      # platform's installers (msi/exe/dmg/deb/AppImage). The attestation is
-      # uploaded to GitHub's attestations API and can be verified by users
-      # with `gh attestation verify <file> --repo ${{ github.repository }}`.
+      # every artifact built. Each matrix job attests only the artifacts it
+      # built; together the three jobs cover every platform's installers
+      # (msi/exe/dmg/deb/AppImage). The attestation is uploaded to GitHub's
+      # attestations API and can be verified by users with
+      # `gh attestation verify <file> --repo ${{ github.repository }}`.
       #
-      # tauri-action's `artifactPaths` output is a JSON array of file paths;
-      # we expand it into the comma-separated form `subject-path` accepts
-      # (see actions/attest-build-provenance@v2 README — comma and newline
+      # The `artifactPaths` output is a JSON array of file paths; we expand
+      # it into the comma-separated form `subject-path` accepts (see
+      # actions/attest-build-provenance@v2 README — comma and newline
       # delimited lists are both supported and each entry is trimmed). Tauri
       # bundle filenames never contain commas, so this is unambiguous.
-      #
-      # No explicit `if:` guard is needed: tauri-action throws when no
-      # artifacts are produced (because we set `tagName`), which fails the
-      # job and causes this step to be skipped automatically.
       - name: Attest build provenance for release artifacts
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # actions/attest-build-provenance@v4.1.0
         with:
