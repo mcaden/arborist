@@ -132,9 +132,11 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
             }
         }
         "turnEnd" => {
-            if !state.in_turn {
-                return;
-            }
+            // Always drain `open_permissions` on `turnEnd`, regardless of `in_turn`. A `turnEnd` arriving outside a recorded turn (missing /
+            // dropped `UserPromptSubmit` hook fire, late-attached watcher whose catch-up reset state, helper restart) would otherwise leave the
+            // sidebar shield stuck indefinitely because `awaitingPermission` is accepted regardless of turn state on its own arm. The `TurnEnd`
+            // event itself is only emitted when we *were* in a turn — we don't synthesize lifecycle markers we never claimed to be in.
+            let was_in_turn = state.in_turn;
             state.in_turn = false;
             // Drain any still-open permission requests as denied — Claude has no explicit "denied" event when the user dismisses a prompt, so the
             // safe interpretation is "the turn ended without approval". Emit *before* TurnEnd so the frontend reducer sees the cleanup first and
@@ -145,7 +147,9 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
                     state.open_permissions.remove(&request_id);
                     emit(ActivityEvent::PermissionResolved { request_id, approved: false });
                 }
-                emit(ActivityEvent::TurnEnd { duration_ms: None });
+                if was_in_turn {
+                    emit(ActivityEvent::TurnEnd { duration_ms: None });
+                }
             } else {
                 // Catch-up phase: don't emit, but still keep the maps consistent.
                 state.open_permissions.clear();
@@ -468,6 +472,33 @@ mod tests {
             ]
         );
         assert!(s.open_permissions.is_empty());
+    }
+
+    #[test]
+    fn turn_end_outside_turn_still_drains_dangling_permissions() {
+        // Regression: a `turnEnd` arriving without a preceding `turnStart` (dropped UserPromptSubmit hook fire, helper restart, late watcher
+        // attach) used to early-return and leave the permission shield stuck. Now it always drains `open_permissions`; only the `TurnEnd` event
+        // itself is gated on whether we were in a turn.
+        let mut s = EventsState::new();
+        // Open a permission without a turnStart first.
+        let _ = collect(
+            &mut s,
+            &[br#"{"kind":"awaitingPermission","toolUseId":"tuOrphan","toolName":"Bash","permissionKind":"bash:execute","summary":"ls"}"#],
+            false,
+        );
+        assert!(!s.in_turn, "precondition: no turn recorded");
+        assert_eq!(s.open_permissions.len(), 1, "precondition: orphan permission present");
+
+        let evs = collect(&mut s, &[br#"{"kind":"turnEnd"}"#], false);
+        // Drain happens; TurnEnd is suppressed because we never claimed to be in a turn.
+        assert_eq!(
+            evs,
+            vec![ActivityEvent::PermissionResolved {
+                request_id: "tuOrphan".into(),
+                approved: false,
+            }]
+        );
+        assert!(s.open_permissions.is_empty(), "shield must be cleared");
     }
 
     #[test]
