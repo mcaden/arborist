@@ -473,19 +473,22 @@ pub(crate) fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (Strin
         });
     }
 
-    // Hook integration: when the helper binary is locatable, write a per-session `claude-settings.json` that registers our hooks (plus the user's
-    // own merged in) and point Claude at it with `--settings <quoted-path>`. When `helper_exe_path` is `None` (unit tests, or a release where the
-    // helper wasn't bundled) we silently skip — Claude still works, just without the richer sidebar status reporting.
+    // Hook integration: when the helper binary is locatable AND the plugin reports a settings-file path, write a per-session
+    // `claude-settings.json` that registers our hooks (plus the user's own merged in) and point Claude at it with `--settings <quoted-path>`.
+    // The path comes from [`crate::plugins::ai::settings_file_path`] so the plugin (not compose) owns the layout under the session temp dir. When
+    // `helper_exe_path` is `None` (unit tests, or a release where the helper wasn't bundled) we silently skip — Claude still works, just without
+    // the richer sidebar status reporting.
     if let Some(helper) = inputs.helper_exe_path {
-        let settings_path = session_temp_dir(&inputs.session_id).join("claude-settings.json");
-        let events_path = crate::claude_hook_events::hook_events_path(&inputs.session_id);
-        let user_paths = crate::plugins::ai::claude::hooks::user_settings_paths(inputs.user_home, Some(inputs.worktree_path));
-        let body = crate::plugins::ai::claude::hooks::build_settings_string(helper, inputs.session_id, &events_path, &user_paths);
-        command_parts.push(format!("--settings {}", quoter(&settings_path.to_string_lossy())));
-        temp_files.push(TempFileSpec {
-            path: settings_path,
-            contents: body,
-        });
+        if let Some(settings_path) = crate::plugins::ai::settings_file_path(inputs.tool, &inputs.session_id) {
+            let events_path = crate::claude_hook_events::hook_events_path(&inputs.session_id);
+            let user_paths = crate::plugins::ai::claude::hooks::user_settings_paths(inputs.user_home, Some(inputs.worktree_path));
+            let body = crate::plugins::ai::claude::hooks::build_settings_string(helper, inputs.session_id, &events_path, &user_paths);
+            command_parts.push(format!("--settings {}", quoter(&settings_path.to_string_lossy())));
+            temp_files.push(TempFileSpec {
+                path: settings_path,
+                contents: body,
+            });
+        }
     }
 
     (command_parts.join(" "), temp_files)

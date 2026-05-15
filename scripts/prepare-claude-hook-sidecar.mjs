@@ -7,7 +7,8 @@
 //
 //   1. Runs `cargo build --release --bin arborist-claude-hook` so the artifact exists on disk regardless of whether the surrounding `tauri build`
 //      invocation passed `--bin arborist` (which it does — Tauri's CLI restricts the cargo target).
-//   2. Resolves the host target triple via `rustc -vV` so we don't have to hardcode it across platforms.
+//   2. Asks Cargo for the workspace `target_directory` (it differs between a standalone crate and a workspace member — this repo is a workspace
+//      and builds into the *repo-root* `target/`, not `src-tauri/target/`), and resolves the host target triple via `rustc -vV`.
 //   3. Copies the built binary to `src-tauri/binaries/arborist-claude-hook-<triple>{.exe}` so `externalBin` picks it up.
 //
 // Wired via `tauri.conf.json::build.beforeBundleCommand` so it runs after frontend + main-bin builds but before bundling.
@@ -20,7 +21,6 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const tauriDir = join(repoRoot, 'src-tauri');
-const targetDir = join(tauriDir, 'target', 'release');
 const outDir = join(tauriDir, 'binaries');
 
 function exe(name) {
@@ -36,6 +36,20 @@ function rustcHostTriple() {
   return match[1].trim();
 }
 
+// Ask Cargo for the canonical workspace target directory. Hardcoding `src-tauri/target/release` is wrong for a workspace member —
+// `cargo build` from `src-tauri/` still writes to the workspace's `target/`, which lives at the repo root for this project.
+function cargoTargetDir() {
+  const out = execSync('cargo metadata --no-deps --format-version 1', {
+    cwd: tauriDir,
+    encoding: 'utf8',
+  });
+  const meta = JSON.parse(out);
+  if (!meta.target_directory) {
+    throw new Error('cargo metadata did not return a target_directory');
+  }
+  return meta.target_directory;
+}
+
 function ensureDir(path) {
   if (!existsSync(path)) mkdirSync(path, { recursive: true });
 }
@@ -46,7 +60,7 @@ execSync('cargo build --release --bin arborist-claude-hook', {
   stdio: 'inherit',
 });
 
-const src = join(targetDir, exe('arborist-claude-hook'));
+const src = join(cargoTargetDir(), 'release', exe('arborist-claude-hook'));
 if (!existsSync(src) || !statSync(src).isFile()) {
   throw new Error(`expected built helper at ${src} but did not find one`);
 }

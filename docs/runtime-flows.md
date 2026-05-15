@@ -109,8 +109,9 @@ sequenceDiagram
 
 Launch composition:
 
-- Claude without an instruction set launches as bare `claude --settings <hooks-config>`; with an instruction set, `--system-prompt <temp-file>` is added alongside `--settings`. The Arborist session id is pre-allocated and spliced in via `--session-id <uuid>` on first spawn (`--resume <uuid>` on every subsequent spawn — restart, restore-on-launch).
-- The `--settings` file registers the `arborist-claude-hook` sidecar binary against every hook event Arborist cares about. The user's own `~/.claude/settings.json` and project `.claude/settings.json` hooks are deep-merged in at session-create time, so user formatters / validators keep running. The helper appends one structured line to `<session_temp_dir>/hook-events.jsonl` per hook fire; the backend tails the file and emits `session://activity` events (`AwaitingPermission`, `ToolStart`/`ToolEnd`, `TurnStart`/`TurnEnd`).
+- Claude with no instruction set launches as bare `claude`. When the `arborist-claude-hook` sidecar is found next to the running `arborist` binary, `--settings <hooks-config>` is added; otherwise it's omitted and the session runs without hook-based status reporting (the degraded path — sidebar falls back to PTY-byte heuristics).
+- An instruction set adds `--system-prompt <temp-file>` (Arborist context + instruction content). The Arborist session id is pre-allocated and spliced in via `--session-id <uuid>` on first spawn (`--resume <uuid>` on every subsequent spawn — restart, restore-on-launch).
+- The `--settings` file (when written) registers the `arborist-claude-hook` sidecar binary against every hook event Arborist cares about. The user's own `~/.claude/settings.json` and project `.claude/settings.json` hooks are deep-merged in at session-create time, so user formatters / validators keep running. The helper appends one structured line to `<session_temp_dir>/hook-events.jsonl` per hook fire; the backend tails the file and emits `session://activity` events (`AwaitingPermission`, `ToolStart`/`ToolEnd`, `TurnStart`/`TurnEnd`).
 - Copilot launches bare as `copilot`; Arborist does not pass `--instructions`.
 - Custom AI launch commands replace the program token and are stored by plugin id.
 

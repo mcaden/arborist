@@ -131,20 +131,6 @@ fn resolve_claude_hook_helper() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Resolve the user's home directory. Returns `None` in unusual environments (root containers, missing `HOME`/`USERPROFILE`); Claude compose then
-/// reads only project-local settings, never user-level. Uses platform env vars directly rather than the `dirs` crate to avoid an extra dependency
-/// for a one-line lookup.
-fn dirs_home_dir() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(std::path::PathBuf::from)
-    }
-}
-
 /// Branch this binary was built from, captured at compile time by `build.rs`
 /// and embedded via a generated file under `OUT_DIR` (no environment variable
 /// involved on either side).
@@ -280,7 +266,7 @@ pub fn run() {
             // Resolve the Claude hook helper + user home once at boot. Both flow into Claude's compose path via `AppContext`; missing values are
             // logged but never fatal (Claude sessions still spawn — just without the hook-based status reporting).
             let claude_hook_helper = resolve_claude_hook_helper();
-            let user_home = dirs_home_dir();
+            let user_home = session_metrics::home_dir();
             if claude_hook_helper.is_none() {
                 tracing::warn!("arborist-claude-hook not found next to arborist binary; Claude hook integration disabled this session");
             }
