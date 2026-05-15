@@ -76,4 +76,15 @@ describe('pathsEqual', () => {
   it('rejects different paths', () => {
     expect(pathsEqual('/repo/foo', '/repo/bar')).toBe(false);
   });
+
+  it('handles UNC paths case-insensitively', () => {
+    expect(pathsEqual('\\\\Server\\Share\\project', '\\\\server\\share\\project')).toBe(true);
+  });
+
+  it('handles root paths correctly', () => {
+    expect(pathsEqual('/', '/')).toBe(true);
+    expect(pathsEqual('C:/', 'C:\\')).toBe(true);
+    expect(pathsEqual('/', '/repo')).toBe(false);
+    expect(pathsEqual('C:/', 'C:/repo')).toBe(false);
+  });
 });

@@ -16,13 +16,18 @@ function isWindowsLikePath(p: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(p) || /^[\\/]{2}/.test(p);
 }
 
-/** Normalize separators to `/` and strip trailing slashes. */
-export function normalize(p: string): string {
+/** Normalize separators to `/` and strip trailing slashes (preserving root paths). */
+function normalize(p: string): string {
   // Replacing backslashes globally is safe enough for our purpose:
   // backslashes in literal POSIX file names are rare, and the inputs to
   // this helper come from `git worktree list --porcelain` and our own
   // workspace-root config — neither produces such names in practice.
-  return p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const slashed = p.replace(/\\/g, '/');
+  // Preserve root paths: `/`, `C:/`, `//server` — stripping their trailing
+  // slash would change semantics (empty string or `C:` = CWD on that drive).
+  if (slashed === '/') return '/';
+  if (/^[A-Za-z]:\/$/i.test(slashed)) return slashed;
+  return slashed.replace(/\/+$/, '');
 }
 
 /**
