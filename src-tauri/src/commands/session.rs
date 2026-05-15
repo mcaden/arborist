@@ -452,15 +452,16 @@ fn default_structured_command(tool: Tool, temp_files: &[crate::types::TempFileSp
     let args = match tool {
         Tool::Claude => {
             // Map each known temp file to its flag. Filename is load-bearing: compose produces a `claude-settings.json` temp file when the
-            // `arborist-claude-hook` sidecar is locatable (and nothing otherwise). Unknown filenames are silently ignored — when
-            // `structured_command` is in use (every Claude session created by this code path) the PTY pool spawns from the structured argv and
-            // ignores `composed_command` entirely, so an unmapped temp file would never reach the command line. Adding a new temp-file category
-            // therefore requires adding a match arm here (and ideally a compose-level test) alongside the producer in `compose.rs`.
+            // `arborist-claude-hook` sidecar is locatable (and nothing otherwise). The basename comes from `claude::CLAUDE_SETTINGS_FILE_NAME` so
+            // the same constant is shared with the plugin's `settings_file_path` and any future producer. Unknown filenames are silently ignored —
+            // when `structured_command` is in use (every Claude session created by this code path) the PTY pool spawns from the structured argv
+            // and ignores `composed_command` entirely, so an unmapped temp file would never reach the command line. Adding a new temp-file
+            // category therefore requires adding a match arm here (and ideally a compose-level test) alongside the producer in `compose.rs`.
             let mut args = Vec::new();
             for temp in temp_files {
                 let name = temp.path.file_name().and_then(|s| s.to_str());
                 let path_str = temp.path.to_string_lossy().into_owned();
-                if let Some("claude-settings.json") = name {
+                if name == Some(crate::plugins::ai::claude::CLAUDE_SETTINGS_FILE_NAME) {
                     args.push("--settings".to_owned());
                     args.push(path_str);
                 }

@@ -11,6 +11,11 @@ use crate::types::Tool;
 
 pub mod hooks;
 
+/// Filename of the per-session `--settings` JSON we hand to Claude (`<session_temp_dir>/claude-settings.json`). Single source of truth — the
+/// structured-argv router in `commands::session::default_structured_command` matches on this basename to decide when to add `--settings <path>`,
+/// and [`ClaudePlugin::settings_file_path`] builds the full path with it.
+pub const CLAUDE_SETTINGS_FILE_NAME: &str = "claude-settings.json";
+
 /// Stable singleton instance for dispatch sites that need a `'static`
 /// [`AiPlugin`] reference without allocating.
 pub static PLUGIN: ClaudePlugin = ClaudePlugin;
@@ -77,7 +82,7 @@ impl AiPlugin for ClaudePlugin {
     }
 
     fn settings_file_path(&self, session_id: &SessionId) -> Option<std::path::PathBuf> {
-        Some(crate::compose::session_temp_dir(session_id).join("claude-settings.json"))
+        Some(crate::compose::session_temp_dir(session_id).join(CLAUDE_SETTINGS_FILE_NAME))
     }
 
     fn create_ai_session_id(&self) -> Option<String> {
