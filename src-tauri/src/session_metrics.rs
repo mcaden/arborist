@@ -1426,11 +1426,13 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
         let snap = loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            let s = rx.recv_timeout(remaining).expect("watcher emitted snapshot");
+            let s = match rx.recv_timeout(remaining) {
+                Ok(s) => s,
+                Err(_) => panic!("timed out waiting for cumulative snapshot (context_tokens_used never reached 42_000)"),
+            };
             if s.context_tokens_used == Some(42_000) {
                 break s;
             }
-            assert!(std::time::Instant::now() < deadline, "timed out waiting for cumulative snapshot");
         };
         assert_eq!(snap.context_tokens_used, Some(42_000));
         assert_eq!(snap.context_tokens_limit, Some(170_000));
