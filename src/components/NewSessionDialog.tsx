@@ -38,7 +38,7 @@ function deriveLabel(path: string): string {
   return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }
 
-function ExistingEmptyState({ allAlreadyOpen }: { allAlreadyOpen: boolean }): JSX.Element {
+function ExistingEmptyState({ allAlreadyOpen }: Readonly<{ allAlreadyOpen: boolean }>): JSX.Element {
   if (allAlreadyOpen) {
     return (
       <p className="mb-2 text-sm text-slate-500">All worktrees are already open — create one in the New tab, or use Browse for a path elsewhere.</p>
@@ -48,6 +48,52 @@ function ExistingEmptyState({ allAlreadyOpen }: { allAlreadyOpen: boolean }): JS
     <p className="mb-2 text-sm text-slate-500">
       No worktrees found in <span className="font-mono">.arborist/.worktrees/</span> — create one in the New tab, or use Browse for a path elsewhere.
     </p>
+  );
+}
+
+interface ExistingWorktreeListProps {
+  loading: boolean;
+  availableWorktrees: WorktreeInfo[];
+  allAlreadyOpen: boolean;
+  selectedPath: string | null;
+  onSelect: (w: WorktreeInfo) => void;
+}
+
+function ExistingWorktreeList({
+  loading,
+  availableWorktrees,
+  allAlreadyOpen,
+  selectedPath,
+  onSelect,
+}: Readonly<ExistingWorktreeListProps>): JSX.Element {
+  if (loading) {
+    return <p className="text-sm text-slate-500">Loading...</p>;
+  }
+  if (availableWorktrees.length === 0) {
+    return <ExistingEmptyState allAlreadyOpen={allAlreadyOpen} />;
+  }
+  return (
+    <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+      {availableWorktrees.map((w) => (
+        <li key={w.path}>
+          <button
+            type="button"
+            onClick={() => onSelect(w)}
+            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
+              selectedPath === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
+            }`}
+          >
+            <span className="truncate font-mono">{w.path}</span>
+            <span className="flex shrink-0 items-center gap-1">
+              {w.branch && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">{w.branch}</span>}
+              {w.isMain && (
+                <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">main</span>
+              )}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -310,43 +356,20 @@ export function NewSessionDialog(): JSX.Element | null {
         <div role="tabpanel" id="worktree-panel-existing" aria-labelledby="worktree-tab-existing" hidden={worktreeMode !== 'existing'}>
           {worktreeMode === 'existing' && (
             <>
-              {worktreesLoading ? (
-                <p className="text-sm text-slate-500">Loading...</p>
-              ) : availableWorktrees.length === 0 ? (
-                <ExistingEmptyState allAlreadyOpen={worktrees.length > 0} />
-              ) : (
-                <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-                  {availableWorktrees.map((w) => (
-                    <li key={w.path}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setWorktree({
-                            path: w.path,
-                            ...(w.branch !== undefined ? { branch: w.branch } : {}),
-                            isMain: w.isMain,
-                          });
-                          // Move focus to the confirm button so Enter opens the worktree.
-                          requestAnimationFrame(() => existingConfirmRef.current?.focus());
-                        }}
-                        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
-                          worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
-                        }`}
-                      >
-                        <span className="truncate font-mono">{w.path}</span>
-                        <span className="flex shrink-0 items-center gap-1">
-                          {w.branch && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs dark:bg-slate-600">{w.branch}</span>}
-                          {w.isMain && (
-                            <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-xs text-emerald-900 dark:bg-emerald-700 dark:text-emerald-50">
-                              main
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <ExistingWorktreeList
+                loading={worktreesLoading}
+                availableWorktrees={availableWorktrees}
+                allAlreadyOpen={worktrees.length > 0}
+                selectedPath={worktree?.path ?? null}
+                onSelect={(w) => {
+                  setWorktree({
+                    path: w.path,
+                    ...(w.branch !== undefined ? { branch: w.branch } : {}),
+                    isMain: w.isMain,
+                  });
+                  requestAnimationFrame(() => existingConfirmRef.current?.focus());
+                }}
+              />
               <button
                 type="button"
                 onClick={() => {
