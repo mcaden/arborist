@@ -144,6 +144,11 @@ pre code {
   font-size: 0.95rem;
 }
 
+.icon-github {
+  vertical-align: -0.15em;
+  margin-right: 0.3em;
+}
+
 .page-section,
 .hero {
   width: min(1120px, calc(100% - 2rem));
