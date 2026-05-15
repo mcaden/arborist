@@ -176,9 +176,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-release-${{ matrix.platform.rust-targets || 'default' }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-release-${{ matrix.platform.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-release-${{ matrix.platform.rust-targets || 'default' }}-cargo-
+            ${{ runner.os }}-release-${{ matrix.platform.name }}-cargo-
 
       # Tauri's Linux build needs system libraries (must match ci.yml). `lld`
       # + `clang` are required by the workspace `.cargo/config.toml` for the
