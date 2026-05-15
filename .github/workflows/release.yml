@@ -198,15 +198,13 @@ jobs:
             libssl-dev \
             build-essential
 
-      # macOS: `.cargo/config.toml` sets `linker = "clang"` with
-      # `-fuse-ld=lld` for faster dev builds. GitHub runners don't have lld
-      # for Mach-O, so override rustflags to use the system clang with its
-      # default linker (Apple ld / ld-prime).
+      # macOS: `.cargo/config.toml` sets `-fuse-ld=lld` via per-target
+      # rustflags for faster dev builds. GitHub runners don't have lld for
+      # Mach-O, so override with RUSTFLAGS (takes precedence over config.toml
+      # target rustflags). Empty value = no extra flags → system linker.
       - name: Override macOS linker config for CI
         if: runner.os == 'macOS'
-        run: |
-          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS=" >> "$GITHUB_ENV"
+        run: echo "RUSTFLAGS=" >> "$GITHUB_ENV"
 
       - run: pnpm install --frozen-lockfile
 
