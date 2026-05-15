@@ -23,14 +23,14 @@ function normalize(p: string): string {
   // this helper come from `git worktree list --porcelain` and our own
   // workspace-root config — neither produces such names in practice.
   const slashed = p.replace(/\\/g, '/');
-  // Preserve root paths: `/`, `C:/`, `//server` — stripping their trailing
-  // slash would change semantics (empty string or `C:` = CWD on that drive).
-  if (slashed === '/') return '/';
-  if (/^[A-Za-z]:\/$/.test(slashed)) return slashed;
+  // Drive root with any number of trailing slashes (e.g. `C:/`, `C:////`) → `X:/`.
+  if (/^[A-Za-z]:\/+$/.test(slashed)) return slashed[0] + ':/';
   // Strip trailing slashes without regex quantifiers (avoids SonarCloud ReDoS false positive).
   let end = slashed.length;
   while (end > 0 && slashed[end - 1] === '/') end--;
-  return end === 0 ? slashed : slashed.slice(0, end);
+  // All slashes stripped → input was all slashes → POSIX root.
+  if (end === 0) return '/';
+  return slashed.slice(0, end);
 }
 
 /**
@@ -47,7 +47,8 @@ function normalize(p: string): string {
 export function isInsideWorktreesDir(root: string, child: string): boolean {
   const r = normalize(root);
   const c = normalize(child);
-  const prefix = `${r}/.arborist/.worktrees/`;
+  // Avoid double-slash when root is `/` or `C:/` (already ends with `/`).
+  const prefix = r.endsWith('/') ? `${r}.arborist/.worktrees/` : `${r}/.arborist/.worktrees/`;
   const winLike = isWindowsLikePath(r) || isWindowsLikePath(c);
   if (winLike) {
     const cl = c.toLowerCase();

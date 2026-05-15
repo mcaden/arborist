@@ -50,6 +50,12 @@ describe('isInsideWorktreesDir', () => {
   it('handles UNC paths case-insensitively', () => {
     expect(isInsideWorktreesDir('\\\\server\\Share', '\\\\Server\\share\\.arborist\\.worktrees\\foo')).toBe(true);
   });
+
+  it('handles filesystem root as workspace root without double slash', () => {
+    expect(isInsideWorktreesDir('/', '/.arborist/.worktrees/foo')).toBe(true);
+    expect(isInsideWorktreesDir('C:/', 'C:/.arborist/.worktrees/foo')).toBe(true);
+    expect(isInsideWorktreesDir('////', '/.arborist/.worktrees/foo')).toBe(true);
+  });
 });
 
 describe('pathsEqual', () => {
@@ -86,5 +92,11 @@ describe('pathsEqual', () => {
     expect(pathsEqual('C:/', 'C:\\')).toBe(true);
     expect(pathsEqual('/', '/repo')).toBe(false);
     expect(pathsEqual('C:/', 'C:/repo')).toBe(false);
+  });
+
+  it('normalizes multiple trailing slashes to root', () => {
+    expect(pathsEqual('////', '/')).toBe(true);
+    expect(pathsEqual('C:////', 'C:/')).toBe(true);
+    expect(pathsEqual('C:////', 'c:\\')).toBe(true);
   });
 });

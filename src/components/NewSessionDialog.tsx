@@ -12,6 +12,7 @@
 // in tests covers `showModal`/`close`).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/shallow';
 
 import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { isInsideWorktreesDir, pathsEqual } from '@/lib/worktree-paths';
@@ -19,7 +20,7 @@ import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib
 import { validateWorktreeName } from '@/lib/worktree-validation';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
-import { useWorktreeTabActions, useWorktreeTabs } from '@/store/worktree-tab-store';
+import { useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { WorktreeInfo } from '@/types/arborist';
 
 type WorktreeMode = 'existing' | 'new';
@@ -101,7 +102,8 @@ export function NewSessionDialog(): JSX.Element | null {
   const isOpen = useNewSessionDialog((s) => s.isOpen);
   const close = useNewSessionDialog((s) => s.close);
   const wttActions = useWorktreeTabActions();
-  const openTabs = useWorktreeTabs();
+  // Only subscribe to tab changes when the dialog is open — avoids re-renders on tab open/close/focus while hidden.
+  const openTabs = useWorktreeTabStore(useShallow((s) => (isOpen ? s.tabs : [])));
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
