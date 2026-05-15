@@ -358,10 +358,15 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         .unwrap();
 
     // Create a worktree tab so sub-sessions have a parent.
+    // Canonicalize the path so it matches what `session_create_impl` stores
+    // after `validate_worktree` (which calls `dunce::canonicalize`). Without
+    // this, Windows short-name / casing differences cause the path comparison
+    // in `worktree_tab_close_impl` to miss the child sessions.
     let worktree_tab_id = WorktreeTabId::new();
+    let canonical_wt_path = dunce::canonicalize(worktree.path()).unwrap();
     let wt_tab = WorktreeTab {
         id: worktree_tab_id,
-        path: worktree.path().to_path_buf(),
+        path: canonical_wt_path,
         name: "wt".into(),
         branch: None,
         label: "wt".into(),
