@@ -636,27 +636,33 @@ pub fn boot_select_workspace(
 
     let binding = match bind_workspace(&workspace_root, app_data_dir, branch, git_runner, source) {
         Ok(b) => b,
-        Err(BootError::Contention { ref branch, ref workspace }) if source != BootSource::Cli => {
+        Err(BootError::Contention {
+            branch: ref contended_branch,
+            workspace: ref contended_workspace,
+        }) if source != BootSource::Cli => {
             // The auto-resolved workspace (hint/legacy) or picker selection is locked by another instance. Inform the user and let them pick a
             // different workspace rather than hard-exiting.
-            show_lock_contention_picker_dialog(branch, workspace);
-            return boot_select_workspace_from_picker(app_data_dir, branch, git_runner);
+            show_lock_contention_picker_dialog(contended_branch, contended_workspace);
+            return boot_select_workspace_from_picker(app_data_dir, branch, git_runner, prompt_for_workspace_native);
         }
         Err(e) => return Err(e),
     };
 
-    // Ensure the bound workspace's config.json reflects the canonical workspace_root (single source of truth — see helper docs). Boot must propagate
-    // a save failure here: if we let the bind stand with workspace_root=None on disk, the frontend would rehydrate, see `workspaceRoot: null`, fall
-    // back to the first- boot picker, and the picker's confirm path (`config_set`) would write to the already-bound store while the backend remained
-    // locked on the original workspace. Aborting drops `binding`, which releases the OS lock — caller (`lib::run`) surfaces a dialog and exits
-    // non-zero, and the next launch starts clean.
+    finalize_binding(binding, app_data_dir, branch)
+}
+
+/// Post-bind finalization: persist `workspace_root` into config.json and write the last-workspace hint. Both
+/// `boot_select_workspace` and `boot_select_workspace_from_picker` converge here after a successful `bind_workspace`.
+///
+/// Propagates a `WorkspaceRootPersist` error if the config write fails (boot must abort in that case — see
+/// [`ensure_workspace_root_in_config`] docs). The hint write is non-fatal.
+fn finalize_binding(binding: WorkspaceBinding, app_data_dir: &Path, branch: &str) -> Result<Option<WorkspaceBinding>, BootError> {
     if let Err(source) = ensure_workspace_root_in_config(&binding.store, &binding.workspace_root) {
         return Err(BootError::WorkspaceRootPersist {
             dir: binding.layout.workspace_dir().to_path_buf(),
             source,
         });
     }
-
     if let Err(e) = write_hint(app_data_dir, branch, &binding.workspace_root) {
         warn!(error = %e, "failed to persist last-workspace hint; non-fatal");
     }
@@ -666,37 +672,43 @@ pub fn boot_select_workspace(
 /// Picker-only workspace selection loop. Called when the initial resolution hit lock contention and we need the user to pick a different workspace.
 /// Loops on contention (the user might pick the same locked workspace again) and on invalid-repo picks, showing a dialog each time. Returns
 /// `Ok(None)` if the user cancels the picker at any point.
-fn boot_select_workspace_from_picker(app_data_dir: &Path, branch: &str, git_runner: &dyn GitRunner) -> Result<Option<WorkspaceBinding>, BootError> {
+///
+/// The `prompt` parameter is the folder-picker function — production passes [`prompt_for_workspace_native`]; tests inject a stub.
+fn boot_select_workspace_from_picker(
+    app_data_dir: &Path,
+    branch: &str,
+    git_runner: &dyn GitRunner,
+    prompt: impl Fn(&str) -> Option<PathBuf>,
+) -> Result<Option<WorkspaceBinding>, BootError> {
+    boot_select_workspace_from_picker_inner(app_data_dir, branch, git_runner, prompt, |e| match e {
+        BootError::Contention { ref branch, ref workspace } => show_lock_contention_picker_dialog(branch, workspace),
+        BootError::NotARepository {
+            ref workspace, ref reason, ..
+        } => show_not_a_repo_dialog(workspace, reason),
+        _ => {}
+    })
+}
+
+/// Inner implementation with injectable error-display handler for testability.
+fn boot_select_workspace_from_picker_inner(
+    app_data_dir: &Path,
+    branch: &str,
+    git_runner: &dyn GitRunner,
+    prompt: impl Fn(&str) -> Option<PathBuf>,
+    on_recoverable_error: impl Fn(&BootError),
+) -> Result<Option<WorkspaceBinding>, BootError> {
     loop {
-        let Some(workspace_root) = prompt_for_workspace_native(branch) else {
+        let Some(workspace_root) = prompt(branch) else {
             return Ok(None); // user cancelled
         };
 
         match bind_workspace(&workspace_root, app_data_dir, branch, git_runner, BootSource::Picker) {
-            Ok(binding) => {
-                if let Err(source) = ensure_workspace_root_in_config(&binding.store, &binding.workspace_root) {
-                    return Err(BootError::WorkspaceRootPersist {
-                        dir: binding.layout.workspace_dir().to_path_buf(),
-                        source,
-                    });
-                }
-                if let Err(e) = write_hint(app_data_dir, branch, &binding.workspace_root) {
-                    warn!(error = %e, "failed to persist last-workspace hint; non-fatal");
-                }
-                return Ok(Some(binding));
+            Ok(binding) => return finalize_binding(binding, app_data_dir, branch),
+            Err(ref e @ BootError::Contention { .. }) => {
+                on_recoverable_error(e);
             }
-            Err(BootError::Contention {
-                branch: ref b,
-                workspace: ref w,
-            }) => {
-                show_lock_contention_picker_dialog(b, w);
-                // loop again — let user pick another
-            }
-            Err(BootError::NotARepository {
-                ref workspace, ref reason, ..
-            }) => {
-                show_not_a_repo_dialog(workspace, reason);
-                // loop again — let user pick another
+            Err(ref e @ BootError::NotARepository { .. }) => {
+                on_recoverable_error(e);
             }
             Err(e) => return Err(e),
         }
@@ -1408,5 +1420,83 @@ mod tests {
             read_hint(&app_data, "main").is_none(),
             "hint must not be written when boot aborts on persist failure",
         );
+    }
+
+    // ----- boot_select_workspace_from_picker -------------------------
+
+    #[test]
+    fn picker_loop_contention_then_success() {
+        let td = TempDir::new().unwrap();
+        let app_data = td.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+
+        // ws1 will be locked (contention); ws2 is free.
+        let ws1 = td.path().join("locked-workspace");
+        std::fs::create_dir_all(ws1.join(".git")).unwrap();
+        let ws2 = td.path().join("free-workspace");
+        std::fs::create_dir_all(ws2.join(".git")).unwrap();
+
+        // Pre-lock ws1
+        let canon1 = crate::store_layout::CanonicalPath::canonicalise(&ws1).unwrap();
+        let layout1 = StoreRoot::new(&app_data, "main").for_workspace(&canon1);
+        std::fs::create_dir_all(layout1.workspace_dir()).unwrap();
+        let _lock = WorkspaceLockGuard::acquire(layout1.lock_path()).unwrap();
+
+        // Stub prompt: first call returns ws1 (locked), second returns ws2 (free).
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let prompt = |_branch: &str| -> Option<PathBuf> {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match n {
+                0 => Some(ws1.clone()),
+                1 => Some(ws2.clone()),
+                _ => None,
+            }
+        };
+
+        let result = boot_select_workspace_from_picker_inner(&app_data, "main", &YesRunner, prompt, |_| {});
+        let binding = result.unwrap().expect("should return Some(binding)");
+        assert_eq!(binding.workspace_root, dunce::canonicalize(&ws2).unwrap());
+    }
+
+    #[test]
+    fn picker_loop_not_a_repo_then_success() {
+        let td = TempDir::new().unwrap();
+        let app_data = td.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+
+        // ws1 is not a repo (no .git dir); ws2 is valid.
+        let ws1 = td.path().join("not-a-repo");
+        std::fs::create_dir_all(&ws1).unwrap();
+        let ws2 = td.path().join("valid-repo");
+        std::fs::create_dir_all(ws2.join(".git")).unwrap();
+
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let prompt = |_branch: &str| -> Option<PathBuf> {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match n {
+                0 => Some(ws1.clone()),
+                1 => Some(ws2.clone()),
+                _ => None,
+            }
+        };
+
+        // YesRunner reports every path as a git toplevel, but validate_repo_root also checks `.git.is_dir()` — ws1 lacks
+        // `.git` entirely so it's rejected as NotARepository regardless of what the runner says.
+        let result = boot_select_workspace_from_picker_inner(&app_data, "main", &YesRunner, prompt, |_| {});
+        let binding = result.unwrap().expect("should return Some(binding)");
+        assert_eq!(binding.workspace_root, dunce::canonicalize(&ws2).unwrap());
+    }
+
+    #[test]
+    fn picker_loop_cancel_returns_none() {
+        let td = TempDir::new().unwrap();
+        let app_data = td.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+
+        // Prompt always returns None (user cancels immediately).
+        let prompt = |_branch: &str| -> Option<PathBuf> { None };
+
+        let result = boot_select_workspace_from_picker_inner(&app_data, "main", &YesRunner, prompt, |_| {});
+        assert!(result.unwrap().is_none(), "cancel should return Ok(None)");
     }
 }
