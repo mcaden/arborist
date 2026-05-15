@@ -17,17 +17,16 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
-import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord } from '@/types/arborist';
+import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord, ThemeMode } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
-  configVersion: 10,
-  defaultInstructionSets: { claude: '', copilot: '' },
-  instructionSetsDir: '',
+  configVersion: 11,
   workspaceRoot: null,
   worktreeRoots: [],
   worktreePrepCommands: [],
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
   pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+  repoCommandTrust: { records: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -36,6 +35,7 @@ const EMPTY_CONFIG: AppConfig = {
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 };
 
 export type HydrationStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -117,18 +117,17 @@ export const useConfigStore = create<ConfigStoreState>((set) => ({
 // ---------------------------------------------------------------------------
 
 export const selectConfig = (s: ConfigStoreState): AppConfig => s.config;
-export const selectInstructionSetsDir = (s: ConfigStoreState): string => s.config.instructionSetsDir;
 export const selectWorkspaceRoot = (s: ConfigStoreState): string | null => s.config.workspaceRoot;
 export const selectWorktreeRoots = (s: ConfigStoreState): readonly string[] => s.config.worktreeRoots;
 export const selectWorktreePrepCommands = (s: ConfigStoreState): readonly string[] => s.config.worktreePrepCommands;
 export const selectAiLaunchCommands = (s: ConfigStoreState): AppConfig['aiLaunchCommands'] => s.config.aiLaunchCommands;
 export const selectPluginSettings = (s: ConfigStoreState): AppConfig['pluginSettings'] => s.config.pluginSettings;
-export const selectDefaultInstructionSets = (s: ConfigStoreState): AppConfig['defaultInstructionSets'] => s.config.defaultInstructionSets;
 export const selectTabOrder = (s: ConfigStoreState): AppConfig['tabOrder'] => s.config.tabOrder;
 export const selectLastOpenSessions = (s: ConfigStoreState): AppConfig['lastOpenSessions'] => s.config.lastOpenSessions;
 export const selectCustomProcesses = (s: ConfigStoreState): readonly CustomProcessDef[] => s.config.customProcesses;
 export const selectLastOpenSubSessions = (s: ConfigStoreState): readonly SubSessionRecord[] => s.config.lastOpenSubSessions;
 export const selectSidebarWidthPx = (s: ConfigStoreState): number | undefined => s.config.sidebarWidthPx;
+export const selectTheme = (s: ConfigStoreState): ThemeMode => s.config.theme;
 export const selectStatus = (s: ConfigStoreState): HydrationStatus => s.status;
 export const selectError = (s: ConfigStoreState): string | null => s.error;
 

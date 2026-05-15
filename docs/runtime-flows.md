@@ -70,6 +70,9 @@ sequenceDiagram
     participant Prep as prep child
     participant Banner as WorktreePrepBanner
 
+    UI->>Rust: shell_command_preview { worktreeCreate }
+    Rust-->>UI: commands requiring trust
+    UI->>Rust: repo_command_allow_once or repo_command_trust { worktreeCreate }
     UI->>Rust: worktree_create { name }
     Rust->>Rust: validateWorktreeName / validate workspace root
     Rust->>Git: git -C <workspace> worktree add .arborist/.worktrees/<name> -b <name>
@@ -83,7 +86,10 @@ Prep commands are one-shot setup commands. They run only after `worktree_create`
 to `<app_data_dir>/worktree-prep-logs/<prepId>.log`. Opening a prep log goes through `worktree_prep_open_log`, which validates that the path resolves
 under the prep-log directory before asking the OS to open it.
 
-Repo-level overrides from `<workspace>/.arborist/settings.json` can replace user-level prep commands for that repo.
+Repo-level executable settings from `<workspace>/.arborist/settings.json` are defaults only. If the user has configured prep commands, the repo prep
+commands are ignored and do not prompt. If repo prep commands apply, the frontend asks the backend for a preview before `worktree_create`; the user can
+run once or persist "don't ask again" for the exact command fingerprint. The backend rechecks approval immediately before using the previewed config,
+so changed repo snippets do not run under old approvals.
 
 ## Opening a worktree tab and launching an AI session
 
@@ -98,10 +104,13 @@ sequenceDiagram
     UI->>Cmd: worktree_tab_open { path }
     Cmd->>Store: persist WorktreeTab
     Cmd-->>UI: WorktreeTab
+    UI->>Cmd: shell_command_preview { sessionCreate }
+    Cmd-->>UI: repo launch command requiring trust, if any
+    UI->>Cmd: repo_command_allow_once or repo_command_trust { sessionCreate }
     UI->>Cmd: session_create { tool, worktreePath, cols, rows }
     Cmd->>Cmd: compose CLI command once
-    Cmd->>Store: persist Session with composedCommand
-    Cmd->>Pty: spawn shell -c composedCommand with cwd=worktreePath
+    Cmd->>Store: persist Session with composedCommand/provenance
+    Cmd->>Pty: spawn structured argv or shell snippet with cwd=worktreePath
     Pty->>CLI: child process starts
     Pty-->>UI: session://output
     Pty-->>UI: session://status
@@ -109,13 +118,20 @@ sequenceDiagram
 
 Launch composition:
 
-- Claude with no instruction set launches as bare `claude`. When the `arborist-claude-hook` sidecar is found next to the running `arborist` binary, `--settings <hooks-config>` is added; otherwise it's omitted and the session runs without hook-based status reporting (the degraded path — sidebar falls back to PTY-byte heuristics).
-- An instruction set adds `--system-prompt <temp-file>` (Arborist context + instruction content). The Arborist session id is pre-allocated and spliced in via `--session-id <uuid>` on first spawn (`--resume <uuid>` on every subsequent spawn — restart, restore-on-launch).
+- Claude launches as `claude` (repository-level `CLAUDE.md` discovery is handled by the CLI from the worktree `cwd`). When the `arborist-claude-hook` sidecar is found next to the running `arborist` binary, `--settings <hooks-config>` is added; otherwise it's omitted and the session runs without hook-based status reporting (the degraded path — sidebar falls back to PTY-byte heuristics). The Arborist session id is pre-allocated and spliced in via `--session-id <uuid>` on first spawn (`--resume <uuid>` on every subsequent spawn — restart, restore-on-launch).
 - The `--settings` file (when written) registers the `arborist-claude-hook` sidecar binary against every hook event Arborist cares about. The user's own `~/.claude/settings.json` and project `.claude/settings.json` hooks are deep-merged in at session-create time, so user formatters / validators keep running. The helper appends one structured line to `<session_temp_dir>/hook-events.jsonl` per hook fire; the backend tails the file and emits `session://activity` events (`AwaitingPermission`, `ToolStart`/`ToolEnd`, `TurnStart`/`TurnEnd`).
 - Copilot launches bare as `copilot`; Arborist does not pass `--instructions`.
 - Custom AI launch commands replace the program token and are stored by plugin id.
+- Default Claude/Copilot launches use structured argv. User launch overrides and applied repo launch defaults remain shell snippets because they
+  intentionally allow extra args.
+- Repo-provided launch defaults apply only when the user has not configured that tool's launch command. Applied repo launch defaults require approval
+  before session creation. The user can run once or choose "don't ask again" for the exact command fingerprint; the session stores command provenance
+  for later restart/restore checks.
 
 The worktree path is always the process `cwd`. It is not embedded in `composedCommand`.
+
+Active session temp artifacts live under `<os-temp>/arborist/<session-uuid>`. Copilot launch resets its `otel.jsonl` to an empty private file before
+spawn, with owner-only permissions on Unix; session temp creation and cleanup refuse symlinks and Windows reparse points instead of traversing them.
 
 ## Session restart
 
@@ -123,20 +139,24 @@ The worktree path is always the process `cwd`. It is not embedded in `composedCo
 flowchart LR
     Exit["PTY exits with error"] --> Status["session://status error"]
     Status --> Overlay["Terminal overlay shows restart"]
-    Overlay --> Restart["session_restart { sessionId, cols, rows }"]
+    Overlay --> Preview["shell_command_preview { sessionRestart }"]
+    Preview --> Approve["repo_command_allow_once or repo_command_trust"]
+    Approve --> Restart["session_restart { sessionId, cols, rows }"]
     Restart --> Spawn["Respawn stored composedCommand<br/>cwd = stored worktreePath"]
     Spawn --> Starting["session://status starting"]
 ```
 
 Restart intentionally starts a fresh AI conversation. App-restart restore can resume an AI conversation when the backend has a known AI session id;
-manual restart clears or replaces that id according to the tool.
+manual restart clears or replaces that id according to the tool. If the stored session was created from an applied repo-provided launch default, restart and
+restore revalidate the persisted command provenance. Restore cannot prompt, so an untrusted restored session is left in `error` state for the user to
+review and restart.
 
 ## Closing worktree tabs and sessions
 
 Session close:
 
 1. The frontend asks for confirmation.
-2. `session_close` tears down the PTY and removes the session record.
+2. `session_close` tears down the PTY, removes the session record, and attempts to remove the session temp directory.
 3. If PTY kill/reap is unconfirmed, `teardownError` is returned and worktree deletion is refused because the process may still hold the worktree cwd.
 4. If `deleteWorktree` is true and teardown was confirmed, the backend attempts `git worktree remove --force`.
 5. Worktree deletion failure is returned as `worktreeDeleteError`; the session still closes.
@@ -145,9 +165,10 @@ Worktree-tab close:
 
 1. The frontend asks for confirmation, including app close policy for application sub-sessions.
 2. `worktree_tab_close` cascades to child AI sessions and sub-sessions.
-3. Terminal children terminate. Application children detach or terminate according to policy.
-4. Child teardown errors are returned in `childErrors`.
-5. Optional worktree deletion happens only when child teardown reported no errors; deletion refusal/failure is returned as `worktreeDeleteError`.
+3. Child AI session teardown uses the same session temp cleanup path, including Copilot OTel file cleanup.
+4. Terminal children terminate. Application children detach or terminate according to policy.
+5. Child teardown errors are returned in `childErrors`.
+6. Optional worktree deletion happens only when child teardown reported no errors; deletion refusal/failure is returned as `worktreeDeleteError`.
 
 ## Custom-process sub-sessions
 
@@ -184,10 +205,13 @@ flowchart LR
     Metrics --> Activity
     Metrics --> Snapshot["session://metrics"]
     Metrics --> Store["AI session id discovery"]
+    Metrics --> Persist["Session.last_metrics (persist)"]
 ```
 
 Activity events drive sidebar state such as working, idle, attention, tool running, and awaiting permission. Metrics events drive token/context
-display. Watchers deduplicate unchanged snapshots and stop/join during workspace switches so stale callbacks do not write into an old workspace.
+display and are also persisted on the session record (`last_metrics`) so the frontend can seed its metrics store on restore without waiting for the
+watcher to re-emit. Watchers deduplicate unchanged snapshots and stop/join during workspace switches so stale callbacks do not write into an old
+workspace.
 
 ## Event ordering expectations
 

@@ -26,7 +26,7 @@ If a task genuinely requires restarting the host, ask the user to do it — neve
 
 - **Frontend**: React + TypeScript, Vite, Tailwind CSS (class dark-mode strategy), Zustand, xterm.js
 - **Backend**: Rust, Tauri v2, `portable-pty` (ConPTY on Windows), custom JSON persistence via `config_store.rs`
-- **Layout**: `src/` (frontend), `src-tauri/src/` (Rust), `crates/arborist-types/` (wire types), `instructions/` (default instruction templates), `docs/` (project docs)
+- **Layout**: `src/` (frontend), `src-tauri/src/` (Rust), `crates/arborist-types/` (wire types), `docs/` (project docs)
 
 ## Commands
 
@@ -130,7 +130,7 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 
 ### Tool-specific CLI rules (easy to get wrong)
 
-- **Claude**: inject a `--system-prompt <temp-file>` where the temp file = generated context block + selected instruction set. Temp file lives under OS-temp `arborist/<session-uuid>/` and is deleted on session close.
+- **Claude**: do **not** pass `--system-prompt` for new sessions. Claude auto-discovers `CLAUDE.md` from the worktree `cwd`.
 - **Claude hooks**: when the `arborist-claude-hook` sidecar binary is found next to the running `arborist` (release bundle or `cargo build` artifact), each Claude session also gets a `--settings <temp-file>` pointing at a per-session `claude-settings.json` (same temp dir). The file registers the sidecar against PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest/UserPromptSubmit/Stop/SessionEnd. The user's own `~/.claude/settings.json` and project `.claude/settings.json` hooks are deep-merged in at session-create time so user formatters / validators keep running alongside Arborist's. If the sidecar isn't locatable (e.g. dev runs where the helper wasn't built, partial installs), `--settings` is silently omitted and Claude launches without hook integration — the sidebar falls back to PTY-byte heuristics. The sidebar's `awaitingPermission`/`runningTool`/`thinking`/`awaiting` icons all flow from this hook pipeline — see `src-tauri/src/plugins/ai/claude/hooks.rs` and `src-tauri/src/claude_hook_events.rs`.
 - **Claude session id**: pre-allocated at create time (mirrors Copilot). The persisted `composed_command` stays bare; `compose::with_first_launch_session_id` splices `--session-id <uuid>` on the very first spawn (so Claude creates the conversation at our uuid); `compose::with_resume` splices `--resume <uuid>` on every subsequent spawn (restart / restore-on-launch).
 - **Copilot**: do **not** pass `--instructions` — it disables auto-discovery of `.github/copilot-instructions.md`.

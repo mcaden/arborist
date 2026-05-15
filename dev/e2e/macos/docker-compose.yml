@@ -1,0 +1,62 @@
+# =============================================================================
+# Arborist — macOS e2e Docker Compose (local development harness)
+#
+# Runs a macOS VM via QEMU/KVM inside Docker for e2e testing.
+# Host-side scripts (dev/e2e/macos/scripts/run.sh) SSH into the VM to build
+# and test the app — no orchestrator container needed.
+#
+# Supports two macOS VM images (set MACOS_IMAGE env var):
+#   sickcodes/docker-osx:latest  — default; SSH on port 10022 via QEMU hostfwd
+#   dockurr/macos                — alternative; requires manual SSH enablement
+#
+# Prerequisites:
+#   - Linux host with KVM, or Windows 11 with Docker Desktop (WSL2 + KVM)
+#   - A provisioned macOS VM disk (one-time setup — see README.md)
+#   - Only legal on Apple hardware (Apple EULA requirement)
+#
+# Usage:
+#   docker compose -f dev/e2e/macos/docker-compose.yml up -d
+#   ./dev/e2e/macos/scripts/run.sh e2e
+#   ./dev/e2e/macos/scripts/run.sh build
+#   ./dev/e2e/macos/scripts/run.sh shell
+#   docker compose -f dev/e2e/macos/docker-compose.yml down
+# =============================================================================
+
+services:
+  vm:
+    image: ${MACOS_IMAGE:-sickcodes/docker-osx:latest}
+    container_name: arborist-macos-vm
+    environment:
+      # --- sickcodes/docker-osx settings ---
+      SHORTNAME: ${MACOS_VERSION:-sonoma}
+      GENERATE_UNIQUE: "true"
+      CPU: "Haswell-noTSX"
+      CPUID_FLAGS: "kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on"
+      MASTER_PLIST_URL: "https://raw.githubusercontent.com/sickcodes/osx-serial-generator/master/config-custom-sonoma.plist"
+      # --- dockurr/macos settings (ignored by sickcodes) ---
+      VERSION: "15"
+      RAM_SIZE: "8G"
+      CPU_CORES: "4"
+      DISK_SIZE: "64G"
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      # SSH: sickcodes QEMU hostfwd 10022; dockurr exposes 22 directly.
+      # MACOS_SSH_CONTAINER_PORT lets callers switch (default 10022 for sickcodes).
+      - "50922:${MACOS_SSH_CONTAINER_PORT:-10022}"
+      # Web viewer (dockurr only)
+      - "8006:8006"
+      # VNC
+      - "5900:5900/tcp"
+      - "5900:5900/udp"
+    volumes:
+      # Persistent VM disk — survives container recreation
+      - macos-storage:/storage
+    stop_grace_period: 2m
+    restart: unless-stopped
+
+volumes:
+  macos-storage:

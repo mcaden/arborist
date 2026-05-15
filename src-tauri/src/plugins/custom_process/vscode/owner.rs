@@ -592,7 +592,7 @@ mod unix_liveness {
                 // (2) Window-based check — expensive (spawns osascript / wmctrl) so we throttle to one in every WINDOW_POLL_EVERY ticks. If the
                 // workspace window is no longer enumerable for `WINDOW_GONE_THRESHOLD` consecutive *window* polls, treat the workspace as closed
                 // even though the editor process is still alive (other windows / workspaces).
-                if tick % WINDOW_POLL_EVERY == 0 {
+                if tick.is_multiple_of(WINDOW_POLL_EVERY) {
                     if super::platform::find_vscode_window(&self.basename).is_none() {
                         window_gone_polls = window_gone_polls.saturating_add(1);
                         if window_gone_polls >= WINDOW_GONE_THRESHOLD {

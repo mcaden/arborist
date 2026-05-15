@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arborist_lib::commands::session::{
-    frontend_ready_impl, restore_all_sessions, session_close_impl, session_close_locked, session_create_impl, session_focus_impl, session_input_impl,
-    session_list_impl, session_resize_impl, session_restart_impl, AppContext,
+    frontend_ready_impl, repo_command_allow_once_impl, repo_command_trust_impl, restore_all_sessions, session_close_impl, session_close_locked,
+    session_create_impl, session_focus_impl, session_input_impl, session_list_impl, session_resize_impl, session_restart_impl,
+    shell_command_preview_impl, trusted_worktree_create_config, AppContext,
 };
 use arborist_lib::commands::worktree_tab::worktree_tab_open_impl;
 use arborist_lib::compose::session_temp_dir;
@@ -24,8 +25,8 @@ use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::types::{
-    ChildId, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs,
-    SessionRestartArgs, SessionStatus, Tool, WorktreeInfo, WorktreeTabOpenArgs,
+    ChildId, PartialAppConfig, RepoCommandTrustArgs, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs,
+    SessionStatus, ShellCommandIntent, ShellCommandPreviewArgs, Tool, WorktreeInfo, WorktreeTabOpenArgs,
 };
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
@@ -198,9 +199,7 @@ struct Harness {
     spawner: Arc<FakeSpawner>,
     events: Arc<CapturedEvents>,
     _config_dir: TempDir,
-    _instructions_dir: TempDir,
     worktree: TempDir,
-    instruction_id: InstructionSetId,
 }
 
 /// Records `remove_worktree` invocations so a test can assert opt-in deletion was forwarded to the git layer.
@@ -244,26 +243,9 @@ fn build_harness() -> Harness {
 
 fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let config_dir = TempDir::new().unwrap();
-    let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
 
-    // Seed a single instruction set on disk so session_create can resolve it.
-    let instruction_id = InstructionSetId("claude-default".into());
-    let instr_path = instructions_dir.path().join("claude-default.md");
-    std::fs::write(&instr_path, "# Claude default instructions\nbe helpful").unwrap();
-
     let store = ConfigStore::open(config_dir.path()).unwrap();
-    // Wire the discovery dir so the instruction lookup succeeds.
-    store
-        .save_config(PartialAppConfig {
-            instruction_sets_dir: Some(instructions_dir.path().to_path_buf()),
-            default_instruction_sets: Some(PartialDefaultInstructionSets {
-                claude: Some(instruction_id.clone()),
-                copilot: None,
-            }),
-            ..Default::default()
-        })
-        .unwrap();
 
     let spawner = Arc::new(FakeSpawner::new());
     let pool = Arc::new(PtyPool::new(spawner.clone() as Arc<dyn PtySpawner>));
@@ -284,9 +266,7 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         spawner,
         events,
         _config_dir: config_dir,
-        _instructions_dir: instructions_dir,
         worktree,
-        instruction_id,
     }
 }
 
@@ -294,10 +274,72 @@ fn create_args(h: &Harness) -> SessionCreateArgs {
     SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(h.instruction_id.clone()),
         cols: 80,
         rows: 24,
     }
+}
+
+fn set_workspace_root_to_worktree(h: &Harness) {
+    h.ctx
+        .store()
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(h.worktree.path().to_path_buf())),
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+fn write_repo_settings(h: &Harness, body: &str) {
+    let dir = h.worktree.path().join(arborist_lib::repo_settings::ARBORIST_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(arborist_lib::repo_settings::SETTINGS_FILENAME), body).unwrap();
+}
+
+fn repo_claude_settings(command: &str) -> String {
+    format!(
+        r#"{{
+  "pluginSettings": {{
+    "ai": {{
+      "claude": {{
+        "settings": {{
+          "launchCommand": {command:?}
+        }}
+      }}
+    }}
+  }}
+}}"#
+    )
+}
+
+fn repo_prep_settings(command: &str) -> String {
+    format!(
+        r#"{{
+  "worktreePrepCommands": [{command:?}]
+}}"#
+    )
+}
+
+fn trust_repo_claude_launch(h: &Harness) {
+    let preview_args = ShellCommandPreviewArgs {
+        intent: ShellCommandIntent::SessionCreate {
+            tool: Tool::Claude,
+            worktree_path: h.worktree.path().to_path_buf(),
+        },
+    };
+    let preview = shell_command_preview_impl(&h.ctx, preview_args.clone()).expect("preview");
+    assert!(preview.trust_required, "repo launch override should require trust");
+    assert_eq!(preview.trust_records.len(), 1);
+    repo_command_trust_impl(&h.ctx, RepoCommandTrustArgs { intent: preview_args.intent }).expect("trust repo launch");
+}
+
+fn allow_once_repo_claude_launch(h: &Harness) {
+    let args = RepoCommandTrustArgs {
+        intent: ShellCommandIntent::SessionCreate {
+            tool: Tool::Claude,
+            worktree_path: h.worktree.path().to_path_buf(),
+        },
+    };
+    repo_command_allow_once_impl(&h.ctx, args).expect("allow repo launch once");
 }
 
 /// Wait until predicate holds or `dur` elapses. Avoids fixed `sleep`s.
@@ -358,6 +400,190 @@ async fn create_emits_starting_then_running_and_persists_session() {
 }
 
 #[tokio::test]
+async fn create_uses_structured_argv_for_default_launcher() {
+    let h = build_harness();
+
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("create ok");
+
+    let cmd = h.spawner.state.lock().unwrap().last_cmd.clone().expect("spawn command");
+    assert_eq!(cmd.program, "claude");
+    // Claude pre-allocates a session uuid; the first-launch splice adds `--session-id <uuid>` to the structured argv (and `--resume <uuid>` on
+    // subsequent spawns — see `with_first_launch_for_spawn` / `with_resume_for_spawn`). The test harness's `AppContext` doesn't wire the
+    // `arborist-claude-hook` sidecar, so `--settings` is omitted; this assertion pins the minimal expected shape.
+    let aid = h
+        .ctx
+        .store()
+        .load_sessions()
+        .get(&view.id)
+        .and_then(|s| s.ai_session_id.clone())
+        .expect("Claude pre-allocates an ai_session_id");
+    assert_eq!(cmd.args, vec!["--session-id".to_owned(), aid]);
+}
+
+#[tokio::test]
+async fn create_blocks_untrusted_repo_ai_launch_override() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --danger"));
+
+    let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("repo launch override should require trust");
+
+    assert_eq!(err.code, "TrustRequired");
+    assert_eq!(h.spawner.state.lock().unwrap().spawn_count, 0);
+}
+
+#[tokio::test]
+async fn user_ai_launch_command_wins_over_repo_and_does_not_prompt() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.set_ai_launch_command("claude".to_owned(), "user-claude --safe".to_owned());
+            true
+        })
+        .expect("seed user launch command");
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --danger"));
+
+    let preview = shell_command_preview_impl(
+        &h.ctx,
+        ShellCommandPreviewArgs {
+            intent: ShellCommandIntent::SessionCreate {
+                tool: Tool::Claude,
+                worktree_path: h.worktree.path().to_path_buf(),
+            },
+        },
+    )
+    .expect("preview");
+    assert!(!preview.trust_required, "ignored repo launch override should not prompt");
+    assert!(preview.commands.is_empty());
+
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("user launch command should run without repo trust");
+
+    let cmd = h.spawner.state.lock().unwrap().last_cmd.clone().expect("spawn command");
+    assert!(cmd.args.iter().any(|arg| arg.contains("user-claude --safe")));
+    assert!(!cmd.args.iter().any(|arg| arg.contains("repo-claude --danger")));
+    let sessions = h.ctx.store().load_sessions();
+    assert!(
+        sessions[&view.id].command_provenance.is_empty(),
+        "ignored repo command must not be recorded as session provenance"
+    );
+}
+
+#[tokio::test]
+async fn user_worktree_prep_commands_win_over_repo_and_do_not_prompt() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    h.ctx
+        .store()
+        .save_config(PartialAppConfig {
+            worktree_prep_commands: Some(vec!["user-prep --safe".to_owned()]),
+            ..Default::default()
+        })
+        .expect("seed user prep command");
+    write_repo_settings(&h, &repo_prep_settings("repo-prep --danger"));
+
+    let preview = shell_command_preview_impl(
+        &h.ctx,
+        ShellCommandPreviewArgs {
+            intent: ShellCommandIntent::WorktreeCreate {
+                name: "feature-user-prep".to_owned(),
+            },
+        },
+    )
+    .expect("preview");
+    assert!(!preview.trust_required, "ignored repo prep override should not prompt");
+    assert!(preview.commands.is_empty());
+
+    let cfg = trusted_worktree_create_config(&h.ctx, "feature-user-prep").expect("user prep command should not require repo trust");
+    assert_eq!(cfg.worktree_prep_commands, vec!["user-prep --safe".to_owned()]);
+}
+
+#[tokio::test]
+async fn trusting_repo_ai_launch_allows_create_and_persists_provenance() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model test"));
+    trust_repo_claude_launch(&h);
+
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("create ok after trust");
+
+    let cmd = h.spawner.state.lock().unwrap().last_cmd.clone().expect("spawn command");
+    assert!(cmd.args.iter().any(|arg| arg.contains("repo-claude --model test")));
+    let sessions = h.ctx.store().load_sessions();
+    let session = sessions.get(&view.id).expect("persisted session");
+    assert_eq!(session.structured_command, None);
+    assert_eq!(session.command_provenance.len(), 1);
+    assert_eq!(
+        session.command_provenance[0].source,
+        arborist_lib::types::ShellCommandSource::RepoSettings
+    );
+}
+
+#[tokio::test]
+async fn allow_once_repo_ai_launch_allows_single_create_without_persisting_trust() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model one-shot"));
+
+    allow_once_repo_claude_launch(&h);
+    assert!(
+        h.ctx.store().load_config().repo_command_trust.records.is_empty(),
+        "run-once approval must not persist trust in user config"
+    );
+
+    session_create_impl(&h.ctx, create_args(&h)).expect("first create consumes run-once approval");
+    let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("run-once approval must be consumed");
+
+    assert_eq!(err.code, "TrustRequired");
+}
+
+#[tokio::test]
+async fn persistent_repo_ai_launch_trust_is_scoped_to_exact_command() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model first"));
+    trust_repo_claude_launch(&h);
+
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model second"));
+    let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("changed repo command must require new trust");
+
+    assert_eq!(err.code, "TrustRequired");
+    assert_eq!(h.spawner.state.lock().unwrap().spawn_count, 0);
+}
+
+#[tokio::test]
+async fn restart_blocks_persisted_repo_command_when_trust_record_is_removed() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model test"));
+    trust_repo_claude_launch(&h);
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("create ok after trust");
+    let spawn_count = h.spawner.state.lock().unwrap().spawn_count;
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.repo_command_trust.records.clear();
+            true
+        })
+        .unwrap();
+
+    let err = session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect_err("restart should require renewed trust");
+
+    assert_eq!(err.code, "TrustRequired");
+    assert_eq!(h.spawner.state.lock().unwrap().spawn_count, spawn_count);
+    assert_eq!(h.ctx.store().load_sessions()[&view.id].status, SessionStatus::Error);
+}
+
+#[tokio::test]
 async fn create_passes_initial_size_to_spawner() {
     // Regression: pre-fix, the PTY was always opened at DEFAULT_PTY_SIZE (80×24) regardless of what the frontend actually rendered, so the CLI's
     // first paint (e.g. a Copilot/Claude splash) was always at 80 cols. The frontend now measures its host first and passes the real dims through
@@ -366,7 +592,6 @@ async fn create_passes_initial_size_to_spawner() {
     let args = SessionCreateArgs {
         tool: Tool::Claude,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(h.instruction_id.clone()),
         cols: 173,
         rows: 47,
     };
@@ -408,7 +633,6 @@ async fn create_rejects_zero_dimensions() {
         let args = SessionCreateArgs {
             tool: Tool::Claude,
             worktree_path: h.worktree.path().to_path_buf(),
-            instruction_set_id: Some(h.instruction_id.clone()),
             cols,
             rows,
         };
@@ -451,37 +675,6 @@ async fn resize_rejects_zero_dimensions() {
     )
     .expect_err("resize with 0×0 should fail");
     assert_eq!(err.code, "InvalidArgs");
-}
-
-#[tokio::test]
-async fn create_with_unknown_instruction_set_returns_notfound() {
-    let h = build_harness();
-    let args = SessionCreateArgs {
-        tool: Tool::Claude,
-        worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(InstructionSetId("does-not-exist".into())),
-        cols: 80,
-        rows: 24,
-    };
-    let err = session_create_impl(&h.ctx, args).expect_err("should fail");
-    assert_eq!(err.code, "NotFound");
-}
-
-#[tokio::test]
-async fn create_with_tool_mismatch_returns_toolmismatch() {
-    let h = build_harness();
-    // Add a copilot-tagged instruction set under the same dir.
-    let copilot_path = h._instructions_dir.path().join("copilot-only.md");
-    std::fs::write(&copilot_path, "for copilot").unwrap();
-    let args = SessionCreateArgs {
-        tool: Tool::Claude,
-        worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id: Some(InstructionSetId("copilot-only".into())),
-        cols: 80,
-        rows: 24,
-    };
-    let err = session_create_impl(&h.ctx, args).expect_err("should fail");
-    assert_eq!(err.code, "ToolMismatch");
 }
 
 #[tokio::test]
@@ -831,7 +1024,11 @@ async fn close_kills_pty_removes_record_and_clears_active() {
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args(&h)).unwrap();
     let temp = session_temp_dir(&view.id);
-    assert!(temp.exists(), "Claude temp dir must exist after create");
+    // Claude's spawn-prep ensures the per-session temp dir exists so the hook-events tailer can attach immediately. The harness doesn't wire the
+    // sidecar (no `claude-settings.json` written), but the directory itself is still created.
+    assert!(temp.exists(), "Claude spawn_prep should ensure the session temp dir");
+    // Drop a legacy file in for the cleanup assertion below — close should sweep the whole directory regardless of what's in it.
+    std::fs::write(temp.join("legacy-system-prompt.md"), b"legacy prompt").expect("write legacy temp file");
 
     session_close_impl(&h.ctx, view.id, false).await.unwrap();
 
@@ -842,7 +1039,7 @@ async fn close_kills_pty_removes_record_and_clears_active() {
     assert!(cfg.tab_order.is_empty());
     assert!(cfg.last_open_sessions.is_empty());
 
-    // Temp dir is swept by either pool.kill or the post-close belt-and-braces cleanup. Allow a beat for filesystem to settle on Windows.
+    // Legacy temp dirs are swept by either pool.kill or the post-close belt-and-braces cleanup. Allow a beat for filesystem to settle on Windows.
     let cleared = wait_until(|| !temp.exists(), Duration::from_secs(2));
     assert!(cleared, "session temp dir {temp:?} should be removed");
 }
@@ -1134,15 +1331,13 @@ async fn restore_defers_spawn_until_first_session_resize() {
     assert_eq!(size.cols, 132);
     assert_eq!(size.rows, 50);
 
-    // Composed command was reused verbatim — never recomposed.
+    // The persisted composed command is still reused verbatim — never recomposed — even though the default launch now reaches the spawner as
+    // structured argv.
+    let restored = ctx2.store().load_sessions().get(&original.id).cloned().unwrap();
+    assert_eq!(restored.composed_command, original_command);
     let cmd = st.last_cmd.as_ref().unwrap();
-    let composed_in_args = cmd.args.iter().find(|a| a.contains("claude")).cloned();
-    assert!(
-        composed_in_args
-            .as_deref()
-            .is_some_and(|s| s == original_command.as_str() || s.contains(&original_command)),
-        "expected restored spawn to receive original composed command verbatim; got {cmd:?}, original {original_command:?}"
-    );
+    assert_eq!(cmd.program, "claude");
+    assert!(cmd.args.is_empty());
 }
 
 // (no extra trailing helpers)
@@ -1308,16 +1503,9 @@ async fn restore_does_not_rewrite_config_when_no_orphans_present() {
 // equivalent flag and continues the discovery path.
 
 fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
-    // The shared harness seeds a Claude-only instruction set on disk, so for Copilot we pass None — Copilot doesn't accept --instructions anyway
-    // (Copilot auto-discovers `.github/copilot-instructions.md` from cwd).
-    let instruction_set_id = match tool {
-        Tool::Claude => Some(h.instruction_id.clone()),
-        Tool::Copilot => None,
-    };
     SessionCreateArgs {
         tool,
         worktree_path: h.worktree.path().to_path_buf(),
-        instruction_set_id,
         cols: 80,
         rows: 24,
     }

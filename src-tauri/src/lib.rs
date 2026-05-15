@@ -19,6 +19,8 @@ pub mod process_icon;
 pub mod pty_pool;
 pub mod repo_settings;
 pub mod session_metrics;
+pub mod session_temp;
+pub mod shell_trust;
 pub mod sub_sessions;
 /// Wire-contract types for the Rust backend ↔ React frontend boundary.
 ///
@@ -32,10 +34,9 @@ pub mod worktree_icon;
 pub mod worktree_prep;
 
 pub use types::{
-    AppConfig, AppError, DefaultInstructionSets, Error, InstructionSet, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets, Session,
-    SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionMetricsEvent, SessionOutputEvent, SessionResizeArgs, SessionStatus,
-    SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult,
-    WorktreeInfo, CONFIG_VERSION_CURRENT,
+    AppConfig, AppError, Error, PartialAppConfig, Session, SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs, SessionMetricsEvent,
+    SessionOutputEvent, SessionResizeArgs, SessionStatus, SessionStatusEvent, SessionView, TempFileSpec, Tool, WorkspaceValidateArgs,
+    WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeInfo, CONFIG_VERSION_CURRENT,
 };
 
 use tracing_appender::non_blocking::WorkerGuard;
@@ -259,7 +260,7 @@ pub fn run() {
             let workspace_handle = std::sync::Arc::new(std::sync::RwLock::new(scope));
             let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(pty_pool::PortablePtySpawner)));
             let sink = commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
-            let metrics_emit = commands::build_production_metrics_emit(app.handle().clone());
+            let metrics_emit = commands::build_production_metrics_emit(app.handle().clone(), workspace_handle.clone());
             let ai_session_discover = commands::build_production_ai_session_discover(workspace_handle.clone());
             let turn_emit = commands::build_production_turn_emit(app.handle().clone());
             let git_runner: std::sync::Arc<dyn git::GitRunner> = std::sync::Arc::new(git::RealGitRunner);
@@ -367,7 +368,9 @@ pub fn run() {
             commands::ping,
             commands::config_get,
             commands::config_set,
-            commands::instructions_list,
+            commands::shell_command_preview,
+            commands::repo_command_trust,
+            commands::repo_command_allow_once,
             commands::dialog_pick_directory,
             commands::session_create,
             commands::session_list,

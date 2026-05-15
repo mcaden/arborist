@@ -13,6 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { isInsideWorktreesDir } from '@/lib/worktree-paths';
 import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
@@ -152,6 +153,8 @@ export function NewSessionDialog(): JSX.Element | null {
     setCreateError(null);
     setSubmitError(null);
     try {
+      const trusted = await ensureShellCommandTrusted({ kind: 'worktreeCreate', name: trimmed });
+      if (!trusted) return;
       const result = await worktreeCreate(trimmed);
       setWorktree({ path: result.path, branch: trimmed, isMain: false });
       setNewName('');
@@ -296,18 +299,20 @@ export function NewSessionDialog(): JSX.Element | null {
                   elsewhere.
                 </p>
               ) : (
-                <ul className="mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+                <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
                   {worktrees.map((w) => (
                     <li key={w.path}>
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
                           setWorktree({
                             path: w.path,
                             ...(w.branch !== undefined ? { branch: w.branch } : {}),
                             isMain: w.isMain,
-                          })
-                        }
+                          });
+                          // Move focus to the confirm button so Enter opens the worktree.
+                          requestAnimationFrame(() => existingConfirmRef.current?.focus());
+                        }}
                         className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
                           worktree?.path === w.path ? 'bg-sky-100 dark:bg-sky-900' : ''
                         }`}
@@ -339,45 +344,53 @@ export function NewSessionDialog(): JSX.Element | null {
           )}
         </div>
         <div role="tabpanel" id="worktree-panel-new" aria-labelledby="worktree-tab-new" hidden={worktreeMode !== 'new'}>
-          <label htmlFor="new-worktree-name" className="block text-sm font-medium">
-            Branch / worktree name
-          </label>
-          <input
-            id="new-worktree-name"
-            type="text"
-            value={newName}
-            onChange={(e) => {
-              setNewName(e.target.value);
-              setCreateError(null);
+          <form
+            id="new-worktree-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void onCreateWorktree();
             }}
-            aria-invalid={newNameError !== null}
-            aria-describedby={
-              newNameError !== null ? 'new-worktree-name-error' : createError !== null ? 'new-worktree-create-error' : 'new-worktree-name-help'
-            }
-            placeholder="my-feature"
-            className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
-          />
-          {newNameError !== null ? (
-            <p id="new-worktree-name-error" role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
-              {newNameError}
-            </p>
-          ) : (
-            <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
-              Will run{' '}
-              <span className="font-mono">
-                git worktree add .arborist/.worktrees/{newName.trim() || 'NAME'} -b {newName.trim() || 'NAME'}
-              </span>
-            </p>
-          )}
-          {createError !== null && (
-            <p
-              id="new-worktree-create-error"
-              role="alert"
-              className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
-            >
-              {createError}
-            </p>
-          )}
+          >
+            <label htmlFor="new-worktree-name" className="block text-sm font-medium">
+              Branch / worktree name
+            </label>
+            <input
+              id="new-worktree-name"
+              type="text"
+              value={newName}
+              onChange={(e) => {
+                setNewName(e.target.value);
+                setCreateError(null);
+              }}
+              aria-invalid={newNameError !== null}
+              aria-describedby={
+                newNameError !== null ? 'new-worktree-name-error' : createError !== null ? 'new-worktree-create-error' : 'new-worktree-name-help'
+              }
+              placeholder="my-feature"
+              className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-800"
+            />
+            {newNameError !== null ? (
+              <p id="new-worktree-name-error" role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
+                {newNameError}
+              </p>
+            ) : (
+              <p id="new-worktree-name-help" className="mt-1 text-xs text-slate-500">
+                Will run{' '}
+                <span className="font-mono">
+                  git worktree add .arborist/.worktrees/{newName.trim() || 'NAME'} -b {newName.trim() || 'NAME'}
+                </span>
+              </p>
+            )}
+            {createError !== null && (
+              <p
+                id="new-worktree-create-error"
+                role="alert"
+                className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100"
+              >
+                {createError}
+              </p>
+            )}
+          </form>
         </div>
 
         {worktree && <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>}
@@ -406,8 +419,8 @@ export function NewSessionDialog(): JSX.Element | null {
         </button>
         {worktreeMode === 'new' && (
           <button
-            type="button"
-            onClick={() => void onCreateWorktree()}
+            type="submit"
+            form="new-worktree-form"
             disabled={creating || submitting || newName.trim().length === 0 || newNameError !== null}
             className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
           >

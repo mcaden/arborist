@@ -8,27 +8,26 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
-import type { PluginSettings } from '@/types/arborist';
+import type { PluginSettings, ThemeMode } from '@/types/arborist';
 
 function seedConfig(
   overrides: Partial<{
     workspaceRoot: string | null;
-    instructionSetsDir: string;
     worktreePrepCommands: string[];
     aiLaunchCommands: { commands: Record<string, string>; iconDataUris: Record<string, string | null> };
     pluginSettings: PluginSettings;
+    theme: ThemeMode;
   }> = {},
 ): void {
   useConfigStore.setState({
     config: {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: overrides.instructionSetsDir ?? '/cfg/instr',
+      configVersion: 11,
       workspaceRoot: overrides.workspaceRoot ?? '/work',
       worktreeRoots: [],
       worktreePrepCommands: overrides.worktreePrepCommands ?? [],
       aiLaunchCommands: overrides.aiLaunchCommands ?? { commands: {}, iconDataUris: {} },
       pluginSettings: overrides.pluginSettings ?? { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -37,6 +36,7 @@ function seedConfig(
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: overrides.theme ?? 'system',
     },
     status: 'ready',
     error: null,
@@ -61,14 +61,13 @@ afterEach(() => {
   // Reset config store between tests by re-seeding the empty default.
   useConfigStore.setState({
     config: {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -77,6 +76,7 @@ afterEach(() => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     },
     status: 'idle',
     error: null,
@@ -84,15 +84,13 @@ afterEach(() => {
 });
 
 describe('SettingsDialog', () => {
-  it('shows the current workspace root, instructions dir, and worktree prep commands', () => {
+  it('shows the current workspace root and worktree prep commands', () => {
     seedConfig({
       workspaceRoot: '/repos/grove',
-      instructionSetsDir: '/cfg/instr',
       worktreePrepCommands: ['source ~/.zshenv', 'nvm use 20'],
     });
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     expect(screen.getByTestId('settings-workspace-path')).toHaveTextContent('/repos/grove');
-    expect(screen.getByLabelText(/instruction sets directory/i)).toHaveValue('/cfg/instr');
     expect(screen.getByLabelText(/worktree prep commands/i)).toHaveValue('source ~/.zshenv\nnvm use 20');
   });
 
@@ -101,15 +99,14 @@ describe('SettingsDialog', () => {
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     const save = screen.getByRole('button', { name: /^save$/i });
     expect(save).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
-      target: { value: '/new/instr' },
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
+      target: { value: 'echo changed' },
     });
     expect(save).toBeEnabled();
   });
 
   it('persists only the changed fields and closes on success', async () => {
     seedConfig({
-      instructionSetsDir: '/old',
       worktreePrepCommands: ['echo a'],
     });
     const onClose = vi.fn();
@@ -142,28 +139,18 @@ describe('SettingsDialog', () => {
   });
 
   it('surfaces backend errors without closing', async () => {
-    seedConfig({ instructionSetsDir: '/old' });
+    seedConfig();
     bridgeMock.configSet.mockRejectedValueOnce(new Error('bad path'));
     const onClose = vi.fn();
     renderWithPlugins(<SettingsDialog onClose={onClose} />);
-    fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
-      target: { value: 'rel/path' },
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
+      target: { value: 'bad command' },
     });
     await act(async () => {
       screen.getByRole('button', { name: /^save$/i }).click();
     });
     expect(screen.getByTestId('settings-error')).toHaveTextContent('bad path');
     expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('Browse… button populates the instructions input from the directory picker', async () => {
-    seedConfig({ instructionSetsDir: '' });
-    bridgeMock.pickDirectory.mockResolvedValueOnce('/picked/dir');
-    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
-    await act(async () => {
-      screen.getByRole('button', { name: /browse/i }).click();
-    });
-    expect(screen.getByLabelText(/instruction sets directory/i)).toHaveValue('/picked/dir');
   });
 
   it('clicking the backdrop closes the dialog', () => {
@@ -178,8 +165,8 @@ describe('SettingsDialog', () => {
     seedConfig();
     const onClose = vi.fn();
     renderWithPlugins(<SettingsDialog onClose={onClose} />);
-    fireEvent.change(screen.getByLabelText(/instruction sets directory/i), {
-      target: { value: '/something/new' },
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), {
+      target: { value: 'echo changed' },
     });
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     expect(bridgeMock.configSet).not.toHaveBeenCalled();
@@ -306,5 +293,80 @@ describe('SettingsDialog', () => {
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
       pluginSettings: { ai: { claude: { settings: { launchCommand: '' } } } },
     });
+  });
+
+  it('theme picker reflects stored preference and changing it marks the form dirty', () => {
+    seedConfig();
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const radios = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    expect(radios).toHaveLength(3);
+    // Default is 'system'
+    expect(radios[0]!.checked).toBe(true); // system
+    expect(radios[1]!.checked).toBe(false); // light
+    expect(radios[2]!.checked).toBe(false); // dark
+
+    const save = screen.getByRole('button', { name: /^save$/i });
+    expect(save).toBeDisabled();
+
+    // Select 'dark'
+    fireEvent.click(radios[2]!);
+    expect(radios[2]!.checked).toBe(true);
+    expect(save).toBeEnabled();
+  });
+
+  it('opens with a non-default persisted theme pre-selected', () => {
+    seedConfig({ theme: 'dark' });
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const radios = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    expect(radios[0]!.checked).toBe(false); // system
+    expect(radios[1]!.checked).toBe(false); // light
+    expect(radios[2]!.checked).toBe(true); // dark — matches persisted value
+  });
+
+  it('saving the theme persists only the theme field and closes', async () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const darkRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!;
+    fireEvent.click(darkRadio);
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+    expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
+    expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({ theme: 'dark' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel discards the theme change without persisting', () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    const picker = screen.getByTestId('settings-theme-picker');
+    const lightRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1]!;
+    fireEvent.click(lightRadio);
+    expect(lightRadio.checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(bridgeMock.configSet).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('changing the theme clears a stale submitError', async () => {
+    seedConfig({ worktreePrepCommands: [] });
+    bridgeMock.configSet.mockRejectedValueOnce(new Error('network down'));
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    // Trigger a save error via prep commands
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo x' } });
+    await act(async () => {
+      screen.getByRole('button', { name: /^save$/i }).click();
+    });
+    expect(screen.getByTestId('settings-error')).toBeInTheDocument();
+    // Changing theme radio should clear the error
+    const picker = screen.getByTestId('settings-theme-picker');
+    const darkRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!;
+    fireEvent.click(darkRadio);
+    expect(screen.queryByTestId('settings-error')).toBeNull();
   });
 });

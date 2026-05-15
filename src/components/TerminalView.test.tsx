@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -54,7 +54,6 @@ function seedSession(overrides: Partial<SessionView> = {}): SessionView {
     worktreePath: '/wt',
     worktreeName: 'wt',
     label: 'wt',
-    instructionSetId: 'default',
     status: 'running',
     createdAt: 0,
     tabIndex: 0,
@@ -152,16 +151,18 @@ describe('TerminalView', () => {
     expect(mockTerminals[0]!.focus).toHaveBeenCalled();
   });
 
-  it('shows error overlay with Restart button when status === error', () => {
+  it('shows error overlay with Restart button when status === error', async () => {
     seedSession({ status: 'error' });
     render(<TerminalView sessionId="s1" isActive={true} />);
     const restart = screen.getByRole('button', { name: /restart/i });
     act(() => restart.click());
-    expect(sessionRestart).toHaveBeenCalledWith({
-      sessionId: 's1',
-      cols: 80,
-      rows: 24,
-    });
+    await waitFor(() =>
+      expect(sessionRestart).toHaveBeenCalledWith({
+        sessionId: 's1',
+        cols: 80,
+        rows: 24,
+      }),
+    );
   });
 
   it('shows overlay when status === exited', () => {

@@ -25,10 +25,6 @@ pub trait AiPlugin: Plugin {
     /// callers that want the **effective** program string must consult the config first.
     fn default_program(&self) -> &'static str;
 
-    /// Filename of the built-in instruction-set markdown under the `instructions/` directory (e.g. `"claude-default.md"`). Used by the host to seed
-    /// `AppConfig.default_instruction_sets` when the user has not selected anything.
-    fn default_instruction_set_path(&self) -> &'static str;
-
     /// Compose the launch command + any temp files for this tool.
     fn compose(&self, inputs: &crate::compose::ComposeInputs<'_>, quoter: crate::compose::Quoter) -> (String, Vec<TempFileSpec>);
 
@@ -73,9 +69,6 @@ pub trait AiPlugin: Plugin {
 
     /// Resolve the expected transcript/session-state path for `ai_session_id`.
     fn ai_session_transcript_path(&self, home: &Path, worktree_path: &Path, ai_session_id: &str) -> PathBuf;
-
-    /// Prefix used when discovering instruction-set files for this tool.
-    fn instruction_stem_prefix(&self) -> &'static str;
 }
 
 /// Tool-specific restart behavior for persisted `Session.ai_session_id`.
@@ -112,7 +105,17 @@ pub enum ActivityEventsKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpawnPrep {
     pub ensure_temp_dir: bool,
-    pub stale_files: Vec<PathBuf>,
+    pub reset_files: Vec<SpawnPrepFile>,
+}
+
+/// Typed session temp files that may be reset during spawn prep. Reset handlers are responsible for creating their own parent directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnPrepFile {
+    CopilotOtel,
+    /// Claude's per-session `hook-events.jsonl` — the JSONL stream the `arborist-claude-hook` helper appends to and the
+    /// [`crate::claude_hook_events`] tailer reads. Reset removes any leftover file from a prior spawn so the tailer starts clean (matters for
+    /// restart, which re-uses the same session id).
+    ClaudeHookEvents,
 }
 
 /// Built-in AI plugin descriptor used by dispatch sites that need both the
@@ -230,10 +233,4 @@ pub fn resume_requires_preflight(tool: Tool) -> bool {
 #[must_use]
 pub fn ai_session_transcript_path(tool: Tool, home: &Path, worktree_path: &Path, ai_session_id: &str) -> PathBuf {
     plugin_for_tool(tool).ai_session_transcript_path(home, worktree_path, ai_session_id)
-}
-
-/// Prefix used when discovering instruction-set files for a specific tool.
-#[must_use]
-pub fn instruction_stem_prefix(tool: Tool) -> &'static str {
-    plugin_for_tool(tool).instruction_stem_prefix()
 }

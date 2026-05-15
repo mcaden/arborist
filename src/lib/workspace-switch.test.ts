@@ -25,14 +25,13 @@ let sessionAdopt: ReturnType<typeof vi.fn<(sessions: SessionView[], activeSessio
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
-    configVersion: 10,
-    defaultInstructionSets: { claude: '', copilot: '' },
-    instructionSetsDir: '',
+    configVersion: 11,
     workspaceRoot: '/new',
     worktreeRoots: [],
     worktreePrepCommands: [],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
@@ -41,6 +40,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
     ...overrides,
   };
 }

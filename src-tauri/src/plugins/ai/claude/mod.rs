@@ -2,7 +2,7 @@
 //!
 //! Issue #96 migrates Claude-specific behavior behind plugin dispatch. This file
 //! defines the stable plugin identity and core metadata consumed across
-//! composition, settings, and instruction discovery paths.
+//! composition and settings paths.
 
 use crate::plugins::ai::AiPlugin;
 use crate::plugins::Plugin;
@@ -32,10 +32,6 @@ impl AiPlugin for ClaudePlugin {
         "claude"
     }
 
-    fn default_instruction_set_path(&self) -> &'static str {
-        "claude-default.md"
-    }
-
     fn compose(&self, inputs: &crate::compose::ComposeInputs<'_>, quoter: crate::compose::Quoter) -> (String, Vec<crate::types::TempFileSpec>) {
         crate::compose::build_claude(inputs, quoter)
     }
@@ -44,13 +40,13 @@ impl AiPlugin for ClaudePlugin {
         Vec::new()
     }
 
-    fn spawn_prep(&self, session_id: &SessionId) -> crate::plugins::ai::SpawnPrep {
-        // We materialise per-session temp files (`system-prompt.md`, `claude-settings.json`) under `<session_temp_dir>/`, so the directory must
-        // exist. Also wipe any stale `hook-events.jsonl` from a prior run of the same session id so the tailer starts from a clean state — same
-        // pattern Copilot uses for its OTel JSONL.
+    fn spawn_prep(&self, _session_id: &SessionId) -> crate::plugins::ai::SpawnPrep {
+        // We materialise per-session temp files (`claude-settings.json`) under `<session_temp_dir>/`, so the directory must exist. Also wipe any
+        // stale `hook-events.jsonl` from a prior run of the same session id so the tailer starts from a clean state — same pattern Copilot uses for
+        // its OTel JSONL.
         crate::plugins::ai::SpawnPrep {
             ensure_temp_dir: true,
-            stale_files: vec![crate::claude_hook_events::hook_events_path(session_id)],
+            reset_files: vec![crate::plugins::ai::SpawnPrepFile::ClaudeHookEvents],
         }
     }
 
@@ -104,11 +100,4 @@ impl AiPlugin for ClaudePlugin {
             .join(crate::session_metrics::encode_cwd(worktree_path))
             .join(format!("{ai_session_id}.jsonl"))
     }
-
-    fn instruction_stem_prefix(&self) -> &'static str {
-        INSTRUCTION_STEM_PREFIX
-    }
 }
-
-/// Filename-stem prefix for Claude instruction sets (`claude-*.md`).
-pub const INSTRUCTION_STEM_PREFIX: &str = "claude-";

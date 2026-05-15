@@ -32,17 +32,28 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # actions/setup-node@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
+      - run: corepack enable
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # actions/setup-node@v6.4.0
         with:
           node-version: '22'
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # dtolnay/rust-toolchain@master
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup component add rustfmt clippy
+          rustup default stable
+      - name: Cache Rust dependencies
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # actions/cache@v4.2.3
         with:
-          toolchain: stable
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # Swatinem/rust-cache@v2
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-stable-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-stable-cargo-
       # Tauri's Linux build needs system libraries even for `cargo check`/test
       # because the `tauri` crate links against webkit2gtk + friends. `lld` +
       # `clang` are required by the workspace `.cargo/config.toml` for the
@@ -61,14 +72,13 @@ jobs:
             libxdo-dev \
             libssl-dev \
             build-essential
-      # macOS: `brew install llvm` provides a recent `lld` that the workspace
-      # `.cargo/config.toml` invokes via `clang -fuse-ld=lld`. Add llvm's bin
-      # dir to PATH so cargo finds it.
-      - name: Install macOS build dependencies
+      # macOS: `.cargo/config.toml` sets `-fuse-ld=lld` via per-target
+      # rustflags for faster dev builds. GitHub runners don't have lld for
+      # Mach-O, so override with RUSTFLAGS (takes precedence over config.toml
+      # target rustflags). Empty value = no extra flags → system linker.
+      - name: Override macOS linker config for CI
         if: runner.os == 'macOS'
-        run: |
-          brew install llvm
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+        run: echo "RUSTFLAGS=" >> "$GITHUB_ENV"
       # `tauri::generate_context!()` validates that `frontendDist` exists at
       # compile time, so the frontend bundle must be built before any cargo
       # command that compiles the `tauri` crate (clippy, test, build). We run

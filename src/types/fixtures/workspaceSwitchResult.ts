@@ -11,17 +11,13 @@ export const workspaceSwitchResultFixture = {
   workspaceRoot: '/tmp/repo',
   noOp: false,
   config: {
-    configVersion: 10,
-    defaultInstructionSets: {
-      claude: 'claude-default',
-      copilot: 'copilot-default',
-    },
-    instructionSetsDir: '/cfg/instructions',
+    configVersion: 11,
     workspaceRoot: '/tmp/repo',
     worktreeRoots: ['/tmp/repo'],
     worktreePrepCommands: [],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
@@ -30,6 +26,7 @@ export const workspaceSwitchResultFixture = {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
   },
   sessions: [],
 } as const satisfies WorkspaceSwitchResult;

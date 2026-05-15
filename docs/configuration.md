@@ -59,12 +59,7 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 
 ```json
 {
-  "configVersion": 10,
-  "defaultInstructionSets": {
-    "claude": "claude-default",
-    "copilot": "copilot-default"
-  },
-  "instructionSetsDir": "/absolute/path/to/instructions",
+  "configVersion": 11,
   "workspaceRoot": "/absolute/path/to/primary-clone",
   "worktreeRoots": [],
   "worktreePrepCommands": [],
@@ -87,41 +82,32 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
   "lastOpenSubSessions": [],
   "worktreeTabs": [],
   "worktreeTabOrder": [],
-  "activeWorktreeTabId": null
+  "activeWorktreeTabId": null,
+  "theme": "system"
 }
 ```
 
 `sidebarWidthPx` is optional. When present, the backend clamps it to the supported range.
+
+`theme` defaults to `"system"` (follow OS preference). Other accepted values: `"light"`, `"dark"`.
 
 ## Important fields
 
 | Field                                                     | Notes                                                                                                                           |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                         |
-| `instructionSetsDir`                                      | Absolute directory scanned for instruction-set Markdown files. Relative paths are rejected on write and cleared on load.        |
 | `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                                    |
 | `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                         |
 | `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                             |
 | `pluginSettings`                                          | Per-plugin enable flags and plugin-owned settings. AI launch overrides live at `pluginSettings.ai.<id>.settings.launchCommand`. |
+| `repoCommandTrust`                                        | User-local trust records for executable values read from repo-owned `.arborist/settings.json`.                                  |
 | `aiLaunchCommands.commands`                               | Legacy input compatibility for AI launch overrides. Migrated into `pluginSettings` on load or save.                             |
 | `aiLaunchCommands.iconDataUris`                           | Backend-managed icon cache. Frontend patches do not write this map.                                                             |
 | `lastOpenSessions`, `tabOrder`, `activeSessionId`         | AI session restore and focus state. Managed by the app.                                                                         |
 | `worktreeTabs`, `worktreeTabOrder`, `activeWorktreeTabId` | Top-level sidebar state. Managed by the app.                                                                                    |
+| `theme`                                                   | Colour-scheme preference: `"system"` (default, follows OS), `"light"`, or `"dark"`. Absent defaults to `"system"`.              |
 | `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                       |
 | `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                                    |
-
-## Instruction-set discovery
-
-`instructions_list` scans `instructionSetsDir` for `*.md` files:
-
-1. Canonicalize each candidate.
-2. Reject files whose canonical path escapes `instructionSetsDir`.
-3. Skip files larger than 1 MiB.
-4. Bind files prefixed with `claude-` to Claude and `copilot-` to Copilot.
-5. Use the filename without `.md` as the instruction-set id.
-6. Prefer `<tool>-default.md` as the default; otherwise use the first alphabetical match for that tool.
-
-The repository `instructions/` directory contains starter templates. Runtime behavior uses the configured `instructionSetsDir`.
 
 ## Repo overlay
 
@@ -130,14 +116,20 @@ returns the raw user config.
 
 Supported overlay fields:
 
-| Field                                        | Behavior                                                                                  |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `defaultInstructionSets`                     | Overrides default instruction-set ids for the repo.                                       |
-| `pluginSettings.ai.*.settings.launchCommand` | Overrides AI plugin launch commands for the repo. Cached icon data remains machine-local. |
-| `aiLaunchCommands.commands`                  | Legacy alias for repo AI launch command overrides.                                        |
-| `worktreePrepCommands`                       | Overrides prep commands for worktrees created in the repo.                                |
+| Field                                        | Behavior                                                                                                                       |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `pluginSettings.ai.*.settings.launchCommand` | Default AI plugin launch commands for the repo when the user has not set that command. Cached icon data remains machine-local. |
+| `aiLaunchCommands.commands`                  | Legacy alias for repo AI launch command defaults.                                                                              |
+| `worktreePrepCommands`                       | Default prep commands for worktrees created in the repo when the user has not set prep commands.                               |
 
 Malformed overlay files are logged and ignored so a repository typo does not block local work.
+
+Executable overlay values (`pluginSettings.ai.*.settings.launchCommand`, legacy `aiLaunchCommands.commands`, and `worktreePrepCommands`) are defaults
+only. If the user has configured a launch command or prep command, the repo value is ignored and no trust prompt is shown for it. Repo executable values
+that do apply are not run until the user approves the backend-generated preview. The user can run once without writing config, or choose "don't ask
+again" to store approval in the user config under `repoCommandTrust`, not in the repository. Stored trust is keyed to the workspace,
+`.arborist/settings.json` path, command kind/scope, OS/shell, and command text. Editing the repo setting changes the fingerprint and prompts again.
+Existing sessions created from applied repo launch defaults persist command provenance so restart/restore can re-check trust.
 
 ## Custom process defaults
 

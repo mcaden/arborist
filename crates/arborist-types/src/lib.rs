@@ -98,29 +98,6 @@ impl std::fmt::Display for CustomProcessDefId {
     }
 }
 
-/// Stable identifier for an [`InstructionSet`]. Currently a string slug derived from the instruction file name (e.g. `"claude-default"`).
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(transparent)]
-pub struct InstructionSetId(pub String);
-
-impl InstructionSetId {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for InstructionSetId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 /// Stable identifier for a [`WorktreeTab`]. Backed by a UUID v4. Distinct from [`SessionId`] / [`SubSessionId`] at the type level to prevent
 /// accidental cross-use.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -149,6 +126,17 @@ impl std::fmt::Display for WorktreeTabId {
 
 // --------------------------------------------------------------------------- Enums
 // ---------------------------------------------------------------------------
+
+/// User-chosen colour-scheme preference (Issue #151). `System` follows the OS `prefers-color-scheme` media query; `Light`/`Dark` force the
+/// corresponding theme regardless of OS setting. Serialises to `"system"` / `"light"` / `"dark"` for JSON and the TS mirror.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
 
 /// Which AI CLI a session is bound to.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -208,12 +196,150 @@ pub enum SubSessionStatus {
     Error,
 }
 
+/// How a session is spawned when it does not need shell-snippet evaluation.
+///
+/// MIRROR: `src/types/arborist.ts::StructuredCommand`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredCommand {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// Executable command category used by preview/trust/provenance records.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandKind`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellCommandKind {
+    AiLaunch,
+    WorktreePrep,
+}
+
+/// Where an executable command came from.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandSource`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellCommandSource {
+    Default,
+    UserConfig,
+    RepoSettings,
+}
+
+/// Persisted provenance for commands captured while repo overlays were active.
+///
+/// MIRROR: `src/types/arborist.ts::CommandProvenance`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandProvenance {
+    pub kind: ShellCommandKind,
+    pub source: ShellCommandSource,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<PathBuf>,
+}
+
+/// User trust for a repo-provided executable command contribution.
+///
+/// MIRROR: `src/types/arborist.ts::RepoCommandTrustRecord`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommandTrustRecord {
+    pub fingerprint: String,
+    pub workspace_root: PathBuf,
+    pub source_path: PathBuf,
+    pub kind: ShellCommandKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub command: String,
+    pub trusted_at: i64,
+}
+
+/// Trust database for repo-provided executable settings. Stored in the user-level config, never in `.arborist/settings.json`.
+///
+/// MIRROR: `src/types/arborist.ts::RepoCommandTrustState`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommandTrustState {
+    #[serde(default)]
+    pub records: BTreeMap<String, RepoCommandTrustRecord>,
+}
+
+/// One command shown to the user before trusting repo-provided execution.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandPreviewItem`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandPreviewItem {
+    pub kind: ShellCommandKind,
+    pub source: ShellCommandSource,
+    pub command: String,
+    pub target_worktree_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<PathBuf>,
+    pub trusted: bool,
+}
+
+/// Intent to preview for shell-command trust.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandIntent`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ShellCommandIntent {
+    SessionCreate { tool: Tool, worktree_path: PathBuf },
+    SessionRestart { session_id: SessionId },
+    WorktreeCreate { name: String },
+}
+
+/// Arguments for `shell_command_preview`.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandPreviewArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandPreviewArgs {
+    pub intent: ShellCommandIntent,
+}
+
+/// Preview of executable commands relevant to a launch/create/restart action.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandPreview`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandPreview {
+    pub target_worktree_path: PathBuf,
+    #[serde(default)]
+    pub commands: Vec<ShellCommandPreviewItem>,
+    #[serde(default)]
+    pub trust_records: Vec<RepoCommandTrustRecord>,
+    pub trust_required: bool,
+}
+
+/// Arguments for `repo_command_trust`.
+///
+/// MIRROR: `src/types/arborist.ts::RepoCommandTrustArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommandTrustArgs {
+    pub intent: ShellCommandIntent,
+}
+
 // --------------------------------------------------------------------------- Session
 // ---------------------------------------------------------------------------
 
-/// A temp file the backend must materialise on disk before (re)spawning a session. Currently used by Claude for its `--system-prompt` file.
+/// A legacy temp file the backend must materialise on disk before (re)spawning a session.
 ///
-/// Persisted as part of [`Session`] so a Phase 7 `respawn_existing` can rematerialise the file after a crash/restart without re-running composition.
+/// New sessions no longer create prompt temp files, but this remains persisted so older sessions that already have `tempFiles` can restore without
+/// quarantining or losing their original `composedCommand`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TempFileSpec {
@@ -231,25 +357,23 @@ pub struct Session {
     pub worktree_path: PathBuf,
     pub worktree_name: String,
     pub label: String,
-    /// Optional user-curated instruction set overlay. When `None`:
-    /// * Claude is launched with no `--system-prompt`; the agent relies on its
-    ///   auto-discovered `CLAUDE.md` from `cwd`.
-    /// * Copilot ignores this field — it always auto-discovers
-    ///   `.github/copilot-instructions.md` from `cwd` regardless.
-    ///
-    /// Both tools always receive the worktree as their `cwd`, so repository-level instructions are picked up either way.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction_set_id: Option<InstructionSetId>,
     /// Full shell command string. Backend-only; reused verbatim by `respawn_existing` so we never recompose at restart time.
     pub composed_command: String,
+    /// Structured argv for built-in/default launchers. Backend-only; `None` means use `composed_command` through the platform shell for legacy records
+    /// and explicit shell-snippet overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_command: Option<StructuredCommand>,
+    /// Provenance for executable snippets that were supplied by repo overlays when this session was created. Backend-only; used to re-check trust on
+    /// restart/restore.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_provenance: Vec<CommandProvenance>,
     pub status: SessionStatus,
     /// OS PID of the live PTY child; cleared on exit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pid: Option<u32>,
     pub created_at: i64,
     pub tab_index: usize,
-    /// Temp files this session owns on disk. Backend-only; omitted from
-    /// [`SessionView`].
+    /// Legacy temp files this session owns on disk. Backend-only; omitted from [`SessionView`].
     #[serde(default)]
     pub temp_files: Vec<TempFileSpec>,
     /// Most recently observed AI-side session id (Claude transcript file stem; Copilot OTel `gen_ai.conversation.id` / session-state dir name). When
@@ -257,6 +381,10 @@ pub struct Session {
     /// — omitted from [`SessionView`]; not surfaced to the frontend today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_session_id: Option<String>,
+    /// Last-known token-usage / context-window snapshot for this session, persisted so the frontend can restore dashboard totals across app restarts
+    /// without waiting for the metrics watcher to re-emit. Updated on every `session://metrics` emission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_metrics: Option<SessionMetricsEvent>,
 }
 
 /// Frontend-facing projection of [`Session`]. Intentionally drops `composed_command` (backend-only restart material) and `temp_files` (backend-only
@@ -269,14 +397,15 @@ pub struct SessionView {
     pub worktree_path: PathBuf,
     pub worktree_name: String,
     pub label: String,
-    /// See [`Session::instruction_set_id`] for semantics.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction_set_id: Option<InstructionSetId>,
     pub status: SessionStatus,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pid: Option<u32>,
     pub created_at: i64,
     pub tab_index: usize,
+    /// Last-known metrics snapshot, carried from the persisted [`Session`] so the frontend can seed its metrics store on hydrate without waiting for
+    /// the watcher to re-emit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_metrics: Option<SessionMetricsEvent>,
 }
 
 impl From<&Session> for SessionView {
@@ -287,11 +416,11 @@ impl From<&Session> for SessionView {
             worktree_path: s.worktree_path.clone(),
             worktree_name: s.worktree_name.clone(),
             label: s.label.clone(),
-            instruction_set_id: s.instruction_set_id.clone(),
             status: s.status,
             pid: s.pid,
             created_at: s.created_at,
             tab_index: s.tab_index,
+            last_metrics: s.last_metrics.clone(),
         }
     }
 }
@@ -433,6 +562,17 @@ pub struct WorktreeGitStatus {
     pub ahead: u32,
     /// Commits the local branch is behind its upstream. `0` when no upstream is configured.
     pub behind: u32,
+    /// Detected source/base branch (e.g. `main`) that this branch was forked from. `None` when undetectable or when the current branch IS the
+    /// source branch. Determined via `origin/HEAD` → fallback to `origin/main` / `origin/master` existence.
+    /// Only probes the `origin` remote — repos with non-standard remote names will not have source branch info.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_branch: Option<String>,
+    /// Commits the current branch is ahead of the source branch. Only present when `source_branch` is detected.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_ahead: Option<u32>,
+    /// Commits the current branch is behind the source branch. Only present when `source_branch` is detected.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_behind: Option<u32>,
     /// Files with staged changes (non-`.` X column).
     pub staged: u32,
     /// Files with unstaged working-tree changes (non-`.` Y column on a tracked file).
@@ -459,30 +599,8 @@ pub struct WorktreeGitStatus {
 /// thousands of dirty files cannot bloat the IPC payload.
 pub const MAX_GIT_STATUS_FILES: usize = 200;
 
-// --------------------------------------------------------------------------- InstructionSet
-// ---------------------------------------------------------------------------
-
-/// A discovered instruction set on disk. Discovery happens in Phase 4.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct InstructionSet {
-    pub id: InstructionSetId,
-    pub name: String,
-    pub tool: Tool,
-    pub file_path: PathBuf,
-    pub is_default: bool,
-}
-
 // --------------------------------------------------------------------------- AppConfig
 // ---------------------------------------------------------------------------
-
-/// Per-tool default instruction set selection.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct DefaultInstructionSets {
-    pub claude: InstructionSetId,
-    pub copilot: InstructionSetId,
-}
 
 /// Current on-disk schema version for [`AppConfig`]. Incremented whenever the persisted shape changes in a non-backwards-compatible way so the loader
 /// can migrate (or quarantine) old files.
@@ -508,7 +626,9 @@ pub struct DefaultInstructionSets {
 ///   Legacy `claude` / `copilot` fixed fields are migrated in-place on load.
 /// * `10` — added `plugin_settings`, the plugin-keyed home for enable flags and user-editable plugin settings. AI launch command overrides moved to
 ///   `pluginSettings.ai[pluginId].settings.launchCommand`; `ai_launch_commands.commands` is retained only as legacy input compatibility.
-pub const CONFIG_VERSION_CURRENT: u32 = 10;
+/// * `11` — removed Arborist-managed instruction-set configuration. Claude and Copilot now rely on repository instruction discovery from `cwd`;
+///   legacy session `tempFiles` are still loaded so existing sessions can restore.
+pub const CONFIG_VERSION_CURRENT: u32 = 11;
 
 /// Setting key used by AI plugins for the user-editable CLI launch override.
 pub const AI_LAUNCH_COMMAND_SETTING: &str = "launchCommand";
@@ -695,8 +815,6 @@ impl<'de> Deserialize<'de> for AiLaunchCommands {
 pub struct AppConfig {
     /// Schema version of this on-disk config. Bumped when the layout changes; the loader quarantines files with versions it does not understand.
     pub config_version: u32,
-    pub default_instruction_sets: DefaultInstructionSets,
-    pub instruction_sets_dir: PathBuf,
     /// Active workspace root: the single git repository the app operates within. `None` until the user picks one in the first-boot picker (Roadmap
     /// §1.1). When set, takes precedence over `worktree_roots` for session-creation worktree discovery. Added in `configVersion = 3`.
     #[serde(default)]
@@ -720,6 +838,10 @@ pub struct AppConfig {
     /// `pluginSettings.ai[pluginId].settings.launchCommand`.
     #[serde(default)]
     pub plugin_settings: PluginSettings,
+    /// User trust for executable settings read from repo-owned `.arborist/settings.json`. Stored only in the user/workspace config so a repository
+    /// cannot grant trust to itself.
+    #[serde(default)]
+    pub repo_command_trust: RepoCommandTrustState,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
     /// ID of the most recently focused session. Persisted by `session_focus` and consulted by Phase 8+ on launch to decide which tab to show active.
@@ -756,6 +878,10 @@ pub struct AppConfig {
     /// Backwards-compatible add: pre-#94 configs lack the field and serde fills it with `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width_px: Option<u32>,
+    /// User-chosen colour-scheme preference (Issue #151). Defaults to `System` (follow OS). Backwards-compatible: pre-#151 configs lack the field
+    /// and serde fills it with `ThemeMode::System`.
+    #[serde(default)]
+    pub theme: ThemeMode,
 }
 
 /// Lower bound for the resizable sidebar width (CSS px). Narrow enough to still show ~12 chars of label.
@@ -767,13 +893,12 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             config_version: CONFIG_VERSION_CURRENT,
-            default_instruction_sets: DefaultInstructionSets::default(),
-            instruction_sets_dir: PathBuf::new(),
             workspace_root: None,
             worktree_roots: Vec::new(),
             worktree_prep_commands: Vec::new(),
             ai_launch_commands: AiLaunchCommands::default(),
             plugin_settings: PluginSettings::default(),
+            repo_command_trust: RepoCommandTrustState::default(),
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
             active_session_id: None,
@@ -783,6 +908,7 @@ impl Default for AppConfig {
             worktree_tab_order: Vec::new(),
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: ThemeMode::default(),
         }
     }
 }
@@ -830,16 +956,6 @@ impl AppConfig {
                 .or_insert(PluginSettingValue::String(command));
         }
     }
-}
-
-/// Partial form of [`DefaultInstructionSets`] used by [`PartialAppConfig`] for deep-merging in Phase 4's `config_set` command.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct PartialDefaultInstructionSets {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub claude: Option<InstructionSetId>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub copilot: Option<InstructionSetId>,
 }
 
 /// Partial form of [`AiLaunchCommands`]. Keys present in `commands` overwrite
@@ -908,10 +1024,6 @@ pub struct PartialPluginSettings {
 pub struct PartialAppConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub config_version: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub default_instruction_sets: Option<PartialDefaultInstructionSets>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub instruction_sets_dir: Option<PathBuf>,
     /// Tri-state: absent → leave alone; `null` → clear; `"<path>"` → set. Mirrors the encoding used for `active_session_id`.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
     pub workspace_root: Option<Option<PathBuf>>,
@@ -951,6 +1063,9 @@ pub struct PartialAppConfig {
     /// We don't expose a tri-state "clear" since the frontend always sends a concrete width; reverting to the default just sends `224`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width_px: Option<u32>,
+    /// Colour-scheme preference (Issue #151). `None` → leave alone; `Some(mode)` → set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeMode>,
 }
 
 /// serde adapter for `Option<Option<T>>`: distinguishes "absent" from "present-but-null". JSON has no native `Some(None)`, so we serialise
@@ -1166,10 +1281,6 @@ pub struct SessionStatusEvent {
 pub struct SessionCreateArgs {
     pub tool: Tool,
     pub worktree_path: PathBuf,
-    /// Optional. When omitted, the session is launched with no `--system-prompt` for Claude (Copilot never used this field). See
-    /// [`Session::instruction_set_id`].
-    #[serde(default)]
-    pub instruction_set_id: Option<InstructionSetId>,
     /// Initial PTY width (columns) the child process will see at startup. The frontend measures the terminal host before calling `session_create` so
     /// the CLI's first paint (e.g., a Copilot/Claude splash screen) renders at the right width — without this, the child reads 80 cols from the OS,
     /// draws its splash narrow, and never re-paints when the later `session_resize` arrives.
@@ -1757,20 +1868,6 @@ pub enum Error {
     #[error("pty kill failed: {0}")]
     PtyKillFailed(String),
 
-    /// An instruction file exceeds the 1 MiB discovery cap. The payload is the offending file's path for diagnostics.
-    #[error("instruction file too large: {0}")]
-    InstructionFileTooLarge(std::path::PathBuf),
-
-    /// A session's persisted instruction temp file is missing on disk and could not be re-materialised. Surfaces during restore (Phase 7) when both
-    /// the on-disk file and the persisted contents are gone.
-    #[error("instruction file missing: {0}")]
-    InstructionFileMissing(std::path::PathBuf),
-
-    /// The selected instruction set's `tool` does not match the requested session tool (e.g. asking to spawn a Claude session with a
-    /// `copilot-default` instruction set).
-    #[error("tool/instruction-set mismatch: {0}")]
-    ToolMismatch(String),
-
     /// A custom-process def submitted to `config_set` failed validation (empty `id`/`name`/`command`, malformed `id`, or duplicate `id`).
     #[error("invalid custom process def: {0}")]
     InvalidCustomProcessDef(String),
@@ -1827,9 +1924,6 @@ impl Error {
             Self::PtyWriteFailed(_) => "PtyWriteFailed",
             Self::PtyResizeFailed(_) => "PtyResizeFailed",
             Self::PtyKillFailed(_) => "PtyKillFailed",
-            Self::InstructionFileTooLarge(_) => "InstructionFileTooLarge",
-            Self::InstructionFileMissing(_) => "InstructionFileMissing",
-            Self::ToolMismatch(_) => "ToolMismatch",
             Self::InvalidCustomProcessDef(_) => "InvalidCustomProcessDef",
             Self::InvalidPluginSettings(_) => "InvalidPluginSettings",
             Self::ToolMissing(_) => "ToolMissing",
@@ -1908,8 +2002,9 @@ mod tests {
             worktree_path: PathBuf::from("/repo/feature-x"),
             worktree_name: "feature-x".to_owned(),
             label: "feature-x".to_owned(),
-            instruction_set_id: Some(InstructionSetId::new("claude-default")),
             composed_command: "claude --system-prompt /tmp/arborist/abc/sp.md".to_owned(),
+            structured_command: None,
+            command_provenance: Vec::new(),
             status: SessionStatus::Running,
             pid: Some(12345),
             created_at: 1_700_000_000,
@@ -1919,6 +2014,7 @@ mod tests {
                 contents: "context".to_owned(),
             }],
             ai_session_id: None,
+            last_metrics: None,
         }
     }
 
@@ -1929,7 +2025,6 @@ mod tests {
             "worktreePath": "/repo/feature-x",
             "worktreeName": "feature-x",
             "label": "feature-x",
-            "instructionSetId": "claude-default",
             "composedCommand": "claude --system-prompt /tmp/arborist/abc/sp.md",
             "status": "running",
             "pid": 12345,
@@ -1948,7 +2043,6 @@ mod tests {
             "worktreePath": "/repo/feature-x",
             "worktreeName": "feature-x",
             "label": "feature-x",
-            "instructionSetId": "claude-default",
             "status": "running",
             "pid": 12345,
             "createdAt": 1_700_000_000,
@@ -1956,32 +2050,9 @@ mod tests {
         })
     }
 
-    fn instruction_set_fixture() -> (InstructionSet, Value) {
-        let value = InstructionSet {
-            id: InstructionSetId::new("claude-default"),
-            name: "Claude default".to_owned(),
-            tool: Tool::Claude,
-            file_path: PathBuf::from("/cfg/instructions/claude-default.md"),
-            is_default: true,
-        };
-        let fixture = json!({
-            "id": "claude-default",
-            "name": "Claude default",
-            "tool": "claude",
-            "filePath": "/cfg/instructions/claude-default.md",
-            "isDefault": true
-        });
-        (value, fixture)
-    }
-
     fn app_config_fixture() -> (AppConfig, Value) {
         let value = AppConfig {
-            config_version: 10,
-            default_instruction_sets: DefaultInstructionSets {
-                claude: InstructionSetId::new("claude-default"),
-                copilot: InstructionSetId::new("copilot-default"),
-            },
-            instruction_sets_dir: PathBuf::from("/cfg/instructions"),
+            config_version: 11,
             workspace_root: Some(PathBuf::from("/repo")),
             worktree_roots: vec![PathBuf::from("/repo")],
             worktree_prep_commands: vec!["npm install".to_owned()],
@@ -2000,6 +2071,7 @@ mod tests {
                 custom_process: BTreeMap::new(),
                 dashboard_widget: BTreeMap::new(),
             },
+            repo_command_trust: RepoCommandTrustState::default(),
             last_open_sessions: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             tab_order: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             active_session_id: Some(SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))),
@@ -2025,14 +2097,10 @@ mod tests {
             worktree_tab_order: vec![],
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: ThemeMode::System,
         };
         let fixture = json!({
-            "configVersion": 10,
-            "defaultInstructionSets": {
-                "claude": "claude-default",
-                "copilot": "copilot-default"
-            },
-            "instructionSetsDir": "/cfg/instructions",
+            "configVersion": 11,
             "workspaceRoot": "/repo",
             "worktreeRoots": ["/repo"],
             "worktreePrepCommands": ["npm install"],
@@ -2051,6 +2119,9 @@ mod tests {
                 },
                 "customProcess": {},
                 "dashboardWidget": {}
+            },
+            "repoCommandTrust": {
+                "records": {}
             },
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
             "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
@@ -2076,7 +2147,8 @@ mod tests {
             ],
             "worktreeTabs": [],
             "worktreeTabOrder": [],
-            "activeWorktreeTabId": null
+            "activeWorktreeTabId": null,
+            "theme": "system"
         });
         (value, fixture)
     }
@@ -2152,11 +2224,6 @@ mod tests {
     fn partial_app_config_fixture() -> (PartialAppConfig, Value) {
         let value = PartialAppConfig {
             config_version: None,
-            default_instruction_sets: Some(PartialDefaultInstructionSets {
-                claude: Some(InstructionSetId::new("claude-default")),
-                copilot: None,
-            }),
-            instruction_sets_dir: None,
             workspace_root: None,
             worktree_roots: Some(vec![PathBuf::from("/repo")]),
             worktree_prep_commands: None,
@@ -2181,9 +2248,9 @@ mod tests {
             worktree_tab_order: None,
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: None,
         };
         let fixture = json!({
-            "defaultInstructionSets": { "claude": "claude-default" },
             "worktreeRoots": ["/repo"],
             "pluginSettings": {
                 "ai": {
@@ -2205,6 +2272,18 @@ mod tests {
     }
 
     #[test]
+    fn session_ignores_legacy_instruction_set_id() {
+        let mut fixture = session_fixture();
+        fixture
+            .as_object_mut()
+            .expect("object")
+            .insert("instructionSetId".to_owned(), json!("claude-default"));
+
+        let deserialized: Session = serde_json::from_value(fixture).expect("legacy field ignored");
+        assert_eq!(deserialized, sample_session());
+    }
+
+    #[test]
     fn session_view_roundtrip() {
         let view = SessionView::from(&sample_session());
         assert_roundtrip(&view, session_view_fixture());
@@ -2220,15 +2299,25 @@ mod tests {
     }
 
     #[test]
-    fn instruction_set_roundtrip() {
-        let (value, fixture) = instruction_set_fixture();
+    fn app_config_roundtrip() {
+        let (value, fixture) = app_config_fixture();
         assert_roundtrip(&value, fixture);
     }
 
     #[test]
-    fn app_config_roundtrip() {
-        let (value, fixture) = app_config_fixture();
-        assert_roundtrip(&value, fixture);
+    fn app_config_ignores_legacy_instruction_set_fields() {
+        let (mut expected, mut fixture) = app_config_fixture();
+        expected.config_version = 10;
+        let obj = fixture.as_object_mut().expect("object");
+        obj.insert("configVersion".to_owned(), json!(10));
+        obj.insert(
+            "defaultInstructionSets".to_owned(),
+            json!({ "claude": "claude-default", "copilot": "copilot-default" }),
+        );
+        obj.insert("instructionSetsDir".to_owned(), json!("/cfg/instructions"));
+
+        let deserialized: AppConfig = serde_json::from_value(fixture).expect("legacy fields ignored");
+        assert_eq!(deserialized, expected);
     }
 
     #[test]
@@ -2349,7 +2438,6 @@ mod tests {
         let obj = serialized.as_object().expect("object");
         // None fields must be elided so deep-merge sees a true patch.
         assert!(!obj.contains_key("configVersion"));
-        assert!(!obj.contains_key("instructionSetsDir"));
         assert!(!obj.contains_key("workspaceRoot"));
         assert!(!obj.contains_key("worktreePrepCommands"));
         assert!(!obj.contains_key("lastOpenSessions"));
@@ -2427,12 +2515,6 @@ mod tests {
     }
 
     #[test]
-    fn instruction_set_id_is_transparent_string() {
-        let id = InstructionSetId::new("claude-default");
-        assert_eq!(serde_json::to_value(&id).expect("v"), json!("claude-default"));
-    }
-
-    #[test]
     fn app_error_wire_shape() {
         let err = AppError::new("InvalidPath", "boom");
         assert_eq!(
@@ -2453,15 +2535,6 @@ mod tests {
         assert_eq!(Error::PtyWriteFailed("e".into()).code(), "PtyWriteFailed");
         assert_eq!(Error::PtyResizeFailed("e".into()).code(), "PtyResizeFailed");
         assert_eq!(Error::PtyKillFailed("e".into()).code(), "PtyKillFailed");
-        assert_eq!(
-            Error::InstructionFileTooLarge(std::path::PathBuf::from("/x")).code(),
-            "InstructionFileTooLarge"
-        );
-        assert_eq!(
-            Error::InstructionFileMissing(std::path::PathBuf::from("/x")).code(),
-            "InstructionFileMissing"
-        );
-        assert_eq!(Error::ToolMismatch("x".into()).code(), "ToolMismatch");
         assert_eq!(Error::InvalidCustomProcessDef("x".into()).code(), "InvalidCustomProcessDef");
         assert_eq!(Error::InvalidPluginSettings("x".into()).code(), "InvalidPluginSettings");
         assert_eq!(Error::ToolMissing("wmctrl".into()).code(), "ToolMissing");

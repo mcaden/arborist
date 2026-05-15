@@ -58,13 +58,10 @@ export const sessionRestart: Mock<typeof realBridge.sessionRestart> = vi.fn(() =
 
 export const frontendReady: Mock<typeof realBridge.frontendReady> = vi.fn(() => Promise.resolve());
 
-// `config_get`/`config_set`/`instructions_list` are real implementations as
-// of Phase 4; their default mock behaviour returns benign empty values so
-// tests don't need to wire each call individually unless they care.
+// `config_get`/`config_set` are real implementations; their default mock behaviour returns benign empty values so tests don't need to wire each call
+// individually unless they care.
 const defaultAppConfig = (): AppConfig => ({
-  configVersion: 10,
-  defaultInstructionSets: { claude: '', copilot: '' },
-  instructionSetsDir: '',
+  configVersion: 11,
   // Tests assume the main UI is reachable by default. The first-boot
   // picker is exercised explicitly when a test overrides this to `null`.
   workspaceRoot: '/mock/workspace',
@@ -72,6 +69,7 @@ const defaultAppConfig = (): AppConfig => ({
   worktreePrepCommands: [],
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
   pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+  repoCommandTrust: { records: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -80,13 +78,20 @@ const defaultAppConfig = (): AppConfig => ({
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 });
 
 export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
 export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
-export const instructionsList: Mock<typeof realBridge.instructionsList> = vi.fn(() => Promise.resolve([]));
+export const shellCommandPreview: Mock<typeof realBridge.shellCommandPreview> = vi.fn(() =>
+  Promise.resolve({ targetWorktreePath: '/mock/workspace', commands: [], trustRecords: [], trustRequired: false }),
+);
+
+export const repoCommandTrust: Mock<typeof realBridge.repoCommandTrust> = vi.fn(() => Promise.resolve(defaultAppConfig()));
+
+export const repoCommandAllowOnce: Mock<typeof realBridge.repoCommandAllowOnce> = vi.fn(() => Promise.resolve());
 
 export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() => Promise.resolve([]));
 
@@ -175,7 +180,11 @@ export function resetBridgeMocks(): void {
   frontendReady.mockReset().mockImplementation(() => Promise.resolve());
   configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   configSet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
-  instructionsList.mockReset().mockImplementation(() => Promise.resolve([]));
+  shellCommandPreview
+    .mockReset()
+    .mockImplementation(() => Promise.resolve({ targetWorktreePath: '/mock/workspace', commands: [], trustRecords: [], trustRequired: false }));
+  repoCommandTrust.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
+  repoCommandAllowOnce.mockReset().mockImplementation(() => Promise.resolve());
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreeGitStatus.mockReset().mockImplementation(() => Promise.resolve(defaultGitStatus()));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
@@ -224,7 +233,9 @@ const _shapeCheck = {
   frontendReady,
   configGet,
   configSet,
-  instructionsList,
+  shellCommandPreview,
+  repoCommandTrust,
+  repoCommandAllowOnce,
   worktreesList,
   worktreeGitStatus,
   workspaceValidate,

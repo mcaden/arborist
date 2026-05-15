@@ -17,7 +17,6 @@ function makeView(overrides: Partial<SessionView> & Pick<SessionView, 'id'>): Se
     worktreePath: `/repo/${overrides.id}`,
     worktreeName: overrides.id,
     label: overrides.id,
-    instructionSetId: 'default-claude',
     status: 'running',
     createdAt: 1_700_000_000_000,
     tabIndex: 0,
@@ -74,6 +73,23 @@ describe('hydrate', () => {
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(['b', 'c']);
     expect(useSessionStore.getState().isHydrated).toBe(true);
   });
+
+  it('seeds metrics store from lastMetrics on restored sessions', async () => {
+    const views = [
+      makeView({
+        id: 'with-metrics',
+        lastMetrics: { sessionId: 'with-metrics', inputTokens: 5000, outputTokens: 1000, observedAt: 1_700_000_100 },
+      }),
+      makeView({ id: 'no-metrics' }),
+    ];
+    bridgeMock.sessionList.mockResolvedValueOnce(views);
+
+    await useSessionStore.getState().actions.hydrate();
+
+    const { metrics } = useSessionStore.getState();
+    expect(metrics['with-metrics']).toEqual({ sessionId: 'with-metrics', inputTokens: 5000, outputTokens: 1000, observedAt: 1_700_000_100 });
+    expect(metrics['no-metrics']).toBeUndefined();
+  });
 });
 
 describe('create', () => {
@@ -88,7 +104,6 @@ describe('create', () => {
     const view = await useSessionStore.getState().actions.create({
       tool: 'claude',
       worktreePath: '/repo/new',
-      instructionSetId: 'd',
       cols: 80,
       rows: 24,
     });
@@ -97,7 +112,6 @@ describe('create', () => {
     expect(bridgeMock.sessionCreate).toHaveBeenCalledWith({
       tool: 'claude',
       worktreePath: '/repo/new',
-      instructionSetId: 'd',
       cols: 80,
       rows: 24,
     });
@@ -492,6 +506,28 @@ describe('adoptWorkspace', () => {
     expect(s.activity).toEqual({});
     expect(s.lastTurnEndAt).toEqual({});
   });
+
+  it('seeds metrics from lastMetrics on incoming sessions and clears prior workspace metrics', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'old' })],
+      metrics: { old: { sessionId: 'old', inputTokens: 999, outputTokens: 111, observedAt: 1_700_000_000 } },
+    });
+
+    const incoming = [
+      makeView({
+        id: 'new1',
+        lastMetrics: { sessionId: 'new1', inputTokens: 2000, outputTokens: 500, observedAt: 1_700_000_200 },
+      }),
+      makeView({ id: 'new2' }),
+    ];
+
+    useSessionStore.getState().actions.adoptWorkspace(incoming, 'new1');
+
+    const { metrics } = useSessionStore.getState();
+    expect(metrics['new1']).toEqual({ sessionId: 'new1', inputTokens: 2000, outputTokens: 500, observedAt: 1_700_000_200 });
+    expect(metrics['new2']).toBeUndefined();
+    expect(metrics['old']).toBeUndefined();
+  });
 });
 
 describe('applyStatus', () => {
@@ -753,7 +789,7 @@ describe('applyMetrics', () => {
 });
 
 describe('applyStatus + applyMetrics interaction', () => {
-  it('clears stale metrics when a session transitions back to starting (restart)', () => {
+  it('preserves metrics when a session transitions to starting (restore)', () => {
     useSessionStore.setState({
       sessions: [makeView({ id: 'a' })],
       metrics: {
@@ -762,7 +798,7 @@ describe('applyStatus + applyMetrics interaction', () => {
     });
     const evt: SessionStatusEvent = { sessionId: 'a', status: 'starting' };
     useSessionStore.getState().actions.applyStatus(evt);
-    expect(useSessionStore.getState().metrics['a']).toBeUndefined();
+    expect(useSessionStore.getState().metrics['a']).toBeDefined();
   });
 
   it('preserves metrics across non-starting status transitions', () => {
@@ -775,6 +811,41 @@ describe('applyStatus + applyMetrics interaction', () => {
     const evt: SessionStatusEvent = { sessionId: 'a', status: 'running' };
     useSessionStore.getState().actions.applyStatus(evt);
     expect(useSessionStore.getState().metrics['a']).toBeDefined();
+  });
+});
+
+describe('prepareForRestart', () => {
+  it('clears stale metrics and turn markers for the restarted session', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' }), makeView({ id: 'b' })],
+      metrics: {
+        a: { sessionId: 'a', contextUsedPct: 50, observedAt: 1 },
+        b: { sessionId: 'b', contextUsedPct: 30, observedAt: 2 },
+      },
+      lastTurnEndAt: { a: 100, b: 200 },
+      lastTurnDurationMs: { a: 5000, b: 3000 },
+    });
+    useSessionStore.getState().actions.prepareForRestart('a');
+    const state = useSessionStore.getState();
+    expect(state.metrics['a']).toBeUndefined();
+    expect(state.metrics['b']).toBeDefined();
+    expect(state.lastTurnEndAt['a']).toBeUndefined();
+    expect(state.lastTurnEndAt['b']).toBe(200);
+    expect(state.lastTurnDurationMs['a']).toBeUndefined();
+    expect(state.lastTurnDurationMs['b']).toBe(3000);
+  });
+
+  it('is a no-op when the session has no cached metrics or turn markers', () => {
+    useSessionStore.setState({
+      sessions: [makeView({ id: 'a' })],
+      metrics: {},
+      lastTurnEndAt: {},
+      lastTurnDurationMs: {},
+    });
+    const before = useSessionStore.getState();
+    useSessionStore.getState().actions.prepareForRestart('a');
+    const after = useSessionStore.getState();
+    expect(after.metrics).toBe(before.metrics);
   });
 });
 

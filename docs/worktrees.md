@@ -62,14 +62,15 @@ The legacy `worktreeRoots` config field may still contribute discovery results, 
 
 ## Repo-stored settings
 
-`<workspace>/.arborist/settings.json` can be committed to share repo-specific Arborist defaults. Supported overlays are:
+`<workspace>/.arborist/settings.json` can be committed to share repo-specific Arborist defaults. Supported values are:
 
-- `defaultInstructionSets`
 - `pluginSettings.ai.*.settings.launchCommand`
 - `aiLaunchCommands.commands` legacy alias
 - `worktreePrepCommands`
 
 Arborist never writes this file. Malformed overlays are ignored with a warning.
+Repo executable values (`pluginSettings.ai.*.settings.launchCommand`, legacy `aiLaunchCommands.commands`, and `worktreePrepCommands`) fill only empty
+user settings; they never replace user-entered launch or prep commands.
 
 ## Safety invariants
 

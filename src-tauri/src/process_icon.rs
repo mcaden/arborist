@@ -596,8 +596,8 @@ mod platform {
             return false;
         };
         // Tokenise on whitespace; skip `env` and any `KEY=VAL` prefix tokens until we hit the actual program.
-        let mut tokens = exec.split_whitespace();
-        while let Some(t) = tokens.next() {
+        let tokens = exec.split_whitespace();
+        for t in tokens {
             if t == "env" {
                 continue;
             }

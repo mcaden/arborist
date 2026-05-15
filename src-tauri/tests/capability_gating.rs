@@ -66,8 +66,8 @@ fn main_capability_allows_required_commands_only() {
         "main capability must include allow-config so config_get/config_set are callable; got {identifiers:?}",
     );
     assert!(
-        identifiers.contains(&"allow-instructions"),
-        "main capability must include allow-instructions so instructions_list is callable; got {identifiers:?}",
+        identifiers.contains(&"allow-shell-command-trust"),
+        "main capability must include allow-shell-command-trust so repo command trust prompts are callable; got {identifiers:?}",
     );
     assert!(
         identifiers.contains(&"allow-session"),
@@ -254,17 +254,20 @@ fn allow_config_permission_file_declares_config_commands() {
 }
 
 #[test]
-fn allow_instructions_permission_file_declares_instructions_command() {
-    let path = manifest_dir().join("permissions").join("allow-instructions.toml");
+fn allow_shell_command_trust_permission_file_declares_commands() {
+    let path = manifest_dir().join("permissions").join("allow-shell-command-trust.toml");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(
-        raw.contains("identifier = \"allow-instructions\""),
-        "permission identifier must remain `allow-instructions`",
+        raw.contains("identifier = \"allow-shell-command-trust\""),
+        "permission identifier must remain `allow-shell-command-trust`",
     );
-    assert!(
-        raw.contains("\"instructions_list\""),
-        "permission must allow the `instructions_list` command",
-    );
+    for cmd in ["shell_command_preview", "repo_command_trust", "repo_command_allow_once"] {
+        let needle = format!("\"{cmd}\"");
+        assert!(
+            raw.contains(&needle),
+            "allow-shell-command-trust must declare {cmd}; raw permission file:\n{raw}",
+        );
+    }
 }
 
 #[test]

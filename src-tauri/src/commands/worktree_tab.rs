@@ -696,14 +696,16 @@ mod tests {
             worktree_path: PathBuf::from(worktree),
             worktree_name: "wt".into(),
             label: id.to_string(),
-            instruction_set_id: None,
             composed_command: "echo".into(),
+            structured_command: None,
+            command_provenance: Vec::new(),
             status: crate::types::SessionStatus::Running,
             pid: None,
             created_at: 0,
             tab_index: 0,
             temp_files: Vec::new(),
             ai_session_id: None,
+            last_metrics: None,
         }
     }
 

@@ -50,7 +50,6 @@ flowchart TB
 | `src/`                   | React/TypeScript frontend. Components, hooks, stores, plugins, bridge wrappers, and TS wire types.                                      |
 | `src-tauri/src/`         | Rust backend. Tauri entrypoint, command implementations, PTY pools, config store, workspace locks, Git helpers, metrics, and launchers. |
 | `crates/arborist-types/` | Canonical serialized wire and persistence types shared by backend code and mirrored manually in `src/types/arborist.ts`.                |
-| `instructions/`          | Starter instruction-set Markdown files. Runtime uses the configured `instructionSetsDir`; this directory is a template.                 |
 | `docs/`                  | Active project documentation.                                                                                                           |
 | `dev/e2e/linux/`         | Dockerized Linux E2E harness.                                                                                                           |
 | `.github/workflows/`     | CI, approval-gated Rust checks, and release workflow.                                                                                   |
@@ -64,12 +63,13 @@ flowchart TB
 | `store_layout.rs`                                         | Per-branch and per-workspace app-data path layout.                                                                                  |
 | `workspace_lock.rs`                                       | `fs2` advisory lock for one process per `(branch, workspace)` store.                                                                |
 | `workspace_scope.rs`                                      | Current workspace binding and `ConfigStore` handle.                                                                                 |
-| `config_store.rs`                                         | Atomic JSON persistence, migrations, quarantine, config merge, session records, worktree tabs, and instruction discovery.           |
+| `config_store.rs`                                         | Atomic JSON persistence, migrations, quarantine, config merge, session records, and worktree tabs.                                  |
 | `commands/mod.rs`                                         | Thin `#[tauri::command]` wrappers and production event sinks.                                                                       |
 | `commands/session.rs`                                     | Session, workspace, worktree-create, restore, and switch implementation logic.                                                      |
 | `commands/worktree_tab.rs`                                | Worktree tab open, close, focus, reorder, and active-child logic.                                                                   |
 | `commands/subsession.rs`                                  | Custom-process sub-session lifecycle and restore logic.                                                                             |
 | `compose.rs`                                              | CLI command composition, path validation, worktree-name validation, shell quoting, and tool-specific launch behavior.               |
+| `session_temp.rs`                                         | Hardened per-session temp directory and Copilot OTel file creation, reset, orphan cleanup, and symlink/reparse refusal.             |
 | `pty_pool.rs`                                             | PTY spawn/read/write/resize/kill, deferred spawn, backpressure, wait threads, and orphan cleanup.                                   |
 | `sub_sessions.rs`                                         | Parallel PTY/app runtime for custom-process sub-tabs.                                                                               |
 | `app_launcher.rs`                                         | Detached application process spawning and app close/kill support.                                                                   |
@@ -101,19 +101,18 @@ flowchart TB
 The canonical Rust definitions live in `crates/arborist-types/src/lib.rs`. The TypeScript mirror lives in `src/types/arborist.ts`. Any change to a
 Rust wire/persistence type must update the TypeScript mirror in the same commit.
 
-| Type               | Stored where            | Sent to frontend | Purpose                                                                                               |
-| ------------------ | ----------------------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
-| `Session`          | `sessions.json`         | No               | Full backend record for an AI PTY session. Includes `composedCommand`, temp files, and AI session id. |
-| `SessionView`      | Derived from `Session`  | Yes              | Frontend-safe projection without backend-only command/temp-file material.                             |
-| `WorktreeTab`      | `config.json`           | Yes              | Top-level sidebar parent for one worktree path.                                                       |
-| `SubSession`       | In-memory runtime store | Yes              | Live custom-process child tab.                                                                        |
-| `SubSessionRecord` | `config.json`           | No direct UI use | Lightweight restore record for sub-sessions.                                                          |
-| `InstructionSet`   | Discovered from disk    | Yes              | Instruction file metadata.                                                                            |
-| `AppConfig`        | `config.json`           | Yes              | User/workspace configuration and persisted UI/session ordering.                                       |
-| `PartialAppConfig` | Request payload         | Yes              | Deep-merge patch for `config_set`.                                                                    |
-| `AppError`         | Command error payload   | Yes              | Stable `{ code, message }` shape for frontend branching.                                              |
+| Type               | Stored where            | Sent to frontend | Purpose                                                                                                                            |
+| ------------------ | ----------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `Session`          | `sessions.json`         | No               | Full backend record for an AI PTY session. Includes `composedCommand`, temp files, AI session id, and last-known metrics snapshot. |
+| `SessionView`      | Derived from `Session`  | Yes              | Frontend-safe projection without backend-only command/temp-file material.                                                          |
+| `WorktreeTab`      | `config.json`           | Yes              | Top-level sidebar parent for one worktree path.                                                                                    |
+| `SubSession`       | In-memory runtime store | Yes              | Live custom-process child tab.                                                                                                     |
+| `SubSessionRecord` | `config.json`           | No direct UI use | Lightweight restore record for sub-sessions.                                                                                       |
+| `AppConfig`        | `config.json`           | Yes              | User/workspace configuration and persisted UI/session ordering.                                                                    |
+| `PartialAppConfig` | Request payload         | Yes              | Deep-merge patch for `config_set`.                                                                                                 |
+| `AppError`         | Command error payload   | Yes              | Stable `{ code, message }` shape for frontend branching.                                                                           |
 
-Current `AppConfig.configVersion` is `10`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
+Current `AppConfig.configVersion` is `11`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
 
 ## Command and event contract
 
@@ -129,41 +128,43 @@ Every command must be present in all of these places:
 
 ### Commands
 
-| Command                         | Payload                         | Result                    | Purpose                                                                                      |
-| ------------------------------- | ------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------- |
-| `ping`                          | none                            | `string`                  | Command-boundary smoke check.                                                                |
-| `config_get`                    | none                            | `AppConfig`               | Load current workspace config.                                                               |
-| `config_set`                    | `PartialAppConfig`              | `AppConfig`               | Deep-merge config patch, validate, persist, and return merged config.                        |
-| `instructions_list`             | none                            | `InstructionSet[]`        | Discover instruction-set files under `instructionSetsDir`.                                   |
-| `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                |
-| `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                |
-| `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                   |
-| `session_list`                  | none                            | `SessionView[]`           | Return persisted sessions sorted for the sidebar.                                            |
-| `session_close`                 | `SessionCloseArgs`              | `SessionCloseResult`      | Kill session PTY, remove records; delete the Git worktree only after confirmed teardown.     |
-| `session_focus`                 | `SessionIdArg`                  | `void`                    | Persist active session id.                                                                   |
-| `session_resize`                | `SessionResizeArgs`             | `void`                    | Resize live PTY or trigger deferred restore spawn.                                           |
-| `session_input`                 | `SessionInputArgs`              | `void`                    | Write bytes to a session PTY.                                                                |
-| `session_restart`               | `SessionRestartArgs`            | `void`                    | Respawn from stored `composedCommand` and current measured dimensions.                       |
-| `worktrees_list`                | `repoRoot: string`              | `WorktreeInfo[]`          | List Git worktrees. Discovery failures return an empty list.                                 |
-| `worktree_git_status`           | `WorktreeGitStatusArgs`         | `WorktreeGitStatus`       | Snapshot Git status for a worktree. Read failures return `error` in the result.              |
-| `workspace_validate`            | `WorkspaceValidateArgs`         | `WorkspaceValidateResult` | Validate a primary-clone workspace candidate and optionally probe lock contention.           |
-| `workspace_switch`              | `WorkspaceSwitchArgs`           | `WorkspaceSwitchResult`   | Park old workspace, bind new workspace, restore new sessions, and return the new snapshot.   |
-| `worktree_create`               | `WorktreeCreateArgs`            | `WorktreeCreateResult`    | Create `<workspace>/.arborist/.worktrees/<name>` and maybe start prep.                       |
-| `worktree_prep_open_log`        | `WorktreePrepOpenLogArgs`       | `void`                    | Open a contained worktree-prep log file with the OS default handler.                         |
-| `worktree_tab_open`             | `WorktreeTabOpenArgs`           | `WorktreeTab`             | Open or create a top-level worktree tab.                                                     |
-| `worktree_tab_close`            | `WorktreeTabCloseArgs`          | `WorktreeTabCloseResult`  | Cascade-close child sessions/sub-sessions; delete the worktree only if teardown is clean.    |
-| `worktree_tab_focus`            | `WorktreeTabFocusArgs`          | `void`                    | Persist active worktree tab.                                                                 |
-| `worktree_tab_list`             | none                            | `WorktreeTab[]`           | Return persisted worktree tabs.                                                              |
-| `worktree_tab_reorder`          | `WorktreeTabReorderArgs`        | `void`                    | Replace top-level worktree tab ordering.                                                     |
-| `worktree_tab_set_active_child` | `WorktreeTabSetActiveChildArgs` | `void`                    | Persist which child, if any, is active under a worktree tab.                                 |
-| `subsession_create`             | `SubSessionCreateArgs`          | `SubSession`              | Spawn a configured terminal or application custom process under a worktree tab.              |
-| `subsession_close`              | `SubSessionCloseArgs`           | `void`                    | Close/detach/terminate a sub-session according to kind and close intent.                     |
-| `subsession_focus`              | `SubSessionIdArg`               | `void`                    | Focus application window where supported; terminal focus is frontend-only.                   |
-| `subsession_list`               | `SubSessionListArgs`            | `SubSession[]`            | List live sub-sessions, optionally filtered by parent worktree tab.                          |
-| `subsession_input`              | `SubSessionInputArgs`           | `void`                    | Write bytes to a terminal sub-session PTY.                                                   |
-| `subsession_resize`             | `SubSessionResizeArgs`          | `void`                    | Resize a terminal sub-session PTY.                                                           |
-| `subsession_relaunch`           | `SubSessionIdArg`               | `SubSession`              | Relaunch a sub-session under the same id, reusing or re-deriving its command as appropriate. |
-| `subsession_icon`               | `SubSessionIdArg`               | `string \| null`          | Best-effort app icon extraction as a data URI.                                               |
+| Command                         | Payload                         | Result                    | Purpose                                                                                                            |
+| ------------------------------- | ------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ping`                          | none                            | `string`                  | Command-boundary smoke check.                                                                                      |
+| `config_get`                    | none                            | `AppConfig`               | Load current workspace config.                                                                                     |
+| `config_set`                    | `PartialAppConfig`              | `AppConfig`               | Deep-merge config patch, validate, persist, and return merged config.                                              |
+| `shell_command_preview`         | `ShellCommandPreviewArgs`       | `ShellCommandPreview`     | Preview repo-provided executable settings that would run for create/restart actions.                               |
+| `repo_command_trust`            | `RepoCommandTrustArgs`          | `AppConfig`               | Persist trust for the current repo-provided command preview in user config.                                        |
+| `repo_command_allow_once`       | `RepoCommandTrustArgs`          | `void`                    | Allow the current repo-provided command preview to run once without persisting trust.                              |
+| `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                                      |
+| `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                                      |
+| `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                                         |
+| `session_list`                  | none                            | `SessionView[]`           | Return persisted sessions sorted for the sidebar.                                                                  |
+| `session_close`                 | `SessionCloseArgs`              | `SessionCloseResult`      | Kill session PTY, remove records; delete the Git worktree only after confirmed teardown.                           |
+| `session_focus`                 | `SessionIdArg`                  | `void`                    | Persist active session id.                                                                                         |
+| `session_resize`                | `SessionResizeArgs`             | `void`                    | Resize live PTY or trigger deferred restore spawn.                                                                 |
+| `session_input`                 | `SessionInputArgs`              | `void`                    | Write bytes to a session PTY.                                                                                      |
+| `session_restart`               | `SessionRestartArgs`            | `void`                    | Respawn from stored `composedCommand` and current measured dimensions.                                             |
+| `worktrees_list`                | `repoRoot: string`              | `WorktreeInfo[]`          | List Git worktrees. Discovery failures return an empty list.                                                       |
+| `worktree_git_status`           | `WorktreeGitStatusArgs`         | `WorktreeGitStatus`       | Snapshot Git status for a worktree including source-branch divergence. Read failures return `error` in the result. |
+| `workspace_validate`            | `WorkspaceValidateArgs`         | `WorkspaceValidateResult` | Validate a primary-clone workspace candidate and optionally probe lock contention.                                 |
+| `workspace_switch`              | `WorkspaceSwitchArgs`           | `WorkspaceSwitchResult`   | Park old workspace, bind new workspace, restore new sessions, and return the new snapshot.                         |
+| `worktree_create`               | `WorktreeCreateArgs`            | `WorktreeCreateResult`    | Create `<workspace>/.arborist/.worktrees/<name>` and maybe start prep.                                             |
+| `worktree_prep_open_log`        | `WorktreePrepOpenLogArgs`       | `void`                    | Open a contained worktree-prep log file with the OS default handler.                                               |
+| `worktree_tab_open`             | `WorktreeTabOpenArgs`           | `WorktreeTab`             | Open or create a top-level worktree tab.                                                                           |
+| `worktree_tab_close`            | `WorktreeTabCloseArgs`          | `WorktreeTabCloseResult`  | Cascade-close child sessions/sub-sessions; delete the worktree only if teardown is clean.                          |
+| `worktree_tab_focus`            | `WorktreeTabFocusArgs`          | `void`                    | Persist active worktree tab.                                                                                       |
+| `worktree_tab_list`             | none                            | `WorktreeTab[]`           | Return persisted worktree tabs.                                                                                    |
+| `worktree_tab_reorder`          | `WorktreeTabReorderArgs`        | `void`                    | Replace top-level worktree tab ordering.                                                                           |
+| `worktree_tab_set_active_child` | `WorktreeTabSetActiveChildArgs` | `void`                    | Persist which child, if any, is active under a worktree tab.                                                       |
+| `subsession_create`             | `SubSessionCreateArgs`          | `SubSession`              | Spawn a configured terminal or application custom process under a worktree tab.                                    |
+| `subsession_close`              | `SubSessionCloseArgs`           | `void`                    | Close/detach/terminate a sub-session according to kind and close intent.                                           |
+| `subsession_focus`              | `SubSessionIdArg`               | `void`                    | Focus application window where supported; terminal focus is frontend-only.                                         |
+| `subsession_list`               | `SubSessionListArgs`            | `SubSession[]`            | List live sub-sessions, optionally filtered by parent worktree tab.                                                |
+| `subsession_input`              | `SubSessionInputArgs`           | `void`                    | Write bytes to a terminal sub-session PTY.                                                                         |
+| `subsession_resize`             | `SubSessionResizeArgs`          | `void`                    | Resize a terminal sub-session PTY.                                                                                 |
+| `subsession_relaunch`           | `SubSessionIdArg`               | `SubSession`              | Relaunch a sub-session under the same id, reusing or re-deriving its command as appropriate.                       |
+| `subsession_icon`               | `SubSessionIdArg`               | `string \| null`          | Best-effort app icon extraction as a data URI.                                                                     |
 
 ### Events
 
@@ -172,7 +173,7 @@ Every command must be present in all of these places:
 | `session://output`      | `SessionOutputEvent`      | PTY output for AI sessions and terminal sub-sessions. Sub-session ids are mapped into the session id-shaped field.                                                                                                                                                                                                                                  |
 | `session://status`      | `SessionStatusEvent`      | AI session lifecycle status and optional explanatory message.                                                                                                                                                                                                                                                                                       |
 | `session://activity`    | `SessionActivityEvent`    | Attention, working/idle, title, prompt/command, turn, tool, and permission activity. Sources: PTY-byte heuristics ([`activity::ActivityScanner`]), Copilot `events.jsonl` tailer ([`copilot_events`]), and Claude hook tailer ([`claude_hook_events`], fed by the `arborist-claude-hook` helper binary that Claude spawns at each hook fire point). |
-| `session://metrics`     | `SessionMetricsEvent`     | Token/context-window snapshot for a session.                                                                                                                                                                                                                                                                                                        |
+| `session://metrics`     | `SessionMetricsEvent`     | Token/context-window snapshot for a session. Also persisted on `Session.last_metrics` for restore.                                                                                                                                                                                                                                                  |
 | `subsession://status`   | `SubSessionStatusEvent`   | Custom-process sub-session status and optional pid/message.                                                                                                                                                                                                                                                                                         |
 | `subsession://exited`   | `SubSessionExitedEvent`   | Application sub-session process exit notification.                                                                                                                                                                                                                                                                                                  |
 | `subsession://restored` | `SubSessionRestoredEvent` | Restore pass materialized a sub-session row.                                                                                                                                                                                                                                                                                                        |
@@ -182,10 +183,9 @@ Every command must be present in all of these places:
 
 Tauri v2 rejects frontend invokes without capability permissions. `src-tauri/capabilities/main.json` currently grants:
 
-`core:event:allow-listen`, `core:event:allow-unlisten`, `allow-ping`, `allow-config`, `allow-instructions`, `allow-session`,
-`allow-frontend-ready`, `allow-worktrees-list`, `allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`,
-`allow-worktree-create`, `allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, and
-`allow-dialog-pick-directory`.
+`core:event:allow-listen`, `core:event:allow-unlisten`, `allow-ping`, `allow-config`, `allow-session`, `allow-frontend-ready`,
+`allow-worktrees-list`, `allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`, `allow-worktree-create`,
+`allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, and `allow-dialog-pick-directory`.
 
 Broad built-in/plugin grants such as `core:default`, dialog, shell, store, and filesystem permissions are intentionally not granted. Plugin crates may
 still be registered for planned surfaces, but registration alone does not expose commands to the WebView; any future plugin command must get a narrow,
@@ -210,7 +210,11 @@ state. `enabled` is optional; omission means "use the plugin descriptor default"
 ## Invariants
 
 - Compose once, reuse forever. `Session.composedCommand` is built at creation and reused for restart/restore.
+- Default Claude/Copilot launches also store structured argv; explicit launch overrides remain shell snippets.
 - Worktree path is passed as `cwd` to the child process, never inserted into the shell command.
+- Repo-provided executable settings are defaults only and never replace user-entered launch/prep commands. Applied repo executable defaults require
+  local approval. "Don't ask again" trust is scoped to exact command fingerprints, and persisted repo command provenance is revalidated on
+  restart/restore.
 - Frontend and backend communicate only through Tauri commands and events.
 - All `invoke` and `listen` calls go through `src/lib/tauri-bridge.ts`.
 - Rust wire types and TypeScript mirrors change together.

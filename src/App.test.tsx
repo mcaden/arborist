@@ -139,14 +139,13 @@ describe('App boot sequence', () => {
         new Promise((resolve) => {
           resolveCfg = () =>
             resolve({
-              configVersion: 10,
-              defaultInstructionSets: { claude: '', copilot: '' },
-              instructionSetsDir: '',
+              configVersion: 11,
               workspaceRoot: '/mock/workspace',
               worktreeRoots: [],
               worktreePrepCommands: [],
               aiLaunchCommands: { commands: {}, iconDataUris: {} },
               pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+              repoCommandTrust: { records: {} },
               lastOpenSessions: [],
               tabOrder: [],
               activeSessionId: null,
@@ -155,6 +154,7 @@ describe('App boot sequence', () => {
               worktreeTabs: [],
               worktreeTabOrder: [],
               activeWorktreeTabId: null,
+              theme: 'system',
             });
         }),
     );
@@ -258,14 +258,13 @@ describe('App boot sequence', () => {
 
   it('shows the WorkspacePicker on first boot when workspaceRoot is null', async () => {
     configGet.mockResolvedValueOnce({
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -274,6 +273,7 @@ describe('App boot sequence', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     });
     render(<App />);
     await waitFor(() => {
@@ -414,6 +414,87 @@ describe('App dark mode', () => {
     act(() => fireMediaChange(true));
     expect(document.documentElement.classList.contains('dark')).toBe(true);
     act(() => fireMediaChange(false));
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+  });
+
+  it('forces dark class when theme is "dark" regardless of OS preference', async () => {
+    mediaMatches = false; // OS says light
+    configGet.mockResolvedValue({
+      configVersion: 10,
+      workspaceRoot: '/mock/workspace',
+      worktreeRoots: [],
+      worktreePrepCommands: [],
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
+      lastOpenSessions: [],
+      tabOrder: [],
+      activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
+      theme: 'dark',
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains('dark')).toBe(true);
+    });
+  });
+
+  it('forces light (no dark class) when theme is "light" regardless of OS preference', async () => {
+    mediaMatches = true; // OS says dark
+    configGet.mockResolvedValue({
+      configVersion: 10,
+      workspaceRoot: '/mock/workspace',
+      worktreeRoots: [],
+      worktreePrepCommands: [],
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
+      lastOpenSessions: [],
+      tabOrder: [],
+      activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
+      theme: 'light',
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
+    });
+  });
+
+  it('does not react to media-query changes when theme is forced', async () => {
+    mediaMatches = false;
+    configGet.mockResolvedValue({
+      configVersion: 10,
+      workspaceRoot: '/mock/workspace',
+      worktreeRoots: [],
+      worktreePrepCommands: [],
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
+      lastOpenSessions: [],
+      tabOrder: [],
+      activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
+      theme: 'light',
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
+    });
+    // OS changes to dark, but forced light should not react
+    act(() => fireMediaChange(true));
     expect(document.documentElement.classList.contains('dark')).toBe(false);
   });
 });

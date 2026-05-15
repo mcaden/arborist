@@ -2,14 +2,20 @@
 
 # Arborist
 
+[![CI](https://github.com/mcaden/arborist/actions/workflows/ci.yml/badge.svg)](https://github.com/mcaden/arborist/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/mcaden/arborist?include_prereleases&sort=semver)](https://github.com/mcaden/arborist/releases)
+
 **Arborist is a cross-platform desktop app for managing AI coding-assistant sessions across Git worktrees.**
 
 It gives each worktree its own persistent terminal-backed context for Claude CLI, GitHub Copilot CLI, and configured custom processes. Worktree tabs
 live in a sidebar; the main area shows the active worktree dashboard or terminal while background PTYs keep running.
 
+Website: [https://arborist.tools](https://arborist.tools)
+
 ## Status
 
-Arborist is pre-1.0 and preparing for public open-source use. Expect active changes to docs, workflows, and APIs while the project stabilizes.
+Arborist is a public open-source desktop app. Expect active changes to docs, workflows, and APIs while the project stabilizes.
 
 ## What it does
 
@@ -23,11 +29,10 @@ Arborist is pre-1.0 and preparing for public open-source use. Expect active chan
 
 ## Install for users
 
-Arborist has not published a stable release yet. When prerelease installers are available, download them from the
-[Releases page](https://github.com/mcaden/arborist/releases). Until then, use the contributor setup below to run Arborist locally.
+Download signed installers from the [Releases page](https://github.com/mcaden/arborist/releases). Contributors can also use the setup below to run
+Arborist locally from source.
 
-Release artifacts are not OS code-signed unless a release note says otherwise, so first launch may show Windows SmartScreen or macOS Gatekeeper
-warnings. Published assets should have GitHub build attestations:
+Release artifacts are OS-signed and notarized where each platform supports it. Published assets include GitHub build attestations:
 
 ```sh
 gh attestation verify <downloaded-file> --repo mcaden/arborist

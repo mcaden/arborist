@@ -1,6 +1,6 @@
 //! Tauri command handlers.
 //!
-//! Phase 3 introduced `ping`; Phase 4 added `config_get`/`config_set` and `instructions_list`; Phase 7 adds the full session lifecycle plus the
+//! Phase 3 introduced `ping`; Phase 4 added `config_get`/`config_set`; Phase 7 adds the full session lifecycle plus the
 //! `frontend_ready` gate. The actual business logic for session commands lives in the [`session`] submodule as `*_impl` free functions taking
 //! [`session::AppContext`]; the `#[tauri::command]` wrappers below are
 //! intentionally thin so that integration tests can drive the same code paths directly.
@@ -20,14 +20,15 @@ use std::sync::{Arc, RwLock};
 
 use tauri::{Emitter, Manager};
 
-use crate::config_store::{list_instructions_for, ConfigStore};
+use crate::config_store::ConfigStore;
 use crate::sub_sessions::SubAppContext;
 use crate::types::{
-    AppConfig, AppError, InstructionSet, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
-    SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession,
-    SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs,
-    WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab,
-    WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
+    AppConfig, AppError, PartialAppConfig, RepoCommandTrustArgs, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
+    SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, ShellCommandPreview,
+    ShellCommandPreviewArgs, SubSession, SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
+    SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs,
+    WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs,
+    WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -88,18 +89,28 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
     Ok(merged)
 }
 
+#[tauri::command]
+pub async fn shell_command_preview(app: tauri::AppHandle, args: ShellCommandPreviewArgs) -> Result<ShellCommandPreview, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::shell_command_preview_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn repo_command_trust(app: tauri::AppHandle, args: RepoCommandTrustArgs) -> Result<AppConfig, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::repo_command_trust_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn repo_command_allow_once(app: tauri::AppHandle, args: RepoCommandTrustArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    session::repo_command_allow_once_impl(&ctx, args)
+}
+
 /// Best-effort cwd for resolving relative-path commands at config-save time. Defs are templates — the user's workspace root is the most useful
 /// default; OS temp is the last resort. Absolute commands (`C:\Program Files\...`, `/usr/bin/...`) ignore this entirely.
 fn backfill_cwd(cfg: &AppConfig) -> std::path::PathBuf {
     cfg.workspace_root.clone().filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir)
-}
-
-/// Discovers and returns the list of [`InstructionSet`]s available under the configured `instructionSetsDir`.
-#[tauri::command]
-pub async fn instructions_list(app: tauri::AppHandle) -> Result<Vec<InstructionSet>, AppError> {
-    let ctx = ctx_of(&app)?;
-    let cfg = ctx.store().load_config();
-    list_instructions_for(&cfg)
 }
 
 fn pick_directory_native() -> Option<String> {
@@ -274,8 +285,8 @@ pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateAr
 pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) -> Result<WorktreeCreateResult, AppError> {
     let ctx = ctx_of(&app)?;
     let _switch = session::acquire_switch_read(&ctx)?;
+    let cfg = session::trusted_worktree_create_config(&ctx, &args.name)?;
     let mut result = session::worktree_create_impl(&ctx, &args.name)?;
-    let cfg = crate::repo_settings::apply_repo_overlay(ctx.store().load_config());
     result.prep = crate::worktree_prep::maybe_spawn(&app, ctx.prep_registry.clone(), &cfg, &result.path);
     Ok(result)
 }
@@ -457,13 +468,36 @@ pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<Worksp
     crate::pty_pool::PtySink::new(output, status, activity)
 }
 
-/// Build the production metrics emitter (Issue #3) — fires `session://metrics` Tauri events. Tests construct their own callback (typically a channel
-/// sender) and pass it to [`AppContext::new`].
+/// Build the production metrics emitter (Issue #3) — fires `session://metrics` Tauri events and persists the snapshot on the session record so
+/// restore can seed the frontend dashboard (Issue #140). Tests construct their own callback (typically a channel sender) and pass it to
+/// [`AppContext::new`].
 #[must_use]
-pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_metrics::MetricsCb {
+pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLock<WorkspaceScope>>) -> crate::session_metrics::MetricsCb {
     Arc::new(move |payload: crate::types::SessionMetricsEvent| {
-        if let Err(e) = app.emit("session://metrics", payload) {
+        if let Err(e) = app.emit("session://metrics", &payload) {
             tracing::debug!(error = %e, "emit session://metrics failed");
+        }
+        // Best-effort persist — errors are swallowed so a transient store issue doesn't crash the watcher thread.
+        let store = match workspace.read() {
+            Ok(guard) => guard.store.clone(),
+            Err(_) => {
+                tracing::warn!("workspace lock poisoned; skipping metrics persist");
+                return;
+            }
+        };
+        let session_id = payload.session_id;
+        if let Err(e) = store.update_session_metrics(&session_id, payload) {
+            match &e {
+                crate::types::Error::Internal(_) => {
+                    tracing::warn!(error = ?e, "metrics persist bug: id/payload mismatch");
+                }
+                crate::types::Error::NotFound(_) => {
+                    tracing::trace!(error = ?e, "metrics persist skipped (session gone — expected during teardown)");
+                }
+                _ => {
+                    tracing::debug!(error = ?e, "failed to persist session metrics");
+                }
+            }
         }
     })
 }

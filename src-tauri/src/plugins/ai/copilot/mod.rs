@@ -2,7 +2,7 @@
 //!
 //! Issue #96 migrates Copilot-specific behavior behind plugin dispatch. This
 //! file defines the stable plugin identity and core metadata consumed across
-//! composition, settings, and instruction discovery paths.
+//! composition and settings paths.
 
 use crate::plugins::ai::AiPlugin;
 use crate::plugins::Plugin;
@@ -30,10 +30,6 @@ impl AiPlugin for CopilotPlugin {
         "copilot"
     }
 
-    fn default_instruction_set_path(&self) -> &'static str {
-        "copilot-default.md"
-    }
-
     fn compose(&self, inputs: &crate::compose::ComposeInputs<'_>, quoter: crate::compose::Quoter) -> (String, Vec<crate::types::TempFileSpec>) {
         crate::compose::build_copilot(inputs, quoter)
     }
@@ -47,10 +43,10 @@ impl AiPlugin for CopilotPlugin {
         ]
     }
 
-    fn spawn_prep(&self, session_id: &SessionId) -> crate::plugins::ai::SpawnPrep {
+    fn spawn_prep(&self, _session_id: &SessionId) -> crate::plugins::ai::SpawnPrep {
         crate::plugins::ai::SpawnPrep {
-            ensure_temp_dir: true,
-            stale_files: vec![crate::compose::copilot_otel_path(session_id)],
+            ensure_temp_dir: false,
+            reset_files: vec![crate::plugins::ai::SpawnPrepFile::CopilotOtel],
         }
     }
 
@@ -92,11 +88,4 @@ impl AiPlugin for CopilotPlugin {
     fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
         home.join(".copilot").join("session-state").join(ai_session_id)
     }
-
-    fn instruction_stem_prefix(&self) -> &'static str {
-        INSTRUCTION_STEM_PREFIX
-    }
 }
-
-/// Filename-stem prefix for Copilot instruction sets (`copilot-*.md`).
-pub const INSTRUCTION_STEM_PREFIX: &str = "copilot-";

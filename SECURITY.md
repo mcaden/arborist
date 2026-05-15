@@ -40,6 +40,7 @@ Arborist trusts the local user and the workspace they choose, but it still prote
 | WebView content            | Production loads bundled assets with an explicit CSP. Remote network fetches are not required for normal operation.            |
 | Tauri command access       | WebView privileges are limited by `src-tauri/capabilities/main.json`; plugin registration alone does not expose commands.      |
 | Shell command construction | User paths are canonicalized and worktree paths are passed as `cwd`, not interpolated into command strings.                    |
+| Repo-provided commands     | Repo-owned AI launch overrides and worktree prep snippets require explicit user trust before execution.                        |
 | Config                     | Config writes are atomic; corrupt config is quarantined rather than partially loaded.                                          |
 | Workspace isolation        | Each `(branch, workspace)` store is protected by an advisory lock to avoid concurrent writes from multiple Arborist instances. |
 | File opening               | Worktree-prep logs are opened only after containment checks under the app-data log directory.                                  |
@@ -50,6 +51,12 @@ The production CSP in `src-tauri/tauri.conf.json` allows local scripts, local fo
 required by React/xterm rendering, and Tauri IPC only. The main window capability grants only the app-defined commands Arborist uses plus the core
 event listen/unlisten permissions needed for backend events. Broad filesystem, shell, store, and dialog plugin permissions are not granted. Plugin
 crates may still be registered for planned extension surfaces, but the WebView cannot invoke their commands without a narrow capability grant.
+
+Repo settings can be source-controlled, so Arborist treats executable values from `<workspace>/.arborist/settings.json` as untrusted defaults. They do
+not replace user-entered launch/prep commands, and ignored repo values do not prompt. Applied repo executable defaults require local approval for the
+exact preview. The user can approve a single run or choose "don't ask again" for the exact command fingerprint. Stored trust records live in the user
+config (`repoCommandTrust`), include the workspace, source path, command kind/scope, host OS/shell, and command text, and are rechecked before session
+restart/restore so changed repo settings require a fresh approval.
 
 ## Out of scope security guarantees
 
@@ -77,11 +84,11 @@ forks may retain it.
 
 ## Release trust
 
-Release artifacts are unsigned by OS code-signing systems unless release notes say otherwise. GitHub build attestations are published for release
-assets and can be verified with:
+Release artifacts are OS-signed and notarized where each platform supports it. GitHub build attestations are published for release assets and can be
+verified with:
 
 ```sh
 gh attestation verify <downloaded-file> --repo mcaden/arborist
 ```
 
-Unsigned binaries may trigger Windows SmartScreen or macOS Gatekeeper first-run warnings. See [releasing](docs/releasing.md) for release mechanics.
+See [releasing](docs/releasing.md) for release mechanics.

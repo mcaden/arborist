@@ -34,6 +34,7 @@ import {
   type SessionCloseResult,
   type SessionCreateArgs,
 } from '@/lib/tauri-bridge';
+import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { useConfigStore } from '@/store/config-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type {
@@ -218,6 +219,15 @@ export interface SessionStoreActions {
    * against races with `close`.
    */
   applyMetrics: (evt: SessionMetricsEvent) => void;
+  /**
+   * Clear metrics and turn-end markers for a session about to be
+   * restarted. Called eagerly from the frontend restart call sites so
+   * stale numbers don't linger in the sidebar while the new run
+   * accumulates its first turn. Separated from `applyStatus` so that
+   * app-boot restore (which also transitions to `starting`) does NOT
+   * wipe the persisted `lastMetrics` seeded during hydrate.
+   */
+  prepareForRestart: (id: SessionId) => void;
 }
 
 type Store = SessionStoreState & { actions: SessionStoreActions };
@@ -253,6 +263,17 @@ function pickNeighbour(previousSessions: SessionView[], closedId: SessionId): Se
   return undefined;
 }
 
+/** Extract persisted metrics snapshots from session views into a lookup keyed by session id (Issue #140). */
+function extractRestoredMetrics(sessions: SessionView[]): Record<SessionId, SessionMetrics> {
+  const result: Record<SessionId, SessionMetrics> = {};
+  for (const s of sessions) {
+    if (s.lastMetrics) {
+      result[s.id] = s.lastMetrics;
+    }
+  }
+  return result;
+}
+
 export const useSessionStore = create<Store>((set, get) => {
   const actions: SessionStoreActions = {
     hydrate: async () => {
@@ -265,7 +286,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: {},
+        metrics: extractRestoredMetrics(sessions),
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},
@@ -286,6 +307,7 @@ export const useSessionStore = create<Store>((set, get) => {
       } else {
         activeId = sessions[0]?.id;
       }
+      // Seed metrics from persisted lastMetrics (Issue #140).
       set({
         sessions,
         activeId,
@@ -293,7 +315,7 @@ export const useSessionStore = create<Store>((set, get) => {
         statusMessages: {},
         hasUnread: {},
         activity: {},
-        metrics: {},
+        metrics: extractRestoredMetrics(sessions),
         lastTurnEndAt: {},
         lastTurnDurationMs: {},
         openTools: {},
@@ -303,6 +325,14 @@ export const useSessionStore = create<Store>((set, get) => {
     },
 
     create: async (args) => {
+      const trusted = await ensureShellCommandTrusted({
+        kind: 'sessionCreate',
+        tool: args.tool,
+        worktreePath: args.worktreePath,
+      });
+      if (!trusted) {
+        throw new Error('Session launch canceled because repository command settings were not trusted.');
+      }
       const view = await sessionCreate(args);
       set((s) => ({
         sessions: [...s.sessions, view],
@@ -574,7 +604,7 @@ export const useSessionStore = create<Store>((set, get) => {
       // Track the optional status message keyed by session id. We
       // overwrite (not merge) so a status transition without a message
       // clears any stale annotation from a prior transition.
-      const { statusMessages, metrics } = get();
+      const { statusMessages } = get();
       const nextMessages = { ...statusMessages };
       if (evt.message !== undefined && evt.message.length > 0) {
         nextMessages[evt.sessionId] = evt.message;
@@ -585,16 +615,13 @@ export const useSessionStore = create<Store>((set, get) => {
         sessions: nextSessions,
         statusMessages: nextMessages,
       };
-      // On restart (back to `starting`), drop any stale metrics so the
-      // sidebar doesn't show numbers from the previous run. Same logic
-      // applies to the turn-end markers — a new run hasn't completed any
-      // turns yet, so the sidebar should fall back to `idle`.
+      // On restart (back to `starting`), drop stale turn-end markers so
+      // the sidebar falls back to `idle` until the new run finishes its
+      // first turn. Metrics are NOT cleared here — that's handled by the
+      // explicit `prepareForRestart` action at the restart call site.
+      // Clearing here would also wipe persisted `lastMetrics` seeded
+      // during app-boot restore (Issue #140 fix).
       if (evt.status === 'starting') {
-        if (evt.sessionId in metrics) {
-          const nextMetrics = { ...metrics };
-          delete nextMetrics[evt.sessionId];
-          patch.metrics = nextMetrics;
-        }
         const { lastTurnEndAt, lastTurnDurationMs } = get();
         if (evt.sessionId in lastTurnEndAt) {
           const next = { ...lastTurnEndAt };
@@ -806,6 +833,27 @@ export const useSessionStore = create<Store>((set, get) => {
       // the rate the backend emits (≤ once per ~2s per session).
       if (prev && JSON.stringify(prev) === JSON.stringify(evt)) return;
       set({ metrics: { ...metrics, [evt.sessionId]: evt } });
+    },
+
+    prepareForRestart: (id) => {
+      const { metrics, lastTurnEndAt, lastTurnDurationMs } = get();
+      const patch: Partial<SessionStoreState> = {};
+      if (id in metrics) {
+        const next = { ...metrics };
+        delete next[id];
+        patch.metrics = next;
+      }
+      if (id in lastTurnEndAt) {
+        const next = { ...lastTurnEndAt };
+        delete next[id];
+        patch.lastTurnEndAt = next;
+      }
+      if (id in lastTurnDurationMs) {
+        const next = { ...lastTurnDurationMs };
+        delete next[id];
+        patch.lastTurnDurationMs = next;
+      }
+      if (Object.keys(patch).length > 0) set(patch);
     },
   };
 

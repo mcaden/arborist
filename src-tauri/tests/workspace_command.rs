@@ -497,14 +497,16 @@ fn fake_session(worktree: &Path, label: &str) -> arborist_lib::types::Session {
         worktree_path: worktree.to_path_buf(),
         worktree_name: label.to_owned(),
         label: label.to_owned(),
-        instruction_set_id: None,
         composed_command: format!("echo {label}"),
+        structured_command: None,
+        command_provenance: Vec::new(),
         status: SessionStatus::Running,
         pid: None,
         created_at: 1_700_000_000,
         tab_index: 0,
         temp_files: Vec::new(),
         ai_session_id: None,
+        last_metrics: None,
     }
 }
 

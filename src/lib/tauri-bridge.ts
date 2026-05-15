@@ -21,14 +21,15 @@ export type { AppErrorLike } from '@/lib/tauri-error';
 
 import type {
   AppConfig,
-  InstructionSet,
-  InstructionSetId,
   PartialAppConfig,
+  RepoCommandTrustArgs,
   SessionId,
   SessionOutputEvent,
   SessionStatusEvent,
   SessionActivityEvent,
   SessionMetricsEvent,
+  ShellCommandPreview,
+  ShellCommandPreviewArgs,
   SessionView,
   SubSession,
   SubSessionCloseArgs,
@@ -71,7 +72,6 @@ import type {
 export interface SessionCreateArgs {
   tool: Tool;
   worktreePath: string;
-  instructionSetId?: InstructionSetId;
   /**
    * Initial PTY dimensions in character cells. Required: the backend
    * opens the child PTY at exactly this size so the CLI's first paint
@@ -226,9 +226,7 @@ export function frontendReady(): Promise<void> {
 }
 
 /**
- * Returns the persisted [`AppConfig`]. Path fields are canonicalized by the
- * backend; missing instruction-set IDs are silently rewritten to the
- * discovered default for the relevant tool.
+ * Returns the persisted [`AppConfig`]. Path fields are canonicalized by the backend, and invalid persisted values are sanitized on load.
  */
 export function configGet(): Promise<AppConfig> {
   return invoke<AppConfig>('config_get');
@@ -250,13 +248,16 @@ export function configSet(partial: PartialAppConfig): Promise<AppConfig> {
   return invoke<AppConfig>('config_set', { partial });
 }
 
-/**
- * Discovers and returns the list of [`InstructionSet`]s under the configured
- * `instructionSetsDir`. Files exceeding 1 MiB or escaping the directory via
- * symlink are skipped.
- */
-export function instructionsList(): Promise<InstructionSet[]> {
-  return invoke<InstructionSet[]>('instructions_list');
+export function shellCommandPreview(args: ShellCommandPreviewArgs): Promise<ShellCommandPreview> {
+  return invoke<ShellCommandPreview>('shell_command_preview', { args });
+}
+
+export function repoCommandTrust(args: RepoCommandTrustArgs): Promise<AppConfig> {
+  return invoke<AppConfig>('repo_command_trust', { args });
+}
+
+export function repoCommandAllowOnce(args: RepoCommandTrustArgs): Promise<void> {
+  return invoke<void>('repo_command_allow_once', { args });
 }
 
 /**

@@ -16,15 +16,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import * as bridge from './tauri-bridge';
-import type {
-  AppConfig,
-  InstructionSet,
-  PartialAppConfig,
-  SessionOutputEvent,
-  SessionStatusEvent,
-  SessionView,
-  WorkspaceSwitchResult,
-} from '@/types/arborist';
+import type { AppConfig, PartialAppConfig, SessionOutputEvent, SessionStatusEvent, SessionView, WorkspaceSwitchResult } from '@/types/arborist';
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -59,7 +51,6 @@ describe('sessionCreate', () => {
       worktreePath: '/repo/feat',
       worktreeName: 'feat',
       label: 'feat',
-      instructionSetId: 'claude-default',
       status: 'running' as const,
       pid: 1234,
       createdAt: 1700000000,
@@ -69,7 +60,6 @@ describe('sessionCreate', () => {
     const args = {
       tool: 'claude' as const,
       worktreePath: '/repo/feat',
-      instructionSetId: 'claude-default',
       cols: 100,
       rows: 30,
     };
@@ -153,14 +143,13 @@ describe('frontendReady', () => {
 describe('configGet', () => {
   it("calls invoke('config_get') with no args and returns the parsed AppConfig", async () => {
     const cfg: AppConfig = {
-      configVersion: 10,
-      defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
-      instructionSetsDir: '/cfg/instr',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -169,6 +158,7 @@ describe('configGet', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     };
     invokeMock.mockResolvedValueOnce(cfg);
 
@@ -183,14 +173,13 @@ describe('configGet', () => {
 describe('configSet', () => {
   it("calls invoke('config_set') wrapping the partial under `partial` and returns the merged AppConfig", async () => {
     const merged: AppConfig = {
-      configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
+      configVersion: 11,
       workspaceRoot: null,
       worktreeRoots: [],
       worktreePrepCommands: ['nvm use'],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -199,6 +188,7 @@ describe('configSet', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     };
     invokeMock.mockResolvedValueOnce(merged);
     const patch: PartialAppConfig = { worktreePrepCommands: ['nvm use'] };
@@ -211,30 +201,60 @@ describe('configSet', () => {
 
   it('forwards rejections from the backend', async () => {
     invokeMock.mockRejectedValueOnce({ code: 'InvalidPath', message: 'relative' });
-    await expect(bridge.configSet({ instructionSetsDir: 'relative/x' })).rejects.toEqual({
+    await expect(bridge.configSet({ workspaceRoot: 'relative/x' })).rejects.toEqual({
       code: 'InvalidPath',
       message: 'relative',
     });
   });
 });
 
-describe('instructionsList', () => {
-  it("calls invoke('instructions_list') and returns the list", async () => {
-    const sets: InstructionSet[] = [
-      {
-        id: 'claude-default',
-        name: 'Claude default',
-        tool: 'claude',
-        filePath: '/cfg/instr/claude-default.md',
-        isDefault: true,
-      },
-    ];
-    invokeMock.mockResolvedValueOnce(sets);
+describe('repo command trust commands', () => {
+  it("calls invoke('shell_command_preview') wrapping args", async () => {
+    const preview = { targetWorktreePath: '/repo/wt', commands: [], trustRecords: [], trustRequired: false };
+    invokeMock.mockResolvedValueOnce(preview);
+    const args = { intent: { kind: 'worktreeCreate' as const, name: 'feat-x' } };
 
-    const result = await bridge.instructionsList();
+    const result = await bridge.shellCommandPreview(args);
 
-    expect(invokeMock).toHaveBeenCalledWith('instructions_list', undefined);
-    expect(result).toEqual(sets);
+    expect(invokeMock).toHaveBeenCalledWith('shell_command_preview', { args });
+    expect(result).toEqual(preview);
+  });
+
+  it("calls invoke('repo_command_trust') wrapping args and returns AppConfig", async () => {
+    const config: AppConfig = {
+      configVersion: 10,
+      workspaceRoot: null,
+      worktreeRoots: [],
+      worktreePrepCommands: [],
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
+      lastOpenSessions: [],
+      tabOrder: [],
+      activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
+      theme: 'system',
+    };
+    invokeMock.mockResolvedValueOnce(config);
+    const args = { intent: { kind: 'sessionRestart' as const, sessionId: 'sid-1' } };
+
+    const result = await bridge.repoCommandTrust(args);
+
+    expect(invokeMock).toHaveBeenCalledWith('repo_command_trust', { args });
+    expect(result).toEqual(config);
+  });
+
+  it("calls invoke('repo_command_allow_once') wrapping args", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    const args = { intent: { kind: 'sessionRestart' as const, sessionId: 'sid-1' } };
+
+    await bridge.repoCommandAllowOnce(args);
+
+    expect(invokeMock).toHaveBeenCalledWith('repo_command_allow_once', { args });
   });
 });
 
@@ -321,14 +341,13 @@ describe('workspaceSwitch', () => {
   // not at runtime — which is the entire point of having the fixtures
   // hoisted to describe scope rather than inlined inside `it` blocks.
   const cfg: AppConfig = {
-    configVersion: 10,
-    defaultInstructionSets: { claude: 'claude-default', copilot: 'copilot-default' },
-    instructionSetsDir: '/cfg/instr',
+    configVersion: 11,
     workspaceRoot: '/new/ws',
     worktreeRoots: [],
     worktreePrepCommands: [],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: ['sid-restored'],
     tabOrder: ['sid-restored'],
     activeSessionId: 'sid-restored',
@@ -337,6 +356,7 @@ describe('workspaceSwitch', () => {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
   };
   const restoredSession: SessionView = {
     id: 'sid-restored',
@@ -344,7 +364,6 @@ describe('workspaceSwitch', () => {
     worktreePath: '/new/ws/.arborist/.worktrees/feat',
     worktreeName: 'feat',
     label: 'feat',
-    instructionSetId: 'claude-default',
     status: 'starting',
     createdAt: 1_700_000_000,
     tabIndex: 0,

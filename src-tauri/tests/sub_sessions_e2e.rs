@@ -17,14 +17,14 @@ use arborist_lib::commands::subsession::{
     close_for_worktree_tab_impl, restore_all_sub_sessions_impl, subsession_close_impl, subsession_create_impl, subsession_relaunch_impl,
 };
 use arborist_lib::commands::worktree_tab::worktree_tab_close_impl;
+use arborist_lib::compose::{copilot_otel_path, session_temp_dir};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
-    ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, InstructionSetId, PartialAppConfig, PartialDefaultInstructionSets,
-    SessionCreateArgs, SessionId, SessionStatus, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeInfo, WorktreeTab,
-    WorktreeTabAppClosePolicy, WorktreeTabId,
+    ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, PartialAppConfig, SessionCreateArgs, SessionId, SessionStatus,
+    SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeInfo, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabId,
 };
 use arborist_lib::window_focus::RecordingFocuser;
 use portable_pty::{ExitStatus, PtySize};
@@ -314,9 +314,7 @@ struct Harness {
     app_spawner: FakeAppSpawner,
     sub_events: Arc<CapturedSubEvents>,
     config_dir: TempDir,
-    _instructions_dir: TempDir,
     worktree: TempDir,
-    instruction_id: InstructionSetId,
     shell_def_id: CustomProcessDefId,
     app_def_id: CustomProcessDefId,
     worktree_tab_id: WorktreeTabId,
@@ -328,11 +326,7 @@ fn build_harness() -> Harness {
 
 fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let config_dir = TempDir::new().unwrap();
-    let instructions_dir = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
-
-    let instruction_id = InstructionSetId("claude-default".into());
-    std::fs::write(instructions_dir.path().join("claude-default.md"), "# Claude\nbe helpful").unwrap();
 
     let shell_def_id = CustomProcessDefId("shell".into());
     let shell_def = CustomProcessDef {
@@ -358,21 +352,21 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let store = ConfigStore::open(config_dir.path()).unwrap();
     store
         .save_config(PartialAppConfig {
-            instruction_sets_dir: Some(instructions_dir.path().to_path_buf()),
-            default_instruction_sets: Some(PartialDefaultInstructionSets {
-                claude: Some(instruction_id.clone()),
-                copilot: None,
-            }),
             custom_processes: Some(vec![shell_def, app_def]),
             ..Default::default()
         })
         .unwrap();
 
     // Create a worktree tab so sub-sessions have a parent.
+    // Canonicalize the path so it matches what `session_create_impl` stores
+    // after `validate_worktree` (which calls `dunce::canonicalize`). Without
+    // this, Windows short-name / casing differences cause the path comparison
+    // in `worktree_tab_close_impl` to miss the child sessions.
     let worktree_tab_id = WorktreeTabId::new();
+    let canonical_wt_path = dunce::canonicalize(worktree.path()).unwrap();
     let wt_tab = WorktreeTab {
         id: worktree_tab_id,
-        path: worktree.path().to_path_buf(),
+        path: canonical_wt_path,
         name: "wt".into(),
         branch: None,
         label: "wt".into(),
@@ -434,9 +428,7 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         app_spawner,
         sub_events,
         config_dir,
-        _instructions_dir: instructions_dir,
         worktree,
-        instruction_id,
         shell_def_id,
         app_def_id,
         worktree_tab_id,
@@ -449,12 +441,24 @@ fn create_parent(h: &Harness) -> arborist_lib::types::SessionView {
         SessionCreateArgs {
             tool: Tool::Claude,
             worktree_path: h.worktree.path().to_path_buf(),
-            instruction_set_id: Some(h.instruction_id.clone()),
             cols: 80,
             rows: 24,
         },
     )
     .expect("parent create ok")
+}
+
+fn create_copilot_parent(h: &Harness) -> arborist_lib::types::SessionView {
+    session_create_impl(
+        &h.ctx,
+        SessionCreateArgs {
+            tool: Tool::Copilot,
+            worktree_path: h.worktree.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect("copilot parent create ok")
 }
 
 fn create_sub(h: &Harness, tab_id: WorktreeTabId) -> Result<arborist_lib::types::SubSession, arborist_lib::types::AppError> {
@@ -557,6 +561,31 @@ async fn worktree_tab_close_refuses_delete_when_child_session_kill_is_unconfirme
         git.removes.lock().unwrap().is_empty(),
         "git worktree remove must not run after unconfirmed child teardown"
     );
+}
+
+#[tokio::test]
+async fn worktree_tab_close_removes_copilot_otel_temp_file() {
+    let h = build_harness();
+    let parent = create_copilot_parent(&h);
+    let otel_path = copilot_otel_path(&parent.id);
+    let temp_dir = session_temp_dir(&parent.id);
+    assert!(otel_path.exists(), "Copilot spawn prep should create otel.jsonl");
+
+    worktree_tab_close_impl(
+        &h.ctx,
+        Arc::clone(&h.sub_ctx),
+        h.worktree_tab_id,
+        false,
+        WorktreeTabAppClosePolicy::Terminate,
+    )
+    .await
+    .expect("worktree tab close ok");
+
+    assert!(
+        !otel_path.exists(),
+        "worktree-tab close should remove Copilot otel.jsonl through child session teardown"
+    );
+    assert!(!temp_dir.exists(), "worktree-tab close should remove the session temp dir");
 }
 
 #[tokio::test]

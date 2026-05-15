@@ -8,7 +8,7 @@
     "core:event:allow-unlisten",
     "allow-ping",
     "allow-config",
-    "allow-instructions",
+    "allow-shell-command-trust",
     "allow-session",
     "allow-frontend-ready",
     "allow-worktrees-list",
