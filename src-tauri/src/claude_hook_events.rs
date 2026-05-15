@@ -55,11 +55,60 @@ use crate::types::SessionId;
 /// Polling cadence. Kept in line with [`crate::copilot_events::POLL_INTERVAL`] so the two watchers tick on the same rhythm.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Path to the per-session hook-events JSONL file. Lives under the session temp dir alongside Claude's `system-prompt.md` (when present) and
-/// `claude-settings.json`. Deleted with the rest of the session temp tree on close.
+/// Path to the per-session hook-events JSONL file. Lives under the session temp dir alongside `claude-settings.json`. Deleted with the rest of the
+/// session temp tree on close.
 #[must_use]
 pub fn hook_events_path(session_id: &SessionId) -> PathBuf {
     crate::compose::session_temp_dir(session_id).join(crate::session_temp::CLAUDE_HOOK_EVENTS_FILE_NAME)
+}
+
+/// Validate that the per-session `claude-settings.json` at `settings_path` still references a helper-binary command path that exists on disk **in
+/// the current process**. Used as the activity-events gate so a stale persisted settings file (app moved or updated since the session was last
+/// spawned, partial install, packaging regression) doesn't park a polling thread on a `hook-events.jsonl` that will never be written to.
+///
+/// Identifies the Arborist-owned hook entry by `args[2]` matching the expected per-session events path — Arborist always writes the hook's args
+/// as `[<event-kebab>, <session-uuid>, <events-jsonl-path>]`, so any entry whose third arg matches this session's `hook_events_path` is ours
+/// (even after the user's settings are merged in alongside). Returns `false` on missing file, parse error, no matching entry, or a matching entry
+/// whose `command` path doesn't exist as a file.
+#[must_use]
+pub fn settings_file_references_existing_helper(settings_path: &std::path::Path, session_id: &SessionId) -> bool {
+    let Ok(bytes) = std::fs::read(settings_path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    let Some(hooks) = json.get("hooks").and_then(|h| h.as_object()) else {
+        return false;
+    };
+    let expected_events_path = hook_events_path(session_id);
+    let expected_events_str = expected_events_path.to_string_lossy();
+
+    for entries in hooks.values() {
+        let Some(arr) = entries.as_array() else {
+            continue;
+        };
+        for entry in arr {
+            let Some(hook_list) = entry.get("hooks").and_then(|h| h.as_array()) else {
+                continue;
+            };
+            for hook in hook_list {
+                let is_ours = hook
+                    .get("args")
+                    .and_then(|a| a.as_array())
+                    .and_then(|a| a.get(2))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == expected_events_str)
+                    .unwrap_or(false);
+                if is_ours {
+                    if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
+                        return std::path::Path::new(cmd).is_file();
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Callback shape mirrors [`crate::pty_pool::ActivityCb`] so production can wire the same emitter that already broadcasts on `session://activity`.
@@ -618,6 +667,79 @@ mod tests {
         let p = hook_events_path(&sid);
         assert!(p.ends_with("hook-events.jsonl"));
         assert!(p.parent().unwrap().ends_with(sid.0.to_string()));
+    }
+
+    // ---- Gate validation for the activity-events watcher (`settings_file_references_existing_helper`).
+
+    fn write_settings_with_helper(tmp: &tempfile::TempDir, helper_cmd: &str, sid: &SessionId) -> std::path::PathBuf {
+        let events = hook_events_path(sid);
+        let body = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [{ "type": "command", "command": helper_cmd, "args": ["pre-tool-use", sid.0.to_string(), events.to_string_lossy()] }],
+                }],
+            }
+        });
+        let p = tmp.path().join("claude-settings.json");
+        std::fs::write(&p, serde_json::to_string(&body).unwrap()).unwrap();
+        p
+    }
+
+    #[test]
+    fn settings_validation_passes_when_helper_command_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Pretend the helper is an existing file (use the temp dir itself as a stand-in real file).
+        let fake_helper = tmp.path().join("arborist-claude-hook");
+        std::fs::write(&fake_helper, b"#!/bin/sh\n").unwrap();
+        let sid = SessionId::new();
+        let settings = write_settings_with_helper(&tmp, &fake_helper.to_string_lossy(), &sid);
+        assert!(settings_file_references_existing_helper(&settings, &sid));
+    }
+
+    #[test]
+    fn settings_validation_fails_when_helper_command_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sid = SessionId::new();
+        let settings = write_settings_with_helper(&tmp, "/nonexistent/path/to/arborist-claude-hook", &sid);
+        assert!(!settings_file_references_existing_helper(&settings, &sid));
+    }
+
+    #[test]
+    fn settings_validation_fails_when_settings_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sid = SessionId::new();
+        assert!(!settings_file_references_existing_helper(&tmp.path().join("does-not-exist.json"), &sid));
+    }
+
+    #[test]
+    fn settings_validation_fails_when_settings_file_unparseable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("claude-settings.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let sid = SessionId::new();
+        assert!(!settings_file_references_existing_helper(&path, &sid));
+    }
+
+    #[test]
+    fn settings_validation_ignores_user_hook_entries_with_unrelated_args() {
+        // A user-added PreToolUse hook (different args, helper doesn't match our shape) must not satisfy the gate even if its `command` happens to
+        // exist on disk. We require the args[2] events-path-match to identify *our* entry.
+        let tmp = tempfile::tempdir().unwrap();
+        let user_helper = tmp.path().join("user-formatter");
+        std::fs::write(&user_helper, b"echo").unwrap();
+        let sid = SessionId::new();
+        let body = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{ "type": "command", "command": user_helper.to_string_lossy() }],
+                }],
+            }
+        });
+        let path = tmp.path().join("claude-settings.json");
+        std::fs::write(&path, serde_json::to_string(&body).unwrap()).unwrap();
+        assert!(!settings_file_references_existing_helper(&path, &sid));
     }
 
     // ---- End-to-end watcher harness — drives a real file from a background thread, asserts the emitted events.

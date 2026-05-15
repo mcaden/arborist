@@ -174,8 +174,14 @@ impl MetricsRegistry {
                 // polling thread on a file that the world will never write to.
                 let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
                 if crate::plugins::ai::starts_activity_events_watcher(tool) {
+                    // Gate the activity-events watcher on the per-session settings file *referencing a helper-binary command path that exists in
+                    // the current process*. Plain `.exists()` on the settings file isn't enough: on restart/restore we always replay
+                    // `materialise_temp_files(&session.temp_files)`, so a settings file persisted from a previous install (or before the helper
+                    // was moved/uninstalled) will be on disk even when the helper itself isn't reachable. Parsing the settings JSON and looking up
+                    // the Arborist-owned hook entry (identified by `args[2] == hook_events_path`) lets us catch that case and skip spawning a
+                    // tailer that could never receive events.
                     let hook_integration_disabled = match crate::plugins::ai::settings_file_path(tool, &session_id) {
-                        Some(p) => !p.exists(),
+                        Some(p) => !crate::claude_hook_events::settings_file_references_existing_helper(&p, &session_id),
                         None => false,
                     };
                     let home_opt = home_dir();
