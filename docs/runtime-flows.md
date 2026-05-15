@@ -129,6 +129,9 @@ Launch composition:
 
 The worktree path is always the process `cwd`. It is not embedded in `composedCommand`.
 
+Active session temp artifacts live under `<os-temp>/arborist/<session-uuid>`. Copilot launch resets its `otel.jsonl` to an empty private file before
+spawn, with owner-only permissions on Unix; session temp creation and cleanup refuse symlinks and Windows reparse points instead of traversing them.
+
 ## Session restart
 
 ```mermaid
@@ -152,7 +155,7 @@ review and restart.
 Session close:
 
 1. The frontend asks for confirmation.
-2. `session_close` tears down the PTY and removes the session record.
+2. `session_close` tears down the PTY, removes the session record, and attempts to remove the session temp directory.
 3. If PTY kill/reap is unconfirmed, `teardownError` is returned and worktree deletion is refused because the process may still hold the worktree cwd.
 4. If `deleteWorktree` is true and teardown was confirmed, the backend attempts `git worktree remove --force`.
 5. Worktree deletion failure is returned as `worktreeDeleteError`; the session still closes.
@@ -161,9 +164,10 @@ Worktree-tab close:
 
 1. The frontend asks for confirmation, including app close policy for application sub-sessions.
 2. `worktree_tab_close` cascades to child AI sessions and sub-sessions.
-3. Terminal children terminate. Application children detach or terminate according to policy.
-4. Child teardown errors are returned in `childErrors`.
-5. Optional worktree deletion happens only when child teardown reported no errors; deletion refusal/failure is returned as `worktreeDeleteError`.
+3. Child AI session teardown uses the same session temp cleanup path, including Copilot OTel file cleanup.
+4. Terminal children terminate. Application children detach or terminate according to policy.
+5. Child teardown errors are returned in `childErrors`.
+6. Optional worktree deletion happens only when child teardown reported no errors; deletion refusal/failure is returned as `worktreeDeleteError`.
 
 ## Custom-process sub-sessions
 

@@ -18,6 +18,7 @@ pub mod process_icon;
 pub mod pty_pool;
 pub mod repo_settings;
 pub mod session_metrics;
+pub mod session_temp;
 pub mod shell_trust;
 pub mod sub_sessions;
 /// Wire-contract types for the Rust backend ↔ React frontend boundary.

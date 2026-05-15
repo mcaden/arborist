@@ -69,6 +69,7 @@ flowchart TB
 | `commands/worktree_tab.rs`                                | Worktree tab open, close, focus, reorder, and active-child logic.                                                                   |
 | `commands/subsession.rs`                                  | Custom-process sub-session lifecycle and restore logic.                                                                             |
 | `compose.rs`                                              | CLI command composition, path validation, worktree-name validation, shell quoting, and tool-specific launch behavior.               |
+| `session_temp.rs`                                         | Hardened per-session temp directory and Copilot OTel file creation, reset, orphan cleanup, and symlink/reparse refusal.             |
 | `pty_pool.rs`                                             | PTY spawn/read/write/resize/kill, deferred spawn, backpressure, wait threads, and orphan cleanup.                                   |
 | `sub_sessions.rs`                                         | Parallel PTY/app runtime for custom-process sub-tabs.                                                                               |
 | `app_launcher.rs`                                         | Detached application process spawning and app close/kill support.                                                                   |

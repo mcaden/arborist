@@ -815,12 +815,10 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
     }
 
     // 2. Belt-and-braces temp-dir cleanup. `pool.kill` also does this when the
-    //    session is live; we re-attempt for the "already exited" path.
-    let dir = compose::session_temp_dir(&id);
-    if dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&dir) {
-            debug!(session_id = %id, error = %e, "session temp dir removal failed (post-close)");
-        }
+    //    session is live; we re-attempt for the "already exited" path. Worktree
+    //    tab close reaches this same cleanup through its child-session cascade.
+    if let Err(e) = crate::session_temp::remove_session_temp_dir(&id) {
+        warn!(session_id = %id, error = %e, "session temp dir removal failed (post-close)");
     }
 
     // 3. Drop the persisted record.

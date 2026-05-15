@@ -17,6 +17,7 @@ use arborist_lib::commands::subsession::{
     close_for_worktree_tab_impl, restore_all_sub_sessions_impl, subsession_close_impl, subsession_create_impl, subsession_relaunch_impl,
 };
 use arborist_lib::commands::worktree_tab::worktree_tab_close_impl;
+use arborist_lib::compose::{copilot_otel_path, session_temp_dir};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
@@ -442,6 +443,19 @@ fn create_parent(h: &Harness) -> arborist_lib::types::SessionView {
     .expect("parent create ok")
 }
 
+fn create_copilot_parent(h: &Harness) -> arborist_lib::types::SessionView {
+    session_create_impl(
+        &h.ctx,
+        SessionCreateArgs {
+            tool: Tool::Copilot,
+            worktree_path: h.worktree.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect("copilot parent create ok")
+}
+
 fn create_sub(h: &Harness, tab_id: WorktreeTabId) -> Result<arborist_lib::types::SubSession, arborist_lib::types::AppError> {
     subsession_create_impl(
         &h.ctx,
@@ -542,6 +556,31 @@ async fn worktree_tab_close_refuses_delete_when_child_session_kill_is_unconfirme
         git.removes.lock().unwrap().is_empty(),
         "git worktree remove must not run after unconfirmed child teardown"
     );
+}
+
+#[tokio::test]
+async fn worktree_tab_close_removes_copilot_otel_temp_file() {
+    let h = build_harness();
+    let parent = create_copilot_parent(&h);
+    let otel_path = copilot_otel_path(&parent.id);
+    let temp_dir = session_temp_dir(&parent.id);
+    assert!(otel_path.exists(), "Copilot spawn prep should create otel.jsonl");
+
+    worktree_tab_close_impl(
+        &h.ctx,
+        Arc::clone(&h.sub_ctx),
+        h.worktree_tab_id,
+        false,
+        WorktreeTabAppClosePolicy::Terminate,
+    )
+    .await
+    .expect("worktree tab close ok");
+
+    assert!(
+        !otel_path.exists(),
+        "worktree-tab close should remove Copilot otel.jsonl through child session teardown"
+    );
+    assert!(!temp_dir.exists(), "worktree-tab close should remove the session temp dir");
 }
 
 #[tokio::test]

@@ -75,7 +75,13 @@ pub enum MetricsWatcherKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpawnPrep {
     pub ensure_temp_dir: bool,
-    pub stale_files: Vec<PathBuf>,
+    pub reset_files: Vec<SpawnPrepFile>,
+}
+
+/// Typed session temp files that may be reset during spawn prep. Reset handlers are responsible for creating their own parent directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnPrepFile {
+    CopilotOtel,
 }
 
 /// Built-in AI plugin descriptor used by dispatch sites that need both the
