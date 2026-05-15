@@ -610,8 +610,9 @@ pub fn show_workspace_root_persist_dialog(workspace_dir: &Path, reason: &str) {
 ///
 /// Behaviour:
 /// * If a workspace can be resolved (CLI/hint/legacy/picker) and bound, returns
-///   `Ok(Some(WorkspaceBinding))`. Caller writes the hint and builds the
-///   AppContext.
+///   `Ok(Some(WorkspaceBinding))`. The function persists the workspace_root into
+///   config.json and writes the last-workspace hint internally; the caller
+///   builds the AppContext.
 /// * If the user cancels the picker, returns `Ok(None)`. Caller exits cleanly
 ///   (no error).
 /// * On lock contention from a non-CLI source, surfaces a native dialog and
@@ -1381,6 +1382,33 @@ mod tests {
         // workspace_root populated in the workspace's own config.json.
         let cfg = binding.store.load_config();
         assert_eq!(cfg.workspace_root.as_deref(), Some(dunce::canonicalize(&ws).unwrap().as_path()));
+    }
+
+    /// CLI-specified workspace contention must hard-error (never fall back to picker). The non-CLI path dispatches to the picker retry loop, but
+    /// that's tested separately via `picker_loop_*` tests. Same-process lock contention is only reliable on Windows.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn boot_select_via_cli_contention_hard_errors() {
+        let td = TempDir::new().unwrap();
+        let app_data = td.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let ws = td.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+
+        // First bind to hold the lock.
+        let _b1 = bind_workspace(&ws, &app_data, "main", &YesRunner, BootSource::Picker).unwrap();
+
+        // boot_select_workspace with --workspace pointing at the locked path must return Contention.
+        let args = CliArgs {
+            workspace: Some(ws.clone()),
+            ..Default::default()
+        };
+        let err = boot_select_workspace(&args, &app_data, "main", &YesRunner).expect_err("should contend");
+        match err {
+            BootError::Contention { .. } => {}
+            other => panic!("expected Contention, got {other:?}"),
+        }
     }
 
     /// Regression for round-9 review feedback (PR #32): if `ensure_workspace_root_in_config` fails after `bind_workspace` succeeds, boot must abort
