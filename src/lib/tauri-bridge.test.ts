@@ -237,6 +237,7 @@ describe('repo command trust commands', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     };
     invokeMock.mockResolvedValueOnce(config);
     const args = { intent: { kind: 'sessionRestart' as const, sessionId: 'sid-1' } };
