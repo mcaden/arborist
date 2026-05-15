@@ -47,7 +47,8 @@
     "e2e:macos:build": "bash dev/e2e/macos/scripts/run.sh build",
     "e2e:macos": "bash dev/e2e/macos/scripts/run.sh e2e",
     "e2e:macos:shell": "bash dev/e2e/macos/scripts/run.sh shell",
-    "e2e:macos:status": "bash dev/e2e/macos/scripts/run.sh status"
+    "e2e:macos:status": "bash dev/e2e/macos/scripts/run.sh status",
+    "release:prep": "node scripts/release-prep.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

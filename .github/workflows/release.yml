@@ -208,6 +208,20 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Verify version matches tag
+        shell: bash
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          expected="${TAG#v}"
+          actual=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Version mismatch: tag=${TAG} expects ${expected}, but tauri.conf.json has ${actual}. Run 'pnpm run release:prep ${expected}' to fix."
+            exit 1
+          fi
+          echo "Version check passed: ${actual} matches tag ${TAG}"
+
       - name: Build Tauri app
         shell: bash
         run: pnpm tauri build ${{ matrix.platform.args }}

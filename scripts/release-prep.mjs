@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+/**
+ * release-prep.mjs — Bump version across all manifest files, commit, tag, and push.
+ *
+ * Usage:
+ *   node scripts/release-prep.mjs <version>
+ *   pnpm run release:prep 0.1.2
+ *
+ * The version argument should be a bare semver (no "v" prefix). The script will:
+ *  1. Validate the version string
+ *  2. Update package.json, src-tauri/Cargo.toml, crates/arborist-types/Cargo.toml, src-tauri/tauri.conf.json
+ *  3. Run `cargo generate-lockfile` to update Cargo.lock
+ *  4. Commit the changes
+ *  5. Create an annotated tag `v<version>`
+ *  6. Push the commit and tag to origin
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { resolve } from 'node:path';
+
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
+
+const version = process.argv[2];
+if (!version) {
+  console.error('Usage: node scripts/release-prep.mjs <version>');
+  console.error('Example: node scripts/release-prep.mjs 0.1.2');
+  process.exit(1);
+}
+
+if (!SEMVER_RE.test(version)) {
+  console.error(`Invalid semver: "${version}". Expected format: X.Y.Z or X.Y.Z-prerelease`);
+  process.exit(1);
+}
+
+const tag = `v${version}`;
+
+// Check for uncommitted changes
+try {
+  const status = execSync('git status --porcelain', { encoding: 'utf8' }).trim();
+  if (status) {
+    console.error('Working tree is dirty. Commit or stash changes before running release-prep.');
+    process.exit(1);
+  }
+} catch {
+  console.error('Failed to check git status.');
+  process.exit(1);
+}
+
+// Check that the tag doesn't already exist
+try {
+  execSync(`git rev-parse --verify refs/tags/${tag}`, { stdio: 'pipe' });
+  console.error(`Tag ${tag} already exists. Delete it first or choose a different version.`);
+  process.exit(1);
+} catch {
+  // Tag doesn't exist — good
+}
+
+const root = resolve(import.meta.dirname, '..');
+
+// --- Update version files ---
+
+function updateJson(relPath, key) {
+  const filePath = resolve(root, relPath);
+  const content = readFileSync(filePath, 'utf8');
+  const json = JSON.parse(content);
+  const old = json[key];
+  json[key] = version;
+  // Preserve formatting: detect indent from original file
+  const indent = content.match(/^(\s+)"/m)?.[1] || '  ';
+  writeFileSync(filePath, JSON.stringify(json, null, indent) + '\n');
+  console.log(`  ${relPath}: ${old} → ${version}`);
+}
+
+function updateCargoToml(relPath) {
+  const filePath = resolve(root, relPath);
+  const content = readFileSync(filePath, 'utf8');
+  const updated = content.replace(/^(version\s*=\s*")([^"]+)(")/m, `$1${version}$3`);
+  if (updated === content) {
+    console.error(`  ${relPath}: no version field found!`);
+    process.exit(1);
+  }
+  const old = content.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+  writeFileSync(filePath, updated);
+  console.log(`  ${relPath}: ${old} → ${version}`);
+}
+
+console.log(`\nBumping to ${version}:\n`);
+
+updateJson('package.json', 'version');
+updateJson('src-tauri/tauri.conf.json', 'version');
+updateCargoToml('src-tauri/Cargo.toml');
+updateCargoToml('crates/arborist-types/Cargo.toml');
+
+// Update Cargo.lock
+console.log('\n  Updating Cargo.lock...');
+execSync('cargo generate-lockfile', { cwd: root, stdio: 'pipe' });
+
+// --- Git operations ---
+
+console.log(`\nCommitting and tagging ${tag}...\n`);
+
+execSync('git add -A', { cwd: root });
+execSync(`git commit -m "chore: release ${tag}"`, { cwd: root, stdio: 'inherit' });
+execSync(`git tag -a "${tag}" -m "Release ${tag}"`, { cwd: root });
+
+console.log(`\nPushing to origin...\n`);
+execSync(`git push origin HEAD --follow-tags`, { cwd: root, stdio: 'inherit' });
+
+console.log(`\n✅ Done! Tag ${tag} pushed. Trigger the Release workflow from the Actions tab.`);
