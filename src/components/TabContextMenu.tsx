@@ -102,6 +102,7 @@ export function TabContextMenu({ parentSessionId, anchor, onClose, restoreFocusT
 
   const handleRestart = (): void => {
     const dims = getTerminalDimensions(parentSessionId) ?? measureInitialPtyDimensions();
+    sessionActions.prepareForRestart(parentSessionId);
     void (async () => {
       const trusted = await ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId: parentSessionId });
       if (!trusted) return;

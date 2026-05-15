@@ -10,7 +10,7 @@ import { useEffect, useRef } from 'react';
 import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { formatError, sessionRestart } from '@/lib/tauri-bridge';
 import { measureInitialPtyDimensions, useTerminal } from '@/hooks/use-terminal';
-import { useSessionById, useStatusMessage } from '@/store/session-store';
+import { useSessionById, useSessionActions, useStatusMessage } from '@/store/session-store';
 import { selectIsSwitching, useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
 import type { SessionId } from '@/types/arborist';
 
@@ -29,6 +29,7 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   const containerRef = useRef<HTMLDivElement | null>(null);
   const session = useSessionById(sessionId);
   const statusMessage = useStatusMessage(sessionId);
+  const sessionActions = useSessionActions();
   const { attach, detach, focus, refit, getDimensions } = useTerminal(sessionId);
   const isSwitching = useWorkspaceSwitchUiStore(selectIsSwitching);
 
@@ -72,11 +73,8 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   const showOverlay = status === 'error' || status === 'exited';
 
   const handleRestart = (): void => {
-    // Reuse the existing terminal's measured cols/rows so the new PTY
-    // child paints its splash at the size xterm currently shows. If
-    // somehow the terminal entry is gone (very rare — overlay hides
-    // before the entry is disposed), fall back to a fresh measurement.
     const dims = getDimensions() ?? measureInitialPtyDimensions();
+    sessionActions.prepareForRestart(sessionId);
     void (async () => {
       const trusted = await ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId });
       if (!trusted) return;
