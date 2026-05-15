@@ -21,98 +21,32 @@
     ],
     "security": {
       "csp": {
-        "default-src": [
-          "'self'"
-        ],
-        "script-src": [
-          "'self'"
-        ],
-        "style-src": [
-          "'self'",
-          "'unsafe-inline'"
-        ],
-        "img-src": [
-          "'self'",
-          "asset:",
-          "http://asset.localhost",
-          "data:"
-        ],
-        "font-src": [
-          "'self'"
-        ],
-        "connect-src": [
-          "ipc:",
-          "http://ipc.localhost"
-        ],
-        "object-src": [
-          "'none'"
-        ],
-        "base-uri": [
-          "'none'"
-        ],
-        "form-action": [
-          "'none'"
-        ],
-        "frame-ancestors": [
-          "'none'"
-        ],
-        "frame-src": [
-          "'none'"
-        ],
-        "worker-src": [
-          "'none'"
-        ]
+        "default-src": ["'self'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "img-src": ["'self'", "asset:", "http://asset.localhost", "data:"],
+        "font-src": ["'self'"],
+        "connect-src": ["ipc:", "http://ipc.localhost"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "form-action": ["'none'"],
+        "frame-ancestors": ["'none'"],
+        "frame-src": ["'none'"],
+        "worker-src": ["'none'"]
       },
       "devCsp": {
-        "default-src": [
-          "'self'",
-          "http://localhost:*"
-        ],
-        "script-src": [
-          "'self'",
-          "'unsafe-eval'",
-          "http://localhost:*"
-        ],
-        "style-src": [
-          "'self'",
-          "'unsafe-inline'",
-          "http://localhost:*"
-        ],
-        "img-src": [
-          "'self'",
-          "asset:",
-          "http://asset.localhost",
-          "data:",
-          "http://localhost:*"
-        ],
-        "font-src": [
-          "'self'",
-          "http://localhost:*"
-        ],
-        "connect-src": [
-          "ipc:",
-          "http://ipc.localhost",
-          "http://localhost:*",
-          "ws://localhost:*"
-        ],
-        "object-src": [
-          "'none'"
-        ],
-        "base-uri": [
-          "'none'"
-        ],
-        "form-action": [
-          "'none'"
-        ],
-        "frame-ancestors": [
-          "'none'"
-        ],
-        "frame-src": [
-          "'none'"
-        ],
-        "worker-src": [
-          "'none'"
-        ]
+        "default-src": ["'self'", "http://localhost:*"],
+        "script-src": ["'self'", "'unsafe-eval'", "http://localhost:*"],
+        "style-src": ["'self'", "'unsafe-inline'", "http://localhost:*"],
+        "img-src": ["'self'", "asset:", "http://asset.localhost", "data:", "http://localhost:*"],
+        "font-src": ["'self'", "http://localhost:*"],
+        "connect-src": ["ipc:", "http://ipc.localhost", "http://localhost:*", "ws://localhost:*"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "form-action": ["'none'"],
+        "frame-ancestors": ["'none'"],
+        "frame-src": ["'none'"],
+        "worker-src": ["'none'"]
       },
       "dangerousDisableAssetCspModification": false
     }
@@ -124,17 +58,25 @@
     "homepage": "https://arborist.tools",
     "copyright": "Copyright (c) 2026 Aaron Moore",
     "license": "MIT",
-    "licenseFile": "../LICENSE",
+    "licenseFile": "../LICENSE.rtf",
     "category": "DeveloperTool",
     "shortDescription": "Manage AI coding-assistant sessions across Git worktrees.",
     "longDescription": "Arborist manages Claude CLI, GitHub Copilot CLI, and custom process sessions across Git worktrees.",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "headerImage": "icons/installer/nsis-header.bmp",
+        "sidebarImage": "icons/installer/nsis-sidebar.bmp",
+        "installerIcon": "icons/icon.ico"
+      }
+    },
+    "macOS": {
+      "dmg": {
+        "background": "icons/installer/dmg-background.png",
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 },
+        "windowSize": { "width": 660, "height": 400 }
+      }
+    }
   }
 }
