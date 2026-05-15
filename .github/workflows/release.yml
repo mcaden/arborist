@@ -198,17 +198,20 @@ jobs:
             libssl-dev \
             build-essential
 
-      # macOS: `brew install llvm` provides a recent `lld` that the workspace
-      # `.cargo/config.toml` invokes via `clang -fuse-ld=lld`. Set CC/CXX so
-      # cargo uses LLVM's clang (which knows where its own lld lives).
+      # macOS: `brew install llvm` provides `lld` that the workspace
+      # `.cargo/config.toml` invokes via `clang -fuse-ld=lld`. Apple's system
+      # clang cannot resolve lld, so we override the linker for each macOS
+      # target triple via Cargo env vars to point directly at LLVM's clang.
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         run: |
           brew install llvm
-          LLVM_BIN="$(brew --prefix llvm)/bin"
-          echo "${LLVM_BIN}" >> "$GITHUB_PATH"
-          echo "CC=${LLVM_BIN}/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_BIN}/clang++" >> "$GITHUB_ENV"
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
 
       - run: pnpm install --frozen-lockfile
 
