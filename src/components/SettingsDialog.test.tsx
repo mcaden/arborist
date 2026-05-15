@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
@@ -55,10 +55,9 @@ beforeEach(() => {
     isHydrated: true,
     statusMessages: {},
   });
-});
-
-afterEach(() => {
-  // Reset config store between tests by re-seeding the empty default.
+  // Reset config store at the start of each test (before render) rather
+  // than afterEach — resetting while the component is still mounted
+  // triggers Zustand subscriber notifications outside act().
   useConfigStore.setState({
     config: {
       configVersion: 11,

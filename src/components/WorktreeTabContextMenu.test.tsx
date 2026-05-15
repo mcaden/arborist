@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -95,6 +95,7 @@ describe('WorktreeTabContextMenu', () => {
     await waitFor(() =>
       expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude', worktreePath: '/repo/feature-x' })),
     );
+    await act(async () => {});
   });
 
   it('clicking Launch Copilot calls sessionCreate with copilot tool', async () => {
@@ -113,6 +114,7 @@ describe('WorktreeTabContextMenu', () => {
     await waitFor(() =>
       expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'copilot', worktreePath: '/repo/feature-x' })),
     );
+    await act(async () => {});
   });
 
   it('returns null when the tab has been removed from the store', () => {
@@ -126,7 +128,9 @@ describe('WorktreeTabContextMenu', () => {
   it('closes when the tab is removed while the menu is mounted', async () => {
     const onClose = vi.fn();
     renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
-    useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+    act(() => {
+      useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
+    });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
@@ -156,6 +160,7 @@ describe('WorktreeTabContextMenu', () => {
 
     await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude' })));
     expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
+    await act(async () => {});
   });
 
   it('estimates menu height from item count so long custom-process menus stay within the viewport', () => {
