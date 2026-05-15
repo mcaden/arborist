@@ -176,9 +176,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-release-${{ matrix.platform.rust-targets || 'default' }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-release-${{ matrix.platform.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-release-${{ matrix.platform.rust-targets || 'default' }}-cargo-
+            ${{ runner.os }}-release-${{ matrix.platform.name }}-cargo-
 
       # Tauri's Linux build needs system libraries (must match ci.yml). `lld`
       # + `clang` are required by the workspace `.cargo/config.toml` for the
@@ -208,6 +208,35 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Verify version matches tag
+        shell: bash
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          expected="${TAG#v}"
+
+          # Check all four manifest files that release-prep maintains
+          tauri_ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")
+          pkg_ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('package.json','utf8')).version)")
+          cargo_ver=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          types_ver=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' crates/arborist-types/Cargo.toml | head -1)
+
+          ok=true
+          for pair in "src-tauri/tauri.conf.json:${tauri_ver}" "package.json:${pkg_ver}" "src-tauri/Cargo.toml:${cargo_ver}" "crates/arborist-types/Cargo.toml:${types_ver}"; do
+            file="${pair%%:*}"
+            ver="${pair#*:}"
+            if [ "$ver" != "$expected" ]; then
+              echo "::error::Version mismatch in ${file}: expected ${expected} (from tag ${TAG}), got ${ver}."
+              ok=false
+            fi
+          done
+          if [ "$ok" = false ]; then
+            echo "::error::Run 'pnpm run release:prep ${expected}' to fix all manifests."
+            exit 1
+          fi
+          echo "Version check passed: all manifests at ${expected} match tag ${TAG}"
+
       - name: Build Tauri app
         shell: bash
         run: pnpm tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.platform.args }}
@@ -234,7 +263,7 @@ jobs:
             -o -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" \
             -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \
             -o -name "*.AppImage.tar.gz" -o -name "*.AppImage.tar.gz.sig" \
-          \) | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          \) | tr -d '\r' | jq -R -s -c 'split("\n") | map(select(length > 0))')
           if [ "$(echo "$artifacts" | jq length)" -eq 0 ]; then
             echo "::error::No Tauri release artifacts found"
             exit 1
@@ -250,7 +279,7 @@ jobs:
           ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
         run: |
           set -euo pipefail
-          echo "$ARTIFACT_PATHS" | jq -r '.[]' | while IFS= read -r f; do
+          echo "$ARTIFACT_PATHS" | jq -r '.[]' | tr -d '\r' | while IFS= read -r f; do
             echo "Uploading: $f"
             gh release upload "$TAG" "$f" --clobber
           done
