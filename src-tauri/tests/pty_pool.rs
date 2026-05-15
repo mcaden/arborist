@@ -424,14 +424,17 @@ fn pool_spawn_prep_injects_otel_env_and_clears_stale_file_for_copilot() {
 }
 
 #[test]
-fn pool_spawn_prep_is_noop_for_claude_session() {
+fn pool_spawn_prep_claude_creates_temp_dir_and_clears_stale_hook_events() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
 
-    // Confirm the temp dir does NOT exist before spawn — the pool should not create one for Claude sessions that have no compose-time temp files
-    // (matches today's `materialise_temp_files`-only behaviour).
+    // Seed a stale `hook-events.jsonl` from a prior spawn under the same session id — Claude's spawn_prep must wipe it before the new tailer starts
+    // reading, otherwise pre-fix bytes leak into the live phase.
     let temp = session_temp_dir(&session.id);
-    assert!(!temp.exists(), "precondition: no Claude temp dir");
+    let hook_events = arborist_lib::claude_hook_events::hook_events_path(&session.id);
+    std::fs::create_dir_all(&temp).expect("seed temp dir");
+    std::fs::write(&hook_events, b"{\"kind\":\"toolStart\",\"toolUseId\":\"stale\"}\n").expect("seed stale hook events");
+    assert!(hook_events.exists(), "precondition: stale hook events file present");
 
     let spawner = Arc::new(FakeSpawner::new(FakeMode::Parked));
     let spawner_for_assert = Arc::clone(&spawner);
@@ -443,8 +446,18 @@ fn pool_spawn_prep_is_noop_for_claude_session() {
     pool.spawn(&session, sink, DEFAULT_PTY_SIZE).expect("spawn");
 
     let cmd = spawner_for_assert.last_cmd.lock().unwrap().clone().expect("spawner received a command");
-    assert!(cmd.env.is_empty(), "Claude must not get any extra env");
-    assert!(!temp.exists(), "Claude spawn must not create the OTel temp dir");
+    assert!(
+        cmd.env.is_empty(),
+        "Claude must not get any extra env (env vars are reserved for Copilot's OTel exporter)"
+    );
+    assert!(
+        temp.exists(),
+        "Claude spawn must create the session temp dir for the hook events file + settings JSON"
+    );
+    assert!(
+        !hook_events.exists(),
+        "Claude spawn must wipe stale hook-events.jsonl before the tailer starts"
+    );
 
     rt.block_on(async {
         pool.kill(&session.id).await.ok();

@@ -109,8 +109,8 @@ sequenceDiagram
 
 Launch composition:
 
-- Claude without an instruction set launches as bare `claude`.
-- Claude with an instruction set gets `--system-prompt <temp-file>`, where the temp file includes Arborist context and the instruction content.
+- Claude without an instruction set launches as bare `claude --settings <hooks-config>`; with an instruction set, `--system-prompt <temp-file>` is added alongside `--settings`. The Arborist session id is pre-allocated and spliced in via `--session-id <uuid>` on first spawn (`--resume <uuid>` on every subsequent spawn — restart, restore-on-launch).
+- The `--settings` file registers the `arborist-claude-hook` sidecar binary against every hook event Arborist cares about. The user's own `~/.claude/settings.json` and project `.claude/settings.json` hooks are deep-merged in at session-create time, so user formatters / validators keep running. The helper appends one structured line to `<session_temp_dir>/hook-events.jsonl` per hook fire; the backend tails the file and emits `session://activity` events (`AwaitingPermission`, `ToolStart`/`ToolEnd`, `TurnStart`/`TurnEnd`).
 - Copilot launches bare as `copilot`; Arborist does not pass `--instructions`.
 - Custom AI launch commands replace the program token and are stored by plugin id.
 

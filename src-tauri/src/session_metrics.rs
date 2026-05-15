@@ -163,27 +163,39 @@ impl MetricsRegistry {
         };
         match join {
             Ok(handle) => {
-                // For Copilot with a known ai_session_id, also spawn the events.jsonl tailer (sibling — same `running` flag).
+                // For tools that arm an activity-events tailer (Copilot today, Claude once the hook helper is wired), dispatch through
+                // `activity_events_kind` to resolve the per-tool tailer flavour + path. The watcher thread is spawned with the same `running` flag
+                // and parked in `extra_joins` so `stop` / `stop_and_join` / `stop_all_and_join` tear down everything together.
                 let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
                 if crate::plugins::ai::starts_activity_events_watcher(tool) {
-                    if let (Some(home), Some(aid)) = (home_dir(), ai_session_id) {
-                        let events_path = crate::copilot_events::events_path(&home, &aid);
+                    let home_opt = home_dir();
+                    let kind = crate::plugins::ai::activity_events_kind(tool, session_id, home_opt.as_deref(), ai_session_id.as_deref());
+                    if let Some(kind) = kind {
                         let events_running = Arc::clone(&running);
                         let events_emit = Arc::clone(&activity_emit);
-                        match crate::copilot_events::spawn_watcher(session_id, events_path, events_emit, events_running) {
+                        let spawn_res = match kind {
+                            crate::plugins::ai::ActivityEventsKind::CopilotEventsJsonl(path) => {
+                                crate::copilot_events::spawn_watcher(session_id, path, events_emit, events_running)
+                            }
+                            crate::plugins::ai::ActivityEventsKind::ClaudeHookEventsJsonl(path) => {
+                                crate::claude_hook_events::spawn_watcher(session_id, path, events_emit, events_running)
+                            }
+                        };
+                        match spawn_res {
                             Ok(h) => extra_joins.push(h),
                             Err(e) => {
                                 tracing::warn!(
                                     session_id = %session_id,
                                     error = %e,
-                                    "copilot events watcher thread spawn failed",
+                                    "activity events watcher thread spawn failed",
                                 );
                             }
                         }
                     } else {
                         tracing::debug!(
                             session_id = %session_id,
-                            "copilot events watcher not started (no home dir or ai_session_id)",
+                            ?tool,
+                            "activity events watcher not started (no kind resolved; missing home dir or ai_session_id?)",
                         );
                     }
                 }

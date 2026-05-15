@@ -162,6 +162,16 @@ pub struct AppContext {
     /// Issue #63: in-flight worktree-prep registry. The `worktree_create` wrapper inserts here when it kicks off a prep; the prep watcher task removes
     /// itself on exit. App shutdown / workspace switch can call [`crate::worktree_prep::WorktreePrepRegistry::kill_all`] for best-effort cleanup.
     pub prep_registry: Arc<crate::worktree_prep::WorktreePrepRegistry>,
+    /// Absolute path to the `arborist-claude-hook` helper binary, when locatable at boot.
+    ///
+    /// Resolved once at `AppContext` construction via [`std::env::current_exe()`]'s parent directory (the helper ships as a sibling executable —
+    /// see `tauri.conf.json::bundle.externalBin` and the `[[bin]]` entry in `src-tauri/Cargo.toml`). When `None`, Claude session compose silently
+    /// skips writing the per-session `claude-settings.json` and Claude launches without the Arborist hook integration. The fallback is intentional:
+    /// a missing helper (dev builds, partial installs) is degraded, not fatal — sidebar status reverts to the pre-hooks heuristics.
+    pub claude_hook_helper: Option<PathBuf>,
+    /// Absolute path to the user's home directory. Used by Claude compose to read `~/.claude/settings.json` and merge the user's hooks into the
+    /// per-session settings file. `None` falls back to skipping user-level settings.
+    pub user_home: Option<PathBuf>,
 }
 
 /// RAII counter for [`AppContext::switch_pending`]. Increments on `new`, decrements on drop. Held by `workspace_switch_impl_inner` for the entire
@@ -249,7 +259,18 @@ impl AppContext {
             switch_lock: Arc::new(tokio::sync::RwLock::new(())),
             switch_pending: Arc::new(AtomicUsize::new(0)),
             prep_registry: Arc::new(crate::worktree_prep::WorktreePrepRegistry::new()),
+            claude_hook_helper: None,
+            user_home: None,
         }
+    }
+
+    /// Builder-style: attach the Claude hook helper + user home dir resolved at startup. Production wires both in `lib.rs::run`; tests can omit
+    /// either or both, in which case Claude sessions launch without the hook integration (sidebar falls back to today's heuristics).
+    #[must_use]
+    pub fn with_claude_hook_environment(mut self, helper: Option<PathBuf>, user_home: Option<PathBuf>) -> Self {
+        self.claude_hook_helper = helper;
+        self.user_home = user_home;
+        self
     }
 
     /// True iff `session_close` is currently mid-cascade for `id`. Used by `subsession_create_impl` and the sub-session restore second pass to refuse
@@ -428,6 +449,8 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         instruction_set: set_opt.as_ref(),
         instruction_set_contents: contents_opt.as_deref(),
         cli_launch_command: Some(cli_override),
+        helper_exe_path: ctx.claude_hook_helper.as_deref(),
+        user_home: ctx.user_home.as_deref(),
     })
     .map_err(AppError::from)?;
 
@@ -498,13 +521,13 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 10. Announce Starting (synchronous; the pool will follow with Running).
     (ctx.sink.status)(&session.id, SessionStatus::Starting, None, None);
 
-    // 11. Spawn. The pool emits Running with PID through the same sink. For Copilot
-    //     we splice the pre-allocated `--resume <uuid>` here so Copilot creates the
-    //     session-state directory at the known deterministic path from spawn time.
-    //     The persisted `composed_command` stays bare (see step 7).
+    // 11. Spawn. The pool emits Running with PID through the same sink. For tools with a pre-allocated `ai_session_id` we splice the right
+    //     create-time flag into the composed_command (Claude → `--session-id <uuid>` so Claude creates the conversation at our uuid; Copilot →
+    //     `--resume <uuid>` which Copilot treats as create-if-absent). Restart / restore paths use [`compose::with_resume`] instead. The persisted
+    //     `composed_command` stays bare (see step 7).
     let session_to_spawn = if let Some(aid) = preallocated_ai_id.as_deref() {
         let mut s = session.clone();
-        s.composed_command = compose::with_resume(&session.composed_command, args.tool, aid);
+        s.composed_command = compose::with_first_launch_session_id(&session.composed_command, args.tool, aid);
         s
     } else {
         session.clone()
@@ -1016,7 +1039,9 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // session at that uuid). This keeps the events.jsonl path deterministic across restart (same property as the create path) so restore-on-launch
     // can resume the post-restart conversation.
     //
-    // For Claude we keep today's behavior: clear ai_session_id and let the watcher re-discover the new transcript after the user prompts.
+    // For Claude (post-hook-integration) we **preserve** the pre-allocated uuid and splice `--resume <uuid>` so the same transcript continues
+    // across restart. The legacy Claude path (pre-hook-integration) used `Clear` and a transcript-discovery fallback; that behaviour is preserved
+    // for any tool still configured with `Clear`.
     //
     // Order matters: stop the OLD watcher first, *then* mutate ai_session_id. We need `stop_and_join` (not just `stop`) because the worker only
     // re-checks its `running` flag at the top of each poll iteration — a fire-and-forget stop would let the in-flight iteration call `discover()` one
@@ -1024,21 +1049,25 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // below by `metrics.start` will repopulate the field if/when the CLI rotates the conversation (e.g. user-typed `/clear` or `/resume <other-id>`).
     //
     // Persist order:
-    //   - Claude: clear *eagerly* (before respawn). This preserves the pre-Phase-2
-    //     semantics — a crash between here and the new watcher's first discovery
-    //     could otherwise let the next restore `--resume` the pre-restart
-    //     conversation. Cost: a failed Claude restart loses the prior id from the
-    //     persisted record (same as today).
-    //   - Copilot: defer until *after* `respawn_existing` succeeds. The
-    //     pre-allocated uuid is ours and unique; if respawn fails, we keep the old
-    //     conversation id resumable rather than rotating to a uuid with no Copilot
-    //     session-state directory (which would irrevocably orphan the prior
-    //     conversation on a transient respawn failure).
+    //   - `Clear`: clear *eagerly* (before respawn). This preserves the
+    //     pre-Phase-2 semantics — a crash between here and the new watcher's
+    //     first discovery could otherwise let the next restore `--resume` the
+    //     pre-restart conversation. Cost: a failed restart loses the prior
+    //     id from the persisted record.
+    //   - `RotateUuid` (Copilot): defer until *after* `respawn_existing`
+    //     succeeds. The pre-allocated uuid is ours and unique; if respawn
+    //     fails, we keep the old conversation id resumable rather than
+    //     rotating to a uuid with no session-state directory (which would
+    //     irrevocably orphan the prior conversation on a transient failure).
+    //   - `Preserve` (Claude): no persisted change. The existing
+    //     `Session.ai_session_id` is reused verbatim for the `--resume`
+    //     splice, mirroring restore-on-launch's behaviour.
     ctx.metrics.stop_and_join(&id);
     let restart_policy = crate::plugins::ai::restart_ai_session_policy(session.tool);
     let restart_ai_id: Option<String> = match restart_policy {
         crate::plugins::ai::RestartAiSessionPolicy::RotateUuid => Some(uuid::Uuid::new_v4().to_string()),
-        crate::plugins::ai::RestartAiSessionPolicy::Preserve | crate::plugins::ai::RestartAiSessionPolicy::Clear => None,
+        crate::plugins::ai::RestartAiSessionPolicy::Preserve => session.ai_session_id.clone(),
+        crate::plugins::ai::RestartAiSessionPolicy::Clear => None,
     };
     if matches!(restart_policy, crate::plugins::ai::RestartAiSessionPolicy::Clear) {
         if let Err(e) = ctx.store().update_session_ai_session_id(&id, None) {

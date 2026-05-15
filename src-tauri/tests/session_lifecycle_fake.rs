@@ -1359,20 +1359,25 @@ async fn session_create_preallocates_ai_session_id_for_copilot() {
 }
 
 #[tokio::test]
-async fn session_create_does_not_preallocate_for_claude() {
+async fn session_create_preallocates_session_id_for_claude() {
+    // Post-#hook-integration: Claude pre-allocates a uuid at create time (mirroring Copilot) so the helper-binary args baked into
+    // `claude-settings.json` can splice the deterministic Arborist session id and so `--session-id <uuid>` can drive the new conversation onto a
+    // known transcript path from spawn-instant 0.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Claude)).unwrap();
 
     let persisted = h.ctx.store().load_sessions().get(&view.id).cloned().unwrap();
-    assert_eq!(
-        persisted.ai_session_id, None,
-        "Claude must not pre-allocate; id is discovered from transcript",
-    );
+    let aid = persisted.ai_session_id.expect("Claude must pre-allocate ai_session_id at create time");
+    assert!(uuid::Uuid::parse_str(&aid).is_ok(), "ai_session_id must be a uuid");
 
     let spawned = last_spawn_args_joined(&h.spawner);
     assert!(
+        spawned.contains(&format!("--session-id {aid}")),
+        "Claude first-launch spawn must splice --session-id <preallocated-uuid>; got {spawned:?}",
+    );
+    assert!(
         !spawned.contains("--resume"),
-        "Claude spawn must not splice --resume on create; got {spawned:?}",
+        "Claude first-launch must use --session-id, not --resume (resume is for subsequent spawns); got {spawned:?}",
     );
 }
 
@@ -1419,17 +1424,18 @@ async fn session_restart_reallocates_ai_session_id_for_copilot() {
 }
 
 #[tokio::test]
-async fn session_restart_clears_ai_session_id_for_claude() {
-    // Claude's restart contract: drop the prior conversation id eagerly so a crash between restart and the new watcher's first discovery can't leave
-    // us pointing at the pre-restart transcript.
+async fn session_restart_preserves_ai_session_id_for_claude() {
+    // Post-#hook-integration: Claude's restart policy flipped from `Clear` to `Preserve` because we now pre-allocate the session id at create
+    // time. Restart re-spawns Claude with `--resume <persisted-uuid>` so the conversation continues across an in-app restart.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Claude)).unwrap();
-
-    // Simulate the metrics watcher having discovered an id post-spawn.
-    h.ctx
+    let aid_before = h
+        .ctx
         .store()
-        .update_session_ai_session_id(&view.id, Some("preexisting-claude-id".to_owned()))
-        .unwrap();
+        .load_sessions()
+        .get(&view.id)
+        .and_then(|s| s.ai_session_id.clone())
+        .expect("Claude create must pre-allocate");
 
     session_restart_impl(
         &h.ctx,
@@ -1443,14 +1449,15 @@ async fn session_restart_clears_ai_session_id_for_claude() {
 
     let after = h.ctx.store().load_sessions().get(&view.id).cloned().unwrap();
     assert_eq!(
-        after.ai_session_id, None,
-        "Claude restart must clear ai_session_id (no equivalent of --resume <uuid>)",
+        after.ai_session_id.as_deref(),
+        Some(aid_before.as_str()),
+        "Claude restart must preserve the pre-allocated ai_session_id so --resume targets the same transcript",
     );
 
     let spawned = last_spawn_args_joined(&h.spawner);
     assert!(
-        !spawned.contains("--resume"),
-        "Claude restart spawn must not carry --resume; got {spawned:?}",
+        spawned.contains(&format!("--resume {aid_before}")),
+        "Claude restart spawn must carry --resume <preserved-uuid>; got {spawned:?}",
     );
 }
 

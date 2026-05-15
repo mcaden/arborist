@@ -60,6 +60,15 @@ pub struct ComposeInputs<'a> {
     /// composed command. The string is treated as a verbatim shell snippet — *not* a single quoted token — so users can put extra arguments in it
     /// (e.g. `"npx claude --model sonnet"`). Empty strings behave the same as `None` (use the default).
     pub cli_launch_command: Option<&'a str>,
+    /// Absolute path to the `arborist-claude-hook` helper binary (resolved at `AppContext` startup via
+    /// [`std::env::current_exe()`]'s sibling). When `Some`, Claude's
+    /// compose path materialises a per-session `claude-settings.json` (Claude hook config) and adds `--settings <quoted-path>` to the launch
+    /// command. When `None`, falls back to today's no-hooks behaviour — useful for unit tests and for graceful degradation when the helper binary
+    /// cannot be located at runtime.
+    pub helper_exe_path: Option<&'a Path>,
+    /// Absolute path to the user's home directory. Used by Claude compose to read `~/.claude/settings.json` and deep-merge the user's own hooks
+    /// (PreToolUse formatters, Stop validators, etc.) into the per-session settings file we write. When `None`, user-level settings are skipped.
+    pub user_home: Option<&'a Path>,
 }
 
 /// Compose the shell command for a session.
@@ -263,6 +272,33 @@ pub fn with_resume(composed_command: &str, _tool: Tool, ai_session_id: &str) -> 
     }
 }
 
+/// Splice the pre-allocated `ai_session_id` into a composed_command for the **very first spawn** of a session — i.e. before the AI conversation
+/// exists on disk yet.
+///
+/// The flag we emit is tool-specific:
+///
+/// * **Claude** uses `--session-id <uuid>`, which is documented as "use this id for the (new) conversation". The Claude CLI rejects `--resume
+///   <uuid>` when the transcript file doesn't exist yet (verified). Every spawn *after* the first should use [`with_resume`] so the same
+///   conversation continues.
+/// * **Copilot** uses `--resume <uuid>` even on first launch — Copilot's `--resume` semantics create the conversation at that uuid if it doesn't
+///   exist yet (the existing Copilot pre-allocation already relies on this).
+///
+/// The persisted `composed_command` stays bare; this helper produces a temporary version used only for the spawn call.
+#[must_use]
+pub fn with_first_launch_session_id(composed_command: &str, tool: Tool, ai_session_id: &str) -> String {
+    match tool {
+        Tool::Claude => {
+            if is_shell_safe_token(ai_session_id) {
+                format!("{composed_command} --session-id {ai_session_id}")
+            } else {
+                let quoter = platform_shell().quoter;
+                format!("{composed_command} --session-id {}", quoter(ai_session_id))
+            }
+        }
+        Tool::Copilot => with_resume(composed_command, tool, ai_session_id),
+    }
+}
+
 /// True for non-empty values composed entirely of characters that have no special meaning to either `sh` or `cmd.exe`: ASCII letters, digits, `-`,
 /// `_`, and `.`. UUIDs and similar slugs trivially satisfy this and can be appended to a composed command without quoting.
 ///
@@ -421,32 +457,38 @@ fn worktree_context_block(label: &str, worktree_path: &Path) -> String {
 pub(crate) fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command);
 
-    // No user instruction set: launch plain `claude`. The agent still auto-discovers `CLAUDE.md` from its `cwd` (the worktree). Skipping
-    // `--system-prompt` keeps the launch surface minimal and lets the agent derive its location from `pwd`/`git` without us having to fabricate a
-    // worktree-context system prompt.
-    let Some(contents) = inputs.instruction_set_contents else {
-        return (program, Vec::new());
-    };
+    let mut command_parts: Vec<String> = vec![program];
+    let mut temp_files: Vec<TempFileSpec> = Vec::new();
 
-    let dir = session_temp_dir(&inputs.session_id);
-    let temp_path = dir.join("system-prompt.md");
-
-    let header = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
-    let body = format!("{header}\n---\n{contents}", header = header, contents = contents,);
-
-    let cli_cmd = format!(
-        "{program} --system-prompt {quoted}",
-        program = program,
-        quoted = quoter(&temp_path.to_string_lossy()),
-    );
-
-    (
-        cli_cmd,
-        vec![TempFileSpec {
+    if let Some(contents) = inputs.instruction_set_contents {
+        // User supplied an instruction set — write it to a temp `system-prompt.md` and add `--system-prompt <quoted-path>` to the launch command.
+        let dir = session_temp_dir(&inputs.session_id);
+        let temp_path = dir.join("system-prompt.md");
+        let header = worktree_context_block(inputs.worktree_label, inputs.worktree_path);
+        let body = format!("{header}\n---\n{contents}", header = header, contents = contents);
+        command_parts.push(format!("--system-prompt {}", quoter(&temp_path.to_string_lossy())));
+        temp_files.push(TempFileSpec {
             path: temp_path,
             contents: body,
-        }],
-    )
+        });
+    }
+
+    // Hook integration: when the helper binary is locatable, write a per-session `claude-settings.json` that registers our hooks (plus the user's
+    // own merged in) and point Claude at it with `--settings <quoted-path>`. When `helper_exe_path` is `None` (unit tests, or a release where the
+    // helper wasn't bundled) we silently skip — Claude still works, just without the richer sidebar status reporting.
+    if let Some(helper) = inputs.helper_exe_path {
+        let settings_path = session_temp_dir(&inputs.session_id).join("claude-settings.json");
+        let events_path = crate::claude_hook_events::hook_events_path(&inputs.session_id);
+        let user_paths = crate::plugins::ai::claude::hooks::user_settings_paths(inputs.user_home, Some(inputs.worktree_path));
+        let body = crate::plugins::ai::claude::hooks::build_settings_string(helper, inputs.session_id, &events_path, &user_paths);
+        command_parts.push(format!("--settings {}", quoter(&settings_path.to_string_lossy())));
+        temp_files.push(TempFileSpec {
+            path: settings_path,
+            contents: body,
+        });
+    }
+
+    (command_parts.join(" "), temp_files)
 }
 
 pub(crate) fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
@@ -513,6 +555,8 @@ mod tests {
             instruction_set: is,
             instruction_set_contents: body,
             cli_launch_command: None,
+            helper_exe_path: None,
+            user_home: None,
         }
     }
 

@@ -6,6 +6,7 @@
 
 pub mod activity;
 pub mod app_launcher;
+pub mod claude_hook_events;
 pub mod cmd_resolver;
 pub mod commands;
 pub mod compose;
@@ -114,6 +115,33 @@ fn workspace_basename(path: &std::path::Path) -> Option<String> {
         None
     } else {
         Some(name)
+    }
+}
+
+/// Locate the `arborist-claude-hook` helper binary as a sibling of the running `arborist` executable. Returns `None` on the (degraded but
+/// non-fatal) cases where `current_exe()` fails or the helper isn't on disk — Claude session compose then falls back to no-hook mode.
+fn resolve_claude_hook_helper() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let parent = exe.parent()?;
+    let candidate = parent.join(format!("arborist-claude-hook{}", std::env::consts::EXE_SUFFIX));
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Resolve the user's home directory. Returns `None` in unusual environments (root containers, missing `HOME`/`USERPROFILE`); Claude compose then
+/// reads only project-local settings, never user-level. Uses platform env vars directly rather than the `dirs` crate to avoid an extra dependency
+/// for a one-line lookup.
+fn dirs_home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(std::path::PathBuf::from)
     }
 }
 
@@ -249,15 +277,17 @@ pub fn run() {
             let ai_session_discover = commands::build_production_ai_session_discover(workspace_handle.clone());
             let turn_emit = commands::build_production_turn_emit(app.handle().clone());
             let git_runner: std::sync::Arc<dyn git::GitRunner> = std::sync::Arc::new(git::RealGitRunner);
-            let ctx = std::sync::Arc::new(commands::AppContext::with_workspace(
-                pool,
-                workspace_handle,
-                sink,
-                git_runner,
-                metrics_emit,
-                ai_session_discover,
-                turn_emit,
-            ));
+            // Resolve the Claude hook helper + user home once at boot. Both flow into Claude's compose path via `AppContext`; missing values are
+            // logged but never fatal (Claude sessions still spawn — just without the hook-based status reporting).
+            let claude_hook_helper = resolve_claude_hook_helper();
+            let user_home = dirs_home_dir();
+            if claude_hook_helper.is_none() {
+                tracing::warn!("arborist-claude-hook not found next to arborist binary; Claude hook integration disabled this session");
+            }
+            let ctx = std::sync::Arc::new(
+                commands::AppContext::with_workspace(pool, workspace_handle, sink, git_runner, metrics_emit, ai_session_discover, turn_emit)
+                    .with_claude_hook_environment(claude_hook_helper, user_home),
+            );
             // Hold a local Arc so the startup backfill below can share the *same* `ConfigStore` (and its write lock) that subsequent `config_set`
             // calls will use.
             let ctx_for_backfill = ctx.clone();
