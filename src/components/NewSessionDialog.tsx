@@ -19,7 +19,7 @@ import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib
 import { validateWorktreeName } from '@/lib/worktree-validation';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
-import { useWorktreeTabActions } from '@/store/worktree-tab-store';
+import { useWorktreeTabActions, useWorktreeTabs } from '@/store/worktree-tab-store';
 import type { WorktreeInfo } from '@/types/arborist';
 
 type WorktreeMode = 'existing' | 'new';
@@ -42,6 +42,7 @@ export function NewSessionDialog(): JSX.Element | null {
   const isOpen = useNewSessionDialog((s) => s.isOpen);
   const close = useNewSessionDialog((s) => s.close);
   const wttActions = useWorktreeTabActions();
+  const openTabs = useWorktreeTabs();
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
@@ -145,6 +146,12 @@ export function NewSessionDialog(): JSX.Element | null {
     if (trimmed.length === 0) return null;
     return validateWorktreeName(trimmed);
   }, [newName]);
+
+  // Filter out worktrees that are already loaded as tabs.
+  const availableWorktrees = useMemo(() => {
+    const loadedPaths = new Set(openTabs.map((t) => t.path));
+    return worktrees.filter((w) => !loadedPaths.has(w.path));
+  }, [worktrees, openTabs]);
 
   const onCreateWorktree = async (): Promise<void> => {
     const trimmed = newName.trim();
@@ -293,14 +300,20 @@ export function NewSessionDialog(): JSX.Element | null {
             <>
               {worktreesLoading ? (
                 <p className="text-sm text-slate-500">Loading...</p>
-              ) : worktrees.length === 0 ? (
+              ) : availableWorktrees.length === 0 ? (
                 <p className="mb-2 text-sm text-slate-500">
-                  No worktrees found in <span className="font-mono">.arborist/.worktrees/</span> — create one in the New tab, or use Browse for a path
-                  elsewhere.
+                  {worktrees.length > 0 ? (
+                    'All worktrees are already open — create one in the New tab, or use Browse for a path elsewhere.'
+                  ) : (
+                    <>
+                      No worktrees found in <span className="font-mono">.arborist/.worktrees/</span> — create one in the New tab, or use Browse for a
+                      path elsewhere.
+                    </>
+                  )}
                 </p>
               ) : (
                 <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
-                  {worktrees.map((w) => (
+                  {availableWorktrees.map((w) => (
                     <li key={w.path}>
                       <button
                         type="button"
