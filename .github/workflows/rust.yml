@@ -72,21 +72,15 @@ jobs:
             libxdo-dev \
             libssl-dev \
             build-essential
-      # macOS: `brew install llvm` provides `lld` that the workspace
-      # `.cargo/config.toml` invokes via `clang -fuse-ld=lld`. Apple's system
-      # clang cannot resolve lld even when LLVM's bin dir is on PATH, so we
-      # override the linker for each macOS target triple via Cargo env vars to
-      # point directly at LLVM's clang.
-      - name: Install macOS build dependencies
+      # macOS: `.cargo/config.toml` sets `linker = "clang"` with
+      # `-fuse-ld=lld` for faster dev builds. GitHub runners don't have lld
+      # for Mach-O, so override both the linker and rustflags to use the
+      # system clang with its default linker (Apple ld / ld-prime).
+      - name: Override macOS linker config for CI
         if: runner.os == 'macOS'
         run: |
-          brew install llvm
-          LLVM_PREFIX="$(brew --prefix llvm)"
-          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
-          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS=" >> "$GITHUB_ENV"
       # `tauri::generate_context!()` validates that `frontendDist` exists at
       # compile time, so the frontend bundle must be built before any cargo
       # command that compiles the `tauri` crate (clippy, test, build). We run
