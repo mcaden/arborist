@@ -426,6 +426,7 @@ describe('App dark mode', () => {
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -446,13 +447,12 @@ describe('App dark mode', () => {
     mediaMatches = true; // OS says dark
     configGet.mockResolvedValue({
       configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
       workspaceRoot: '/mock/workspace',
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -473,13 +473,12 @@ describe('App dark mode', () => {
     mediaMatches = false;
     configGet.mockResolvedValue({
       configVersion: 10,
-      defaultInstructionSets: { claude: '', copilot: '' },
-      instructionSetsDir: '',
       workspaceRoot: '/mock/workspace',
       worktreeRoots: [],
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
