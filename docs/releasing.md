@@ -66,6 +66,7 @@ pnpm run release:prep 0.1.3
 ```
 
 The script:
+
 1. Reads the current version from manifests (e.g. `0.1.2`) — this is the version being released.
 2. Validates: on `main`, clean tree, tag `v0.1.2` doesn't exist, all 4 manifests agree.
 3. Tags current HEAD as `v0.1.2` and pushes the tag (no commits to `main`).
