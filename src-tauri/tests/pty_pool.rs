@@ -22,6 +22,7 @@ use arborist_lib::pty_pool::{
 use arborist_lib::session_temp::{ensure_session_temp_dir, prepare_copilot_otel_file, remove_copilot_otel_file, remove_session_temp_dir};
 use arborist_lib::types::{Session, SessionId, SessionStatus, TempFileSpec, Tool};
 use portable_pty::{ExitStatus, PtySize};
+use serial_test::serial;
 use uuid::Uuid;
 
 // --------------------------------------------------------------------------- Shared test helpers
@@ -859,6 +860,7 @@ fn wait_thread_emits_status_with_cleared_pid_on_natural_exit() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[serial(cleanup_orphans)]
 fn cleanup_orphans_deletes_only_unpersisted_stale_dirs() {
     // Plant three dirs under <os-temp>/arborist/:
     //   - young: <1h, NOT in persisted   → keep (too young)
@@ -921,6 +923,7 @@ fn remove_session_temp_dir_refuses_symlink_child_and_preserves_target() {
 }
 
 #[test]
+#[serial(cleanup_orphans)]
 fn cleanup_orphans_skips_uuid_symlink_and_preserves_target() {
     let anchor = SessionId::new();
     ensure_session_temp_dir(&anchor).expect("create root");

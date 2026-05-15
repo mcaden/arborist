@@ -1420,10 +1420,20 @@ mod tests {
             );
         });
 
-        // Append the fixture (two chat spans + invoke_agent + metrics) and wait for the watcher to surface a snapshot. With both spans written at
-        // once, the first emit reflects the cumulative totals.
+        // Append the fixture (two chat spans + invoke_agent + metrics). On Linux, `std::fs::write` is not atomic so the watcher can catch a partial
+        // write (only the first span). Drain snapshots until we see the cumulative totals from both spans.
         std::fs::write(&path, COPILOT_OTEL_FIXTURE).unwrap();
-        let snap = rx.recv_timeout(Duration::from_secs(8)).expect("watcher emitted snapshot");
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let snap = loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let s = match rx.recv_timeout(remaining) {
+                Ok(s) => s,
+                Err(_) => panic!("timed out waiting for cumulative snapshot (context_tokens_used never reached 42_000)"),
+            };
+            if s.context_tokens_used == Some(42_000) {
+                break s;
+            }
+        };
         assert_eq!(snap.context_tokens_used, Some(42_000));
         assert_eq!(snap.context_tokens_limit, Some(170_000));
         assert_eq!(snap.input_tokens, Some(39_497 + 12_345));
