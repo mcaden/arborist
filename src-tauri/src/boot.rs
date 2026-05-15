@@ -560,11 +560,7 @@ fn show_lock_contention_picker_dialog(branch: &str, workspace: &Path) {
         .set_level(rfd::MessageLevel::Warning)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
-    info!(
-        branch = branch,
-        ?workspace,
-        "lock contention on auto-resolved workspace; falling back to picker"
-    );
+    info!(branch = branch, ?workspace, "lock contention; reprompting workspace picker");
 }
 
 /// Native message-dialog informing the user that the requested path isn't a git repository root and so cannot be bound as a workspace. Used when the
@@ -687,7 +683,10 @@ fn boot_select_workspace_from_picker(
     prompt: impl Fn(&str) -> Option<PathBuf>,
 ) -> Result<Option<WorkspaceBinding>, BootError> {
     boot_select_workspace_from_picker_inner(app_data_dir, branch, git_runner, prompt, |e| match e {
-        BootError::Contention { ref branch, ref workspace } => show_lock_contention_picker_dialog(branch, workspace),
+        BootError::Contention {
+            branch: ref contended_branch,
+            workspace: ref contended_workspace,
+        } => show_lock_contention_picker_dialog(contended_branch, contended_workspace),
         BootError::NotARepository {
             ref workspace, ref reason, ..
         } => show_not_a_repo_dialog(workspace, reason),
