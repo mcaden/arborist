@@ -26,7 +26,7 @@
     "vite": "vite",
     "tauri": "tauri",
     "tauri:dev": "node scripts/tauri-dev.mjs",
-    "tauri:build": "tauri build",
+    "tauri:build": "tauri build --config src-tauri/tauri.bundle.conf.json",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
     "dev:typecheck": "tsc --noEmit --watch",

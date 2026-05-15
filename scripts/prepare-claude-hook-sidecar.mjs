@@ -11,13 +11,21 @@
 //      and builds into the *repo-root* `target/`, not `src-tauri/target/`), and resolves the host target triple via `rustc -vV`.
 //   3. Copies the built binary to `src-tauri/binaries/arborist-claude-hook-<triple>{.exe}` so `externalBin` picks it up.
 //
-// **Not yet wired.** The intended hookup is `tauri.conf.json::build.beforeBundleCommand` so this runs after frontend + main-bin builds but before
-// bundling — neither `beforeBundleCommand` nor the matching `bundle.externalBin` entry is in `tauri.conf.json` yet (Tauri's `externalBin` validation
-// runs during the cargo build script, before `beforeBundleCommand` could prepare the file, which forced a revert during the original PR). Until that
-// release-bundling follow-up lands, this script is invoked manually for local testing only and installed bundles ship without the helper.
+// Wired via `src-tauri/tauri.bundle.conf.json::build.beforeBuildCommand`, which is merged into the base config only for `pnpm tauri:build`
+// (and the release workflow). The base `tauri.conf.json` is left clean so plain `cargo build`, `cargo test`, and `tauri dev` never trigger
+// `externalBin` validation — those flows don't need the sidecar staged in `src-tauri/binaries/` (the cargo `[[bin]]` artifact at
+// `target/{debug,release}/arborist-claude-hook[.exe]` is the sibling-of-`arborist` that the runtime looks for at dev time).
+//
+// ## Security notes
+//
+// Both `cargo` and `rustc` are resolved as absolute paths under `$CARGO_HOME/bin/` (or `~/.cargo/bin/` when the env var isn't set — the rustup
+// default) and spawned with `execFileSync` (no shell). This avoids spawning programs by name through a PATH lookup, which is the typical foot-gun
+// SonarCloud flags as `javascript:S4036`. The host-triple parser splits `rustc -vV` line-by-line instead of using a multiline regex, sidestepping
+// the `javascript:S5852` super-linear-backtracking warning.
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,19 +38,27 @@ function exe(name) {
   return process.platform === 'win32' ? `${name}.exe` : name;
 }
 
+// Resolve a rustup-installed binary (cargo, rustc) to an absolute path under `$CARGO_HOME/bin/`. Avoids PATH-based program resolution so a poisoned
+// PATH (writable directory earlier than the rustup bin dir) can't hijack the build.
+function cargoBin(name) {
+  const cargoHome = process.env.CARGO_HOME ?? join(homedir(), '.cargo');
+  return join(cargoHome, 'bin', exe(name));
+}
+
 function rustcHostTriple() {
-  const out = execSync('rustc -vV', { encoding: 'utf8' });
-  const match = out.match(/^host:\s*(.+)$/m);
-  if (!match) {
-    throw new Error('could not parse host target triple from `rustc -vV`');
+  const out = execFileSync(cargoBin('rustc'), ['-vV'], { encoding: 'utf8' });
+  for (const line of out.split('\n')) {
+    if (line.startsWith('host:')) {
+      return line.slice('host:'.length).trim();
+    }
   }
-  return match[1].trim();
+  throw new Error('could not parse host target triple from `rustc -vV`');
 }
 
 // Ask Cargo for the canonical workspace target directory. Hardcoding `src-tauri/target/release` is wrong for a workspace member —
 // `cargo build` from `src-tauri/` still writes to the workspace's `target/`, which lives at the repo root for this project.
 function cargoTargetDir() {
-  const out = execSync('cargo metadata --no-deps --format-version 1', {
+  const out = execFileSync(cargoBin('cargo'), ['metadata', '--no-deps', '--format-version', '1'], {
     cwd: tauriDir,
     encoding: 'utf8',
   });
@@ -58,7 +74,7 @@ function ensureDir(path) {
 }
 
 console.log('[prepare-claude-hook-sidecar] building arborist-claude-hook (release)…');
-execSync('cargo build --release --bin arborist-claude-hook', {
+execFileSync(cargoBin('cargo'), ['build', '--release', '--bin', 'arborist-claude-hook'], {
   cwd: tauriDir,
   stdio: 'inherit',
 });
