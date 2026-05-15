@@ -22,13 +22,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 const clearMock = vi.fn();
+const attachMock = vi.fn();
+const detachMock = vi.fn();
+const focusMock = vi.fn();
+const refitMock = vi.fn();
 
 vi.mock('@/hooks/use-terminal', () => ({
   useSubTerminal: () => ({
-    attach: vi.fn(),
-    detach: vi.fn(),
-    focus: vi.fn(),
-    refit: vi.fn(),
+    attach: attachMock,
+    detach: detachMock,
+    focus: focusMock,
+    refit: refitMock,
     clear: clearMock,
   }),
 }));
@@ -71,15 +75,22 @@ function id(suffix: string): SubSessionId {
   return ('22222222-2222-2222-2222-2222222222' + suffix) as SubSessionId;
 }
 
-beforeEach(() => {
-  let rafId = 0;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-    cb(performance.now());
-    return ++rafId;
+/** Flush pending microtasks and requestAnimationFrame callbacks inside an act() boundary. */
+async function flushEffects(): Promise<void> {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
   });
-  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+}
+
+beforeEach(() => {
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => setTimeout(() => cb(performance.now()), 0));
+  vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
   bridgeMock.resetBridgeMocks();
   clearMock.mockReset();
+  attachMock.mockReset();
+  detachMock.mockReset();
+  focusMock.mockReset();
+  refitMock.mockReset();
   useSubSessionStore.setState({
     subSessions: [],
     statusMessages: {},
@@ -97,9 +108,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('01'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(screen.queryByRole('status', { name: /sub-session ended/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /relaunch/i })).not.toBeInTheDocument();
   });
@@ -108,9 +117,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('02'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(screen.getByRole('status', { name: /sub-session ended/i })).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /relaunch/i })).toBeInTheDocument();
@@ -124,9 +131,7 @@ describe('SubTerminalView', () => {
       statusMessages: { [sub.id]: 'spawn failed: ENOENT' },
     });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(screen.getByRole('status', { name: /sub-session ended/i })).toBeInTheDocument();
     expect(screen.getByText(/ended with an error/i)).toBeInTheDocument();
   });
@@ -135,9 +140,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('04'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(clearMock).not.toHaveBeenCalled();
     await act(async () => {
       useSubSessionStore.setState({
@@ -146,9 +149,7 @@ describe('SubTerminalView', () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     rerender(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(clearMock).not.toHaveBeenCalled();
   });
 
@@ -156,9 +157,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('05'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     const { rerender } = render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(clearMock).not.toHaveBeenCalled();
     await act(async () => {
       useSubSessionStore.setState({
@@ -167,9 +166,7 @@ describe('SubTerminalView', () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     rerender(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(clearMock).toHaveBeenCalledTimes(1);
   });
 
@@ -178,9 +175,7 @@ describe('SubTerminalView', () => {
     useSubSessionStore.setState({ subSessions: [sub] });
     bridgeMock.subSessionRelaunch.mockResolvedValueOnce(sub);
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     await act(async () => {
       screen.getByRole('button', { name: /relaunch/i }).click();
     });
@@ -191,9 +186,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('07'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     screen.getByRole('button', { name: /^close$/i }).click();
     expect(bridgeMock.subSessionClose).toHaveBeenCalledWith(sub.id, undefined);
     await act(async () => {});
@@ -203,9 +196,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('08'), status: 'exited', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).toContain('opacity-50');
   });
 
@@ -213,9 +204,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('09'), status: 'error', pid: undefined });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).toContain('opacity-50');
   });
 
@@ -223,9 +212,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('0a'), status: 'running', pid: 100 });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).not.toContain('opacity-50');
   });
 
@@ -233,9 +220,7 @@ describe('SubTerminalView', () => {
     const sub = makeSub({ id: id('0b'), status: 'starting' });
     useSubSessionStore.setState({ subSessions: [sub] });
     render(<SubTerminalView subSessionId={sub.id} isActive />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    await flushEffects();
     expect(screen.getByTestId('sub-terminal-host').className).not.toContain('opacity-50');
   });
 });

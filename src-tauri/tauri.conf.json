@@ -21,98 +21,32 @@
     ],
     "security": {
       "csp": {
-        "default-src": [
-          "'self'"
-        ],
-        "script-src": [
-          "'self'"
-        ],
-        "style-src": [
-          "'self'",
-          "'unsafe-inline'"
-        ],
-        "img-src": [
-          "'self'",
-          "asset:",
-          "http://asset.localhost",
-          "data:"
-        ],
-        "font-src": [
-          "'self'"
-        ],
-        "connect-src": [
-          "ipc:",
-          "http://ipc.localhost"
-        ],
-        "object-src": [
-          "'none'"
-        ],
-        "base-uri": [
-          "'none'"
-        ],
-        "form-action": [
-          "'none'"
-        ],
-        "frame-ancestors": [
-          "'none'"
-        ],
-        "frame-src": [
-          "'none'"
-        ],
-        "worker-src": [
-          "'none'"
-        ]
+        "default-src": ["'self'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "img-src": ["'self'", "asset:", "http://asset.localhost", "data:"],
+        "font-src": ["'self'"],
+        "connect-src": ["ipc:", "http://ipc.localhost"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "form-action": ["'none'"],
+        "frame-ancestors": ["'none'"],
+        "frame-src": ["'none'"],
+        "worker-src": ["'none'"]
       },
       "devCsp": {
-        "default-src": [
-          "'self'",
-          "http://localhost:*"
-        ],
-        "script-src": [
-          "'self'",
-          "'unsafe-eval'",
-          "http://localhost:*"
-        ],
-        "style-src": [
-          "'self'",
-          "'unsafe-inline'",
-          "http://localhost:*"
-        ],
-        "img-src": [
-          "'self'",
-          "asset:",
-          "http://asset.localhost",
-          "data:",
-          "http://localhost:*"
-        ],
-        "font-src": [
-          "'self'",
-          "http://localhost:*"
-        ],
-        "connect-src": [
-          "ipc:",
-          "http://ipc.localhost",
-          "http://localhost:*",
-          "ws://localhost:*"
-        ],
-        "object-src": [
-          "'none'"
-        ],
-        "base-uri": [
-          "'none'"
-        ],
-        "form-action": [
-          "'none'"
-        ],
-        "frame-ancestors": [
-          "'none'"
-        ],
-        "frame-src": [
-          "'none'"
-        ],
-        "worker-src": [
-          "'none'"
-        ]
+        "default-src": ["'self'", "http://localhost:*"],
+        "script-src": ["'self'", "'unsafe-eval'", "http://localhost:*"],
+        "style-src": ["'self'", "'unsafe-inline'", "http://localhost:*"],
+        "img-src": ["'self'", "asset:", "http://asset.localhost", "data:", "http://localhost:*"],
+        "font-src": ["'self'", "http://localhost:*"],
+        "connect-src": ["ipc:", "http://ipc.localhost", "http://localhost:*", "ws://localhost:*"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "form-action": ["'none'"],
+        "frame-ancestors": ["'none'"],
+        "frame-src": ["'none'"],
+        "worker-src": ["'none'"]
       },
       "dangerousDisableAssetCspModification": false
     }
@@ -128,13 +62,6 @@
     "category": "DeveloperTool",
     "shortDescription": "Manage AI coding-assistant sessions across Git worktrees.",
     "longDescription": "Arborist manages Claude CLI, GitHub Copilot CLI, and custom process sessions across Git worktrees.",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.icns", "icons/icon.ico"]
   }
 }
