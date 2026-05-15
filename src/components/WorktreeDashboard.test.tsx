@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -59,10 +59,11 @@ afterEach(() => {
 });
 
 describe('WorktreeDashboard', () => {
-  it('renders the worktree name, path, and branch', () => {
+  it('renders the worktree name, path, and branch', async () => {
     useWorktreeTabStore.setState({ tabs: [tab({ branch: 'feature-x' })] });
 
     renderDashboard();
+    await act(async () => {});
 
     expect(screen.getByRole('heading', { name: 'feature-x' })).toBeInTheDocument();
     expect(screen.getByText('/repo/feature-x')).toBeInTheDocument();
@@ -83,6 +84,7 @@ describe('WorktreeDashboard', () => {
     });
 
     renderDashboard();
+    await act(async () => {});
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-claude'));
 
@@ -94,6 +96,7 @@ describe('WorktreeDashboard', () => {
         }),
       ),
     );
+    await act(async () => {});
   });
 
   it('clicking Launch Copilot calls sessionCreate with copilot tool', async () => {
@@ -110,6 +113,7 @@ describe('WorktreeDashboard', () => {
     });
 
     renderDashboard();
+    await act(async () => {});
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-copilot'));
 
@@ -121,6 +125,7 @@ describe('WorktreeDashboard', () => {
         }),
       ),
     );
+    await act(async () => {});
   });
 
   it('mounts widgets in registry order', () => {
@@ -135,7 +140,7 @@ describe('WorktreeDashboard', () => {
     expect(screen.getAllByTestId(/^widget-/).map((n) => n.textContent)).toEqual(['first', 'second', 'third']);
   });
 
-  it('hides disabled AI plugins and dashboard widgets', () => {
+  it('hides disabled AI plugins and dashboard widgets', async () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     useConfigStore.setState((s) => ({
       config: {
@@ -149,6 +154,7 @@ describe('WorktreeDashboard', () => {
     }));
 
     renderDashboard();
+    await act(async () => {});
 
     expect(screen.getByTestId('worktree-dashboard-launch-claude')).toBeInTheDocument();
     expect(screen.queryByTestId('worktree-dashboard-launch-copilot')).toBeNull();

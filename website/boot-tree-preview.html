@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boot Tree Animation Preview</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100vh;
+        transition:
+          background 0.3s,
+          color 0.3s;
+      }
+
+      body.light {
+        background: #ffffff;
+        color: #334155;
+      }
+      body.dark {
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+
+      .controls {
+        margin: 2rem 0 1rem;
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+      }
+      .controls button {
+        padding: 0.4rem 1rem;
+        border-radius: 6px;
+        border: 1px solid #64748b;
+        cursor: pointer;
+        font-size: 0.875rem;
+        background: transparent;
+        color: inherit;
+      }
+      .controls button:hover {
+        background: #64748b22;
+      }
+      .controls button.active {
+        background: #64748b44;
+        font-weight: 600;
+      }
+
+      .preview-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.5rem;
+        flex: 1;
+        width: 100%;
+        max-width: 600px;
+        padding: 2rem;
+      }
+
+      .preview-container p {
+        font-size: 0.875rem;
+        opacity: 0.8;
+      }
+
+      /* === Boot tree animation (mirrored from src/index.css) === */
+
+      .boot-tree {
+        width: 220px;
+        height: 220px;
+      }
+      .boot-tree svg {
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Leaf flutter — wind blowing left to right across the canopy.
+         Groups 0-6 map to left-to-right columns with cascading delays. */
+      @keyframes boot-tree-flutter {
+        0%,
+        100% {
+          transform: translate(0, 0) rotate(0deg);
+        }
+        40% {
+          transform: translate(5px, -0.5px) rotate(1deg);
+        }
+        60% {
+          transform: translate(3px, 0px) rotate(0.5deg);
+        }
+        80% {
+          transform: translate(1px, 0.3px) rotate(-0.3deg);
+        }
+      }
+
+      .bl-0 {
+        animation: boot-tree-flutter 3.5s ease-in-out 0s infinite;
+      }
+      .bl-1 {
+        animation: boot-tree-flutter 3.5s ease-in-out 0.3s infinite;
+      }
+      .bl-2 {
+        animation: boot-tree-flutter 3.5s ease-in-out 0.6s infinite;
+      }
+      @keyframes boot-tree-flutter-mid {
+        0%,
+        100% {
+          transform: translate(0, 0) rotate(0deg);
+        }
+        40% {
+          transform: translate(3.5px, -0.4px) rotate(0.7deg);
+        }
+        60% {
+          transform: translate(2px, 0px) rotate(0.35deg);
+        }
+        80% {
+          transform: translate(0.7px, 0.2px) rotate(-0.2deg);
+        }
+      }
+      .bl-3 {
+        animation: boot-tree-flutter-mid 3.5s ease-in-out 0.9s infinite;
+      }
+      .bl-4 {
+        animation: boot-tree-flutter-mid 3.5s ease-in-out 1.2s infinite;
+      }
+
+      @keyframes boot-tree-flutter-gentle {
+        0%,
+        100% {
+          transform: translate(0, 0) rotate(0deg);
+        }
+        40% {
+          transform: translate(2.5px, -0.25px) rotate(0.5deg);
+        }
+        60% {
+          transform: translate(1.5px, 0px) rotate(0.25deg);
+        }
+        80% {
+          transform: translate(0.5px, 0.15px) rotate(-0.15deg);
+        }
+      }
+      .bl-5 {
+        animation: boot-tree-flutter-gentle 3.5s ease-in-out 1.5s infinite;
+      }
+      .bl-6 {
+        animation: boot-tree-flutter-gentle 3.5s ease-in-out 1.8s infinite;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .bl {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body class="dark">
+    <div class="controls">
+      <button id="btn-light">Light</button>
+      <button id="btn-dark" class="active">Dark</button>
+    </div>
+
+    <div class="preview-container">
+      <div class="boot-tree" id="tree-container">
+        <!-- SVG loaded via fetch from the processed logo asset -->
+      </div>
+      <p>Loading Arborist…</p>
+    </div>
+
+    <script>
+      const btnLight = document.getElementById('btn-light');
+      const btnDark = document.getElementById('btn-dark');
+      btnLight.addEventListener('click', () => {
+        document.body.className = 'light';
+        btnLight.classList.add('active');
+        btnDark.classList.remove('active');
+      });
+      btnDark.addEventListener('click', () => {
+        document.body.className = 'dark';
+        btnDark.classList.add('active');
+        btnLight.classList.remove('active');
+      });
+
+      // Load the processed logo SVG (with .bl class annotations)
+      fetch('arborist-logo.svg?v=' + Date.now())
+        .then((r) => r.text())
+        .then((svg) => {
+          document.getElementById('tree-container').innerHTML = svg;
+        });
+    </script>
+  </body>
+</html>
