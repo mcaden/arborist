@@ -451,26 +451,18 @@ fn default_structured_command(tool: Tool, temp_files: &[crate::types::TempFileSp
     let program = crate::plugins::ai::plugin_for_tool(tool).default_program().to_owned();
     let args = match tool {
         Tool::Claude => {
-            // Map each known temp file to its flag. Filename is load-bearing because compose may produce different temp files in different
-            // configurations: `claude-settings.json` (when the `arborist-claude-hook` sidecar is locatable) or a legacy `system-prompt.md` from
-            // sessions persisted before the instruction-set feature was removed. Unknown filenames are silently ignored — when
-            // `structured_command` is in use (every Claude session created by this code path), the PTY pool spawns from the structured argv and
-            // ignores `composed_command` entirely, so any unmapped temp file would never be referenced on the command line. Adding a new temp-file
-            // category therefore requires adding a match arm here (and ideally a compose-level test) alongside the producer in `compose.rs`.
+            // Map each known temp file to its flag. Filename is load-bearing: compose produces a `claude-settings.json` temp file when the
+            // `arborist-claude-hook` sidecar is locatable (and nothing otherwise). Unknown filenames are silently ignored — when
+            // `structured_command` is in use (every Claude session created by this code path) the PTY pool spawns from the structured argv and
+            // ignores `composed_command` entirely, so an unmapped temp file would never reach the command line. Adding a new temp-file category
+            // therefore requires adding a match arm here (and ideally a compose-level test) alongside the producer in `compose.rs`.
             let mut args = Vec::new();
             for temp in temp_files {
                 let name = temp.path.file_name().and_then(|s| s.to_str());
                 let path_str = temp.path.to_string_lossy().into_owned();
-                match name {
-                    Some("claude-settings.json") => {
-                        args.push("--settings".to_owned());
-                        args.push(path_str);
-                    }
-                    Some("system-prompt.md") => {
-                        args.push("--system-prompt".to_owned());
-                        args.push(path_str);
-                    }
-                    _ => {}
+                if let Some("claude-settings.json") = name {
+                    args.push("--settings".to_owned());
+                    args.push(path_str);
                 }
             }
             args

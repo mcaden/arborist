@@ -205,11 +205,19 @@ impl MetricsRegistry {
                                 );
                             }
                         }
+                    } else if hook_integration_disabled {
+                        tracing::debug!(
+                            session_id = %session_id,
+                            ?tool,
+                            "activity events watcher not started (hook integration disabled — per-session settings file absent on disk)",
+                        );
                     } else {
                         tracing::debug!(
                             session_id = %session_id,
                             ?tool,
-                            "activity events watcher not started (no kind resolved; missing home dir or ai_session_id?)",
+                            home_present = home_opt.is_some(),
+                            ai_session_id_present = ai_session_id.is_some(),
+                            "activity events watcher not started (plugin returned no kind; missing home dir or ai_session_id)",
                         );
                     }
                 }
