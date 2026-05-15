@@ -69,6 +69,7 @@ const defaultAppConfig = (): AppConfig => ({
   worktreePrepCommands: [],
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
   pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+  repoCommandTrust: { records: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -77,11 +78,20 @@ const defaultAppConfig = (): AppConfig => ({
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 });
 
 export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
 export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
+
+export const shellCommandPreview: Mock<typeof realBridge.shellCommandPreview> = vi.fn(() =>
+  Promise.resolve({ targetWorktreePath: '/mock/workspace', commands: [], trustRecords: [], trustRequired: false }),
+);
+
+export const repoCommandTrust: Mock<typeof realBridge.repoCommandTrust> = vi.fn(() => Promise.resolve(defaultAppConfig()));
+
+export const repoCommandAllowOnce: Mock<typeof realBridge.repoCommandAllowOnce> = vi.fn(() => Promise.resolve());
 
 export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() => Promise.resolve([]));
 
@@ -170,6 +180,11 @@ export function resetBridgeMocks(): void {
   frontendReady.mockReset().mockImplementation(() => Promise.resolve());
   configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   configSet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
+  shellCommandPreview
+    .mockReset()
+    .mockImplementation(() => Promise.resolve({ targetWorktreePath: '/mock/workspace', commands: [], trustRecords: [], trustRequired: false }));
+  repoCommandTrust.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
+  repoCommandAllowOnce.mockReset().mockImplementation(() => Promise.resolve());
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreeGitStatus.mockReset().mockImplementation(() => Promise.resolve(defaultGitStatus()));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
@@ -218,6 +233,9 @@ const _shapeCheck = {
   frontendReady,
   configGet,
   configSet,
+  shellCommandPreview,
+  repoCommandTrust,
+  repoCommandAllowOnce,
   worktreesList,
   worktreeGitStatus,
   workspaceValidate,

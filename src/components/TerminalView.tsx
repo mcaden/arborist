@@ -7,6 +7,7 @@
 
 import { useEffect, useRef } from 'react';
 
+import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { formatError, sessionRestart } from '@/lib/tauri-bridge';
 import { measureInitialPtyDimensions, useTerminal } from '@/hooks/use-terminal';
 import { useSessionById, useStatusMessage } from '@/store/session-store';
@@ -76,7 +77,11 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
     // somehow the terminal entry is gone (very rare — overlay hides
     // before the entry is disposed), fall back to a fresh measurement.
     const dims = getDimensions() ?? measureInitialPtyDimensions();
-    void sessionRestart({ sessionId, cols: dims.cols, rows: dims.rows }).catch((err: unknown) => {
+    void (async () => {
+      const trusted = await ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId });
+      if (!trusted) return;
+      await sessionRestart({ sessionId, cols: dims.cols, rows: dims.rows });
+    })().catch((err: unknown) => {
       const message = formatError(err);
       console.warn(`[TerminalView] session_restart(${sessionId}) failed: ${message}`);
     });

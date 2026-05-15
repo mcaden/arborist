@@ -8,7 +8,23 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: ['dist', 'dist-ssr', 'coverage', 'node_modules', 'src-tauri', 'target', '.husky', '**/*.config.js', '**/*.config.cjs', '**/*.config.ts'],
+    ignores: [
+      'dist',
+      'dist-ssr',
+      'coverage',
+      'node_modules',
+      'src-tauri',
+      'target',
+      'crates',
+      'website',
+      'docs',
+      'dev',
+      '.github',
+      '.husky',
+      '**/*.config.js',
+      '**/*.config.cjs',
+      '**/*.config.ts',
+    ],
   },
   js.configs.recommended,
   ...tsPlugin.configs['flat/recommended'],

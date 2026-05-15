@@ -23,11 +23,12 @@ use tauri::{Emitter, Manager};
 use crate::config_store::ConfigStore;
 use crate::sub_sessions::SubAppContext;
 use crate::types::{
-    AppConfig, AppError, PartialAppConfig, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg, SessionInputArgs,
-    SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, SubSession, SubSessionCloseArgs,
-    SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult,
-    WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs,
-    WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
+    AppConfig, AppError, PartialAppConfig, RepoCommandTrustArgs, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
+    SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, ShellCommandPreview,
+    ShellCommandPreviewArgs, SubSession, SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
+    SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs,
+    WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs,
+    WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -86,6 +87,24 @@ pub async fn config_set(app: tauri::AppHandle, partial: PartialAppConfig) -> Res
         })
         .map_err(AppError::from)?;
     Ok(merged)
+}
+
+#[tauri::command]
+pub async fn shell_command_preview(app: tauri::AppHandle, args: ShellCommandPreviewArgs) -> Result<ShellCommandPreview, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::shell_command_preview_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn repo_command_trust(app: tauri::AppHandle, args: RepoCommandTrustArgs) -> Result<AppConfig, AppError> {
+    let ctx = ctx_of(&app)?;
+    session::repo_command_trust_impl(&ctx, args)
+}
+
+#[tauri::command]
+pub async fn repo_command_allow_once(app: tauri::AppHandle, args: RepoCommandTrustArgs) -> Result<(), AppError> {
+    let ctx = ctx_of(&app)?;
+    session::repo_command_allow_once_impl(&ctx, args)
 }
 
 /// Best-effort cwd for resolving relative-path commands at config-save time. Defs are templates — the user's workspace root is the most useful
@@ -266,8 +285,8 @@ pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateAr
 pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) -> Result<WorktreeCreateResult, AppError> {
     let ctx = ctx_of(&app)?;
     let _switch = session::acquire_switch_read(&ctx)?;
+    let cfg = session::trusted_worktree_create_config(&ctx, &args.name)?;
     let mut result = session::worktree_create_impl(&ctx, &args.name)?;
-    let cfg = crate::repo_settings::apply_repo_overlay(ctx.store().load_config());
     result.prep = crate::worktree_prep::maybe_spawn(&app, ctx.prep_registry.clone(), &cfg, &result.path);
     Ok(result)
 }
@@ -449,13 +468,36 @@ pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<Worksp
     crate::pty_pool::PtySink::new(output, status, activity)
 }
 
-/// Build the production metrics emitter (Issue #3) — fires `session://metrics` Tauri events. Tests construct their own callback (typically a channel
-/// sender) and pass it to [`AppContext::new`].
+/// Build the production metrics emitter (Issue #3) — fires `session://metrics` Tauri events and persists the snapshot on the session record so
+/// restore can seed the frontend dashboard (Issue #140). Tests construct their own callback (typically a channel sender) and pass it to
+/// [`AppContext::new`].
 #[must_use]
-pub fn build_production_metrics_emit(app: tauri::AppHandle) -> crate::session_metrics::MetricsCb {
+pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLock<WorkspaceScope>>) -> crate::session_metrics::MetricsCb {
     Arc::new(move |payload: crate::types::SessionMetricsEvent| {
-        if let Err(e) = app.emit("session://metrics", payload) {
+        if let Err(e) = app.emit("session://metrics", &payload) {
             tracing::debug!(error = %e, "emit session://metrics failed");
+        }
+        // Best-effort persist — errors are swallowed so a transient store issue doesn't crash the watcher thread.
+        let store = match workspace.read() {
+            Ok(guard) => guard.store.clone(),
+            Err(_) => {
+                tracing::warn!("workspace lock poisoned; skipping metrics persist");
+                return;
+            }
+        };
+        let session_id = payload.session_id;
+        if let Err(e) = store.update_session_metrics(&session_id, payload) {
+            match &e {
+                crate::types::Error::Internal(_) => {
+                    tracing::warn!(error = ?e, "metrics persist bug: id/payload mismatch");
+                }
+                crate::types::Error::NotFound(_) => {
+                    tracing::trace!(error = ?e, "metrics persist skipped (session gone — expected during teardown)");
+                }
+                _ => {
+                    tracing::debug!(error = ?e, "failed to persist session metrics");
+                }
+            }
         }
     })
 }

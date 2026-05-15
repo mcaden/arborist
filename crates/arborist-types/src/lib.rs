@@ -127,6 +127,17 @@ impl std::fmt::Display for WorktreeTabId {
 // --------------------------------------------------------------------------- Enums
 // ---------------------------------------------------------------------------
 
+/// User-chosen colour-scheme preference (Issue #151). `System` follows the OS `prefers-color-scheme` media query; `Light`/`Dark` force the
+/// corresponding theme regardless of OS setting. Serialises to `"system"` / `"light"` / `"dark"` for JSON and the TS mirror.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Which AI CLI a session is bound to.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -185,6 +196,143 @@ pub enum SubSessionStatus {
     Error,
 }
 
+/// How a session is spawned when it does not need shell-snippet evaluation.
+///
+/// MIRROR: `src/types/arborist.ts::StructuredCommand`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredCommand {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// Executable command category used by preview/trust/provenance records.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandKind`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellCommandKind {
+    AiLaunch,
+    WorktreePrep,
+}
+
+/// Where an executable command came from.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandSource`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellCommandSource {
+    Default,
+    UserConfig,
+    RepoSettings,
+}
+
+/// Persisted provenance for commands captured while repo overlays were active.
+///
+/// MIRROR: `src/types/arborist.ts::CommandProvenance`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandProvenance {
+    pub kind: ShellCommandKind,
+    pub source: ShellCommandSource,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<PathBuf>,
+}
+
+/// User trust for a repo-provided executable command contribution.
+///
+/// MIRROR: `src/types/arborist.ts::RepoCommandTrustRecord`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommandTrustRecord {
+    pub fingerprint: String,
+    pub workspace_root: PathBuf,
+    pub source_path: PathBuf,
+    pub kind: ShellCommandKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub command: String,
+    pub trusted_at: i64,
+}
+
+/// Trust database for repo-provided executable settings. Stored in the user-level config, never in `.arborist/settings.json`.
+///
+/// MIRROR: `src/types/arborist.ts::RepoCommandTrustState`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommandTrustState {
+    #[serde(default)]
+    pub records: BTreeMap<String, RepoCommandTrustRecord>,
+}
+
+/// One command shown to the user before trusting repo-provided execution.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandPreviewItem`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandPreviewItem {
+    pub kind: ShellCommandKind,
+    pub source: ShellCommandSource,
+    pub command: String,
+    pub target_worktree_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<PathBuf>,
+    pub trusted: bool,
+}
+
+/// Intent to preview for shell-command trust.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandIntent`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ShellCommandIntent {
+    SessionCreate { tool: Tool, worktree_path: PathBuf },
+    SessionRestart { session_id: SessionId },
+    WorktreeCreate { name: String },
+}
+
+/// Arguments for `shell_command_preview`.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandPreviewArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandPreviewArgs {
+    pub intent: ShellCommandIntent,
+}
+
+/// Preview of executable commands relevant to a launch/create/restart action.
+///
+/// MIRROR: `src/types/arborist.ts::ShellCommandPreview`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandPreview {
+    pub target_worktree_path: PathBuf,
+    #[serde(default)]
+    pub commands: Vec<ShellCommandPreviewItem>,
+    #[serde(default)]
+    pub trust_records: Vec<RepoCommandTrustRecord>,
+    pub trust_required: bool,
+}
+
+/// Arguments for `repo_command_trust`.
+///
+/// MIRROR: `src/types/arborist.ts::RepoCommandTrustArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommandTrustArgs {
+    pub intent: ShellCommandIntent,
+}
+
 // --------------------------------------------------------------------------- Session
 // ---------------------------------------------------------------------------
 
@@ -211,6 +359,14 @@ pub struct Session {
     pub label: String,
     /// Full shell command string. Backend-only; reused verbatim by `respawn_existing` so we never recompose at restart time.
     pub composed_command: String,
+    /// Structured argv for built-in/default launchers. Backend-only; `None` means use `composed_command` through the platform shell for legacy records
+    /// and explicit shell-snippet overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_command: Option<StructuredCommand>,
+    /// Provenance for executable snippets that were supplied by repo overlays when this session was created. Backend-only; used to re-check trust on
+    /// restart/restore.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_provenance: Vec<CommandProvenance>,
     pub status: SessionStatus,
     /// OS PID of the live PTY child; cleared on exit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -225,6 +381,10 @@ pub struct Session {
     /// — omitted from [`SessionView`]; not surfaced to the frontend today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_session_id: Option<String>,
+    /// Last-known token-usage / context-window snapshot for this session, persisted so the frontend can restore dashboard totals across app restarts
+    /// without waiting for the metrics watcher to re-emit. Updated on every `session://metrics` emission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_metrics: Option<SessionMetricsEvent>,
 }
 
 /// Frontend-facing projection of [`Session`]. Intentionally drops `composed_command` (backend-only restart material) and `temp_files` (backend-only
@@ -242,6 +402,10 @@ pub struct SessionView {
     pub pid: Option<u32>,
     pub created_at: i64,
     pub tab_index: usize,
+    /// Last-known metrics snapshot, carried from the persisted [`Session`] so the frontend can seed its metrics store on hydrate without waiting for
+    /// the watcher to re-emit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_metrics: Option<SessionMetricsEvent>,
 }
 
 impl From<&Session> for SessionView {
@@ -256,6 +420,7 @@ impl From<&Session> for SessionView {
             pid: s.pid,
             created_at: s.created_at,
             tab_index: s.tab_index,
+            last_metrics: s.last_metrics.clone(),
         }
     }
 }
@@ -673,6 +838,10 @@ pub struct AppConfig {
     /// `pluginSettings.ai[pluginId].settings.launchCommand`.
     #[serde(default)]
     pub plugin_settings: PluginSettings,
+    /// User trust for executable settings read from repo-owned `.arborist/settings.json`. Stored only in the user/workspace config so a repository
+    /// cannot grant trust to itself.
+    #[serde(default)]
+    pub repo_command_trust: RepoCommandTrustState,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
     /// ID of the most recently focused session. Persisted by `session_focus` and consulted by Phase 8+ on launch to decide which tab to show active.
@@ -709,6 +878,10 @@ pub struct AppConfig {
     /// Backwards-compatible add: pre-#94 configs lack the field and serde fills it with `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width_px: Option<u32>,
+    /// User-chosen colour-scheme preference (Issue #151). Defaults to `System` (follow OS). Backwards-compatible: pre-#151 configs lack the field
+    /// and serde fills it with `ThemeMode::System`.
+    #[serde(default)]
+    pub theme: ThemeMode,
 }
 
 /// Lower bound for the resizable sidebar width (CSS px). Narrow enough to still show ~12 chars of label.
@@ -725,6 +898,7 @@ impl Default for AppConfig {
             worktree_prep_commands: Vec::new(),
             ai_launch_commands: AiLaunchCommands::default(),
             plugin_settings: PluginSettings::default(),
+            repo_command_trust: RepoCommandTrustState::default(),
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
             active_session_id: None,
@@ -734,6 +908,7 @@ impl Default for AppConfig {
             worktree_tab_order: Vec::new(),
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: ThemeMode::default(),
         }
     }
 }
@@ -888,6 +1063,9 @@ pub struct PartialAppConfig {
     /// We don't expose a tri-state "clear" since the frontend always sends a concrete width; reverting to the default just sends `224`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width_px: Option<u32>,
+    /// Colour-scheme preference (Issue #151). `None` → leave alone; `Some(mode)` → set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeMode>,
 }
 
 /// serde adapter for `Option<Option<T>>`: distinguishes "absent" from "present-but-null". JSON has no native `Some(None)`, so we serialise
@@ -1825,6 +2003,8 @@ mod tests {
             worktree_name: "feature-x".to_owned(),
             label: "feature-x".to_owned(),
             composed_command: "claude --system-prompt /tmp/arborist/abc/sp.md".to_owned(),
+            structured_command: None,
+            command_provenance: Vec::new(),
             status: SessionStatus::Running,
             pid: Some(12345),
             created_at: 1_700_000_000,
@@ -1834,6 +2014,7 @@ mod tests {
                 contents: "context".to_owned(),
             }],
             ai_session_id: None,
+            last_metrics: None,
         }
     }
 
@@ -1890,6 +2071,7 @@ mod tests {
                 custom_process: BTreeMap::new(),
                 dashboard_widget: BTreeMap::new(),
             },
+            repo_command_trust: RepoCommandTrustState::default(),
             last_open_sessions: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             tab_order: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             active_session_id: Some(SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))),
@@ -1915,6 +2097,7 @@ mod tests {
             worktree_tab_order: vec![],
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: ThemeMode::System,
         };
         let fixture = json!({
             "configVersion": 11,
@@ -1936,6 +2119,9 @@ mod tests {
                 },
                 "customProcess": {},
                 "dashboardWidget": {}
+            },
+            "repoCommandTrust": {
+                "records": {}
             },
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
             "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
@@ -1961,7 +2147,8 @@ mod tests {
             ],
             "worktreeTabs": [],
             "worktreeTabOrder": [],
-            "activeWorktreeTabId": null
+            "activeWorktreeTabId": null,
+            "theme": "system"
         });
         (value, fixture)
     }
@@ -2061,6 +2248,7 @@ mod tests {
             worktree_tab_order: None,
             active_worktree_tab_id: None,
             sidebar_width_px: None,
+            theme: None,
         };
         let fixture = json!({
             "worktreeRoots": ["/repo"],

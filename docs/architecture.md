@@ -101,16 +101,16 @@ flowchart TB
 The canonical Rust definitions live in `crates/arborist-types/src/lib.rs`. The TypeScript mirror lives in `src/types/arborist.ts`. Any change to a
 Rust wire/persistence type must update the TypeScript mirror in the same commit.
 
-| Type               | Stored where            | Sent to frontend | Purpose                                                                                               |
-| ------------------ | ----------------------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
-| `Session`          | `sessions.json`         | No               | Full backend record for an AI PTY session. Includes `composedCommand`, temp files, and AI session id. |
-| `SessionView`      | Derived from `Session`  | Yes              | Frontend-safe projection without backend-only command/temp-file material.                             |
-| `WorktreeTab`      | `config.json`           | Yes              | Top-level sidebar parent for one worktree path.                                                       |
-| `SubSession`       | In-memory runtime store | Yes              | Live custom-process child tab.                                                                        |
-| `SubSessionRecord` | `config.json`           | No direct UI use | Lightweight restore record for sub-sessions.                                                          |
-| `AppConfig`        | `config.json`           | Yes              | User/workspace configuration and persisted UI/session ordering.                                       |
-| `PartialAppConfig` | Request payload         | Yes              | Deep-merge patch for `config_set`.                                                                    |
-| `AppError`         | Command error payload   | Yes              | Stable `{ code, message }` shape for frontend branching.                                              |
+| Type               | Stored where            | Sent to frontend | Purpose                                                                                                                            |
+| ------------------ | ----------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `Session`          | `sessions.json`         | No               | Full backend record for an AI PTY session. Includes `composedCommand`, temp files, AI session id, and last-known metrics snapshot. |
+| `SessionView`      | Derived from `Session`  | Yes              | Frontend-safe projection without backend-only command/temp-file material.                                                          |
+| `WorktreeTab`      | `config.json`           | Yes              | Top-level sidebar parent for one worktree path.                                                                                    |
+| `SubSession`       | In-memory runtime store | Yes              | Live custom-process child tab.                                                                                                     |
+| `SubSessionRecord` | `config.json`           | No direct UI use | Lightweight restore record for sub-sessions.                                                                                       |
+| `AppConfig`        | `config.json`           | Yes              | User/workspace configuration and persisted UI/session ordering.                                                                    |
+| `PartialAppConfig` | Request payload         | Yes              | Deep-merge patch for `config_set`.                                                                                                 |
+| `AppError`         | Command error payload   | Yes              | Stable `{ code, message }` shape for frontend branching.                                                                           |
 
 Current `AppConfig.configVersion` is `11`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
 
@@ -133,6 +133,9 @@ Every command must be present in all of these places:
 | `ping`                          | none                            | `string`                  | Command-boundary smoke check.                                                                                      |
 | `config_get`                    | none                            | `AppConfig`               | Load current workspace config.                                                                                     |
 | `config_set`                    | `PartialAppConfig`              | `AppConfig`               | Deep-merge config patch, validate, persist, and return merged config.                                              |
+| `shell_command_preview`         | `ShellCommandPreviewArgs`       | `ShellCommandPreview`     | Preview repo-provided executable settings that would run for create/restart actions.                               |
+| `repo_command_trust`            | `RepoCommandTrustArgs`          | `AppConfig`               | Persist trust for the current repo-provided command preview in user config.                                        |
+| `repo_command_allow_once`       | `RepoCommandTrustArgs`          | `void`                    | Allow the current repo-provided command preview to run once without persisting trust.                              |
 | `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                                      |
 | `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                                      |
 | `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                                         |
@@ -170,7 +173,7 @@ Every command must be present in all of these places:
 | `session://output`      | `SessionOutputEvent`      | PTY output for AI sessions and terminal sub-sessions. Sub-session ids are mapped into the session id-shaped field. |
 | `session://status`      | `SessionStatusEvent`      | AI session lifecycle status and optional explanatory message.                                                      |
 | `session://activity`    | `SessionActivityEvent`    | Attention, working/idle, title, prompt/command, turn, tool, and permission activity.                               |
-| `session://metrics`     | `SessionMetricsEvent`     | Token/context-window snapshot for a session.                                                                       |
+| `session://metrics`     | `SessionMetricsEvent`     | Token/context-window snapshot for a session. Also persisted on `Session.last_metrics` for restore.                 |
 | `subsession://status`   | `SubSessionStatusEvent`   | Custom-process sub-session status and optional pid/message.                                                        |
 | `subsession://exited`   | `SubSessionExitedEvent`   | Application sub-session process exit notification.                                                                 |
 | `subsession://restored` | `SubSessionRestoredEvent` | Restore pass materialized a sub-session row.                                                                       |
@@ -207,7 +210,11 @@ state. `enabled` is optional; omission means "use the plugin descriptor default"
 ## Invariants
 
 - Compose once, reuse forever. `Session.composedCommand` is built at creation and reused for restart/restore.
+- Default Claude/Copilot launches also store structured argv; explicit launch overrides remain shell snippets.
 - Worktree path is passed as `cwd` to the child process, never inserted into the shell command.
+- Repo-provided executable settings are defaults only and never replace user-entered launch/prep commands. Applied repo executable defaults require
+  local approval. "Don't ask again" trust is scoped to exact command fingerprints, and persisted repo command provenance is revalidated on
+  restart/restore.
 - Frontend and backend communicate only through Tauri commands and events.
 - All `invoke` and `listen` calls go through `src/lib/tauri-bridge.ts`.
 - Rust wire types and TypeScript mirrors change together.

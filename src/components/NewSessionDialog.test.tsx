@@ -23,6 +23,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     worktreePrepCommands: ['nvm use 20'],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,
@@ -31,6 +32,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
     ...overrides,
   };
 }

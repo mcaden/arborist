@@ -149,6 +149,7 @@ describe('configGet', () => {
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -157,6 +158,7 @@ describe('configGet', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     };
     invokeMock.mockResolvedValueOnce(cfg);
 
@@ -177,6 +179,7 @@ describe('configSet', () => {
       worktreePrepCommands: ['nvm use'],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -185,6 +188,7 @@ describe('configSet', () => {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     };
     invokeMock.mockResolvedValueOnce(merged);
     const patch: PartialAppConfig = { worktreePrepCommands: ['nvm use'] };
@@ -201,6 +205,55 @@ describe('configSet', () => {
       code: 'InvalidPath',
       message: 'relative',
     });
+  });
+});
+
+describe('repo command trust commands', () => {
+  it("calls invoke('shell_command_preview') wrapping args", async () => {
+    const preview = { targetWorktreePath: '/repo/wt', commands: [], trustRecords: [], trustRequired: false };
+    invokeMock.mockResolvedValueOnce(preview);
+    const args = { intent: { kind: 'worktreeCreate' as const, name: 'feat-x' } };
+
+    const result = await bridge.shellCommandPreview(args);
+
+    expect(invokeMock).toHaveBeenCalledWith('shell_command_preview', { args });
+    expect(result).toEqual(preview);
+  });
+
+  it("calls invoke('repo_command_trust') wrapping args and returns AppConfig", async () => {
+    const config: AppConfig = {
+      configVersion: 10,
+      workspaceRoot: null,
+      worktreeRoots: [],
+      worktreePrepCommands: [],
+      aiLaunchCommands: { commands: {}, iconDataUris: {} },
+      pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
+      lastOpenSessions: [],
+      tabOrder: [],
+      activeSessionId: null,
+      customProcesses: [],
+      lastOpenSubSessions: [],
+      worktreeTabs: [],
+      worktreeTabOrder: [],
+      activeWorktreeTabId: null,
+    };
+    invokeMock.mockResolvedValueOnce(config);
+    const args = { intent: { kind: 'sessionRestart' as const, sessionId: 'sid-1' } };
+
+    const result = await bridge.repoCommandTrust(args);
+
+    expect(invokeMock).toHaveBeenCalledWith('repo_command_trust', { args });
+    expect(result).toEqual(config);
+  });
+
+  it("calls invoke('repo_command_allow_once') wrapping args", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    const args = { intent: { kind: 'sessionRestart' as const, sessionId: 'sid-1' } };
+
+    await bridge.repoCommandAllowOnce(args);
+
+    expect(invokeMock).toHaveBeenCalledWith('repo_command_allow_once', { args });
   });
 });
 
@@ -293,6 +346,7 @@ describe('workspaceSwitch', () => {
     worktreePrepCommands: [],
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+    repoCommandTrust: { records: {} },
     lastOpenSessions: ['sid-restored'],
     tabOrder: ['sid-restored'],
     activeSessionId: 'sid-restored',
@@ -301,6 +355,7 @@ describe('workspaceSwitch', () => {
     worktreeTabs: [],
     worktreeTabOrder: [],
     activeWorktreeTabId: null,
+    theme: 'system',
   };
   const restoredSession: SessionView = {
     id: 'sid-restored',

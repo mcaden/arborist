@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arborist_lib::commands::session::{
-    frontend_ready_impl, restore_all_sessions, session_close_impl, session_close_locked, session_create_impl, session_focus_impl, session_input_impl,
-    session_list_impl, session_resize_impl, session_restart_impl, AppContext,
+    frontend_ready_impl, repo_command_allow_once_impl, repo_command_trust_impl, restore_all_sessions, session_close_impl, session_close_locked,
+    session_create_impl, session_focus_impl, session_input_impl, session_list_impl, session_resize_impl, session_restart_impl,
+    shell_command_preview_impl, trusted_worktree_create_config, AppContext,
 };
 use arborist_lib::commands::worktree_tab::worktree_tab_open_impl;
 use arborist_lib::compose::session_temp_dir;
@@ -24,8 +25,8 @@ use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySink, PtySpawner, PtyWaiter, SpawnedChild};
 use arborist_lib::types::{
-    ChildId, PartialAppConfig, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs, SessionStatus, Tool,
-    WorktreeInfo, WorktreeTabOpenArgs,
+    ChildId, PartialAppConfig, RepoCommandTrustArgs, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs, SessionRestartArgs,
+    SessionStatus, ShellCommandIntent, ShellCommandPreviewArgs, Tool, WorktreeInfo, WorktreeTabOpenArgs,
 };
 use portable_pty::{ExitStatus, PtySize};
 use tempfile::TempDir;
@@ -278,6 +279,69 @@ fn create_args(h: &Harness) -> SessionCreateArgs {
     }
 }
 
+fn set_workspace_root_to_worktree(h: &Harness) {
+    h.ctx
+        .store()
+        .save_config(PartialAppConfig {
+            workspace_root: Some(Some(h.worktree.path().to_path_buf())),
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+fn write_repo_settings(h: &Harness, body: &str) {
+    let dir = h.worktree.path().join(arborist_lib::repo_settings::ARBORIST_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(arborist_lib::repo_settings::SETTINGS_FILENAME), body).unwrap();
+}
+
+fn repo_claude_settings(command: &str) -> String {
+    format!(
+        r#"{{
+  "pluginSettings": {{
+    "ai": {{
+      "claude": {{
+        "settings": {{
+          "launchCommand": {command:?}
+        }}
+      }}
+    }}
+  }}
+}}"#
+    )
+}
+
+fn repo_prep_settings(command: &str) -> String {
+    format!(
+        r#"{{
+  "worktreePrepCommands": [{command:?}]
+}}"#
+    )
+}
+
+fn trust_repo_claude_launch(h: &Harness) {
+    let preview_args = ShellCommandPreviewArgs {
+        intent: ShellCommandIntent::SessionCreate {
+            tool: Tool::Claude,
+            worktree_path: h.worktree.path().to_path_buf(),
+        },
+    };
+    let preview = shell_command_preview_impl(&h.ctx, preview_args.clone()).expect("preview");
+    assert!(preview.trust_required, "repo launch override should require trust");
+    assert_eq!(preview.trust_records.len(), 1);
+    repo_command_trust_impl(&h.ctx, RepoCommandTrustArgs { intent: preview_args.intent }).expect("trust repo launch");
+}
+
+fn allow_once_repo_claude_launch(h: &Harness) {
+    let args = RepoCommandTrustArgs {
+        intent: ShellCommandIntent::SessionCreate {
+            tool: Tool::Claude,
+            worktree_path: h.worktree.path().to_path_buf(),
+        },
+    };
+    repo_command_allow_once_impl(&h.ctx, args).expect("allow repo launch once");
+}
+
 /// Wait until predicate holds or `dur` elapses. Avoids fixed `sleep`s.
 fn wait_until<F: FnMut() -> bool>(mut f: F, dur: Duration) -> bool {
     let start = std::time::Instant::now();
@@ -333,6 +397,180 @@ async fn create_emits_starting_then_running_and_persists_session() {
         !cmd.args.iter().any(|a| a.contains("cd ")),
         "composed command must not contain `cd <path>` interpolation"
     );
+}
+
+#[tokio::test]
+async fn create_uses_structured_argv_for_default_launcher() {
+    let h = build_harness();
+
+    session_create_impl(&h.ctx, create_args(&h)).expect("create ok");
+
+    let cmd = h.spawner.state.lock().unwrap().last_cmd.clone().expect("spawn command");
+    assert_eq!(cmd.program, "claude");
+    assert!(cmd.args.is_empty());
+}
+
+#[tokio::test]
+async fn create_blocks_untrusted_repo_ai_launch_override() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --danger"));
+
+    let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("repo launch override should require trust");
+
+    assert_eq!(err.code, "TrustRequired");
+    assert_eq!(h.spawner.state.lock().unwrap().spawn_count, 0);
+}
+
+#[tokio::test]
+async fn user_ai_launch_command_wins_over_repo_and_does_not_prompt() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.set_ai_launch_command("claude".to_owned(), "user-claude --safe".to_owned());
+            true
+        })
+        .expect("seed user launch command");
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --danger"));
+
+    let preview = shell_command_preview_impl(
+        &h.ctx,
+        ShellCommandPreviewArgs {
+            intent: ShellCommandIntent::SessionCreate {
+                tool: Tool::Claude,
+                worktree_path: h.worktree.path().to_path_buf(),
+            },
+        },
+    )
+    .expect("preview");
+    assert!(!preview.trust_required, "ignored repo launch override should not prompt");
+    assert!(preview.commands.is_empty());
+
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("user launch command should run without repo trust");
+
+    let cmd = h.spawner.state.lock().unwrap().last_cmd.clone().expect("spawn command");
+    assert!(cmd.args.iter().any(|arg| arg.contains("user-claude --safe")));
+    assert!(!cmd.args.iter().any(|arg| arg.contains("repo-claude --danger")));
+    let sessions = h.ctx.store().load_sessions();
+    assert!(
+        sessions[&view.id].command_provenance.is_empty(),
+        "ignored repo command must not be recorded as session provenance"
+    );
+}
+
+#[tokio::test]
+async fn user_worktree_prep_commands_win_over_repo_and_do_not_prompt() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    h.ctx
+        .store()
+        .save_config(PartialAppConfig {
+            worktree_prep_commands: Some(vec!["user-prep --safe".to_owned()]),
+            ..Default::default()
+        })
+        .expect("seed user prep command");
+    write_repo_settings(&h, &repo_prep_settings("repo-prep --danger"));
+
+    let preview = shell_command_preview_impl(
+        &h.ctx,
+        ShellCommandPreviewArgs {
+            intent: ShellCommandIntent::WorktreeCreate {
+                name: "feature-user-prep".to_owned(),
+            },
+        },
+    )
+    .expect("preview");
+    assert!(!preview.trust_required, "ignored repo prep override should not prompt");
+    assert!(preview.commands.is_empty());
+
+    let cfg = trusted_worktree_create_config(&h.ctx, "feature-user-prep").expect("user prep command should not require repo trust");
+    assert_eq!(cfg.worktree_prep_commands, vec!["user-prep --safe".to_owned()]);
+}
+
+#[tokio::test]
+async fn trusting_repo_ai_launch_allows_create_and_persists_provenance() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model test"));
+    trust_repo_claude_launch(&h);
+
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("create ok after trust");
+
+    let cmd = h.spawner.state.lock().unwrap().last_cmd.clone().expect("spawn command");
+    assert!(cmd.args.iter().any(|arg| arg.contains("repo-claude --model test")));
+    let sessions = h.ctx.store().load_sessions();
+    let session = sessions.get(&view.id).expect("persisted session");
+    assert_eq!(session.structured_command, None);
+    assert_eq!(session.command_provenance.len(), 1);
+    assert_eq!(
+        session.command_provenance[0].source,
+        arborist_lib::types::ShellCommandSource::RepoSettings
+    );
+}
+
+#[tokio::test]
+async fn allow_once_repo_ai_launch_allows_single_create_without_persisting_trust() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model one-shot"));
+
+    allow_once_repo_claude_launch(&h);
+    assert!(
+        h.ctx.store().load_config().repo_command_trust.records.is_empty(),
+        "run-once approval must not persist trust in user config"
+    );
+
+    session_create_impl(&h.ctx, create_args(&h)).expect("first create consumes run-once approval");
+    let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("run-once approval must be consumed");
+
+    assert_eq!(err.code, "TrustRequired");
+}
+
+#[tokio::test]
+async fn persistent_repo_ai_launch_trust_is_scoped_to_exact_command() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model first"));
+    trust_repo_claude_launch(&h);
+
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model second"));
+    let err = session_create_impl(&h.ctx, create_args(&h)).expect_err("changed repo command must require new trust");
+
+    assert_eq!(err.code, "TrustRequired");
+    assert_eq!(h.spawner.state.lock().unwrap().spawn_count, 0);
+}
+
+#[tokio::test]
+async fn restart_blocks_persisted_repo_command_when_trust_record_is_removed() {
+    let h = build_harness();
+    set_workspace_root_to_worktree(&h);
+    write_repo_settings(&h, &repo_claude_settings("repo-claude --model test"));
+    trust_repo_claude_launch(&h);
+    let view = session_create_impl(&h.ctx, create_args(&h)).expect("create ok after trust");
+    let spawn_count = h.spawner.state.lock().unwrap().spawn_count;
+    h.ctx
+        .store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            cfg.repo_command_trust.records.clear();
+            true
+        })
+        .unwrap();
+
+    let err = session_restart_impl(
+        &h.ctx,
+        SessionRestartArgs {
+            session_id: view.id,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect_err("restart should require renewed trust");
+
+    assert_eq!(err.code, "TrustRequired");
+    assert_eq!(h.spawner.state.lock().unwrap().spawn_count, spawn_count);
+    assert_eq!(h.ctx.store().load_sessions()[&view.id].status, SessionStatus::Error);
 }
 
 #[tokio::test]
@@ -1081,15 +1319,13 @@ async fn restore_defers_spawn_until_first_session_resize() {
     assert_eq!(size.cols, 132);
     assert_eq!(size.rows, 50);
 
-    // Composed command was reused verbatim — never recomposed.
+    // The persisted composed command is still reused verbatim — never recomposed — even though the default launch now reaches the spawner as
+    // structured argv.
+    let restored = ctx2.store().load_sessions().get(&original.id).cloned().unwrap();
+    assert_eq!(restored.composed_command, original_command);
     let cmd = st.last_cmd.as_ref().unwrap();
-    let composed_in_args = cmd.args.iter().find(|a| a.contains("claude")).cloned();
-    assert!(
-        composed_in_args
-            .as_deref()
-            .is_some_and(|s| s == original_command.as_str() || s.contains(&original_command)),
-        "expected restored spawn to receive original composed command verbatim; got {cmd:?}, original {original_command:?}"
-    );
+    assert_eq!(cmd.program, "claude");
+    assert!(cmd.args.is_empty());
 }
 
 // (no extra trailing helpers)

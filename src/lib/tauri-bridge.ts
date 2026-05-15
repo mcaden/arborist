@@ -22,11 +22,14 @@ export type { AppErrorLike } from '@/lib/tauri-error';
 import type {
   AppConfig,
   PartialAppConfig,
+  RepoCommandTrustArgs,
   SessionId,
   SessionOutputEvent,
   SessionStatusEvent,
   SessionActivityEvent,
   SessionMetricsEvent,
+  ShellCommandPreview,
+  ShellCommandPreviewArgs,
   SessionView,
   SubSession,
   SubSessionCloseArgs,
@@ -243,6 +246,18 @@ export function configGet(): Promise<AppConfig> {
  */
 export function configSet(partial: PartialAppConfig): Promise<AppConfig> {
   return invoke<AppConfig>('config_set', { partial });
+}
+
+export function shellCommandPreview(args: ShellCommandPreviewArgs): Promise<ShellCommandPreview> {
+  return invoke<ShellCommandPreview>('shell_command_preview', { args });
+}
+
+export function repoCommandTrust(args: RepoCommandTrustArgs): Promise<AppConfig> {
+  return invoke<AppConfig>('repo_command_trust', { args });
+}
+
+export function repoCommandAllowOnce(args: RepoCommandTrustArgs): Promise<void> {
+  return invoke<void>('repo_command_allow_once', { args });
 }
 
 /**

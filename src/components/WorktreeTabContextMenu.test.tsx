@@ -79,7 +79,7 @@ describe('WorktreeTabContextMenu', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('clicking Launch Claude calls sessionCreate with this worktree path', () => {
+  it('clicking Launch Claude calls sessionCreate with this worktree path', async () => {
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',
       tool: 'claude',
@@ -92,10 +92,12 @@ describe('WorktreeTabContextMenu', () => {
     });
     renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
     fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-claude'));
-    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude', worktreePath: '/repo/feature-x' }));
+    await waitFor(() =>
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude', worktreePath: '/repo/feature-x' })),
+    );
   });
 
-  it('clicking Launch Copilot calls sessionCreate with copilot tool', () => {
+  it('clicking Launch Copilot calls sessionCreate with copilot tool', async () => {
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',
       tool: 'copilot',
@@ -108,7 +110,9 @@ describe('WorktreeTabContextMenu', () => {
     });
     renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
     fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-copilot'));
-    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'copilot', worktreePath: '/repo/feature-x' }));
+    await waitFor(() =>
+      expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'copilot', worktreePath: '/repo/feature-x' })),
+    );
   });
 
   it('returns null when the tab has been removed from the store', () => {
@@ -133,7 +137,7 @@ describe('WorktreeTabContextMenu', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('Enter activates the focused menu item rather than the last hovered item', () => {
+  it('Enter activates the focused menu item rather than the last hovered item', async () => {
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',
       tool: 'claude',
@@ -150,7 +154,7 @@ describe('WorktreeTabContextMenu', () => {
     fireEvent.mouseEnter(screen.getByTestId('worktree-tab-context-menu-close'));
     fireEvent.keyDown(launchClaude, { key: 'Enter' });
 
-    expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude' }));
+    await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude' })));
     expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
   });
 

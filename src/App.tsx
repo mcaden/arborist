@@ -27,13 +27,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
 import { Sidebar } from '@/components/Sidebar';
+import { ShellCommandTrustDialogHost } from '@/components/ShellCommandTrustDialog';
 import { WorkspacePicker } from '@/components/WorkspacePicker';
 import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
 import { subscribeToSubExited, subscribeToSubRestored, subscribeToSubStatus } from '@/lib/sub-session-events';
 import { formatError, frontendReady } from '@/lib/tauri-bridge';
 import { createBuiltinsRegistry, PluginRegistryProvider } from '@/plugins';
-import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
+import { selectTheme, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -52,23 +53,32 @@ function applyDarkModeClass(isDark: boolean): void {
   }
 }
 
-function useDarkModeFromSystem(): void {
+function useTheme(): void {
+  const theme = useConfigStore(selectTheme);
   useEffect(() => {
+    if (theme === 'light') {
+      applyDarkModeClass(false);
+      return;
+    }
+    if (theme === 'dark') {
+      applyDarkModeClass(true);
+      return;
+    }
+    // theme === 'system': follow OS preference
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      applyDarkModeClass(false);
       return;
     }
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     applyDarkModeClass(mq.matches);
     const onChange = (e: MediaQueryListEvent): void => applyDarkModeClass(e.matches);
-    // Older WebViews only expose addListener/removeListener; prefer the
-    // modern API and fall back where needed.
     if (typeof mq.addEventListener === 'function') {
       mq.addEventListener('change', onChange);
       return () => mq.removeEventListener('change', onChange);
     }
     mq.addListener(onChange);
     return () => mq.removeListener(onChange);
-  }, []);
+  }, [theme]);
 }
 
 function BootSplash(): JSX.Element {
@@ -108,6 +118,7 @@ export function App(): JSX.Element {
   return (
     <PluginRegistryProvider registry={registry}>
       <AppInner />
+      <ShellCommandTrustDialogHost />
     </PluginRegistryProvider>
   );
 }
@@ -116,7 +127,7 @@ function AppInner(): JSX.Element {
   const [status, setStatus] = useState<BootStatus>('booting');
   const [error, setError] = useState<string | null>(null);
 
-  useDarkModeFromSystem();
+  useTheme();
 
   useEffect(() => {
     let cancelled = false;

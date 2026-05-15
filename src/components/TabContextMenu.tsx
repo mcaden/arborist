@@ -19,6 +19,7 @@ import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'r
 import { createPortal } from 'react-dom';
 
 import { getTerminalDimensions, measureInitialPtyDimensions } from '@/hooks/use-terminal';
+import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { formatError, sessionRestart } from '@/lib/tauri-bridge';
 import { useSessionActions } from '@/store/session-store';
 import type { SessionId } from '@/types/arborist';
@@ -101,7 +102,11 @@ export function TabContextMenu({ parentSessionId, anchor, onClose, restoreFocusT
 
   const handleRestart = (): void => {
     const dims = getTerminalDimensions(parentSessionId) ?? measureInitialPtyDimensions();
-    void sessionRestart({ sessionId: parentSessionId, cols: dims.cols, rows: dims.rows }).catch((err: unknown) => {
+    void (async () => {
+      const trusted = await ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId: parentSessionId });
+      if (!trusted) return;
+      await sessionRestart({ sessionId: parentSessionId, cols: dims.cols, rows: dims.rows });
+    })().catch((err: unknown) => {
       const message = formatError(err);
       console.warn(`[TabContextMenu] session_restart failed: ${message}`);
     });

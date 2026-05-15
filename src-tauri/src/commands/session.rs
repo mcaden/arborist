@@ -29,8 +29,9 @@ use crate::git::{GitRunner, RealGitRunner};
 use crate::pty_pool::{cleanup_orphans, KillOutcome, PtyPool, PtySink};
 use crate::session_metrics::{AiSessionDiscoveryCb, MetricsCb, MetricsRegistry, TurnCb};
 use crate::types::{
-    AppError, Error, PartialAppConfig, Session, SessionCloseResult, SessionCreateArgs, SessionId, SessionInputArgs, SessionResizeArgs,
-    SessionRestartArgs, SessionStatus, SessionView, Tool, WorktreeTabId,
+    AppConfig, AppError, Error, PartialAppConfig, RepoCommandTrustArgs, Session, SessionCloseResult, SessionCreateArgs, SessionId, SessionInputArgs,
+    SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionView, ShellCommandIntent, ShellCommandKind, ShellCommandPreview,
+    ShellCommandPreviewArgs, StructuredCommand, Tool, WorktreeTabId,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -76,6 +77,9 @@ pub struct AppContext {
     /// `Mutex<HashMap>` (not `RwLock`) because the only access pattern is a single-step claim (`remove`) under the same lock as the membership check,
     /// which a `RwLock` cannot give us atomically.
     pub pending_spawn: Arc<Mutex<HashMap<SessionId, Session>>>,
+    /// In-memory run-once approvals for repo-provided executable settings. Persistent "don't ask again" trust lives in user config; this map is only
+    /// for the next matching command fingerprint in the current process.
+    pub one_shot_repo_command_trust: Arc<Mutex<HashMap<String, usize>>>,
     /// **Workspace-switch barrier — quiesce side** (Phase 7).
     ///
     /// Used in tandem with [`Self::switch_pending`]. Together the pair answers two questions a workspace-mutating handler must resolve before
@@ -244,6 +248,7 @@ impl AppContext {
             closing_parents: Arc::new(Mutex::new(HashSet::new())),
             closing_worktree_tabs: Arc::new(Mutex::new(HashSet::new())),
             pending_spawn: Arc::new(Mutex::new(HashMap::new())),
+            one_shot_repo_command_trust: Arc::new(Mutex::new(HashMap::new())),
             switch_lock: Arc::new(tokio::sync::RwLock::new(())),
             switch_pending: Arc::new(AtomicUsize::new(0)),
             prep_registry: Arc::new(crate::worktree_prep::WorktreePrepRegistry::new()),
@@ -365,6 +370,199 @@ fn validate_pty_dims(cols: u16, rows: u16) -> Result<(), AppError> {
     Ok(())
 }
 
+fn effective_config_with_repo_overlay(user_cfg: AppConfig) -> (AppConfig, Option<(PathBuf, crate::repo_settings::RepoSettings)>) {
+    let Some(workspace) = user_cfg.workspace_root.clone() else {
+        return (user_cfg, None);
+    };
+    let repo = crate::repo_settings::RepoSettings::load(&workspace);
+    let mut effective = user_cfg;
+    repo.apply_to(&mut effective);
+    (effective, Some((workspace, repo)))
+}
+
+fn repo_ai_launch_candidate(
+    repo: Option<&(PathBuf, crate::repo_settings::RepoSettings)>,
+    user_cfg: &AppConfig,
+    tool: Tool,
+    command: String,
+    target_worktree_path: PathBuf,
+) -> Option<crate::shell_trust::RepoCommandCandidate> {
+    let (workspace_root, repo_settings) = repo?;
+    let repo_command = repo_settings.ai_launch_command_for_id_if_user_unset(user_cfg, tool.as_id())?.trim();
+    if repo_command.is_empty() {
+        return None;
+    }
+    Some(crate::shell_trust::RepoCommandCandidate {
+        kind: ShellCommandKind::AiLaunch,
+        command,
+        scope: Some(tool.as_id().to_owned()),
+        workspace_root: workspace_root.clone(),
+        source_path: crate::repo_settings::RepoSettings::settings_path(workspace_root),
+        target_worktree_path,
+    })
+}
+
+fn repo_worktree_prep_candidate(
+    repo: Option<&(PathBuf, crate::repo_settings::RepoSettings)>,
+    user_cfg: &AppConfig,
+    target_worktree_path: PathBuf,
+) -> Option<crate::shell_trust::RepoCommandCandidate> {
+    let (workspace_root, repo_settings) = repo?;
+    let cleaned = crate::worktree_prep::clean_commands(repo_settings.worktree_prep_commands_if_user_unset(user_cfg)?);
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(crate::shell_trust::RepoCommandCandidate {
+        kind: ShellCommandKind::WorktreePrep,
+        command: cleaned.join(" && "),
+        scope: None,
+        workspace_root: workspace_root.clone(),
+        source_path: crate::repo_settings::RepoSettings::settings_path(workspace_root),
+        target_worktree_path,
+    })
+}
+
+fn default_structured_command(tool: Tool, temp_files: &[crate::types::TempFileSpec]) -> StructuredCommand {
+    let program = crate::plugins::ai::plugin_for_tool(tool).default_program().to_owned();
+    let args = match tool {
+        Tool::Claude => temp_files
+            .first()
+            .map(|temp| vec!["--system-prompt".to_owned(), temp.path.to_string_lossy().into_owned()])
+            .unwrap_or_default(),
+        Tool::Copilot => Vec::new(),
+    };
+    StructuredCommand { program, args }
+}
+
+fn with_resume_for_spawn(session: &Session, ai_session_id: &str) -> Session {
+    let mut session_to_spawn = session.clone();
+    session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, ai_session_id);
+    if let Some(structured) = session_to_spawn.structured_command.as_mut() {
+        structured.args.push("--resume".to_owned());
+        structured.args.push(ai_session_id.to_owned());
+    }
+    session_to_spawn
+}
+
+fn session_create_trust_inputs(
+    ctx: &AppContext,
+    tool: Tool,
+    worktree_path: &Path,
+    session_id: SessionId,
+) -> Result<(PathBuf, AppConfig, Vec<crate::shell_trust::RepoCommandCandidate>), AppError> {
+    let worktree = compose::validate_worktree(worktree_path).map_err(AppError::from)?;
+    let user_cfg = ctx.store().load_config();
+    let (cfg, repo_overlay) = effective_config_with_repo_overlay(user_cfg.clone());
+    let plugin = crate::plugins::ai::plugin_for_tool(tool);
+    if !cfg.plugin_settings.ai_enabled(plugin.id(), plugin.default_enabled()) {
+        return Err(AppError::new(
+            "PluginDisabled",
+            format!(
+                "AI plugin {} is disabled; enable it in Settings > Plugins before launching a new session",
+                plugin.display_name()
+            ),
+        ));
+    }
+
+    let label = worktree
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "session".to_owned());
+    let cli_override = cfg.ai_launch_command_for_tool(tool);
+    let composed = compose::compose_command(&ComposeInputs {
+        session_id,
+        tool,
+        worktree_path: &worktree,
+        worktree_label: &label,
+        cli_launch_command: Some(cli_override),
+    })
+    .map_err(AppError::from)?;
+
+    let command = crate::shell_trust::normalize_command_for_session(session_id, &composed.composed_command);
+    let candidates = repo_ai_launch_candidate(repo_overlay.as_ref(), &user_cfg, tool, command, worktree.clone())
+        .into_iter()
+        .collect();
+    Ok((worktree, cfg, candidates))
+}
+
+fn worktree_create_trust_inputs(
+    user_cfg: AppConfig,
+    name: &str,
+) -> Result<(AppConfig, PathBuf, Vec<crate::shell_trust::RepoCommandCandidate>), AppError> {
+    let validated = compose::validate_worktree_name(name).map_err(|msg| AppError::from(Error::InvalidPath(msg)))?;
+    let user_cfg_for_overlay = user_cfg.clone();
+    let (cfg, repo_overlay) = effective_config_with_repo_overlay(user_cfg);
+    let Some(workspace) = cfg.workspace_root.as_ref() else {
+        return Err(AppError::from(Error::NotFound(
+            "workspaceRoot is not set; cannot create worktree".to_owned(),
+        )));
+    };
+    let target = workspace.join(crate::repo_settings::WORKTREES_REL).join(validated);
+    let candidates = repo_worktree_prep_candidate(repo_overlay.as_ref(), &user_cfg_for_overlay, target.clone())
+        .into_iter()
+        .collect();
+    Ok((cfg, target, candidates))
+}
+
+pub fn trusted_worktree_create_config(ctx: &AppContext, name: &str) -> Result<AppConfig, AppError> {
+    let (cfg, _target, candidates) = worktree_create_trust_inputs(ctx.store().load_config(), name)?;
+    crate::shell_trust::ensure_trusted_or_consume_once(&cfg, &candidates, &ctx.one_shot_repo_command_trust)?;
+    Ok(cfg)
+}
+
+pub fn shell_command_preview_impl(ctx: &AppContext, args: ShellCommandPreviewArgs) -> Result<ShellCommandPreview, AppError> {
+    let _switch = acquire_switch_read(ctx)?;
+    match args.intent {
+        ShellCommandIntent::SessionCreate { tool, worktree_path } => {
+            let preview_id = SessionId(uuid::Uuid::nil());
+            let (target, cfg, candidates) = session_create_trust_inputs(ctx, tool, &worktree_path, preview_id)?;
+            Ok(crate::shell_trust::preview(target, &cfg, candidates))
+        }
+        ShellCommandIntent::SessionRestart { session_id } => {
+            let sessions = ctx.store().load_sessions();
+            let session = sessions
+                .get(&session_id)
+                .ok_or_else(|| AppError::from(Error::NotFound(format!("session {session_id} not found"))))?;
+            let cfg = ctx.store().load_config();
+            let candidates = crate::shell_trust::session_candidates(session)?;
+            Ok(crate::shell_trust::preview(session.worktree_path.clone(), &cfg, candidates))
+        }
+        ShellCommandIntent::WorktreeCreate { name } => {
+            let (cfg, target, candidates) = worktree_create_trust_inputs(ctx.store().load_config(), &name)?;
+            Ok(crate::shell_trust::preview(target, &cfg, candidates))
+        }
+    }
+}
+
+pub fn repo_command_trust_impl(ctx: &AppContext, args: RepoCommandTrustArgs) -> Result<AppConfig, AppError> {
+    let preview = shell_command_preview_impl(ctx, ShellCommandPreviewArgs { intent: args.intent })?;
+    if preview.trust_records.is_empty() {
+        return Ok(ctx.store().load_config());
+    }
+    let trusted_at = crate::shell_trust::now_unix_seconds();
+    let records = preview
+        .trust_records
+        .into_iter()
+        .map(|mut record| {
+            record.trusted_at = trusted_at;
+            record
+        })
+        .collect::<Vec<_>>();
+    ctx.store()
+        .save_config_with(PartialAppConfig::default(), |cfg| {
+            for record in records.iter().cloned() {
+                cfg.repo_command_trust.records.insert(record.fingerprint.clone(), record);
+            }
+            true
+        })
+        .map_err(AppError::from)
+}
+
+pub fn repo_command_allow_once_impl(ctx: &AppContext, args: RepoCommandTrustArgs) -> Result<(), AppError> {
+    let preview = shell_command_preview_impl(ctx, ShellCommandPreviewArgs { intent: args.intent })?;
+    crate::shell_trust::allow_once(&ctx.one_shot_repo_command_trust, &preview.trust_records)
+}
+
 /// Create a new session, materialise its temp files, persist it, and spawn the PTY child. Returns the [`SessionView`] the frontend can stash in its
 /// store.
 pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<SessionView, AppError> {
@@ -374,9 +572,10 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 1. Validate worktree (canonicalises; rejects relative/missing).
     let worktree = compose::validate_worktree(&args.worktree_path).map_err(AppError::from)?;
 
-    // 2. Load effective config. Repo overlay (issue #71): launch-command defaults from `<workspace>/.arborist/settings.json` win over user-level
-    //    `AppConfig` defaults.
-    let cfg = crate::repo_settings::apply_repo_overlay(ctx.store().load_config());
+    // 2. Load effective config. Repo overlay (issue #71): defaults from `<workspace>/.arborist/settings.json` apply where allowed; executable
+    //    settings stay subordinate to user-entered launch/prep commands.
+    let user_cfg = ctx.store().load_config();
+    let (cfg, repo_overlay) = effective_config_with_repo_overlay(user_cfg.clone());
     let plugin = crate::plugins::ai::plugin_for_tool(args.tool);
     if !cfg.plugin_settings.ai_enabled(plugin.id(), plugin.default_enabled()) {
         return Err(AppError::new(
@@ -407,6 +606,17 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         cli_launch_command: Some(cli_override),
     })
     .map_err(AppError::from)?;
+    let normalized_command = crate::shell_trust::normalize_command_for_session(session_id, &composed.composed_command);
+    let repo_command = repo_ai_launch_candidate(repo_overlay.as_ref(), &user_cfg, args.tool, normalized_command, worktree.clone());
+    let command_provenance = repo_command.as_ref().map(crate::shell_trust::provenance).into_iter().collect::<Vec<_>>();
+    if let Some(candidate) = repo_command.as_ref() {
+        crate::shell_trust::ensure_trusted_or_consume_once(&cfg, std::slice::from_ref(candidate), &ctx.one_shot_repo_command_trust)?;
+    }
+    let structured_command = if cli_override.trim().is_empty() {
+        Some(default_structured_command(args.tool, &composed.temp_files))
+    } else {
+        None
+    };
 
     // 5. Materialise temp files on disk.
     materialise_temp_files(&composed.temp_files)?;
@@ -439,12 +649,15 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         worktree_name: basename,
         label: label.clone(),
         composed_command: composed.composed_command,
+        structured_command,
+        command_provenance,
         status: SessionStatus::Starting,
         pid: None,
         created_at: now_unix_seconds(),
         tab_index,
         temp_files: composed.temp_files,
         ai_session_id: preallocated_ai_id.clone(),
+        last_metrics: None,
     };
 
     // 7. Persist before spawning so a crash mid-spawn still leaves an auditable
@@ -477,9 +690,7 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     //     session-state directory at the known deterministic path from spawn time.
     //     The persisted `composed_command` stays bare (see step 7).
     let session_to_spawn = if let Some(aid) = preallocated_ai_id.as_deref() {
-        let mut s = session.clone();
-        s.composed_command = compose::with_resume(&session.composed_command, args.tool, aid);
-        s
+        with_resume_for_spawn(&session, aid)
     } else {
         session.clone()
     };
@@ -966,6 +1177,16 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
         return Err(AppError::from(Error::WorktreeMissing(session.worktree_path.clone())));
     }
 
+    let session_candidates = crate::shell_trust::session_candidates(&session)?;
+    if let Err(e) =
+        crate::shell_trust::ensure_trusted_or_consume_once(&ctx.store().load_config(), &session_candidates, &ctx.one_shot_repo_command_trust)
+    {
+        let msg = format!("Cannot restart session until its repository-provided command is trusted: {}", &e.message);
+        let _ = ctx.store().update_session_status(&id, SessionStatus::Error, None);
+        (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+        return Err(e);
+    }
+
     // Re-materialise temp files in case they were deleted (e.g. by a prior close path that ran while the session was still open in another window —
     // defensive). Composed command is reused verbatim — *never* recompose at restart time.
     if let Err(e) = materialise_temp_files(&session.temp_files) {
@@ -1019,9 +1240,7 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     }
 
     let session_to_spawn = if let Some(aid) = restart_ai_id.as_deref() {
-        let mut s = session.clone();
-        s.composed_command = compose::with_resume(&session.composed_command, session.tool, aid);
-        s
+        with_resume_for_spawn(&session, aid)
     } else {
         session.clone()
     };
@@ -1271,6 +1490,14 @@ pub fn restore_all_sessions(ctx: &AppContext) {
             continue;
         }
 
+        if let Err(e) = crate::shell_trust::ensure_session_trusted(&store.load_config(), &session) {
+            warn!(session_id = %id, error = %e.message, "restore: repo-provided command is not trusted; leaving session stopped");
+            let msg = format!("Cannot restore session until its repository-provided command is trusted: {}", &e.message);
+            let _ = store.update_session_status(&id, SessionStatus::Error, None);
+            (ctx.sink.status)(&id, SessionStatus::Error, None, Some(msg));
+            continue;
+        }
+
         // Re-materialise temp files in case they were swept by an OS-level tmp clean. `respawn_existing` reuses `composed_command` verbatim.
         if let Err(e) = materialise_temp_files(&session.temp_files) {
             warn!(session_id = %id, error = ?e, "restore: temp-file materialise failed");
@@ -1317,7 +1544,7 @@ pub fn restore_all_sessions(ctx: &AppContext) {
                 let _ = store.update_session_ai_session_id(&id, None);
             }
             if should_splice {
-                session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, aid);
+                session_to_spawn = with_resume_for_spawn(&session, aid);
             }
         }
 

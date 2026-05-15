@@ -17,6 +17,7 @@ const SAMPLE: AppConfig = {
   worktreePrepCommands: ['nvm use'],
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
   pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+  repoCommandTrust: { records: {} },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -25,6 +26,7 @@ const SAMPLE: AppConfig = {
   worktreeTabs: [],
   worktreeTabOrder: [],
   activeWorktreeTabId: null,
+  theme: 'system',
 };
 
 function resetStore(): void {
@@ -36,6 +38,7 @@ function resetStore(): void {
       worktreePrepCommands: [],
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
+      repoCommandTrust: { records: {} },
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -44,6 +47,7 @@ function resetStore(): void {
       worktreeTabs: [],
       worktreeTabOrder: [],
       activeWorktreeTabId: null,
+      theme: 'system',
     },
     status: 'idle',
     error: null,
