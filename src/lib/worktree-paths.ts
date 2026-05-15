@@ -18,6 +18,7 @@ function isWindowsLikePath(p: string): boolean {
 
 /** Normalize separators to `/` and strip trailing slashes (preserving root paths). */
 function normalize(p: string): string {
+  if (p.length === 0) return '';
   // Replacing backslashes globally is safe enough for our purpose:
   // backslashes in literal POSIX file names are rare, and the inputs to
   // this helper come from `git worktree list --porcelain` and our own

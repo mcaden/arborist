@@ -99,4 +99,9 @@ describe('pathsEqual', () => {
     expect(pathsEqual('C:////', 'C:/')).toBe(true);
     expect(pathsEqual('C:////', 'c:\\')).toBe(true);
   });
+
+  it('does not treat empty string as root', () => {
+    expect(pathsEqual('', '/')).toBe(false);
+    expect(pathsEqual('', '')).toBe(true);
+  });
 });
