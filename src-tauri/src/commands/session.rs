@@ -167,9 +167,13 @@ pub struct AppContext {
     /// Absolute path to the `arborist-claude-hook` helper binary, when locatable at boot.
     ///
     /// Resolved once at `AppContext` construction via [`std::env::current_exe()`]'s parent directory (the helper ships as a sibling executable —
-    /// see `tauri.conf.json::bundle.externalBin` and the `[[bin]]` entry in `src-tauri/Cargo.toml`). When `None`, Claude session compose silently
-    /// skips writing the per-session `claude-settings.json` and Claude launches without the Arborist hook integration. The fallback is intentional:
-    /// a missing helper (dev builds, partial installs) is degraded, not fatal — sidebar status reverts to the pre-hooks heuristics.
+    /// declared as a `[[bin]]` entry in `src-tauri/Cargo.toml`). When `None`, Claude session compose silently skips writing the per-session
+    /// `claude-settings.json` and Claude launches without the Arborist hook integration. The fallback is intentional: a missing helper (dev builds,
+    /// partial installs) is degraded, not fatal — sidebar status reverts to the pre-hooks heuristics.
+    ///
+    /// **Release-bundling note:** wiring the helper into `tauri.conf.json::bundle.externalBin` so installed builds also get the sidecar is a planned
+    /// follow-up — `tauri.conf.json` currently has no `externalBin` entry, so today the helper is only available when running from a local cargo
+    /// build (dev / `pnpm dev`). See `scripts/prepare-claude-hook-sidecar.mjs` for the staging script that will feed `externalBin` once wired.
     pub claude_hook_helper: Option<PathBuf>,
     /// Absolute path to the user's home directory. Used by Claude compose to read `~/.claude/settings.json` and merge the user's hooks into the
     /// per-session settings file. `None` falls back to skipping user-level settings.

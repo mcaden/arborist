@@ -22,10 +22,17 @@ path = "src/main.rs"
 # Helper invoked by Claude Code hooks (registered via `--settings`). Reads the
 # hook payload from stdin and appends a structured JSONL line to the per-session
 # `hook-events.jsonl` that `claude_hook_events.rs` tails. Production-built —
-# shipped alongside `arborist` in the bundle. Placed under `src/bin_hook/` for
-# the same reason the test bins below live under `src/test_bin/`: Tauri's CLI
-# auto-discovers everything under `src/bin/` as a bundle target, and we want to
-# control bundling explicitly via `tauri.conf.json::bundle.externalBin`.
+# the goal is to ship it alongside `arborist` in the bundle. Placed under
+# `src/bin_hook/` for the same reason the test bins below live under
+# `src/test_bin/`: Tauri's CLI auto-discovers everything under `src/bin/` as a
+# bundle target, and we want to control bundling explicitly.
+#
+# Release-bundling note: the planned wiring is via
+# `tauri.conf.json::bundle.externalBin` (paired with
+# `scripts/prepare-claude-hook-sidecar.mjs`), but neither is configured yet —
+# it's a follow-up. Until then the helper is only present in local cargo
+# builds (dev / `pnpm dev`); installed bundles launch Claude without the
+# Arborist hook integration and the sidebar falls back to pre-hooks heuristics.
 [[bin]]
 name = "arborist-claude-hook"
 path = "src/bin_hook/arborist_claude_hook.rs"

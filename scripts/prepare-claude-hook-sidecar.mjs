@@ -11,7 +11,10 @@
 //      and builds into the *repo-root* `target/`, not `src-tauri/target/`), and resolves the host target triple via `rustc -vV`.
 //   3. Copies the built binary to `src-tauri/binaries/arborist-claude-hook-<triple>{.exe}` so `externalBin` picks it up.
 //
-// Wired via `tauri.conf.json::build.beforeBundleCommand` so it runs after frontend + main-bin builds but before bundling.
+// **Not yet wired.** The intended hookup is `tauri.conf.json::build.beforeBundleCommand` so this runs after frontend + main-bin builds but before
+// bundling — neither `beforeBundleCommand` nor the matching `bundle.externalBin` entry is in `tauri.conf.json` yet (Tauri's `externalBin` validation
+// runs during the cargo build script, before `beforeBundleCommand` could prepare the file, which forced a revert during the original PR). Until that
+// release-bundling follow-up lands, this script is invoked manually for local testing only and installed bundles ship without the helper.
 
 import { execSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';

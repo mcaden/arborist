@@ -1,8 +1,8 @@
 //! Claude hook settings file builder.
 //!
 //! Composes the per-session `claude-settings.json` we hand to Claude via `--settings <path>` so every hook we register fires the
-//! `arborist-claude-hook` helper binary. Merges the user's existing settings (project local → project → user, oldest first) with our hook entries
-//! so the user's own PreToolUse formatters / Stop validators / etc. keep running.
+//! `arborist-claude-hook` helper binary. Merges the user's existing settings (user-home → project → project local, lowest precedence first — see
+//! [`user_settings_paths`]) with our hook entries so the user's own PreToolUse formatters / Stop validators / etc. keep running.
 //!
 //! ## Why per-session not project-shared
 //!
