@@ -546,6 +546,27 @@ pub fn show_lock_contention_dialog(branch: &str, workspace: &Path) {
     info!(branch = branch, ?workspace, "boot refused: lock contention");
 }
 
+/// Variant of [`show_lock_contention_dialog`] used when the boot flow will fall back to the native picker after the user dismisses the dialog.
+/// Informs the user that the resolved workspace is locked and they should pick a different one.
+fn show_lock_contention_picker_dialog(branch: &str, workspace: &Path) {
+    let body = format!(
+        "This workspace is already open in another Arborist window for the same branch.\n\nBranch: {}\nWorkspace: {}\n\nPick a different workspace folder to continue.",
+        if branch.trim().is_empty() { "main" } else { branch },
+        workspace.display(),
+    );
+    let _ = rfd::MessageDialog::new()
+        .set_title("Workspace already open")
+        .set_description(&body)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+    info!(
+        branch = branch,
+        ?workspace,
+        "lock contention on auto-resolved workspace; falling back to picker"
+    );
+}
+
 /// Native message-dialog informing the user that the requested path isn't a git repository root and so cannot be bound as a workspace. Used when the
 /// source of the path was the native picker (the user explicitly chose it) — for `--workspace` / hint / legacy sources the boot orchestrator surfaces
 /// the error via stderr / log instead.
@@ -593,9 +614,12 @@ pub fn show_workspace_root_persist_dialog(workspace_dir: &Path, reason: &str) {
 ///   AppContext.
 /// * If the user cancels the picker, returns `Ok(None)`. Caller exits cleanly
 ///   (no error).
-/// * On lock contention or hard error, returns `Err(BootError)`. Caller
-///   surfaces a native dialog (for [`BootError::Contention`]) and exits
-///   non-zero.
+/// * On lock contention from a non-CLI source, surfaces a native dialog and
+///   falls back to the native picker so the user can choose a different
+///   workspace. If the user cancels the picker, returns `Ok(None)`.
+/// * On lock contention from a `--workspace` CLI arg, returns
+///   `Err(BootError::Contention)`. Caller surfaces a dialog and exits non-zero.
+/// * On other hard errors, returns `Err(BootError)`. Caller exits non-zero.
 pub fn boot_select_workspace(
     args: &CliArgs,
     app_data_dir: &Path,
@@ -609,7 +633,17 @@ pub fn boot_select_workspace(
     let Some((workspace_root, source)) = resolved else {
         return Ok(None); // user cancelled
     };
-    let binding = bind_workspace(&workspace_root, app_data_dir, branch, git_runner, source)?;
+
+    let binding = match bind_workspace(&workspace_root, app_data_dir, branch, git_runner, source) {
+        Ok(b) => b,
+        Err(BootError::Contention { ref branch, ref workspace }) if source != BootSource::Cli => {
+            // The auto-resolved workspace (hint/legacy) or picker selection is locked by another instance. Inform the user and let them pick a
+            // different workspace rather than hard-exiting.
+            show_lock_contention_picker_dialog(branch, workspace);
+            return boot_select_workspace_from_picker(app_data_dir, branch, git_runner);
+        }
+        Err(e) => return Err(e),
+    };
 
     // Ensure the bound workspace's config.json reflects the canonical workspace_root (single source of truth — see helper docs). Boot must propagate
     // a save failure here: if we let the bind stand with workspace_root=None on disk, the frontend would rehydrate, see `workspaceRoot: null`, fall
@@ -627,6 +661,46 @@ pub fn boot_select_workspace(
         warn!(error = %e, "failed to persist last-workspace hint; non-fatal");
     }
     Ok(Some(binding))
+}
+
+/// Picker-only workspace selection loop. Called when the initial resolution hit lock contention and we need the user to pick a different workspace.
+/// Loops on contention (the user might pick the same locked workspace again) and on invalid-repo picks, showing a dialog each time. Returns
+/// `Ok(None)` if the user cancels the picker at any point.
+fn boot_select_workspace_from_picker(app_data_dir: &Path, branch: &str, git_runner: &dyn GitRunner) -> Result<Option<WorkspaceBinding>, BootError> {
+    loop {
+        let Some(workspace_root) = prompt_for_workspace_native(branch) else {
+            return Ok(None); // user cancelled
+        };
+
+        match bind_workspace(&workspace_root, app_data_dir, branch, git_runner, BootSource::Picker) {
+            Ok(binding) => {
+                if let Err(source) = ensure_workspace_root_in_config(&binding.store, &binding.workspace_root) {
+                    return Err(BootError::WorkspaceRootPersist {
+                        dir: binding.layout.workspace_dir().to_path_buf(),
+                        source,
+                    });
+                }
+                if let Err(e) = write_hint(app_data_dir, branch, &binding.workspace_root) {
+                    warn!(error = %e, "failed to persist last-workspace hint; non-fatal");
+                }
+                return Ok(Some(binding));
+            }
+            Err(BootError::Contention {
+                branch: ref b,
+                workspace: ref w,
+            }) => {
+                show_lock_contention_picker_dialog(b, w);
+                // loop again — let user pick another
+            }
+            Err(BootError::NotARepository {
+                ref workspace, ref reason, ..
+            }) => {
+                show_not_a_repo_dialog(workspace, reason);
+                // loop again — let user pick another
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 #[cfg(test)]
