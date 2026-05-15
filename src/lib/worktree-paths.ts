@@ -27,7 +27,10 @@ function normalize(p: string): string {
   // slash would change semantics (empty string or `C:` = CWD on that drive).
   if (slashed === '/') return '/';
   if (/^[A-Za-z]:\/$/i.test(slashed)) return slashed;
-  return slashed.replace(/\/+$/, '');
+  // Strip trailing slashes without regex quantifiers (avoids SonarCloud ReDoS false positive).
+  let end = slashed.length;
+  while (end > 0 && slashed[end - 1] === '/') end--;
+  return end === 0 ? slashed : slashed.slice(0, end);
 }
 
 /**
