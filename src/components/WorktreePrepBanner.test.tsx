@@ -12,18 +12,17 @@ let dispatch: ((ev: WorktreePrepEvent) => void) | undefined;
 
 beforeEach(() => {
   bridgeMock.resetBridgeMocks();
+  useWorktreePrepStore.getState()._resetForTest();
   bridgeMock.onWorktreePrep.mockImplementationOnce((cb) => {
     dispatch = cb;
     return Promise.resolve(() => {});
   });
-  useWorktreePrepStore.getState()._resetForTest();
+  dispatch = undefined;
   vi.useFakeTimers();
 });
 
 afterEach(() => {
   vi.useRealTimers();
-  useWorktreePrepStore.getState()._resetForTest();
-  dispatch = undefined;
 });
 
 async function subscribe(): Promise<void> {
