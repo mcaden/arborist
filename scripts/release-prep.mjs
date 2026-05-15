@@ -37,6 +37,8 @@ if (!SEMVER_RE.test(version)) {
 
 const tag = `v${version}`;
 
+// --- Preflight checks (all before any file modification) ---
+
 // Check for uncommitted changes
 try {
   const status = execSync('git status --porcelain', { encoding: 'utf8' }).trim();
@@ -47,6 +49,18 @@ try {
 } catch {
   console.error('Failed to check git status.');
   process.exit(1);
+}
+
+// Ensure we're on main to prevent accidental releases from feature branches
+const root = resolve(import.meta.dirname, '..');
+const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: root, encoding: 'utf8' }).trim();
+if (branch !== 'main') {
+  console.error(`Current branch is '${branch}', but releases must be cut from 'main'.`);
+  console.error('Switch to main and try again, or use --allow-branch to override.');
+  if (!process.argv.includes('--allow-branch')) {
+    process.exit(1);
+  }
+  console.warn('⚠ --allow-branch override: proceeding on non-main branch.');
 }
 
 // Check that the tag doesn't already exist (locally or on origin)
@@ -62,8 +76,6 @@ try {
     process.exit(1);
   }
 }
-
-const root = resolve(import.meta.dirname, '..');
 
 // --- Update version files ---
 
@@ -105,15 +117,11 @@ execSync('cargo update -p arborist -p arborist-types', { cwd: root, stdio: 'pipe
 
 // --- Git operations ---
 
-// Ensure we're on main to prevent accidental releases from feature branches
-const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: root, encoding: 'utf8' }).trim();
-if (branch !== 'main') {
-  console.error(`Current branch is '${branch}', but releases must be cut from 'main'.`);
-  console.error('Switch to main and try again, or use --allow-branch to override.');
-  if (!process.argv.includes('--allow-branch')) {
-    process.exit(1);
-  }
-  console.warn('⚠ --allow-branch override: proceeding on non-main branch.');
+// Detect no-op (e.g. re-running after a partial failure with the same version)
+const diff = execSync('git status --porcelain', { cwd: root, encoding: 'utf8' }).trim();
+if (!diff) {
+  console.error(`\nNo changes to commit — manifests already at ${version}. Nothing to release.`);
+  process.exit(1);
 }
 
 console.log(`\nCommitting and tagging ${tag}...\n`);

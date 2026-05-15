@@ -215,12 +215,27 @@ jobs:
         run: |
           set -euo pipefail
           expected="${TAG#v}"
-          actual=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::Version mismatch: tag=${TAG} expects ${expected}, but tauri.conf.json has ${actual}. Run 'pnpm run release:prep ${expected}' to fix."
+
+          # Check all four manifest files that release-prep maintains
+          tauri_ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")
+          pkg_ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('package.json','utf8')).version)")
+          cargo_ver=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          types_ver=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/arborist-types/Cargo.toml | head -1)
+
+          ok=true
+          for pair in "src-tauri/tauri.conf.json:${tauri_ver}" "package.json:${pkg_ver}" "src-tauri/Cargo.toml:${cargo_ver}" "crates/arborist-types/Cargo.toml:${types_ver}"; do
+            file="${pair%%:*}"
+            ver="${pair#*:}"
+            if [ "$ver" != "$expected" ]; then
+              echo "::error::Version mismatch in ${file}: expected ${expected} (from tag ${TAG}), got ${ver}."
+              ok=false
+            fi
+          done
+          if [ "$ok" = false ]; then
+            echo "::error::Run 'pnpm run release:prep ${expected}' to fix all manifests."
             exit 1
           fi
-          echo "Version check passed: ${actual} matches tag ${TAG}"
+          echo "Version check passed: all manifests at ${expected} match tag ${TAG}"
 
       - name: Build Tauri app
         shell: bash

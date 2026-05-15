@@ -67,6 +67,8 @@ pnpm run release:prep 0.1.2
 
 This bumps all version files, updates `Cargo.lock`, commits, tags, and pushes in one step. It validates that you're on `main` and that the tag doesn't already exist locally or on origin.
 
+> **Note:** The script commits the version bump directly to `main` and pushes without a PR. This is intentional for release mechanics — the commit is a pure version bump with no behavioral changes. If your workflow requires PR review for every commit to `main`, use the manual path below instead.
+
 After the script completes, update `CHANGELOG.md` in a follow-up commit if desired, then trigger the workflow:
 
 ```sh
