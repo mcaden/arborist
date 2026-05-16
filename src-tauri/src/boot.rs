@@ -547,7 +547,7 @@ pub fn show_lock_contention_dialog(branch: &str, workspace: &Path) {
 }
 
 /// Variant of [`show_lock_contention_dialog`] used when the boot flow will fall back to the native picker after the user dismisses the dialog.
-/// Informs the user that the resolved workspace is locked and they should pick a different one.
+/// Informs the user that the chosen workspace is locked and they should pick a different one.
 fn show_lock_contention_picker_dialog(branch: &str, workspace: &Path) {
     let body = format!(
         "This workspace is already open in another Arborist window for the same branch.\n\nBranch: {}\nWorkspace: {}\n\nPick a different workspace folder to continue.",
@@ -1456,7 +1456,10 @@ mod tests {
 
     // ----- boot_select_workspace_from_picker -------------------------
 
+    // Same-process flock on Unix is per-process (not per-handle), so this
+    // test only contends reliably on Windows where LockFileEx is per-handle.
     #[test]
+    #[cfg(target_os = "windows")]
     fn picker_loop_contention_then_success() {
         let td = TempDir::new().unwrap();
         let app_data = td.path().join("app-data");
