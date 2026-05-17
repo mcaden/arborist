@@ -16,13 +16,22 @@ function isWindowsLikePath(p: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(p) || /^[\\/]{2}/.test(p);
 }
 
-/** Normalize separators to `/` and strip trailing slashes. */
+/** Normalize separators to `/` and strip trailing slashes (preserving root paths). */
 function normalize(p: string): string {
+  if (p.length === 0) return '';
   // Replacing backslashes globally is safe enough for our purpose:
   // backslashes in literal POSIX file names are rare, and the inputs to
   // this helper come from `git worktree list --porcelain` and our own
   // workspace-root config — neither produces such names in practice.
-  return p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const slashed = p.replaceAll('\\', '/');
+  // Drive root with any number of trailing slashes (e.g. `C:/`, `C:////`) → `X:/`.
+  if (/^[A-Za-z]:\/+$/.test(slashed)) return slashed[0] + ':/';
+  // Strip trailing slashes without regex quantifiers (avoids SonarCloud ReDoS false positive).
+  let end = slashed.length;
+  while (end > 0 && slashed[end - 1] === '/') end--;
+  // All slashes stripped → input was all slashes → POSIX root.
+  if (end === 0) return '/';
+  return slashed.slice(0, end);
 }
 
 /**
@@ -39,7 +48,8 @@ function normalize(p: string): string {
 export function isInsideWorktreesDir(root: string, child: string): boolean {
   const r = normalize(root);
   const c = normalize(child);
-  const prefix = `${r}/.arborist/.worktrees/`;
+  // Avoid double-slash when root is `/` or `C:/` (already ends with `/`).
+  const prefix = r.endsWith('/') ? `${r}.arborist/.worktrees/` : `${r}/.arborist/.worktrees/`;
   const winLike = isWindowsLikePath(r) || isWindowsLikePath(c);
   if (winLike) {
     const cl = c.toLowerCase();
@@ -47,4 +57,17 @@ export function isInsideWorktreesDir(root: string, child: string): boolean {
     return cl.startsWith(pl) && cl.length > pl.length;
   }
   return c.startsWith(prefix) && c.length > prefix.length;
+}
+
+/**
+ * Cross-platform path equality: normalizes separators, trims trailing
+ * slashes, and case-folds on Windows-like paths.
+ */
+export function pathsEqual(a: string, b: string): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (isWindowsLikePath(na) || isWindowsLikePath(nb)) {
+    return na.toLowerCase() === nb.toLowerCase();
+  }
+  return na === nb;
 }
