@@ -23,7 +23,7 @@ function normalize(p: string): string {
   // backslashes in literal POSIX file names are rare, and the inputs to
   // this helper come from `git worktree list --porcelain` and our own
   // workspace-root config — neither produces such names in practice.
-  const slashed = p.replace(/\\/g, '/');
+  const slashed = p.replaceAll('\\', '/');
   // Drive root with any number of trailing slashes (e.g. `C:/`, `C:////`) → `X:/`.
   if (/^[A-Za-z]:\/+$/.test(slashed)) return slashed[0] + ':/';
   // Strip trailing slashes without regex quantifiers (avoids SonarCloud ReDoS false positive).

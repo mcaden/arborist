@@ -137,7 +137,17 @@ impl GitRunner for RealGitRunner {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(parse_porcelain(&stdout))
+        let mut worktrees = parse_porcelain(&stdout);
+        // Canonicalize paths so symlink hops collapse to the same form
+        // used by session tab paths (which go through validate_worktree →
+        // dunce::canonicalize). Without this, UI comparisons between tab
+        // paths and worktree-list paths can mismatch on POSIX with symlinks.
+        for wt in &mut worktrees {
+            if let Ok(canon) = dunce::canonicalize(&wt.path) {
+                wt.path = canon;
+            }
+        }
+        Ok(worktrees)
     }
 
     fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error> {
