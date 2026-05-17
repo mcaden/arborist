@@ -12,7 +12,7 @@
 // in tests covers `showModal`/`close`).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useShallow } from 'zustand/shallow';
+import { useShallow } from 'zustand/react/shallow';
 
 import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { isInsideWorktreesDir, pathsEqual } from '@/lib/worktree-paths';
