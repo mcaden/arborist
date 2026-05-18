@@ -34,6 +34,7 @@ import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
 import { subscribeToSubExited, subscribeToSubRestored, subscribeToSubStatus } from '@/lib/sub-session-events';
 import { formatError, frontendReady } from '@/lib/tauri-bridge';
+import { changeWorkspace } from '@/lib/workspace-switch';
 import { createBuiltinsRegistry, PluginRegistryProvider } from '@/plugins';
 import { selectTheme, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
@@ -145,22 +146,28 @@ function AppInner(): JSX.Element {
       try {
         await useConfigStore.getState().hydrate();
         if (cancelled) return;
-        // Attach the event listeners BEFORE hydrating sessions/sub-sessions
-        // so any status events emitted while the snapshot is in flight are
-        // applied to the cache instead of being dropped on the floor.
+
+        // Attach event listeners eagerly — even in unbound mode. They're no-ops when there are no sessions, but must be live before
+        // `changeWorkspace` triggers restore so status/output events emitted during the workspace-switch inline restore are captured.
         unlistenStatus = subscribeToStatus();
         unlistenActivity = subscribeToActivity();
         unlistenMetrics = subscribeToMetrics();
         unlistenSubStatus = subscribeToSubStatus();
         unlistenSubExited = subscribeToSubExited();
-        // `subsession://restored` MUST be attached before `frontendReady()`
-        // — the restore-on-launch second pass emits one event per
-        // sub-session and the frontend store needs the row hydrated
-        // before any subsequent status event can update it.
         unlistenSubRestored = subscribeToSubRestored();
-        // `worktree://prep` is attached here too so even a sub-second prep
-        // that exits before this effect runs again won't be lost. Issue #63.
         unlistenWorktreePrep = await useWorktreePrepStore.getState().subscribe();
+        initTerminalRouter();
+        if (cancelled) return;
+
+        // Unbound boot: backend started without a workspace (fresh install, contention, or invalid saved workspace). Skip session/worktree
+        // hydration and frontendReady — ReadyApp will show the WorkspacePicker. The in-app picker calls changeWorkspace() which handles
+        // binding + restore + rehydration atomically.
+        const { config } = useConfigStore.getState();
+        if (!config?.workspaceRoot) {
+          setStatus('ready');
+          return;
+        }
+
         await useSessionStore.getState().actions.hydrate();
         if (cancelled) return;
         await useSubSessionStore.getState().actions.hydrate();
@@ -170,8 +177,6 @@ function AppInner(): JSX.Element {
         // under the new sidebar's worktree-keyed iteration. Hydrate's bridge errors propagate so App.boot's error overlay surfaces them.
         const knownPaths = useSessionStore.getState().sessions.map((s) => s.worktreePath);
         await useWorktreeTabStore.getState().actions.hydrate(knownPaths);
-        if (cancelled) return;
-        initTerminalRouter();
         if (cancelled) return;
         await frontendReady();
         if (cancelled) return;
@@ -252,14 +257,16 @@ function AppInner(): JSX.Element {
 
 function ReadyApp(): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
-  const setConfig = useConfigStore((s) => s.set);
 
   if (workspaceRoot === null || workspaceRoot.length === 0) {
     return (
       <WorkspacePicker
         mode="first-boot"
         onConfirm={async (path) => {
-          await setConfig({ workspaceRoot: path });
+          // Use changeWorkspace (not setConfig) so the backend acquires the workspace lock, opens the scoped ConfigStore, runs
+          // restore_all_sessions, and returns the post-bind { config, sessions } atomically. This is critical for unbound boot:
+          // the backend swaps the unbound WorkspaceScope for a real bound one.
+          await changeWorkspace(path);
         }}
       />
     );

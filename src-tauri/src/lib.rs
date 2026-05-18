@@ -156,11 +156,12 @@ pub fn run() {
                 }
             }
 
-            // Phase 6: resolve, lock, and bind the per-(branch, workspace) store before any AppContext is built. This guarantees that
-            // restore-on-launch and every later command operates on the isolated workspace store, never on the legacy shared one.
+            // Phase 6: resolve, lock, and bind the per-(branch, workspace) store. If successful, the AppContext is bound to the resolved workspace.
+            // If no workspace is available (fresh install, contention, invalid saved workspace), an *unbound* AppContext is built so the WebView can
+            // load immediately and let the frontend's in-app workspace picker handle selection.
             //
-            // Resolution chain: --workspace CLI arg → branch hint file → legacy `<app_data_dir>/config.json::workspace_root` → native folder picker
-            // (rfd).
+            // Resolution chain (non-blocking): --workspace CLI arg → branch hint file → legacy `<app_data_dir>/config.json::workspace_root`.
+            // Native folder picker dialogs are no longer used during boot — workspace selection is handled by the in-app picker when unbound.
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
             let cli_args = match boot::parse_cli_args(std::env::args_os()) {
@@ -178,49 +179,58 @@ pub fn run() {
             // the AppContext below so the in-app commands share it.
             let boot_git_runner = git::RealGitRunner;
 
-            let binding = match boot::boot_select_workspace(&cli_args, &app_data_dir, BUILD_BRANCH, &boot_git_runner) {
-                Ok(Some(b)) => b,
+            // Attempt synchronous workspace resolution. CLI failures are still hard exits (the user explicitly chose a workspace). All other
+            // failures (hint/legacy contention, fresh install, invalid saved workspace) produce an unbound boot so the WebView can load immediately
+            // and let the in-app picker handle selection. This eliminates blocking the setup closure on native `rfd` dialogs, which caused
+            // "AppContext not initialised" errors because the WebView loaded and called commands while setup was still blocked.
+            let binding = match boot::boot_select_workspace_nonblocking(&cli_args, &app_data_dir, BUILD_BRANCH, &boot_git_runner) {
+                Ok(Some(b)) => Some(b),
                 Ok(None) => {
-                    tracing::info!("user cancelled workspace picker; exiting");
-                    drop(log_guard);
-                    std::process::exit(0);
+                    tracing::info!("no workspace bound at boot; starting in unbound mode (in-app picker will handle selection)");
+                    None
                 }
-                Err(boot::BootError::Contention { branch, workspace }) => {
+                Err(boot::BootError::Contention { branch, workspace }) if cli_args.workspace.is_some() => {
                     boot::show_lock_contention_dialog(&branch, &workspace);
                     drop(log_guard);
                     std::process::exit(1);
                 }
-                Err(boot::BootError::NotARepository { workspace, reason, origin }) => {
-                    // Only the user-driven picker arm justifies a native dialog. CLI / hint / legacy failures are surfaced via stderr +
-                    // tracing::error so headless or scripted launches don't pop a modal that nobody is sitting in front of (matches the doc comment
-                    // on `show_not_a_repo_dialog`).
-                    if matches!(origin, boot::BootSource::Picker) {
-                        boot::show_not_a_repo_dialog(&workspace, &reason);
-                    } else {
-                        tracing::error!(
-                            ?origin,
-                            workspace = %workspace.display(),
-                            reason = %reason,
-                            "workspace is not a git repository root",
-                        );
-                        eprintln!(
-                            "Arborist failed to open workspace ({origin:?}): {reason}\n  workspace: {}",
-                            workspace.display()
-                        );
-                    }
+                Err(boot::BootError::Contention { .. }) => {
+                    tracing::info!("saved workspace is locked by another instance; starting in unbound mode");
+                    None
+                }
+                Err(boot::BootError::NotARepository { workspace, reason, origin }) if matches!(origin, boot::BootSource::Cli) => {
+                    tracing::error!(
+                        ?origin, workspace = %workspace.display(), reason = %reason,
+                        "workspace is not a git repository root",
+                    );
+                    eprintln!(
+                        "Arborist failed to open workspace ({origin:?}): {reason}\n  workspace: {}",
+                        workspace.display()
+                    );
                     drop(log_guard);
                     std::process::exit(1);
+                }
+                Err(boot::BootError::NotARepository { workspace, reason, origin }) => {
+                    tracing::warn!(
+                        ?origin, workspace = %workspace.display(), reason = %reason,
+                        "resolved workspace is not a valid git repository root; starting unbound"
+                    );
+                    None
                 }
                 Err(boot::BootError::WorkspaceRootPersist { dir, source }) => {
                     boot::show_workspace_root_persist_dialog(&dir, &source.to_string());
                     drop(log_guard);
                     std::process::exit(1);
                 }
-                Err(e) => {
+                Err(e) if cli_args.workspace.is_some() => {
                     tracing::error!(error = %e, "workspace boot bind failed");
                     eprintln!("Arborist failed to open workspace: {e}");
                     drop(log_guard);
                     std::process::exit(1);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "workspace boot bind failed; starting unbound");
+                    None
                 }
             };
 
@@ -231,18 +241,32 @@ pub fn run() {
 
             // Re-set the window title now that we know which workspace we bound (issue #56). The earlier set above used `None` so users see the build
             // branch immediately; this update adds the workspace name. Best-effort: a failure here only affects the title, not the boot.
-            if let Some(window) = app.get_webview_window("main") {
-                let title = window_title(BUILD_BRANCH, Some(&binding.workspace_root));
-                if let Err(err) = window.set_title(&title) {
-                    tracing::warn!(%err, "failed to update main window title after workspace bind");
+            if let Some(ref b) = binding {
+                if let Some(window) = app.get_webview_window("main") {
+                    let title = window_title(BUILD_BRANCH, Some(&b.workspace_root));
+                    if let Err(err) = window.set_title(&title) {
+                        tracing::warn!(%err, "failed to update main window title after workspace bind");
+                    }
                 }
             }
 
-            // Build the production AppContext: portable-pty spawner, the workspace-bound ConfigStore (held behind RwLock so phase 7 workspace_switch
-            // can transactionally swap it), and a PtySink that bridges back into both Tauri events and the persisted session record. The
-            // sink/discover closures take the workspace handle (not a snapshot) so they always operate on the currently-bound store, even after a
+            // Build the production AppContext: portable-pty spawner, the workspace-bound (or unbound) ConfigStore (held behind RwLock so phase 7
+            // workspace_switch can transactionally swap it), and a PtySink that bridges back into both Tauri events and the persisted session record.
+            // The sink/discover closures take the workspace handle (not a snapshot) so they always operate on the currently-bound store, even after a
             // switch.
-            let scope = boot::into_scope(binding);
+            let scope = match binding {
+                Some(b) => boot::into_scope(b),
+                None => {
+                    // Unbound boot: create a scratch store in app_data_dir so `config_get` can return a default AppConfig with
+                    // `workspaceRoot: null`. This scope gets swapped out when the frontend picker calls `workspace_switch`.
+                    let scratch_store = config_store::ConfigStore::open(&app_data_dir).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "failed to open scratch config store for unbound boot; using in-memory fallback");
+                        config_store::ConfigStore::open(std::env::temp_dir()).expect("temp dir config store")
+                    });
+                    workspace_scope::WorkspaceScope::unbound(scratch_store)
+                }
+            };
+            let is_bound = !scope.is_unbound();
             let workspace_handle = std::sync::Arc::new(std::sync::RwLock::new(scope));
             let pool = std::sync::Arc::new(pty_pool::PtyPool::new(std::sync::Arc::new(pty_pool::PortablePtySpawner)));
             let sink = commands::build_production_sink(app.handle().clone(), workspace_handle.clone());
@@ -300,13 +324,8 @@ pub fn run() {
             ));
             app.manage(sub_ctx.clone());
 
-            // Apply `--ai-launch-claude` / `--ai-launch-copilot` overrides if supplied. Persisted into the workspace's config so users / the e2e
-            // harness can replace the bare `claude` / `copilot` program tokens without setting any environment variable.
-            //
-            // Done *before* the startup icon backfill below so the backfill sees the final config — if a future change makes any icon-relevant
-            // field depend on `ai_launch_commands` (e.g. resolving the launcher's exe to extract its OS icon), the warm-cache pass will pick it up
-            // on first boot rather than waiting until next startup.
-            if cli_args.ai_launch_claude.is_some() || cli_args.ai_launch_copilot.is_some() {
+            // Apply `--ai-launch-claude` / `--ai-launch-copilot` overrides if supplied. Only meaningful when bound to a workspace.
+            if is_bound && (cli_args.ai_launch_claude.is_some() || cli_args.ai_launch_copilot.is_some()) {
                 let store = ctx_for_backfill.store();
                 let mut commands = std::collections::BTreeMap::new();
                 if let Some(v) = cli_args.ai_launch_claude.clone() {
@@ -324,13 +343,8 @@ pub fn run() {
                 }
             }
 
-            // Best-effort: warm the persisted icon cache for every sidebar entry now, so the first render after startup doesn't show emoji-then-icon
-            // flicker. Failures are non-fatal — the frontend already has a graceful fallback (the bundled SVG / emoji glyph).
-            //
-            // Routed through the same `AppContext.store` the rest of the runtime uses (cloning the `Arc`-backed `write_lock` so we share it with
-            // subsequent `config_set` calls), and through `save_config_with` so the load/mutate/write sequence is atomic against any future writers.
-            // (Tauri setup is single-threaded, so today there are no other writers; we still hold the lock for forward compatibility.)
-            {
+            // Best-effort: warm the persisted icon cache. Only meaningful when bound to a workspace.
+            if is_bound {
                 let store = ctx_for_backfill.store();
                 let cache = sub_ctx.icon_cache.clone();
                 if let Err(err) = store.save_config_with(types::PartialAppConfig::default(), move |cfg| {

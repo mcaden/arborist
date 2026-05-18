@@ -63,6 +63,25 @@ impl WorkspaceScope {
         }
     }
 
+    /// Unbound boot constructor: the app started without a workspace (fresh install, lock contention on the saved workspace, or user cancelled the
+    /// picker). The store is a throwaway scratch directory — it exists only so `config_get` can return a default `AppConfig` with
+    /// `workspaceRoot: null` without special-casing every caller. Once the frontend's in-app picker calls `workspace_switch`, this scope is swapped
+    /// out for a real bound scope.
+    #[must_use]
+    pub fn unbound(store: ConfigStore) -> Self {
+        Self {
+            workspace_root: None,
+            store,
+            _lock: None,
+        }
+    }
+
+    /// Returns `true` when this scope has no bound workspace (created via [`Self::unbound`]).
+    #[must_use]
+    pub fn is_unbound(&self) -> bool {
+        self.workspace_root.is_none() && self._lock.is_none()
+    }
+
     /// Test-only constructor that omits the OS lock. Suitable for integration tests that don't exercise cross-process uniqueness; production code
     /// must use [`Self::new`].
     #[doc(hidden)]

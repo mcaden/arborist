@@ -648,6 +648,30 @@ pub fn boot_select_workspace(
     finalize_binding(binding, app_data_dir, branch)
 }
 
+/// Non-blocking workspace resolution + binding. Used by the two-phase boot (PR #179) so the setup closure never blocks on native `rfd` dialogs.
+///
+/// Behaviour:
+/// * Resolves via CLI arg → hint → legacy (same as [`boot_select_workspace`]).
+/// * If resolved and bound: returns `Ok(Some(WorkspaceBinding))` with hint/config persisted.
+/// * If no workspace found (fresh install): returns `Ok(None)`. Caller builds an unbound AppContext.
+/// * On contention or other errors: returns `Err(…)`. Caller decides whether to hard-exit (CLI) or start unbound (hint/legacy).
+///
+/// Unlike [`boot_select_workspace`], this function **never** shows a native folder picker or a native dialog — it relies solely on the
+/// already-persisted workspace paths. The in-app picker in the WebView handles user-driven selection when the boot is unbound.
+pub fn boot_select_workspace_nonblocking(
+    args: &CliArgs,
+    app_data_dir: &Path,
+    branch: &str,
+    git_runner: &dyn GitRunner,
+) -> Result<Option<WorkspaceBinding>, BootError> {
+    let Some((workspace_root, source)) = resolve_boot_workspace(args, app_data_dir, branch, git_runner)? else {
+        return Ok(None);
+    };
+
+    let binding = bind_workspace(&workspace_root, app_data_dir, branch, git_runner, source)?;
+    finalize_binding(binding, app_data_dir, branch)
+}
+
 /// Post-bind finalization: persist `workspace_root` into config.json and write the last-workspace hint. Both
 /// `boot_select_workspace` and `boot_select_workspace_from_picker` converge here after a successful `bind_workspace`.
 ///
