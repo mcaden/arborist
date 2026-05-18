@@ -41,8 +41,8 @@ use crate::workspace_lock::WorkspaceLockGuard;
 /// construct a scope without taking a real OS lock; production builds always set it via [`Self::new`].
 #[derive(Debug)]
 pub struct WorkspaceScope {
-    /// Canonicalised workspace root this scope is bound to. `None` during the brief window between app boot and workspace selection (phase 6 will
-    /// eliminate this `None` path for production code; tests may legitimately leave it `None` when they only exercise commands that don't read it).
+    /// Canonicalised workspace root this scope is bound to. `None` during unbound boot (fresh install, lock contention, or no resolvable workspace)
+    /// until the in-app picker calls `workspace_switch`. Tests may also leave it `None` when they only exercise commands that don't read it.
     pub workspace_root: Option<PathBuf>,
     /// Cheap-to-clone [`ConfigStore`] handle for this workspace. `None` when unbound — the app has no workspace yet and no persistence is needed.
     /// Callers must use [`AppContext::store()`](crate::commands::AppContext::store) which panics with a clear message if called while unbound
