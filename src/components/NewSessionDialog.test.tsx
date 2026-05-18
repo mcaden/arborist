@@ -154,6 +154,59 @@ describe('NewSessionDialog', () => {
     expect(screen.getByRole('button', { name: /^open worktree$/i })).toBeEnabled();
   });
 
+  it('filters out worktrees already open as tabs', async () => {
+    const featurePath = `${REPO_ROOT}/.arborist/.worktrees/feature`;
+    const otherPath = `${REPO_ROOT}/.arborist/.worktrees/other`;
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(REPO_ROOT, 'main', true), makeWt(featurePath, 'feature'), makeWt(otherPath, 'other')]);
+    // "feature" is already open as a tab.
+    useWorktreeTabStore.setState({ tabs: [makeTab(featurePath)], activeId: 'tab-feature', isHydrated: true });
+
+    render(<NewSessionDialog />);
+    openDialog();
+    await screen.findByRole('heading', { name: /add worktree/i });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
+
+    // "other" should appear, "feature" should not.
+    expect(await screen.findByRole('button', { name: /other/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /feature/i })).not.toBeInTheDocument();
+  });
+
+  it('filters with normalized paths (different separators/casing)', async () => {
+    // Simulate Windows paths where git reports backslashes but the tab stores forward slashes.
+    const winRoot = String.raw`C:\repos\arborist`;
+    const wtPath = String.raw`${winRoot}\.arborist\.worktrees\feature`;
+    const tabPath = 'C:/repos/arborist/.arborist/.worktrees/feature';
+    const otherPath = String.raw`${winRoot}\.arborist\.worktrees\other`;
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(wtPath, 'feature'), makeWt(otherPath, 'other')]);
+    useWorktreeTabStore.setState({ tabs: [makeTab(tabPath)], activeId: 'tab-feature', isHydrated: true });
+    useConfigStore.setState({ config: defaultConfig({ workspaceRoot: winRoot }), status: 'ready', error: null });
+
+    render(<NewSessionDialog />);
+    openDialog();
+    await screen.findByRole('heading', { name: /add worktree/i });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
+
+    // "feature" should be filtered even though separators differ.
+    expect(await screen.findByRole('button', { name: /other/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /feature/i })).not.toBeInTheDocument();
+  });
+
+  it('shows all-open message when every worktree is already loaded', async () => {
+    const featurePath = `${REPO_ROOT}/.arborist/.worktrees/feature`;
+    bridgeMock.worktreesList.mockResolvedValue([makeWt(REPO_ROOT, 'main', true), makeWt(featurePath, 'feature')]);
+    useWorktreeTabStore.setState({ tabs: [makeTab(featurePath)], activeId: 'tab-feature', isHydrated: true });
+
+    render(<NewSessionDialog />);
+    openDialog();
+    await screen.findByRole('heading', { name: /add worktree/i });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^existing$/i }));
+
+    expect(await screen.findByText(/all worktrees are already open/i)).toBeInTheDocument();
+  });
+
   it('New tab validates name and creates worktree on submit', async () => {
     const path = `${REPO_ROOT}/.arborist/.worktrees/my-feature`;
     bridgeMock.worktreeCreate.mockResolvedValue({ path, prep: null });
