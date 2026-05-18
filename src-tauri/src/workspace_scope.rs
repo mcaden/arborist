@@ -63,8 +63,8 @@ impl WorkspaceScope {
         }
     }
 
-    /// Unbound boot constructor: the app started without a workspace (fresh install, lock contention on the saved workspace, or user cancelled the
-    /// picker). The store is a throwaway scratch directory — it exists only so `config_get` can return a default `AppConfig` with
+    /// Unbound boot constructor: the app started without a workspace (fresh install, lock contention on the saved workspace, or no resolvable
+    /// workspace). The store is a throwaway per-run tempdir — it exists only so `config_get` can return a default `AppConfig` with
     /// `workspaceRoot: null` without special-casing every caller. Once the frontend's in-app picker calls `workspace_switch`, this scope is swapped
     /// out for a real bound scope.
     #[must_use]

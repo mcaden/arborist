@@ -1,22 +1,20 @@
-// App shell. Phase 12 owns the boot sequence:
+// App shell. The boot sequence:
 //
 //   1. Hydrate the config-store from the backend.
-//   2. Hydrate the session-store from `session_list` (the persisted snapshot
-//      sorted by tabIndex — statuses return as-last-persisted; the
-//      `restore_all_sessions` step below flips each one to `Starting`
-//      before respawn, then to `Running` / `Exited` / `Error` as the wait
-//      thread observes the child).
-//   3. `initTerminalRouter()` — attach the global `session://output` router.
-//   4. `subscribeToStatus()` — attach the global `session://status` router.
+//   2. Attach event listeners and initTerminalRouter() — done eagerly so
+//      events emitted during workspace-switch restore are captured.
+//   3. If unbound (no workspaceRoot): return early, show WorkspacePicker.
+//      The picker's onConfirm calls changeWorkspace() which handles
+//      binding + restore, then hydrates the remaining stores inline.
+//   4. (Bound path) Hydrate session-store, sub-session-store, worktree-tab-store.
 //   5. `frontendReady()` — tell the backend listeners are live; backend then
 //      kicks off `restore_all_sessions` asynchronously (see docs/runtime-flows.md#boot-and-restore).
 //
 // In-app workspace switches are handled entirely by
-// `lib/workspace-switch.ts::changeWorkspace`: the backend now runs the
+// `lib/workspace-switch.ts::changeWorkspace`: the backend runs the
 // new workspace's restore inline and returns the post-switch
 // `{ config, sessions }` in the result, which `changeWorkspace`
-// adopts atomically into the stores. No `workspace://changed` event
-// listener is needed; PR5 removed it.
+// adopts atomically into the stores.
 //
 // While the boot effect runs, a `<BootSplash />` is shown. On any thrown
 // error from the hydrate steps, an error overlay with a Reload button is
@@ -274,7 +272,8 @@ function ReadyApp(): JSX.Element {
               // Use changeWorkspace (not setConfig) so the backend acquires the workspace lock, opens the scoped ConfigStore, runs
               // restore_all_sessions, and returns the post-bind { config, sessions } atomically. This is critical for unbound boot:
               // the backend swaps the unbound WorkspaceScope for a real bound one.
-              await changeWorkspace(path);
+              const switched = await changeWorkspace(path);
+              if (!switched) return;
               // Hydrate stores that the unbound boot path skipped. changeWorkspace already adopted config + sessions; we still need
               // worktree-tabs (which depend on the session list) and sub-sessions, then signal the backend that the frontend is ready.
               await useSubSessionStore.getState().actions.hydrate();

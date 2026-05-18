@@ -73,7 +73,7 @@ import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
  * best-effort and never aborts the switch — see docs/runtime-flows.md#workspace-switching
  * step 7.)
  */
-export async function changeWorkspace(path: string): Promise<void> {
+export async function changeWorkspace(path: string): Promise<boolean> {
   const { isSwitching, setSwitching } = useWorkspaceSwitchUiStore.getState();
   // Reentrancy guard: if a switch is already in flight, drop this call.
   // The other call owns the flag and will clear it in its own `finally`;
@@ -84,7 +84,7 @@ export async function changeWorkspace(path: string): Promise<void> {
   // making this function reentrant-safe in isolation removes the last
   // race window.
   if (isSwitching) {
-    return;
+    return false;
   }
   setSwitching(true);
   try {
@@ -98,7 +98,7 @@ export async function changeWorkspace(path: string): Promise<void> {
       throw err;
     }
     if (result.noOp) {
-      return;
+      return false;
     }
     // Atomic adoption: install the new workspace's config + sessions in
     // one render. Order matters — config-store goes first so any
@@ -109,6 +109,7 @@ export async function changeWorkspace(path: string): Promise<void> {
     // would show a blank pane.
     useConfigStore.getState().adoptWorkspace(result.config);
     useSessionStore.getState().actions.adoptWorkspace(result.sessions, result.config.activeSessionId);
+    return true;
   } finally {
     // Cleared even on throw / WorkspaceLocked so the picker / settings
     // dialog isn't permanently locked behind a stuck overlay. Adoption
