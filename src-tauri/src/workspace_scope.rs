@@ -41,11 +41,13 @@ use crate::workspace_lock::WorkspaceLockGuard;
 /// construct a scope without taking a real OS lock; production builds always set it via [`Self::new`].
 #[derive(Debug)]
 pub struct WorkspaceScope {
-    /// Canonicalised workspace root this scope is bound to. `None` during the brief window between app boot and workspace selection (phase 6 will
-    /// eliminate this `None` path for production code; tests may legitimately leave it `None` when they only exercise commands that don't read it).
+    /// Canonicalised workspace root this scope is bound to. `None` during unbound boot (fresh install, lock contention, or no resolvable workspace)
+    /// until the in-app picker calls `workspace_switch`. Tests may also leave it `None` when they only exercise commands that don't read it.
     pub workspace_root: Option<PathBuf>,
-    /// Cheap-to-clone [`ConfigStore`] handle for this workspace.
-    pub store: ConfigStore,
+    /// Cheap-to-clone [`ConfigStore`] handle for this workspace. `None` when unbound — the app has no workspace yet and no persistence is needed.
+    /// Callers must use [`AppContext::store()`](crate::commands::AppContext::store) which panics with a clear message if called while unbound
+    /// (a programming error — the frontend never issues store-dependent commands before binding).
+    pub store: Option<ConfigStore>,
     /// OS-level advisory lock proving this process is the sole writer for this (branch, workspace) tuple. Held by `_file` inside the guard for its
     /// lifetime; released on drop. `None` only in test contexts that opt out via
     /// [`Self::for_test`].
@@ -58,9 +60,27 @@ impl WorkspaceScope {
     pub fn new(workspace_root: Option<PathBuf>, store: ConfigStore, lock: WorkspaceLockGuard) -> Self {
         Self {
             workspace_root,
-            store,
+            store: Some(store),
             _lock: Some(lock),
         }
+    }
+
+    /// Unbound boot constructor: the app started without a workspace (fresh install, lock contention on the saved workspace, or no resolvable
+    /// workspace). No store is created — `config_get` short-circuits to return defaults when unbound, and no other store-dependent command is valid
+    /// until the frontend's in-app picker calls `workspace_switch`, which swaps this scope for a real bound one.
+    #[must_use]
+    pub fn unbound() -> Self {
+        Self {
+            workspace_root: None,
+            store: None,
+            _lock: None,
+        }
+    }
+
+    /// Returns `true` when this scope has no bound workspace (created via [`Self::unbound`]).
+    #[must_use]
+    pub fn is_unbound(&self) -> bool {
+        self.workspace_root.is_none() && self._lock.is_none()
     }
 
     /// Test-only constructor that omits the OS lock. Suitable for integration tests that don't exercise cross-process uniqueness; production code
@@ -70,7 +90,7 @@ impl WorkspaceScope {
     pub fn for_test(store: ConfigStore, workspace_root: Option<PathBuf>) -> Self {
         Self {
             workspace_root,
-            store,
+            store: Some(store),
             _lock: None,
         }
     }

@@ -50,11 +50,17 @@ pub fn store_for(app: &tauri::AppHandle) -> Result<ConfigStore, AppError> {
     ConfigStore::open(dir).map_err(AppError::from)
 }
 
-/// Returns the persisted [`AppConfig`].
+/// Returns the persisted [`AppConfig`], or a default config with `workspaceRoot: null` when unbound (no workspace selected yet).
 #[tauri::command]
 pub async fn config_get(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
     let ctx = ctx_of(&app)?;
-    Ok(ctx.store().load_config())
+    let ws = ctx.workspace.read().expect("workspace lock poisoned");
+    if ws.is_unbound() {
+        return Ok(AppConfig::default());
+    }
+    let store = ws.store.clone().expect("bound scope always has a store");
+    drop(ws);
+    Ok(store.load_config())
 }
 
 /// Deep-merges `partial` into the persisted [`AppConfig`] and returns the resulting config so the frontend can replace its in-memory snapshot in a
@@ -424,7 +430,19 @@ pub fn build_production_sink(app: tauri::AppHandle, workspace: Arc<RwLock<Worksp
             // Re-resolve the current store on every callback so a workspace switch in flight cannot cause a stale write into the previously-bound
             // store.
             let store = match workspace_for_status.read() {
-                Ok(guard) => guard.store.clone(),
+                Ok(guard) => match guard.store.clone() {
+                    Some(s) => s,
+                    None => {
+                        tracing::debug!(session_id = %session_id, "workspace unbound; skipping status persist");
+                        let payload = SessionStatusEvent {
+                            session_id: *session_id,
+                            status,
+                            message,
+                        };
+                        let _ = app_for_status.emit("session://status", &payload);
+                        return;
+                    }
+                },
                 Err(_) => {
                     tracing::error!(session_id = %session_id, "workspace lock poisoned; skipping status persist");
                     // Still emit the event so the frontend sees the transition.
@@ -479,7 +497,10 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLoc
         }
         // Best-effort persist — errors are swallowed so a transient store issue doesn't crash the watcher thread.
         let store = match workspace.read() {
-            Ok(guard) => guard.store.clone(),
+            Ok(guard) => match guard.store.clone() {
+                Some(s) => s,
+                None => return, // unbound — no sessions exist yet
+            },
             Err(_) => {
                 tracing::warn!("workspace lock poisoned; skipping metrics persist");
                 return;
@@ -516,7 +537,10 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLoc
 pub fn build_production_ai_session_discover(workspace: Arc<RwLock<WorkspaceScope>>) -> crate::session_metrics::AiSessionDiscoveryCb {
     Arc::new(move |session_id: crate::types::SessionId, ai_session_id: String| {
         let store = match workspace.read() {
-            Ok(guard) => guard.store.clone(),
+            Ok(guard) => match guard.store.clone() {
+                Some(s) => s,
+                None => return, // unbound — no sessions exist yet
+            },
             Err(_) => {
                 tracing::error!(%session_id, "workspace lock poisoned; skipping ai session id persist");
                 return;

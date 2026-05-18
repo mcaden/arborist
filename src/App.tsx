@@ -1,22 +1,21 @@
-// App shell. Phase 12 owns the boot sequence:
+// App shell. The boot sequence:
 //
 //   1. Hydrate the config-store from the backend.
-//   2. Hydrate the session-store from `session_list` (the persisted snapshot
-//      sorted by tabIndex — statuses return as-last-persisted; the
-//      `restore_all_sessions` step below flips each one to `Starting`
-//      before respawn, then to `Running` / `Exited` / `Error` as the wait
-//      thread observes the child).
-//   3. `initTerminalRouter()` — attach the global `session://output` router.
-//   4. `subscribeToStatus()` — attach the global `session://status` router.
+//   2. Attach event listeners and initTerminalRouter() — done eagerly so
+//      events emitted during workspace-switch restore are captured.
+//   3. If unbound (no workspaceRoot): return early, show WorkspacePicker.
+//      The picker's onConfirm calls changeWorkspace() which handles
+//      binding + restore, then hydrates the remaining stores inline.
+//   4. (Bound path) Hydrate session-store, sub-session-store, worktree-tab-store.
 //   5. `frontendReady()` — tell the backend listeners are live; backend then
-//      kicks off `restore_all_sessions` asynchronously (see docs/runtime-flows.md#boot-and-restore).
+//      runs `restore_all_sessions` and awaits it before returning (acts as a
+//      happens-before barrier for the frontend's first `session_resize`).
 //
 // In-app workspace switches are handled entirely by
-// `lib/workspace-switch.ts::changeWorkspace`: the backend now runs the
+// `lib/workspace-switch.ts::changeWorkspace`: the backend runs the
 // new workspace's restore inline and returns the post-switch
 // `{ config, sessions }` in the result, which `changeWorkspace`
-// adopts atomically into the stores. No `workspace://changed` event
-// listener is needed; PR5 removed it.
+// adopts atomically into the stores.
 //
 // While the boot effect runs, a `<BootSplash />` is shown. On any thrown
 // error from the hydrate steps, an error overlay with a Reload button is
@@ -24,6 +23,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { BootTreeAnimation } from '@/components/BootTreeAnimation';
 import { MainArea } from '@/components/MainArea';
 import { NewSessionDialog } from '@/components/NewSessionDialog';
 import { Sidebar } from '@/components/Sidebar';
@@ -33,6 +33,7 @@ import { initTerminalRouter } from '@/hooks/use-terminal';
 import { subscribeToActivity, subscribeToMetrics, subscribeToStatus } from '@/lib/session-events';
 import { subscribeToSubExited, subscribeToSubRestored, subscribeToSubStatus } from '@/lib/sub-session-events';
 import { formatError, frontendReady } from '@/lib/tauri-bridge';
+import { changeWorkspace } from '@/lib/workspace-switch';
 import { createBuiltinsRegistry, PluginRegistryProvider } from '@/plugins';
 import { selectTheme, selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
@@ -86,8 +87,9 @@ function BootSplash(): JSX.Element {
     <div
       role="status"
       aria-live="polite"
-      className="flex h-full w-full items-center justify-center bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-200"
+      className="flex h-full w-full flex-col items-center justify-center gap-6 bg-white text-slate-700 dark:bg-slate-900 dark:text-slate-200"
     >
+      <BootTreeAnimation />
       <p className="text-sm">Loading Arborist…</p>
     </div>
   );
@@ -143,22 +145,28 @@ function AppInner(): JSX.Element {
       try {
         await useConfigStore.getState().hydrate();
         if (cancelled) return;
-        // Attach the event listeners BEFORE hydrating sessions/sub-sessions
-        // so any status events emitted while the snapshot is in flight are
-        // applied to the cache instead of being dropped on the floor.
+
+        // Attach event listeners eagerly — even in unbound mode. They're no-ops when there are no sessions, but must be live before
+        // `changeWorkspace` triggers restore so status/output events emitted during the workspace-switch inline restore are captured.
         unlistenStatus = subscribeToStatus();
         unlistenActivity = subscribeToActivity();
         unlistenMetrics = subscribeToMetrics();
         unlistenSubStatus = subscribeToSubStatus();
         unlistenSubExited = subscribeToSubExited();
-        // `subsession://restored` MUST be attached before `frontendReady()`
-        // — the restore-on-launch second pass emits one event per
-        // sub-session and the frontend store needs the row hydrated
-        // before any subsequent status event can update it.
         unlistenSubRestored = subscribeToSubRestored();
-        // `worktree://prep` is attached here too so even a sub-second prep
-        // that exits before this effect runs again won't be lost. Issue #63.
         unlistenWorktreePrep = await useWorktreePrepStore.getState().subscribe();
+        initTerminalRouter();
+        if (cancelled) return;
+
+        // Unbound boot: backend started without a workspace (fresh install, contention, or invalid saved workspace). Skip session/worktree
+        // hydration and frontendReady — ReadyApp will show the WorkspacePicker. The in-app picker calls changeWorkspace() which handles
+        // binding + restore + rehydration atomically.
+        const { config } = useConfigStore.getState();
+        if (!config?.workspaceRoot) {
+          setStatus('ready');
+          return;
+        }
+
         await useSessionStore.getState().actions.hydrate();
         if (cancelled) return;
         await useSubSessionStore.getState().actions.hydrate();
@@ -168,8 +176,6 @@ function AppInner(): JSX.Element {
         // under the new sidebar's worktree-keyed iteration. Hydrate's bridge errors propagate so App.boot's error overlay surfaces them.
         const knownPaths = useSessionStore.getState().sessions.map((s) => s.worktreePath);
         await useWorktreeTabStore.getState().actions.hydrate(knownPaths);
-        if (cancelled) return;
-        initTerminalRouter();
         if (cancelled) return;
         await frontendReady();
         if (cancelled) return;
@@ -250,16 +256,35 @@ function AppInner(): JSX.Element {
 
 function ReadyApp(): JSX.Element {
   const workspaceRoot = useConfigStore(selectWorkspaceRoot);
-  const setConfig = useConfigStore((s) => s.set);
 
   if (workspaceRoot === null || workspaceRoot.length === 0) {
     return (
-      <WorkspacePicker
-        mode="first-boot"
-        onConfirm={async (path) => {
-          await setConfig({ workspaceRoot: path });
-        }}
-      />
+      <div className="flex h-full w-full bg-white dark:bg-slate-900">
+        {/* Animated tree branding on left half */}
+        <div className="flex w-1/2 flex-col items-center justify-center border-r border-slate-200 dark:border-slate-700">
+          <h1 className="mb-6 text-2xl font-semibold text-slate-700 dark:text-slate-200">Welcome to Arborist</h1>
+          <BootTreeAnimation />
+        </div>
+        {/* Workspace picker on right half */}
+        <div className="w-1/2">
+          <WorkspacePicker
+            mode="first-boot"
+            onConfirm={async (path) => {
+              // Use changeWorkspace (not setConfig) so the backend acquires the workspace lock, opens the scoped ConfigStore, runs
+              // restore_all_sessions, and returns the post-bind { config, sessions } atomically. This is critical for unbound boot:
+              // the backend swaps the unbound WorkspaceScope for a real bound one.
+              const switched = await changeWorkspace(path);
+              if (!switched) throw new Error('Workspace switch already in progress. Please wait.');
+              // Hydrate stores that the unbound boot path skipped. changeWorkspace already adopted config + sessions; we still need
+              // worktree-tabs (which depend on the session list) and sub-sessions, then signal the backend that the frontend is ready.
+              await useSubSessionStore.getState().actions.hydrate();
+              const knownPaths = useSessionStore.getState().sessions.map((s) => s.worktreePath);
+              await useWorktreeTabStore.getState().actions.hydrate(knownPaths);
+              await frontendReady();
+            }}
+          />
+        </div>
+      </div>
     );
   }
 
