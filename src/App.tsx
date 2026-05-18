@@ -260,12 +260,14 @@ function ReadyApp(): JSX.Element {
 
   if (workspaceRoot === null || workspaceRoot.length === 0) {
     return (
-      <div className="relative h-full w-full bg-white dark:bg-slate-900">
-        {/* Animated tree as subtle branded background behind the picker */}
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-10">
+      <div className="flex h-full w-full bg-white dark:bg-slate-900">
+        {/* Animated tree branding on left half */}
+        <div className="flex w-1/2 flex-col items-center justify-center border-r border-slate-200 dark:border-slate-700">
+          <h1 className="mb-6 text-2xl font-semibold text-slate-700 dark:text-slate-200">Welcome to Arborist</h1>
           <BootTreeAnimation />
         </div>
-        <div className="relative z-10 h-full w-full">
+        {/* Workspace picker on right half */}
+        <div className="w-1/2">
           <WorkspacePicker
             mode="first-boot"
             onConfirm={async (path) => {
