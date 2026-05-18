@@ -257,11 +257,12 @@ pub fn run() {
             let scope = match binding {
                 Some(b) => boot::into_scope(b),
                 None => {
-                    // Unbound boot: create a scratch store in app_data_dir so `config_get` can return a default AppConfig with
-                    // `workspaceRoot: null`. This scope gets swapped out when the frontend picker calls `workspace_switch`.
-                    let scratch_store = config_store::ConfigStore::open(&app_data_dir).unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, "failed to open scratch config store for unbound boot; using in-memory fallback");
-                        config_store::ConfigStore::open(std::env::temp_dir()).expect("temp dir config store")
+                    // Unbound boot: no workspace, no persistence needed. Use a per-run tempdir so `config_get` returns a pristine
+                    // default AppConfig (the file won't exist → defaults with `workspaceRoot: null`). The scope is swapped out when
+                    // the frontend picker calls `workspace_switch`.
+                    let scratch_dir = std::env::temp_dir().join(format!("arborist-unbound-{}", std::process::id()));
+                    let scratch_store = config_store::ConfigStore::open(&scratch_dir).unwrap_or_else(|e| {
+                        panic!("cannot create scratch store for unbound boot: {e}");
                     });
                     workspace_scope::WorkspaceScope::unbound(scratch_store)
                 }
