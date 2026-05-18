@@ -331,7 +331,12 @@ impl AppContext {
     /// swap is not idempotent).
     #[must_use]
     pub fn store(&self) -> ConfigStore {
-        self.workspace.read().expect("workspace lock poisoned").store.clone()
+        self.workspace
+            .read()
+            .expect("workspace lock poisoned")
+            .store
+            .clone()
+            .expect("store() called while unbound — frontend must not issue store-dependent commands before workspace binding")
     }
 }
 

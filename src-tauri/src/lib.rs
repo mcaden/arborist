@@ -257,27 +257,9 @@ pub fn run() {
             let scope = match binding {
                 Some(b) => boot::into_scope(b),
                 None => {
-                    // Unbound boot: no workspace, no persistence needed. Use a per-run tempdir so `config_get` returns a pristine
-                    // default AppConfig (the file won't exist → defaults with `workspaceRoot: null`). The scope is swapped out when
-                    // the frontend picker calls `workspace_switch`.
-                    let mut scratch_dir = std::env::temp_dir().join(format!("arborist-unbound-{}", std::process::id()));
-                    // Remove any stale dir from a prior run that reused this PID — ensures a clean slate.
-                    if let Err(e) = std::fs::remove_dir_all(&scratch_dir) {
-                        if e.kind() != std::io::ErrorKind::NotFound {
-                            tracing::warn!(%e, path = %scratch_dir.display(), "failed to remove stale scratch dir; using randomized fallback");
-                            scratch_dir = std::env::temp_dir().join(format!(
-                                "arborist-unbound-{}-{}",
-                                std::process::id(),
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .subsec_nanos()
-                            ));
-                        }
-                    }
-                    let scratch_store = config_store::ConfigStore::open(&scratch_dir)
-                        .map_err(|e| format!("cannot create scratch store for unbound boot at {}: {e}", scratch_dir.display()))?;
-                    workspace_scope::WorkspaceScope::unbound(scratch_store)
+                    // Unbound boot: no workspace, no persistence needed. `config_get` short-circuits to return defaults when unbound;
+                    // no other store-dependent command is valid until the frontend picker calls `workspace_switch`.
+                    workspace_scope::WorkspaceScope::unbound()
                 }
             };
             let is_bound = !scope.is_unbound();
