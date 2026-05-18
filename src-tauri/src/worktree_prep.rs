@@ -186,6 +186,11 @@ pub fn maybe_spawn(app: &AppHandle, registry: Arc<WorktreePrepRegistry>, cfg: &A
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(stdout_file))
         .stderr(std::process::Stdio::from(stderr_file));
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     // Inherit env. We do not set `kill_on_drop(true)` because the watcher owns the Child and drives the explicit cancellation flow.
     let child = match cmd.spawn() {

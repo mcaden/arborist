@@ -260,15 +260,23 @@ function ReadyApp(): JSX.Element {
 
   if (workspaceRoot === null || workspaceRoot.length === 0) {
     return (
-      <WorkspacePicker
-        mode="first-boot"
-        onConfirm={async (path) => {
-          // Use changeWorkspace (not setConfig) so the backend acquires the workspace lock, opens the scoped ConfigStore, runs
-          // restore_all_sessions, and returns the post-bind { config, sessions } atomically. This is critical for unbound boot:
-          // the backend swaps the unbound WorkspaceScope for a real bound one.
-          await changeWorkspace(path);
-        }}
-      />
+      <div className="relative h-full w-full bg-white dark:bg-slate-900">
+        {/* Animated tree as subtle branded background behind the picker */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-10">
+          <BootTreeAnimation />
+        </div>
+        <div className="relative z-10 h-full w-full">
+          <WorkspacePicker
+            mode="first-boot"
+            onConfirm={async (path) => {
+              // Use changeWorkspace (not setConfig) so the backend acquires the workspace lock, opens the scoped ConfigStore, runs
+              // restore_all_sessions, and returns the post-bind { config, sessions } atomically. This is critical for unbound boot:
+              // the backend swaps the unbound WorkspaceScope for a real bound one.
+              await changeWorkspace(path);
+            }}
+          />
+        </div>
+      </div>
     );
   }
 

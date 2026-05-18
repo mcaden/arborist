@@ -360,6 +360,15 @@ pub fn run() {
                 }
             }
 
+            // Show the main window now that setup is complete. The window starts hidden (`visible: false` in tauri.conf.json) to prevent a
+            // white flash while the WebView initialises. Showing it here — after AppContext is managed and ready for commands — ensures the
+            // frontend's boot effect sees a fully initialised backend.
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(err) = window.show() {
+                    tracing::warn!(%err, "failed to show main window after setup");
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
