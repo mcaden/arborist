@@ -56,15 +56,11 @@ import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
  * state).
  *
  * **Reentrancy contract**: if a switch is already in flight when this
- * is called, the new call is silently dropped — it returns a resolved
- * `Promise<void>` without invoking the bridge or touching the stores.
- * This means an awaited `changeWorkspace(...)` may resolve as a no-op,
- * and callers cannot distinguish "switched" from "dropped" from the
- * return value. In practice the overlay's `inert` root + each picker's
- * `submitting` state prevent overlapping calls from the existing UI,
- * but any future caller that needs to know the call actually ran (e.g.
- * to show user-facing feedback) must gate at its own layer (e.g. by
- * subscribing to `useWorkspaceSwitchUiStore.isSwitching`).
+ * is called, the new call is silently dropped — it returns `false`.
+ * A `noOp` response from the backend (same workspace) also returns
+ * `false`. Returns `true` only when the switch completed and stores
+ * were adopted. Callers that need to run post-switch logic (e.g. the
+ * first-boot hydration path) should gate on the return value.
  *
  * Throws on validation or lock-contention. The caller (picker /
  * settings dialog) keeps the user on the previous workspace because

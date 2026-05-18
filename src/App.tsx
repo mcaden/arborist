@@ -8,7 +8,8 @@
 //      binding + restore, then hydrates the remaining stores inline.
 //   4. (Bound path) Hydrate session-store, sub-session-store, worktree-tab-store.
 //   5. `frontendReady()` — tell the backend listeners are live; backend then
-//      kicks off `restore_all_sessions` asynchronously (see docs/runtime-flows.md#boot-and-restore).
+//      runs `restore_all_sessions` and awaits it before returning (acts as a
+//      happens-before barrier for the frontend's first `session_resize`).
 //
 // In-app workspace switches are handled entirely by
 // `lib/workspace-switch.ts::changeWorkspace`: the backend runs the

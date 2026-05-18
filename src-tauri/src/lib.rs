@@ -261,6 +261,8 @@ pub fn run() {
                     // default AppConfig (the file won't exist → defaults with `workspaceRoot: null`). The scope is swapped out when
                     // the frontend picker calls `workspace_switch`.
                     let scratch_dir = std::env::temp_dir().join(format!("arborist-unbound-{}", std::process::id()));
+                    // Remove any stale dir from a prior run that reused this PID — ensures a clean slate.
+                    let _ = std::fs::remove_dir_all(&scratch_dir);
                     let scratch_store = config_store::ConfigStore::open(&scratch_dir)
                         .map_err(|e| format!("cannot create scratch store for unbound boot at {}: {e}", scratch_dir.display()))?;
                     workspace_scope::WorkspaceScope::unbound(scratch_store)
