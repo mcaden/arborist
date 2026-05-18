@@ -273,7 +273,7 @@ function ReadyApp(): JSX.Element {
               // restore_all_sessions, and returns the post-bind { config, sessions } atomically. This is critical for unbound boot:
               // the backend swaps the unbound WorkspaceScope for a real bound one.
               const switched = await changeWorkspace(path);
-              if (!switched) return;
+              if (!switched) throw new Error('Workspace switch already in progress. Please wait.');
               // Hydrate stores that the unbound boot path skipped. changeWorkspace already adopted config + sessions; we still need
               // worktree-tabs (which depend on the session list) and sub-sessions, then signal the backend that the frontend is ready.
               await useSubSessionStore.getState().actions.hydrate();
