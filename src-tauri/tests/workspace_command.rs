@@ -576,6 +576,41 @@ async fn workspace_switch_parks_old_sessions_preserving_records() {
     assert_eq!(cfg_back.active_session_id, Some(s1.id));
 }
 
+/// Regression: workspace_switch from unbound boot (first install). The switch must not panic when ctx.store() is unavailable (no prior workspace is
+/// bound). This exercises the exact path taken when the user selects a workspace from the first-boot picker.
+#[tokio::test]
+async fn workspace_switch_from_unbound_boot_succeeds() {
+    let app_data_dir = TempDir::new().unwrap();
+    let ws = make_repo_tempdir();
+    let runner = FakeGitRunner::new();
+    runner.set_repo_root(ws.path());
+
+    // Build an *unbound* AppContext (no workspace, no store) — mirrors the fresh-install boot path.
+    let workspace = Arc::new(RwLock::new(WorkspaceScope::unbound()));
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner)));
+    let ctx = Arc::new(AppContext::with_workspace(
+        pool,
+        workspace,
+        null_sink(),
+        Arc::clone(&runner) as Arc<dyn GitRunner>,
+        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
+        Arc::new(|_, _| {}),
+    ));
+
+    let result = workspace_switch_impl_inner(&ctx, None, app_data_dir.path(), "main", ws.path())
+        .await
+        .expect("unbound-to-bound switch must succeed");
+
+    assert!(!result.no_op);
+    let canon = dunce::canonicalize(ws.path()).unwrap();
+    assert_eq!(result.workspace_root, canon);
+    assert_eq!(result.config.workspace_root, Some(canon.clone()));
+    // After the switch the context is bound.
+    let bound = ctx.workspace.read().unwrap().workspace_root.clone();
+    assert_eq!(bound, Some(canon));
+}
+
 /// Regression for the restore stale-worktree drop: if a parked session's worktree was deleted by some other means (e.g. `git worktree remove` while
 /// parked across a workspace switch), `restore_all_sessions` must drop the persisted record + trim the id from last_open_sessions / tab_order /
 /// active_session_id rather than leave a permanent ghost tab in error state.

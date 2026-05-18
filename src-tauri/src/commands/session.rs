@@ -1827,6 +1827,10 @@ pub async fn workspace_switch_impl(
 
 /// Testable inner of [`workspace_switch_impl`]. See module-level docs on the public wrapper for the full pipeline. Split out so unit tests can drive
 /// the swap with a tempdir-backed `app_data_dir` without standing up a real Tauri app.
+///
+/// **Supports unbound→bound transitions** (first-boot picker path). Steps that enumerate or mutate the *current* workspace's store (park, no-op
+/// fast-path) are guarded by `is_unbound()` checks — an unbound scope has no store and no sessions, so those steps are no-ops. Any future code that
+/// adds `ctx.store()` calls before step 8 (the scope swap) must respect this invariant.
 pub async fn workspace_switch_impl_inner(
     ctx: &Arc<AppContext>,
     sub_ctx: Option<Arc<crate::sub_sessions::SubAppContext>>,
@@ -1858,6 +1862,9 @@ pub async fn workspace_switch_impl_inner(
 
     // Step 3 — no-op fast path. We populate `config` and `sessions` from the *current* (unchanged) store so the wire payload is non-nullable; the
     // frontend short-circuits adoption on the `noOp` flag.
+    //
+    // Safe during unbound boot: `current_root` is `None` when unbound, so `None != Some(&canonical)` always skips this branch — we never reach the
+    // `ctx.store()` call.
     let current_root = ctx.workspace.read().expect("workspace lock poisoned").workspace_root.clone();
     if current_root.as_ref() == Some(&canonical) {
         let config = ctx.store().load_config();
@@ -1946,9 +1953,14 @@ pub async fn workspace_switch_impl_inner(
     //
     // Enumerate from the *current* store (still the old one until the swap in step 9). park_session_for_switch_impl uses ctx.store() which clones
     // from the old scope; safe.
-    let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
-    for id in old_session_ids {
-        park_session_for_switch_impl(ctx, id).await;
+    //
+    // Guard: skip entirely when the current scope is unbound (first-boot picker path). There is no old store to enumerate and no sessions to park.
+    let is_unbound = ctx.workspace.read().expect("workspace lock poisoned").is_unbound();
+    if !is_unbound {
+        let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
+        for id in old_session_ids {
+            park_session_for_switch_impl(ctx, id).await;
+        }
     }
 
     // Step 8 — swap WorkspaceScope. The OLD WorkspaceLockGuard inside the old scope is dropped at this assignment, releasing the OS lock on the old
