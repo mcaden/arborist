@@ -4,8 +4,8 @@
 //! rc files. The PTY pool later spawns each session as `<$SHELL> -c <cmd>` (non-interactive, non-login), so user-installed CLIs in `~/.local/bin`,
 //! `~/.npm-global/bin`, Homebrew prefixes, etc. are invisible to the spawned child — `claude: command not found` is the typical user-visible symptom.
 //!
-//! Fix: at boot we ask the user's login shell what its `PATH` is via `<$SHELL> -ilc 'printf MARKER\n%s\n "$PATH"'`, parse the line after the marker,
-//! and apply it to the host process env so every subsequent PTY child inherits the corrected `PATH`. Same pattern as `npm:fix-path` /
+//! Fix: at boot we ask the user's login shell what its `PATH` is via `<$SHELL> -ilc 'printf '%s\n%s\n' MARKER "$PATH"'`, parse the line after the
+//! marker, and apply it to the host process env so every subsequent PTY child inherits the corrected `PATH`. Same pattern as `npm:fix-path` /
 //! VS Code's `resolveShellEnv`.
 //!
 //! Non-macOS targets get a no-op [`apply_login_path_macos`].
@@ -14,16 +14,19 @@
 //! behavior with a log line to look at, rather than a boot abort.
 
 use std::io;
+use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Sentinel printed before the recovered `PATH` so rc-file noise (oh-my-zsh banners, nvm output) ahead of it can be discarded.
 const MARKER: &str = "__ARBORIST_FIXPATH__";
 
 /// Upper bound on the login shell query. Empirically, zsh `-ilc` on macOS lands at 50–500ms; 5s is conservative headroom.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wake-up interval for the exit-status poll loop. 50ms keeps overhead negligible while bounding kill latency well below human perception.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoginPathError {
@@ -59,34 +62,71 @@ impl LoginShellQuery for RealLoginShellQuery {
         let shell = resolve_shell()?;
         let script = format!(r#"printf '%s\n%s\n' '{MARKER}' "$PATH""#);
 
-        let (tx, rx) = mpsc::channel();
-        thread::Builder::new()
-            .name("arborist-login-path".into())
-            .spawn(move || {
-                let out = Command::new(&shell)
-                    .args(["-ilc", &script])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output();
-                let _ = tx.send(out);
-            })
-            .map_err(|e| LoginPathError::Spawn(io::Error::other(format!("thread spawn failed: {e}"))))?;
+        let mut child = Command::new(&shell)
+            .args(["-ilc", &script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(LoginPathError::Spawn)?;
 
-        let output = match rx.recv_timeout(QUERY_TIMEOUT) {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(LoginPathError::Spawn(e)),
-            Err(mpsc::RecvTimeoutError::Timeout) => return Err(LoginPathError::Timeout(QUERY_TIMEOUT)),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(LoginPathError::Spawn(io::Error::other("shell thread disconnected")));
+        // Drain stdout and stderr in dedicated threads to avoid pipe-buffer deadlock (chatty rc files writing to stderr would otherwise block the
+        // child before it can `printf` its PATH line).
+        let stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| LoginPathError::Spawn(io::Error::other("stdout pipe not available")))?;
+        let stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| LoginPathError::Spawn(io::Error::other("stderr pipe not available")))?;
+        let stdout_thread = thread::Builder::new()
+            .name("arborist-login-path-out".into())
+            .spawn(move || read_to_end(stdout_pipe))
+            .map_err(|e| LoginPathError::Spawn(io::Error::other(format!("stdout thread spawn failed: {e}"))))?;
+        let stderr_thread = thread::Builder::new()
+            .name("arborist-login-path-err".into())
+            .spawn(move || read_to_end(stderr_pipe))
+            .map_err(|e| LoginPathError::Spawn(io::Error::other(format!("stderr thread spawn failed: {e}"))))?;
+
+        // Poll for exit; on timeout, kill the child so the reader threads can drain to EOF and join cleanly (no orphaned zsh, no leaked threads).
+        let deadline = Instant::now() + QUERY_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = stdout_thread.join();
+                        let _ = stderr_thread.join();
+                        return Err(LoginPathError::Timeout(QUERY_TIMEOUT));
+                    }
+                    thread::sleep(POLL_INTERVAL);
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+                    return Err(LoginPathError::Spawn(e));
+                }
             }
         };
 
-        if !output.status.success() {
-            return Err(LoginPathError::NonZeroExit(String::from_utf8_lossy(&output.stderr).trim().to_owned()));
+        let stdout = stdout_thread.join().unwrap_or_default();
+        let stderr = stderr_thread.join().unwrap_or_default();
+        if !status.success() {
+            return Err(LoginPathError::NonZeroExit(String::from_utf8_lossy(&stderr).trim().to_owned()));
         }
-        String::from_utf8(output.stdout).map_err(|_| LoginPathError::InvalidUtf8)
+        String::from_utf8(stdout).map_err(|_| LoginPathError::InvalidUtf8)
     }
+}
+
+fn read_to_end<R: Read>(mut r: R) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = r.read_to_end(&mut buf);
+    buf
 }
 
 #[cfg(target_os = "macos")]
@@ -100,16 +140,11 @@ fn resolve_shell() -> Result<String, LoginPathError> {
     std::env::var("SHELL").map_err(|_| LoginPathError::NoShell)
 }
 
-/// Run the trait, parse its stdout, and return the recovered `PATH` (if any). Pure over `std::env` — used by [`apply_login_path_macos`] and tests.
+/// Run the trait, parse its stdout, and return the recovered `PATH`. Pure over `std::env` — used by [`apply_login_path_macos`] and tests.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn compute<Q: LoginShellQuery + ?Sized>(q: &Q) -> Result<Option<String>, LoginPathError> {
+pub(crate) fn compute<Q: LoginShellQuery + ?Sized>(q: &Q) -> Result<String, LoginPathError> {
     let stdout = q.query()?;
-    let path = parse_marker_path(&stdout)?;
-    if path.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(path))
-    }
+    parse_marker_path(&stdout)
 }
 
 /// Apply the login shell's `PATH` to the host process env on macOS. No-op on other targets.
@@ -118,11 +153,10 @@ pub(crate) fn compute<Q: LoginShellQuery + ?Sized>(q: &Q) -> Result<Option<Strin
 #[cfg(target_os = "macos")]
 pub fn apply_login_path_macos() {
     match compute(&RealLoginShellQuery) {
-        Ok(Some(p)) => {
+        Ok(p) => {
             tracing::info!(path = %p, "applying login-shell PATH");
             std::env::set_var("PATH", p);
         }
-        Ok(None) => tracing::warn!("login-shell PATH was empty; keeping inherited PATH"),
         Err(e) => tracing::warn!(error = %e, "login-shell PATH query failed; keeping inherited PATH"),
     }
 }
@@ -207,10 +241,10 @@ mod tests {
     }
 
     #[test]
-    fn compute_returns_some_for_non_empty_path() {
+    fn compute_returns_path() {
         let stdout = format!("{MARKER}\n/opt/bin:/usr/bin\n");
         let q = FakeQuery::new(Ok(stdout));
-        assert_eq!(compute(&q).unwrap(), Some("/opt/bin:/usr/bin".to_owned()));
+        assert_eq!(compute(&q).unwrap(), "/opt/bin:/usr/bin");
     }
 
     #[test]
