@@ -59,6 +59,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     return items;
   }, [aiPlugins, customProcesses]);
 
+  const menuWrapperRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Map<Item, HTMLButtonElement | null>>(new Map());
   const isMountedRef = useRef<boolean>(false);
@@ -92,7 +93,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     function onPointerDown(e: MouseEvent): void {
       const target = e.target as Node | null;
       if (!target) return;
-      if (menuRef.current?.contains(target)) return;
+      if (menuWrapperRef.current?.contains(target)) return;
       closeMenu();
     }
     document.addEventListener('mousedown', onPointerDown);
@@ -198,7 +199,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   };
 
   const menu = (
-    <div style={{ position: 'fixed', left: position.left, top: position.top, minWidth: 200, zIndex: 60 }}>
+    <div ref={menuWrapperRef} style={{ position: 'fixed', left: position.left, top: position.top, minWidth: 200, zIndex: 60 }}>
       <div
         ref={menuRef}
         role="menu"

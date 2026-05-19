@@ -129,6 +129,19 @@ describe('WorktreeTabContextMenu', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('does not treat error-region clicks as outside clicks', async () => {
+    bridgeMock.sessionCreate.mockRejectedValueOnce(new Error('spawn_command failed: program not found'));
+    const onClose = vi.fn();
+    renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-codex'));
+    const error = await screen.findByTestId('worktree-tab-context-menu-error');
+    fireEvent.mouseDown(error);
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('worktree-tab-context-menu')).toBeInTheDocument();
+  });
+
   it('does not update state after unmount when Launch Codex rejects', async () => {
     let rejectLaunch: ((reason?: unknown) => void) | undefined;
     bridgeMock.sessionCreate.mockImplementationOnce(

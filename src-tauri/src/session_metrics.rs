@@ -62,7 +62,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -71,6 +71,8 @@ use crate::types::{SessionId, SessionMetricsEvent, Tool};
 
 /// Polling cadence for the watcher. Trade-off: smaller is more responsive, larger is fewer syscalls.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(2000);
+const CODEX_DISCOVERY_SCAN_MIN_INTERVAL: Duration = POLL_INTERVAL;
+const CODEX_DISCOVERY_SCAN_MAX_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Callback the watcher invokes for each new (changed) snapshot. Production wires this into `app.emit("session://metrics", payload)`; tests pass a
 /// channel sender.
@@ -915,8 +917,8 @@ fn normalize_path_components(path: &Path) -> Vec<String> {
 }
 
 /// Discover the newest rollout JSONL under `sessions_dir` (including date-nested subdirs) whose first-line `SessionMeta.cwd` matches `cwd` and whose
-/// mtime is >= `after`. Returns the full path when found. Called only on initial discovery — `run_codex_watcher` then sticks with the tracked file for
-/// the rest of the session, so the directory walk + first-line parse cost is paid at most once per session, not per poll.
+/// mtime is >= `after`. Returns the full path when found. Called during rollout discovery while no file is bound; `run_codex_watcher` applies a
+/// backoff between misses to avoid re-scanning the entire Codex sessions tree on every poll tick.
 fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> Option<PathBuf> {
     let slack = Duration::from_secs(5);
     let cutoff = after.checked_sub(slack).unwrap_or(after);
@@ -1187,13 +1189,13 @@ fn run_codex_watcher(
     let mut tracked_path: Option<PathBuf> = None;
     let mut tracked_len: u64 = 0;
     let mut state = CodexState::default();
+    let mut discovery_due = Instant::now();
+    let mut discovery_interval = CODEX_DISCOVERY_SCAN_MIN_INTERVAL;
 
     while running.load(Ordering::SeqCst) {
-        // Discovery runs only while no rollout file is bound. Codex shares one `~/.codex/sessions/` tree across every project and nests files in
-        // dated subdirs, so the scan is O(N) over the user's whole rollout history — keeping it off the steady-state path matters. Once bound, the
-        // tracked file persists for the lifetime of the PTY; if Codex ever begins rotating rollouts mid-session, treat the resulting metrics freeze
-        // as the signal to revisit this.
-        if tracked_path.is_none() {
+        // Discovery runs only while no rollout file is bound and uses a backoff between misses. Codex shares one `~/.codex/sessions/` tree across
+        // projects and nests files in dated subdirs, so a cold scan is O(N) over rollout history.
+        if tracked_path.is_none() && Instant::now() >= discovery_due {
             if let Some(c) = newest_codex_rollout(&sessions_dir, &cwd, spawn_instant) {
                 if let Some(thread_id) = codex_rollout_thread_id(&c) {
                     discover(session_id, thread_id);
@@ -1201,6 +1203,10 @@ fn run_codex_watcher(
                 tracked_path = Some(c);
                 tracked_len = 0;
                 state = CodexState::default();
+                discovery_interval = CODEX_DISCOVERY_SCAN_MIN_INTERVAL;
+            } else {
+                discovery_interval = codex_next_discovery_interval(discovery_interval, CODEX_DISCOVERY_SCAN_MAX_INTERVAL);
+                discovery_due = Instant::now().checked_add(discovery_interval).unwrap_or_else(Instant::now);
             }
         }
 
@@ -1231,6 +1237,8 @@ fn run_codex_watcher(
                     tracked_len = 0;
                     state = CodexState::default();
                     last_emitted = None;
+                    discovery_interval = CODEX_DISCOVERY_SCAN_MIN_INTERVAL;
+                    discovery_due = Instant::now();
                 }
             }
         }
@@ -1245,6 +1253,10 @@ fn run_codex_watcher(
 
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn codex_next_discovery_interval(current: Duration, max: Duration) -> Duration {
+    current.saturating_mul(2).min(max)
 }
 
 #[cfg(test)]
@@ -2351,5 +2363,14 @@ mod tests {
         let after = SystemTime::now() - Duration::from_secs(60);
         let result = newest_codex_rollout(&sessions_dir, Path::new(cwd), after);
         assert_eq!(result, Some(good_path));
+    }
+
+    #[test]
+    fn codex_next_discovery_interval_doubles_until_cap() {
+        let next = codex_next_discovery_interval(CODEX_DISCOVERY_SCAN_MIN_INTERVAL, CODEX_DISCOVERY_SCAN_MAX_INTERVAL);
+        assert_eq!(next, CODEX_DISCOVERY_SCAN_MIN_INTERVAL.saturating_mul(2));
+
+        let capped = codex_next_discovery_interval(CODEX_DISCOVERY_SCAN_MAX_INTERVAL, CODEX_DISCOVERY_SCAN_MAX_INTERVAL);
+        assert_eq!(capped, CODEX_DISCOVERY_SCAN_MAX_INTERVAL);
     }
 }
