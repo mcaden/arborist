@@ -899,8 +899,8 @@ struct CodexRolloutLine {
     payload: Option<serde_json::Value>,
 }
 
-/// Normalize a path for cross-platform comparison. On Windows, slashes are unified and components are lowercased so `C:\Repos\X` matches
-/// `c:/repos/x/`. On Unix, the input is returned unchanged via `to_path_buf()` equivalence — callers compare with `==` on `Path`.
+/// Normalize a path into comparable components for cross-platform matching. On Windows, slashes are unified and each component is lowercased so
+/// `C:\Repos\X` and `c:/repos/x/` normalize to the same `Vec<String>`. On Unix, components are preserved as-is.
 fn normalize_path_components(path: &Path) -> Vec<String> {
     path.components()
         .map(|c| {
@@ -914,9 +914,9 @@ fn normalize_path_components(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Discover the newest rollout JSONL under `<home>/.codex/sessions/` (and date-nested subdirs) whose first-line `SessionMeta.cwd` matches `cwd` and
-/// whose mtime is >= `after`. Returns the full path when found. Called only on initial discovery — `run_codex_watcher` then sticks with the tracked
-/// file for the rest of the session, so the directory walk + first-line parse cost is paid at most once per session, not per poll.
+/// Discover the newest rollout JSONL under `sessions_dir` (including date-nested subdirs) whose first-line `SessionMeta.cwd` matches `cwd` and whose
+/// mtime is >= `after`. Returns the full path when found. Called only on initial discovery — `run_codex_watcher` then sticks with the tracked file for
+/// the rest of the session, so the directory walk + first-line parse cost is paid at most once per session, not per poll.
 fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> Option<PathBuf> {
     let slack = Duration::from_secs(5);
     let cutoff = after.checked_sub(slack).unwrap_or(after);
