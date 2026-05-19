@@ -33,6 +33,7 @@ Important details:
 - Restored sessions are spawned on first resize so the CLI's first paint sees the real terminal dimensions, not a fallback `80x24`.
 - Restore augments the spawn-time command copy with `--resume <id>` where supported and safe. It never mutates the persisted `composedCommand`.
 - One failed session restore does not abort the rest of the restore loop.
+- **macOS PATH recovery.** On macOS only, the very first boot step (between `init_tracing` and CLI-arg parsing) queries the user's login shell (`<$SHELL> -ilc 'printf marker; echo $PATH'`) and applies the result via `std::env::set_var("PATH", …)`. `launchd` would otherwise start the `.app` with a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that's missing `~/.local/bin`, `~/.npm-global/bin`, Homebrew, etc., so `claude` / `copilot` would fail to launch from a Finder-started build. Any failure (timeout, missing `$SHELL`, parse error) is logged at `warn!` and leaves PATH unchanged — boot does not abort.
 
 ## Workspace switching
 

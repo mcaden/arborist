@@ -13,6 +13,7 @@ pub mod config_store;
 pub mod copilot_events;
 pub mod git;
 pub mod icon_backfill;
+pub mod login_path;
 pub mod plugins;
 pub mod process_icon;
 pub mod pty_pool;
@@ -144,6 +145,11 @@ pub fn run() {
             std::fs::create_dir_all(&log_dir)?;
             let log_guard = init_tracing(Some(&log_dir));
             tracing::info!("Arborist starting up");
+
+            // On macOS, launchd starts .app bundles with a minimal PATH and never sources the user's shell rc files. Recover the user's interactive
+            // PATH by asking the login shell for it before anything else (PTY spawns, PATH-based command probes) inherits this process's env. No-op on
+            // other targets. See `login_path` module doc for the why.
+            login_path::apply_login_path_macos();
 
             // If this build came from a branch other than `main`, surface the branch name in the window title bar so it's obvious which build is
             // running. We set the title twice: once here with no workspace bound (covers the brief startup window before `boot_select_workspace`
