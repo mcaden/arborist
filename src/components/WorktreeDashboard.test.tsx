@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
@@ -59,10 +59,11 @@ afterEach(() => {
 });
 
 describe('WorktreeDashboard', () => {
-  it('renders the worktree name, path, and branch', () => {
+  it('renders the worktree name, path, and branch', async () => {
     useWorktreeTabStore.setState({ tabs: [tab({ branch: 'feature-x' })] });
 
     renderDashboard();
+    await act(async () => {});
 
     expect(screen.getByRole('heading', { name: 'feature-x' })).toBeInTheDocument();
     expect(screen.getByText('/repo/feature-x')).toBeInTheDocument();
@@ -83,6 +84,7 @@ describe('WorktreeDashboard', () => {
     });
 
     renderDashboard();
+    await act(async () => {});
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-claude'));
 
@@ -94,6 +96,7 @@ describe('WorktreeDashboard', () => {
         }),
       ),
     );
+    await act(async () => {});
   });
 
   it('clicking Launch Copilot calls sessionCreate with copilot tool', async () => {
@@ -110,6 +113,7 @@ describe('WorktreeDashboard', () => {
     });
 
     renderDashboard();
+    await act(async () => {});
 
     fireEvent.click(screen.getByTestId('worktree-dashboard-launch-copilot'));
 
@@ -121,6 +125,49 @@ describe('WorktreeDashboard', () => {
         }),
       ),
     );
+    await act(async () => {});
+  });
+
+  it('shows a launch error when sessionCreate rejects (e.g., codex missing)', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    bridgeMock.sessionCreate.mockRejectedValueOnce(new Error('spawn_command failed: program not found'));
+
+    renderDashboard();
+    await act(async () => {});
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-launch-codex'));
+
+    expect(await screen.findByTestId('worktree-dashboard-launch-error')).toHaveTextContent(/launch codex failed/i);
+  });
+
+  it('does not update state after unmount when launch rejects', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    let rejectLaunch: ((reason?: unknown) => void) | undefined;
+    bridgeMock.sessionCreate.mockImplementationOnce(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectLaunch = reject;
+        }),
+    );
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { unmount } = renderDashboard();
+    await act(async () => {});
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-launch-codex'));
+    unmount();
+
+    await act(async () => {
+      rejectLaunch?.(new Error('spawn_command failed: program not found'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const hasUnmountedWarning = consoleErrorSpy.mock.calls.some((call) =>
+      call.some((arg) => typeof arg === 'string' && arg.includes("Can't perform a React state update on an unmounted component")),
+    );
+    expect(hasUnmountedWarning).toBe(false);
+    consoleErrorSpy.mockRestore();
   });
 
   it('mounts widgets in registry order', () => {
@@ -135,7 +182,7 @@ describe('WorktreeDashboard', () => {
     expect(screen.getAllByTestId(/^widget-/).map((n) => n.textContent)).toEqual(['first', 'second', 'third']);
   });
 
-  it('hides disabled AI plugins and dashboard widgets', () => {
+  it('hides disabled AI plugins and dashboard widgets', async () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     useConfigStore.setState((s) => ({
       config: {
@@ -149,6 +196,7 @@ describe('WorktreeDashboard', () => {
     }));
 
     renderDashboard();
+    await act(async () => {});
 
     expect(screen.getByTestId('worktree-dashboard-launch-claude')).toBeInTheDocument();
     expect(screen.queryByTestId('worktree-dashboard-launch-copilot')).toBeNull();

@@ -171,7 +171,7 @@ describe('App boot sequence', () => {
     });
   });
 
-  it('calls boot steps in order: config -> status -> session -> subsession -> worktreeTab -> router -> ready', async () => {
+  it('calls boot steps in order: config -> status -> router -> session -> subsession -> worktreeTab -> ready', async () => {
     const order: string[] = [];
     const cfgSpy = vi.spyOn(useConfigStore.getState(), 'hydrate').mockImplementation(async () => {
       order.push('config');
@@ -194,14 +194,19 @@ describe('App boot sequence', () => {
       order.push('ready');
     });
 
-    render(<App />);
-    await waitFor(() => expect(frontendReady).toHaveBeenCalled());
+    try {
+      render(<App />);
+      await waitFor(() => expect(frontendReady).toHaveBeenCalled());
 
-    expect(order).toEqual(['config', 'status', 'session', 'subsession', 'worktreeTab', 'router', 'ready']);
-    cfgSpy.mockRestore();
-    sessSpy.mockRestore();
-    subSpy.mockRestore();
-    wttSpy.mockRestore();
+      // Event listeners and terminal router are attached eagerly (before session hydration) so they're live when
+      // changeWorkspace triggers an inline restore from unbound boot. This means 'router' comes before 'session'.
+      expect(order).toEqual(['config', 'status', 'router', 'session', 'subsession', 'worktreeTab', 'ready']);
+    } finally {
+      cfgSpy.mockRestore();
+      sessSpy.mockRestore();
+      subSpy.mockRestore();
+      wttSpy.mockRestore();
+    }
   });
 
   it('passes the live session worktreePath set into worktreeTabStore.hydrate so orphan tabs can be self-healed', async () => {

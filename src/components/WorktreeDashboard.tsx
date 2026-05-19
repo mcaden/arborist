@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ToolIcon } from './ToolIcon';
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
@@ -18,11 +18,19 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   const sessionActions = useSessionActions();
   const registry = useRegistry();
   const pluginSettings = useConfigStore((s) => s.config.pluginSettings);
+  const isMountedRef = useRef<boolean>(false);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const aiPlugins = useMemo(
     () => registry.ai().filter((plugin) => pluginEnabled(pluginSettings, 'ai', plugin.id, plugin.defaultEnabled ?? true)),
     [registry, pluginSettings],
   );
   const aiIconDataUris = useConfigStore((s) => s.config.aiLaunchCommands.iconDataUris);
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const widgets = useMemo(
     () => registry.widgets().filter((widget) => pluginEnabled(pluginSettings, 'dashboardWidget', widget.id, widget.defaultEnabled ?? true)),
     [registry, pluginSettings],
@@ -33,6 +41,8 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   }
 
   const launch = (tool: Tool): void => {
+    setLaunchError(null);
+    const pluginName = aiPlugins.find((plugin) => plugin.id === tool)?.displayName ?? tool;
     const dims = measureInitialPtyDimensions();
     void sessionActions
       .create({
@@ -42,7 +52,10 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
         rows: dims.rows,
       })
       .catch((err: unknown) => {
-        console.warn(`[WorktreeDashboard] sessionCreate(${tool}) failed: ${formatError(err)}`);
+        const message = formatError(err);
+        console.warn(`[WorktreeDashboard] sessionCreate(${tool}) failed: ${message}`);
+        if (!isMountedRef.current) return;
+        setLaunchError(`Launch ${pluginName} failed: ${message}`);
       });
   };
 
@@ -78,6 +91,15 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
           );
         })}
       </div>
+      {launchError && (
+        <p
+          role="alert"
+          data-testid="worktree-dashboard-launch-error"
+          className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300"
+        >
+          {launchError}
+        </p>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         {widgets.map((widget) => (

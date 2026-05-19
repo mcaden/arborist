@@ -1,8 +1,8 @@
 # Arborist overview
 
 Arborist is a cross-platform desktop app for managing AI coding-assistant sessions across Git worktrees. It is built with Tauri v2, a Rust backend,
-and a React/TypeScript frontend. The app gives each worktree a persistent terminal-backed session for Claude CLI, GitHub Copilot CLI, or a configured
-custom process.
+and a React/TypeScript frontend. The app gives each worktree a persistent terminal-backed session for Claude CLI, GitHub Copilot CLI, OpenAI Codex
+CLI, or a configured custom process.
 
 ## Mental model
 
@@ -13,7 +13,7 @@ workspace become top-level tabs in the sidebar. AI sessions and custom-process s
 flowchart LR
     Workspace["Workspace root<br/>primary Git clone"]
     Worktrees["Worktree tabs<br/>one per opened worktree"]
-    Children["Child tabs<br/>Claude, Copilot, shell, apps"]
+    Children["Child tabs<br/>Claude, Copilot, Codex, shell, apps"]
     Main["Main area<br/>dashboard or terminal"]
 
     Workspace --> Worktrees
@@ -34,7 +34,7 @@ Key ideas:
 
 1. Pick a workspace root on first launch. The root must be a primary Git clone, not a linked worktree.
 2. Open an existing worktree tab or create a new worktree under `<workspace>/.arborist/.worktrees/<name>/`.
-3. Launch Claude, Copilot, or a configured custom process from the worktree tab context menu.
+3. Launch Claude, Copilot, Codex, or a configured custom process from the worktree tab context menu.
 4. Switch between child tabs while every background PTY keeps running.
 5. Close tabs when finished. Worktree-tab close cascades to children and can optionally remove the linked worktree.
 

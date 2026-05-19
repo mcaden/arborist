@@ -56,3 +56,11 @@ body {
 .themed-scrollbar:where(.dark, .dark *)::-webkit-scrollbar-thumb:hover {
   background-color: #64748b; /* slate-500 */
 }
+
+/* === Boot tree animation === */
+
+/* Container constrains the SVG to a sensible splash size */
+.boot-tree {
+  width: 220px;
+  height: 220px;
+}

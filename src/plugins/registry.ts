@@ -48,9 +48,9 @@ export interface Plugin {
 
 // MIRROR: src-tauri/src/plugins/ai/mod.rs::AiPlugin
 export interface AiPlugin extends Plugin {
-  /** Stable AI tool discriminator mirrored from persisted `Tool` (`"claude" | "copilot"`). */
+  /** Stable AI tool discriminator mirrored from persisted `Tool` (`"claude" | "copilot" | "codex"`). */
   id: Tool;
-  /** Bare program token (`"claude"`, `"copilot"`). User-overridable via `AppConfig.ai_launch_commands`. */
+  /** Bare program token (`"claude"`, `"copilot"`, `"codex"`). User-overridable via `AppConfig.ai_launch_commands`. */
   defaultProgram: string;
   /** Tooltip copy explaining how this plugin reports context-window limits. */
   contextMetricsLimitTooltipSuffix: string;

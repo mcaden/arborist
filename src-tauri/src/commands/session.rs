@@ -356,7 +356,12 @@ impl AppContext {
     /// swap is not idempotent).
     #[must_use]
     pub fn store(&self) -> ConfigStore {
-        self.workspace.read().expect("workspace lock poisoned").store.clone()
+        self.workspace
+            .read()
+            .expect("workspace lock poisoned")
+            .store
+            .clone()
+            .expect("store() called while unbound — frontend must not issue store-dependent commands before workspace binding")
     }
 }
 
@@ -468,7 +473,7 @@ fn default_structured_command(tool: Tool, temp_files: &[crate::types::TempFileSp
             }
             args
         }
-        Tool::Copilot => Vec::new(),
+        Tool::Copilot | Tool::Codex => Vec::new(),
     };
     StructuredCommand { program, args }
 }
@@ -477,15 +482,14 @@ fn with_resume_for_spawn(session: &Session, ai_session_id: &str) -> Session {
     let mut session_to_spawn = session.clone();
     session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, ai_session_id);
     if let Some(structured) = session_to_spawn.structured_command.as_mut() {
-        structured.args.push("--resume".to_owned());
-        structured.args.push(ai_session_id.to_owned());
+        structured.args.extend(crate::plugins::ai::resume_args(session.tool, ai_session_id));
     }
     session_to_spawn
 }
 
 /// First-launch counterpart to [`with_resume_for_spawn`]: splices the *create-time* flag for the tool into both `composed_command` and the
-/// optional `structured_command`. The flag differs per tool — Claude uses `--session-id <uuid>` to create the conversation at our uuid (Claude
-/// rejects `--resume <uuid>` when the transcript doesn't exist yet), Copilot uses `--resume <uuid>` (which Copilot treats as create-if-absent).
+/// optional `structured_command`. The first-launch form differs per tool — Claude uses `--session-id <uuid>` to create the conversation at our uuid
+/// (Claude rejects `--resume <uuid>` when the transcript doesn't exist yet), while Copilot/Codex use their resume arguments (create-if-absent).
 ///
 /// Only used for the very first spawn of a session. Every subsequent spawn (restart, restore-on-launch) goes through [`with_resume_for_spawn`] so
 /// the conversation continues.
@@ -493,12 +497,15 @@ fn with_first_launch_for_spawn(session: &Session, ai_session_id: &str) -> Sessio
     let mut session_to_spawn = session.clone();
     session_to_spawn.composed_command = compose::with_first_launch_session_id(&session.composed_command, session.tool, ai_session_id);
     if let Some(structured) = session_to_spawn.structured_command.as_mut() {
-        let flag = match session.tool {
-            Tool::Claude => "--session-id",
-            Tool::Copilot => "--resume",
-        };
-        structured.args.push(flag.to_owned());
-        structured.args.push(ai_session_id.to_owned());
+        match session.tool {
+            Tool::Claude => {
+                structured.args.push("--session-id".to_owned());
+                structured.args.push(ai_session_id.to_owned());
+            }
+            Tool::Copilot | Tool::Codex => {
+                structured.args.extend(crate::plugins::ai::resume_args(session.tool, ai_session_id));
+            }
+        }
     }
     session_to_spawn
 }
@@ -1891,6 +1898,10 @@ pub async fn workspace_switch_impl(
 
 /// Testable inner of [`workspace_switch_impl`]. See module-level docs on the public wrapper for the full pipeline. Split out so unit tests can drive
 /// the swap with a tempdir-backed `app_data_dir` without standing up a real Tauri app.
+///
+/// **Supports unbound→bound transitions** (first-boot picker path). Steps that enumerate or mutate the *current* workspace's store (park, no-op
+/// fast-path) are guarded by `is_unbound()` checks — an unbound scope has no store and no sessions, so those steps are no-ops. Any future code that
+/// adds `ctx.store()` calls before step 8 (the scope swap) must respect this invariant.
 pub async fn workspace_switch_impl_inner(
     ctx: &Arc<AppContext>,
     sub_ctx: Option<Arc<crate::sub_sessions::SubAppContext>>,
@@ -1922,6 +1933,9 @@ pub async fn workspace_switch_impl_inner(
 
     // Step 3 — no-op fast path. We populate `config` and `sessions` from the *current* (unchanged) store so the wire payload is non-nullable; the
     // frontend short-circuits adoption on the `noOp` flag.
+    //
+    // Safe during unbound boot: `current_root` is `None` when unbound, so `None != Some(&canonical)` always skips this branch — we never reach the
+    // `ctx.store()` call.
     let current_root = ctx.workspace.read().expect("workspace lock poisoned").workspace_root.clone();
     if current_root.as_ref() == Some(&canonical) {
         let config = ctx.store().load_config();
@@ -2010,9 +2024,14 @@ pub async fn workspace_switch_impl_inner(
     //
     // Enumerate from the *current* store (still the old one until the swap in step 9). park_session_for_switch_impl uses ctx.store() which clones
     // from the old scope; safe.
-    let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
-    for id in old_session_ids {
-        park_session_for_switch_impl(ctx, id).await;
+    //
+    // Guard: skip entirely when the current scope is unbound (first-boot picker path). There is no old store to enumerate and no sessions to park.
+    let is_unbound = ctx.workspace.read().expect("workspace lock poisoned").is_unbound();
+    if !is_unbound {
+        let old_session_ids: Vec<SessionId> = ctx.store().load_sessions().keys().copied().collect();
+        for id in old_session_ids {
+            park_session_for_switch_impl(ctx, id).await;
+        }
     }
 
     // Step 8 — swap WorkspaceScope. The OLD WorkspaceLockGuard inside the old scope is dropped at this assignment, releasing the OS lock on the old

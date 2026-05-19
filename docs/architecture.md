@@ -200,7 +200,7 @@ Arborist has an internal plugin registry, not a public plugin marketplace. Built
 
 | Plugin family     | Examples                    | Notes                                                                                                     |
 | ----------------- | --------------------------- | --------------------------------------------------------------------------------------------------------- |
-| AI tools          | Claude, Copilot             | Tool ids match `Tool::as_id()`. Launch overrides live in `pluginSettings.ai.<id>.settings.launchCommand`. |
+| AI tools          | Claude, Copilot, Codex      | Tool ids match `Tool::as_id()`. Launch overrides live in `pluginSettings.ai.<id>.settings.launchCommand`. |
 | Custom processes  | Shell, open folder, VS Code | Seeded definitions are user-editable and user-deletable; plugin toggles control built-in integrations.    |
 | Dashboard widgets | AI usage, Git status        | Render worktree dashboard data and can be enabled/disabled through `pluginSettings.dashboardWidget`.      |
 

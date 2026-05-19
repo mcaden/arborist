@@ -39,6 +39,14 @@ const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[];
 /// Strip the repo-selection variables here so every `git` we spawn really does target the repo the caller asked for.
 pub(crate) fn git_command() -> Command {
     let mut cmd = Command::new("git");
+    // On Windows, suppress the transient console window that appears when a GUI application spawns a console subprocess. Without this flag every
+    // `git` invocation during boot (validate_repo_root, list_worktrees, etc.) briefly flashes a black window.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     for var in [
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -137,7 +145,17 @@ impl GitRunner for RealGitRunner {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(parse_porcelain(&stdout))
+        let mut worktrees = parse_porcelain(&stdout);
+        // Canonicalize paths so symlink hops collapse to the same form
+        // used by session tab paths (which go through validate_worktree →
+        // dunce::canonicalize). Without this, UI comparisons between tab
+        // paths and worktree-list paths can mismatch on POSIX with symlinks.
+        for wt in &mut worktrees {
+            if let Ok(canon) = dunce::canonicalize(&wt.path) {
+                wt.path = canon;
+            }
+        }
+        Ok(worktrees)
     }
 
     fn git_toplevel(&self, path: &Path) -> Result<Option<PathBuf>, Error> {

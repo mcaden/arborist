@@ -13,6 +13,7 @@ use crate::types::Tool;
 use crate::types::{SessionId, TempFileSpec};
 
 pub mod claude;
+pub mod codex;
 pub mod copilot;
 
 /// AI plugin trait. See module-level docs for the full implementor contract.
@@ -64,8 +65,11 @@ pub trait AiPlugin: Plugin {
     /// Restart-time AI-session-id policy for this tool.
     fn restart_ai_session_policy(&self) -> RestartAiSessionPolicy;
 
-    /// Whether restore-time `--resume` should verify transcript/session-state first.
+    /// Whether restore-time resume invocation should verify transcript/session-state first.
     fn resume_requires_preflight(&self) -> bool;
+
+    /// Structured-command args to resume the AI session id for this tool.
+    fn resume_args(&self, ai_session_id: &str) -> Vec<String>;
 
     /// Resolve the expected transcript/session-state path for `ai_session_id`.
     fn ai_session_transcript_path(&self, home: &Path, worktree_path: &Path, ai_session_id: &str) -> PathBuf;
@@ -87,6 +91,7 @@ pub enum RestartAiSessionPolicy {
 pub enum MetricsWatcherKind {
     Claude { home: PathBuf, cwd: PathBuf },
     Copilot { otel_path: PathBuf },
+    Codex { codex_home: PathBuf, cwd: PathBuf },
 }
 
 /// Which activity-events tailer flavour to spawn for a tool, with its resolved on-disk path.
@@ -131,12 +136,16 @@ fn claude_factory() -> Arc<dyn AiPlugin> {
     Arc::new(claude::ClaudePlugin)
 }
 
+fn codex_factory() -> Arc<dyn AiPlugin> {
+    Arc::new(codex::CodexPlugin)
+}
+
 fn copilot_factory() -> Arc<dyn AiPlugin> {
     Arc::new(copilot::CopilotPlugin)
 }
 
 /// Built-in AI plugins in stable registration order.
-pub const BUILTIN_AI: [BuiltinAi; 2] = [
+pub const BUILTIN_AI: [BuiltinAi; 3] = [
     BuiltinAi {
         tool: Tool::Claude,
         plugin: &claude::PLUGIN,
@@ -146,6 +155,11 @@ pub const BUILTIN_AI: [BuiltinAi; 2] = [
         tool: Tool::Copilot,
         plugin: &copilot::PLUGIN,
         factory: copilot_factory,
+    },
+    BuiltinAi {
+        tool: Tool::Codex,
+        plugin: &codex::PLUGIN,
+        factory: codex_factory,
     },
 ];
 
@@ -158,10 +172,11 @@ pub fn plugin_for_tool(tool: Tool) -> &'static dyn AiPlugin {
     match tool {
         Tool::Claude => &claude::PLUGIN,
         Tool::Copilot => &copilot::PLUGIN,
+        Tool::Codex => &codex::PLUGIN,
     }
 }
 
-/// Resolve a built-in AI plugin by registry id (`"claude"`, `"copilot"`).
+/// Resolve a built-in AI plugin by registry id (`"claude"`, `"copilot"`, `"codex"`).
 #[must_use]
 pub fn plugin_for_id(id: &str) -> Option<&'static dyn AiPlugin> {
     BUILTIN_AI.iter().find(|p| p.plugin.id() == id).map(|p| p.plugin)
@@ -222,15 +237,33 @@ pub fn restart_ai_session_policy(tool: Tool) -> RestartAiSessionPolicy {
 }
 
 /// Resume preflight policy:
-/// - Claude: require transcript/session state path to exist before `--resume`.
-/// - Copilot: allow `--resume` unconditionally (CLI creates missing sessions).
+/// - Claude: require transcript/session-state path to exist before invoking resume args.
+/// - Copilot/Codex: allow resume invocation unconditionally (CLIs create missing sessions).
 #[must_use]
 pub fn resume_requires_preflight(tool: Tool) -> bool {
     plugin_for_tool(tool).resume_requires_preflight()
+}
+
+/// Structured-command args to resume `ai_session_id` for `tool`.
+#[must_use]
+pub fn resume_args(tool: Tool, ai_session_id: &str) -> Vec<String> {
+    plugin_for_tool(tool).resume_args(ai_session_id)
 }
 
 /// Resolve the expected transcript/session-state path for `ai_session_id`.
 #[must_use]
 pub fn ai_session_transcript_path(tool: Tool, home: &Path, worktree_path: &Path, ai_session_id: &str) -> PathBuf {
     plugin_for_tool(tool).ai_session_transcript_path(home, worktree_path, ai_session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_args_dispatch_per_tool() {
+        assert_eq!(resume_args(Tool::Claude, "aid-1"), vec!["--resume".to_owned(), "aid-1".to_owned()]);
+        assert_eq!(resume_args(Tool::Copilot, "aid-2"), vec!["--resume".to_owned(), "aid-2".to_owned()]);
+        assert_eq!(resume_args(Tool::Codex, "aid-3"), vec!["resume".to_owned(), "aid-3".to_owned()]);
+    }
 }
