@@ -956,7 +956,7 @@ fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> O
     // Scan top-level `sessions/` directory.
     scan_dir(sessions_dir, &expected_norm, cutoff, &mut best);
 
-    // Also scan date-nested subdirs (YYYY/MM/DD pattern).
+    // Also scan three-level nested subdirs (Codex commonly uses YYYY/MM/DD).
     if let Ok(years) = std::fs::read_dir(sessions_dir) {
         for year_entry in years.flatten() {
             let year_path = year_entry.path();
@@ -1070,8 +1070,9 @@ impl CodexState {
     }
 }
 
-/// Extract token-count fields from a `TokenCount` event's `info` payload. Returns a tuple of `(input, output, total, model_context_window)`, each
-/// `Some` when present and well-typed. Missing `payload.info` returns an all-`None` tuple early.
+/// Extract token-count fields from a `TokenCount` event's nested `payload.payload.info` object. Returns a tuple of
+/// `(input, output, total, model_context_window)`, each `Some` when present and well-typed. Missing nested info returns
+/// an all-`None` tuple early.
 fn extract_codex_token_count(payload: &serde_json::Value) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
     let Some(info) = payload.get("payload").and_then(|p| p.get("info")) else {
         return (None, None, None, None);
