@@ -175,30 +175,30 @@ impl MetricsRegistry {
                 // `running` flag and parked in `extra_joins` so `stop` / `stop_and_join` / `stop_all_and_join` tear down everything together.
                 //
                 // Gating note: when the plugin advertises a per-session settings file via `settings_file_path` (i.e. Claude), we additionally
-                // require that file to exist, parse as JSON, contain a registered hook command whose **basename** is `arborist-claude-hook[.exe]`,
-                // *and* point at a path that exists in the current process — see
-                // [`crate::claude_hook_events::settings_file_references_existing_helper`]. Plain `.exists()` on the settings file is not enough
+                // require that file to exist, parse as JSON, and contain an Arborist-owned hook entry whose command path exists *and* whose args
+                // include this session id + hook-events path — see [`crate::claude_hook_events::settings_file_hook_events_path`]. Plain `.exists()`
+                // on the settings file is not enough
                 // because on restart/restore we replay `materialise_temp_files(&session.temp_files)`, so a settings file persisted from a previous
                 // install (or before the helper was moved/uninstalled/repackaged) will be on disk even when the helper itself isn't reachable.
                 // Falling any of those checks disables the watcher so we don't park a per-session polling thread on a `hook-events.jsonl` no one
-                // will write to. The validator identifies the Arborist entry by basename rather than by `args[2]` path-equality so it survives
-                // Windows path-string mismatches (short-name vs long-name, `temp_dir()` resolution drift between compose-time and gate-time
-                // processes, trailing-separator variation) that previously fired this gate as a false negative.
+                // will write to.
                 let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
                 if crate::plugins::ai::starts_activity_events_watcher(tool) {
-                    // Gate the activity-events watcher on the per-session settings file *referencing a helper-binary command path that exists in
-                    // the current process*. Plain `.exists()` on the settings file isn't enough: on restart/restore we always replay
-                    // `materialise_temp_files(&session.temp_files)`, so a settings file persisted from a previous install (or before the helper
-                    // was moved/uninstalled) will be on disk even when the helper itself isn't reachable. Parsing the settings JSON and matching
-                    // the Arborist-owned hook by command basename (`arborist-claude-hook[.exe]`) is the robust identification — see the rationale
-                    // on the gating-note block above.
+                    // For Claude, resolve the hook-events path directly from the validated Arborist hook entry in the settings JSON so we tail the
+                    // exact file the helper will append to (instead of assuming the current process's computed temp path string).
+                    let mut claude_hook_events_path: Option<PathBuf> = None;
                     let hook_integration_disabled = match crate::plugins::ai::settings_file_path(tool, &session_id) {
-                        Some(p) => !crate::claude_hook_events::settings_file_references_existing_helper(&p, &session_id),
+                        Some(p) => {
+                            claude_hook_events_path = crate::claude_hook_events::settings_file_hook_events_path(&p, &session_id);
+                            claude_hook_events_path.is_none()
+                        }
                         None => false,
                     };
                     let home_opt = home_dir();
                     let kind = if hook_integration_disabled {
                         None
+                    } else if let Some(path) = claude_hook_events_path {
+                        Some(crate::plugins::ai::ActivityEventsKind::ClaudeHookEventsJsonl(path))
                     } else {
                         crate::plugins::ai::activity_events_kind(tool, session_id, home_opt.as_deref(), ai_session_id.as_deref())
                     };
@@ -227,7 +227,7 @@ impl MetricsRegistry {
                         tracing::debug!(
                             session_id = %session_id,
                             ?tool,
-                            "activity events watcher not started (hook integration disabled — settings file missing, unparseable, missing an Arborist hook entry, or references a helper command path that doesn't exist in the current process)",
+                            "activity events watcher not started (hook integration disabled — settings file missing, unparseable, missing an Arborist hook entry, invalid/missing hook args path, or references a helper command path that doesn't exist in the current process)",
                         );
                     } else {
                         tracing::debug!(

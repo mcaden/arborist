@@ -63,27 +63,21 @@ pub fn hook_events_path(session_id: &SessionId) -> PathBuf {
     crate::compose::session_temp_dir(session_id).join(crate::session_temp::CLAUDE_HOOK_EVENTS_FILE_NAME)
 }
 
-/// Validate that the per-session `claude-settings.json` at `settings_path` still references a helper-binary command path that exists on disk **in
-/// the current process**. Used as the activity-events gate so a stale persisted settings file (app moved or updated since the session was last
-/// spawned, partial install, packaging regression) doesn't park a polling thread on a `hook-events.jsonl` that will never be written to.
+/// Resolve the hook-events JSONL path from a per-session `claude-settings.json` at `settings_path`, but only when it references a valid
+/// Arborist-owned helper command path that exists on disk **in the current process**.
 ///
 /// Identifies an Arborist-owned hook entry by **command basename** equal to `arborist-claude-hook[.exe]`. The basename is unique to us (Claude's
-/// hook contract registers commands by absolute path; no other tool ships a binary by this name), and unlike path-equality on the embedded
-/// `args[2]` events-path it survives the standard Windows path-string mismatches: short-name vs long-name (`AAROMO~1`/`aaromoore`),
-/// `temp_dir()` resolution drift between the compose-time process and the gate-time process (different `TMP`/`TEMP`/`USERPROFILE` env
-/// inheritance from a wrapping shell), and trailing-separator variation. Returns `false` on missing file, parse error, no matching entry, or a
-/// matching entry whose `command` path doesn't exist as a file.
+/// hook contract registers commands by absolute path; no other tool ships a binary by this name). Returns `None` on missing file, parse error, no
+/// matching entry, missing/invalid hook args, session-id mismatch, or a matching entry whose `command` path doesn't exist as a file.
 #[must_use]
-pub fn settings_file_references_existing_helper(settings_path: &std::path::Path, _session_id: &SessionId) -> bool {
+pub fn settings_file_hook_events_path(settings_path: &std::path::Path, session_id: &SessionId) -> Option<PathBuf> {
     let Ok(bytes) = std::fs::read(settings_path) else {
-        return false;
+        return None;
     };
     let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return false;
+        return None;
     };
-    let Some(hooks) = json.get("hooks").and_then(|h| h.as_object()) else {
-        return false;
-    };
+    let hooks = json.get("hooks").and_then(|h| h.as_object())?;
     // Arborist sidecar basename is OS-independent: just `arborist-claude-hook` plus the platform's executable suffix. Compare case-insensitively
     // because Windows is case-insensitive and the helper path is written using whatever case the file resolver returned (which can differ from
     // user-typed casing). The helper-name constant is hard-coded here rather than reading from a shared source because the hook-side string is the
@@ -91,6 +85,7 @@ pub fn settings_file_references_existing_helper(settings_path: &std::path::Path,
     // resolved path) but the constant is the load-bearing string for the validator's correctness.
     let expected_basename = format!("arborist-claude-hook{}", std::env::consts::EXE_SUFFIX);
 
+    let expected_session_id = session_id.0.to_string();
     for entries in hooks.values() {
         let Some(arr) = entries.as_array() else {
             continue;
@@ -109,13 +104,33 @@ pub fn settings_file_references_existing_helper(settings_path: &std::path::Path,
                     .and_then(|n| n.to_str())
                     .map(|n| n.eq_ignore_ascii_case(&expected_basename))
                     .unwrap_or(false);
-                if basename_matches && cmd_path.is_file() {
-                    return true;
+                if !basename_matches || !cmd_path.is_file() {
+                    continue;
                 }
+                let Some(args) = hook.get("args").and_then(|a| a.as_array()) else {
+                    continue;
+                };
+                let session_arg = args.get(1).and_then(|a| a.as_str());
+                if session_arg != Some(expected_session_id.as_str()) {
+                    continue;
+                }
+                let Some(events_arg) = args.get(2).and_then(|a| a.as_str()) else {
+                    continue;
+                };
+                if events_arg.is_empty() {
+                    continue;
+                }
+                return Some(PathBuf::from(events_arg));
             }
         }
     }
-    false
+    None
+}
+
+/// Backward-compatible boolean gate helper used by legacy call sites/tests.
+#[must_use]
+pub fn settings_file_references_existing_helper(settings_path: &std::path::Path, session_id: &SessionId) -> bool {
+    settings_file_hook_events_path(settings_path, session_id).is_some()
 }
 
 /// Callback shape mirrors [`crate::pty_pool::ActivityCb`] so production can wire the same emitter that already broadcasts on `session://activity`.
@@ -754,6 +769,16 @@ mod tests {
     }
 
     #[test]
+    fn settings_validation_returns_hook_events_path_from_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_helper = tmp.path().join(helper_basename());
+        std::fs::write(&fake_helper, b"#!/bin/sh\n").unwrap();
+        let sid = SessionId::new();
+        let settings = write_settings_with_helper(&tmp, &fake_helper.to_string_lossy(), &sid);
+        assert_eq!(settings_file_hook_events_path(&settings, &sid), Some(hook_events_path(&sid)));
+    }
+
+    #[test]
     fn settings_validation_passes_when_args_path_diverges_from_current_temp_dir() {
         // Regression: previously the validator required `args[2]` to byte-equal `hook_events_path(session_id).to_string_lossy()`. On Windows that
         // failed whenever `std::env::temp_dir()` resolved to a different string between the compose-time process (short-name `AAROMO~1`, or
@@ -779,6 +804,30 @@ mod tests {
         let path = tmp.path().join("claude-settings.json");
         std::fs::write(&path, serde_json::to_string(&body).unwrap()).unwrap();
         assert!(settings_file_references_existing_helper(&path, &sid));
+    }
+
+    #[test]
+    fn settings_validation_fails_when_helper_args_session_id_mismatches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_helper = tmp.path().join(helper_basename());
+        std::fs::write(&fake_helper, b"#!/bin/sh\n").unwrap();
+        let sid = SessionId::new();
+        let body = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": fake_helper.to_string_lossy(),
+                        "args": ["pre-tool-use", SessionId::new().0.to_string(), hook_events_path(&sid).to_string_lossy()],
+                    }],
+                }],
+            }
+        });
+        let path = tmp.path().join("claude-settings.json");
+        std::fs::write(&path, serde_json::to_string(&body).unwrap()).unwrap();
+        assert_eq!(settings_file_hook_events_path(&path, &sid), None);
+        assert!(!settings_file_references_existing_helper(&path, &sid));
     }
 
     #[test]
