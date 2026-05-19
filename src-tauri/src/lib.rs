@@ -13,6 +13,7 @@ pub mod config_store;
 pub mod copilot_events;
 pub mod git;
 pub mod icon_backfill;
+pub mod login_path;
 pub mod plugins;
 pub mod process_icon;
 pub mod pty_pool;
@@ -144,6 +145,9 @@ pub fn run() {
             std::fs::create_dir_all(&log_dir)?;
             let log_guard = init_tracing(Some(&log_dir));
             tracing::info!("Arborist starting up");
+
+            // Recover the user's interactive PATH before anything inherits this process's env (macOS only; no-op elsewhere).
+            login_path::apply_login_path_macos();
 
             // If this build came from a branch other than `main`, surface the branch name in the window title bar so it's obvious which build is
             // running. We set the title twice: once here with no workspace bound (covers the brief startup window before `boot_select_workspace`
