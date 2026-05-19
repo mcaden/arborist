@@ -73,7 +73,7 @@ pub enum RestartAiSessionPolicy {
 pub enum MetricsWatcherKind {
     Claude { home: PathBuf, cwd: PathBuf },
     Copilot { otel_path: PathBuf },
-    Codex { home: PathBuf, cwd: PathBuf },
+    Codex { codex_home: PathBuf, cwd: PathBuf },
 }
 
 /// Spawn-prep side effects run right before PTY spawn.

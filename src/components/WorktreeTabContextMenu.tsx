@@ -64,6 +64,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   const firstMenuItem = itemOrder[0] ?? 'settings';
   const [focusedItem, setFocusedItem] = useState<Item>(firstMenuItem);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const closeMenu = useCallback((): void => {
     onClose();
@@ -129,6 +130,8 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       closeMenu();
       return;
     }
+    setActionError(null);
+    const pluginName = aiPlugins.find((plugin) => plugin.id === tool)?.displayName ?? tool;
     const dims = measureInitialPtyDimensions();
     void sessionActions
       .create({
@@ -137,10 +140,14 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
         cols: dims.cols,
         rows: dims.rows,
       })
+      .then(() => {
+        closeMenu();
+      })
       .catch((err: unknown) => {
-        console.warn(`[WorktreeTabContextMenu] session_create(${tool}) failed: ${formatError(err)}`);
+        const message = formatError(err);
+        console.warn(`[WorktreeTabContextMenu] session_create(${tool}) failed: ${message}`);
+        setActionError(`Launch ${pluginName} failed: ${message}`);
       });
-    closeMenu();
   };
 
   const handleCustomProcess = (defId: string): void => {
@@ -278,6 +285,14 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       >
         <span>Close worktree tab</span>
       </button>
+      {actionError && (
+        <>
+          <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+          <p role="alert" data-testid="worktree-tab-context-menu-error" className="px-3 py-1.5 text-xs text-red-700 dark:text-red-300">
+            {actionError}
+          </p>
+        </>
+      )}
     </div>
   );
 

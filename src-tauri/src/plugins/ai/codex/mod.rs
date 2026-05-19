@@ -48,8 +48,11 @@ impl AiPlugin for CodexPlugin {
     }
 
     fn metrics_watcher_kind(&self, _session_id: SessionId, cwd: &std::path::Path) -> Option<crate::plugins::ai::MetricsWatcherKind> {
-        crate::session_metrics::home_dir().map(|home| crate::plugins::ai::MetricsWatcherKind::Codex {
-            home,
+        let codex_home = std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| crate::session_metrics::home_dir().map(|home| home.join(".codex")))?;
+        Some(crate::plugins::ai::MetricsWatcherKind::Codex {
+            codex_home,
             cwd: cwd.to_path_buf(),
         })
     }

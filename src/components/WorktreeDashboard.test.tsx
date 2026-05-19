@@ -128,6 +128,18 @@ describe('WorktreeDashboard', () => {
     await act(async () => {});
   });
 
+  it('shows a launch error when sessionCreate rejects (e.g., codex missing)', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    bridgeMock.sessionCreate.mockRejectedValueOnce(new Error('spawn_command failed: program not found'));
+
+    renderDashboard();
+    await act(async () => {});
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-launch-codex'));
+
+    expect(await screen.findByTestId('worktree-dashboard-launch-error')).toHaveTextContent(/launch codex failed/i);
+  });
+
   it('mounts widgets in registry order', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     const registry = createRegistry();

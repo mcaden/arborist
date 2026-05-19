@@ -160,9 +160,9 @@ impl MetricsRegistry {
                     run_copilot_watcher(session_id, otel_path, emit, emit_turn, discover, running_for_thread);
                 })
             }
-            crate::plugins::ai::MetricsWatcherKind::Codex { home, cwd } => {
+            crate::plugins::ai::MetricsWatcherKind::Codex { codex_home, cwd } => {
                 thread::Builder::new().name(format!("arborist-metrics-{}", session_id)).spawn(move || {
-                    run_codex_watcher(session_id, home, cwd, spawn_instant, emit, emit_turn, discover, running_for_thread);
+                    run_codex_watcher(session_id, codex_home, cwd, spawn_instant, emit, emit_turn, discover, running_for_thread);
                 })
             }
         };
@@ -1069,7 +1069,7 @@ impl CodexState {
 }
 
 /// Extract token-count fields from a `TokenCount` event's `info` payload. Returns a tuple of `(input, output, total, model_context_window)`, each
-/// `Some` when present and well-typed. The `?` short-circuits at the missing-`info` boundary; nested fields use the same chain.
+/// `Some` when present and well-typed. Missing `payload.info` returns an all-`None` tuple early.
 fn extract_codex_token_count(payload: &serde_json::Value) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
     let Some(info) = payload.get("payload").and_then(|p| p.get("info")) else {
         return (None, None, None, None);
@@ -1087,7 +1087,7 @@ fn ingest_codex_rollout_line(line: &[u8], state: &mut CodexState) {
     // Lines in the rollout are `{"timestamp":"...","type":"<variant>","payload":{...}}`.
     // We care about:
     // - type = "event_msg" with payload.type = "TokenCount" → token usage
-    // - type = "turn_context" → model name and context_window
+    // - type = "turn_context" → model name
     let Ok(outer) = serde_json::from_slice::<CodexRolloutLine>(line) else {
         return;
     };
@@ -1173,7 +1173,7 @@ fn parse_codex_turn_duration_ms(line: &[u8]) -> Option<Option<u64>> {
 #[allow(clippy::too_many_arguments)]
 fn run_codex_watcher(
     session_id: SessionId,
-    home: PathBuf,
+    codex_home: PathBuf,
     cwd: PathBuf,
     spawn_instant: SystemTime,
     emit: MetricsCb,
@@ -1181,7 +1181,6 @@ fn run_codex_watcher(
     discover: AiSessionDiscoveryCb,
     running: Arc<AtomicBool>,
 ) {
-    let codex_home = std::env::var("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".codex"));
     let sessions_dir = codex_home.join("sessions");
 
     let mut last_emitted: Option<SessionMetricsEvent> = None;

@@ -117,6 +117,17 @@ describe('WorktreeTabContextMenu', () => {
     await act(async () => {});
   });
 
+  it('keeps menu open and surfaces an error when Launch Codex fails', async () => {
+    bridgeMock.sessionCreate.mockRejectedValueOnce(new Error('spawn_command failed: program not found'));
+    const onClose = vi.fn();
+    renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-codex'));
+
+    expect(await screen.findByTestId('worktree-tab-context-menu-error')).toHaveTextContent(/launch codex failed/i);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('returns null when the tab has been removed from the store', () => {
     const onClose = vi.fn();
     useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
