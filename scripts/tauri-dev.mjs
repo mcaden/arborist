@@ -10,10 +10,21 @@
 //   - `build.beforeDevCommand` runs vite with `--port=<port>` so the frontend
 //     binds to the right port (no env var required).
 //   - `build.devUrl` is set to the matching URL so the desktop shell loads it.
-import { spawn } from 'node:child_process';
+//
+// Sidecar build: before launching `tauri dev`, we run `cargo build --bin
+// arborist-claude-hook` so the helper binary exists at `target/debug/` as a
+// sibling of the about-to-be-built `arborist` binary. `tauri dev` only
+// compiles the main `arborist` target via cargo, so without this step the
+// first dev run on a clean checkout starts arborist with no sibling helper —
+// `resolve_claude_hook_helper()` returns `None`, every Claude session in that
+// session launches without `--settings`, and the sidebar falls back to
+// PTY-byte heuristics with no indication of why. The release path
+// (`tauri.bundle.conf.json::beforeBuildCommand`) already builds and stages
+// the helper; this puts dev on equal footing.
+import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -56,12 +67,37 @@ process.on('exit', cleanup);
 console.log(`[arborist] tauri dev on port ${port}`);
 
 const isWindows = process.platform === 'win32';
+
+// Resolve `cargo` under `$CARGO_HOME/bin/` so we don't depend on PATH (and so a writable directory earlier on PATH can't shadow the toolchain). Same
+// pattern the release sidecar prep script uses (`scripts/prepare-claude-hook-sidecar.mjs`).
+function cargoBin() {
+  const cargoHome = process.env.CARGO_HOME ?? join(homedir(), '.cargo');
+  const name = isWindows ? 'cargo.exe' : 'cargo';
+  return join(cargoHome, 'bin', name);
+}
+
+// Build the Claude hook sidecar before `tauri dev` so the helper sits next to `arborist.exe` in `target/debug/` on first launch. Synchronous because
+// tauri dev's own cargo build holds the workspace target lock — running these in parallel would just serialise on the lock. After the first build,
+// this is a near-no-op (cargo cache hit).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, '..');
+const tauriDir = join(projectRoot, 'src-tauri');
+console.log('[arborist] building arborist-claude-hook (debug)…');
+try {
+  execFileSync(cargoBin(), ['build', '--bin', 'arborist-claude-hook'], {
+    cwd: tauriDir,
+    stdio: 'inherit',
+  });
+} catch (err) {
+  console.error('[arborist] failed to build arborist-claude-hook — aborting; sidebar status would be degraded without it.');
+  cleanup();
+  process.exit(err?.status ?? 1);
+}
+
 const tauriDevArgs = ['dev', '--config', overridePath, ...process.argv.slice(2)];
 
 // Resolve the local `tauri` binary from node_modules/.bin so we don't depend
 // on `npx` (which can misresolve under some Node versions / setups).
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..');
 const tauriBin = isWindows ? join(projectRoot, 'node_modules', '.bin', 'tauri.cmd') : join(projectRoot, 'node_modules', '.bin', 'tauri');
 
 // On POSIX we can spawn the binary directly without a shell and put the child
