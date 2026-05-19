@@ -238,9 +238,9 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 /// Augment a stored `composed_command` with resume logic so the AI conversation continues across an app restart, a user-initiated
 /// restart, or — for Copilot — pre-binds the brand-new session to a pre-allocated uuid at create time.
 ///
-/// Resume syntax varies by tool:
-/// * Claude / Copilot: `<cmd> --resume <ai_session_id>` (trailing flag)
-/// * Codex: `<cmd> resume <ai_session_id>` (subcommand — no `--` prefix)
+/// Resume syntax is plugin-dispatched (`plugins::ai::resume_args`):
+/// * Claude / Copilot currently append `--resume <ai_session_id>`
+/// * Codex currently appends `resume <ai_session_id>` (subcommand)
 ///
 /// Used by every spawn site that has an `ai_session_id` to honor: `session_create` (Copilot only — pre-allocated uuid), `session_restart` (Copilot
 /// only — freshly re-allocated uuid), and `restore_all_sessions` (both tools when an id is persisted). The persisted `composed_command` itself stays
@@ -257,16 +257,17 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 /// quoting is still applied for any future non-safe id (e.g. Copilot's session-by-name resume).
 #[must_use]
 pub fn with_resume(composed_command: &str, tool: Tool, ai_session_id: &str) -> String {
-    let resume_keyword = match tool {
-        Tool::Codex => "resume",
-        Tool::Claude | Tool::Copilot => "--resume",
-    };
-    if is_shell_safe_token(ai_session_id) {
-        format!("{composed_command} {resume_keyword} {ai_session_id}")
-    } else {
-        let quoter = platform_shell().quoter;
-        format!("{composed_command} {resume_keyword} {}", quoter(ai_session_id))
+    let quoter = platform_shell().quoter;
+    let resume_tokens = crate::plugins::ai::resume_args(tool, ai_session_id);
+    if resume_tokens.is_empty() {
+        return composed_command.to_owned();
     }
+    let tail = resume_tokens
+        .iter()
+        .map(|token| if is_shell_safe_token(token) { token.clone() } else { quoter(token) })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{composed_command} {tail}")
 }
 
 /// True for non-empty values composed entirely of characters that have no special meaning to either `sh` or `cmd.exe`: ASCII letters, digits, `-`,

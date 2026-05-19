@@ -125,6 +125,7 @@ describe('WorktreeTabContextMenu', () => {
     fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-codex'));
 
     expect(await screen.findByTestId('worktree-tab-context-menu-error')).toHaveTextContent(/launch codex failed/i);
+    expect(screen.getByTestId('worktree-tab-context-menu')).not.toContainElement(screen.getByTestId('worktree-tab-context-menu-error'));
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -225,7 +226,7 @@ describe('WorktreeTabContextMenu', () => {
       renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 390, y: 230 }} onClose={noop} />);
 
       const menu = screen.getByTestId('worktree-tab-context-menu');
-      expect(menu).toHaveStyle({ left: '176px', top: '4px' });
+      expect(menu.parentElement).toHaveStyle({ left: '176px', top: '4px' });
     } finally {
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });

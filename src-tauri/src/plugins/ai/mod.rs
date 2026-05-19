@@ -47,7 +47,7 @@ pub trait AiPlugin: Plugin {
     /// Restart-time AI-session-id policy for this tool.
     fn restart_ai_session_policy(&self) -> RestartAiSessionPolicy;
 
-    /// Whether restore-time `--resume` should verify transcript/session-state first.
+    /// Whether restore-time resume invocation should verify transcript/session-state first.
     fn resume_requires_preflight(&self) -> bool;
 
     /// Structured-command args to resume the AI session id for this tool.
@@ -191,8 +191,8 @@ pub fn restart_ai_session_policy(tool: Tool) -> RestartAiSessionPolicy {
 }
 
 /// Resume preflight policy:
-/// - Claude: require transcript/session state path to exist before `--resume`.
-/// - Copilot: allow `--resume` unconditionally (CLI creates missing sessions).
+/// - Claude: require transcript/session-state path to exist before invoking resume args.
+/// - Copilot/Codex: allow resume invocation unconditionally (CLIs create missing sessions).
 #[must_use]
 pub fn resume_requires_preflight(tool: Tool) -> bool {
     plugin_for_tool(tool).resume_requires_preflight()

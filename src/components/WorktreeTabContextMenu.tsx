@@ -198,110 +198,112 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   };
 
   const menu = (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={`Worktree tab actions for ${tab.name}`}
-      data-testid="worktree-tab-context-menu"
-      style={{ position: 'fixed', left: position.left, top: position.top, minWidth: 200, zIndex: 60 }}
-      className="rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          closeMenu();
-          return;
-        }
-        if (e.key === 'Tab') {
-          e.preventDefault();
-          closeMenu();
-          return;
-        }
-        switch (e.key) {
-          case 'ArrowDown':
+    <div style={{ position: 'fixed', left: position.left, top: position.top, minWidth: 200, zIndex: 60 }}>
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label={`Worktree tab actions for ${tab.name}`}
+        data-testid="worktree-tab-context-menu"
+        className="rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
             e.preventDefault();
-            moveFocus(1);
-            break;
-          case 'ArrowUp':
+            closeMenu();
+            return;
+          }
+          if (e.key === 'Tab') {
             e.preventDefault();
-            moveFocus(-1);
-            break;
-          case 'Enter':
-          case ' ':
-            e.preventDefault();
-            activateItem(itemForElement(e.target) ?? focusedItem);
-            break;
-          default:
-        }
-      }}
-    >
-      {aiPlugins.map((plugin) => {
-        const key: Item = `launch:${plugin.id}` as Item;
-        return (
-          <button
-            key={plugin.id}
-            ref={setItemRef(key)}
-            type="button"
-            role="menuitem"
-            data-testid={`worktree-tab-context-menu-launch-${plugin.id}`}
-            onClick={() => handleLaunch(plugin.id)}
-            onMouseEnter={() => setFocusedItem(key)}
-            className={itemBase}
-          >
-            <MenuIcon src={aiIconDataUris[plugin.id] ?? undefined} fallback="🤖" />
-            <span>{`Launch ${plugin.displayName}`}</span>
-          </button>
-        );
-      })}
-      {customProcesses.length > 0 &&
-        customProcesses.map((def) => {
-          const key: Item = `cp:${def.id}` as Item;
+            closeMenu();
+            return;
+          }
+          switch (e.key) {
+            case 'ArrowDown':
+              e.preventDefault();
+              moveFocus(1);
+              break;
+            case 'ArrowUp':
+              e.preventDefault();
+              moveFocus(-1);
+              break;
+            case 'Enter':
+            case ' ':
+              e.preventDefault();
+              activateItem(itemForElement(e.target) ?? focusedItem);
+              break;
+            default:
+          }
+        }}
+      >
+        {aiPlugins.map((plugin) => {
+          const key: Item = `launch:${plugin.id}` as Item;
           return (
             <button
-              key={def.id}
+              key={plugin.id}
               ref={setItemRef(key)}
               type="button"
               role="menuitem"
-              data-testid={`worktree-tab-context-menu-cp-${def.id}`}
-              onClick={() => handleCustomProcess(def.id)}
+              data-testid={`worktree-tab-context-menu-launch-${plugin.id}`}
+              onClick={() => handleLaunch(plugin.id)}
               onMouseEnter={() => setFocusedItem(key)}
               className={itemBase}
             >
-              <MenuIcon src={def.iconDataUri} fallback="⌗" />
-              <span>{def.name}</span>
+              <MenuIcon src={aiIconDataUris[plugin.id] ?? undefined} fallback="🤖" />
+              <span>{`Launch ${plugin.displayName}`}</span>
             </button>
           );
         })}
-      <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
-      <button
-        ref={setItemRef('settings')}
-        type="button"
-        role="menuitem"
-        data-testid="worktree-tab-context-menu-settings"
-        onClick={handleSettings}
-        onMouseEnter={() => setFocusedItem('settings')}
-        className={itemBase}
-      >
-        <span>Custom Processes…</span>
-      </button>
-      <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
-      <button
-        ref={setItemRef('close')}
-        type="button"
-        role="menuitem"
-        data-testid="worktree-tab-context-menu-close"
-        onClick={handleClose}
-        onMouseEnter={() => setFocusedItem('close')}
-        className={itemBase}
-      >
-        <span>Close worktree tab</span>
-      </button>
+        {customProcesses.length > 0 &&
+          customProcesses.map((def) => {
+            const key: Item = `cp:${def.id}` as Item;
+            return (
+              <button
+                key={def.id}
+                ref={setItemRef(key)}
+                type="button"
+                role="menuitem"
+                data-testid={`worktree-tab-context-menu-cp-${def.id}`}
+                onClick={() => handleCustomProcess(def.id)}
+                onMouseEnter={() => setFocusedItem(key)}
+                className={itemBase}
+              >
+                <MenuIcon src={def.iconDataUri} fallback="⌗" />
+                <span>{def.name}</span>
+              </button>
+            );
+          })}
+        <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
+        <button
+          ref={setItemRef('settings')}
+          type="button"
+          role="menuitem"
+          data-testid="worktree-tab-context-menu-settings"
+          onClick={handleSettings}
+          onMouseEnter={() => setFocusedItem('settings')}
+          className={itemBase}
+        >
+          <span>Custom Processes…</span>
+        </button>
+        <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
+        <button
+          ref={setItemRef('close')}
+          type="button"
+          role="menuitem"
+          data-testid="worktree-tab-context-menu-close"
+          onClick={handleClose}
+          onMouseEnter={() => setFocusedItem('close')}
+          className={itemBase}
+        >
+          <span>Close worktree tab</span>
+        </button>
+      </div>
       {actionError && (
-        <>
-          <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
-          <p role="alert" data-testid="worktree-tab-context-menu-error" className="px-3 py-1.5 text-xs text-red-700 dark:text-red-300">
-            {actionError}
-          </p>
-        </>
+        <p
+          role="alert"
+          data-testid="worktree-tab-context-menu-error"
+          className="mt-1 rounded border border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-700 shadow dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300"
+        >
+          {actionError}
+        </p>
       )}
     </div>
   );
