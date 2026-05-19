@@ -437,7 +437,7 @@ mod tests {
     fn build_registry_registers_builtin_plugins() {
         let reg = build_registry().expect("build_registry must not collide on duplicate ids");
         let ai_ids: Vec<&str> = reg.ai().iter().map(|p| p.id()).collect();
-        assert_eq!(ai_ids, vec!["claude", "copilot"]);
+        assert_eq!(ai_ids, vec!["claude", "copilot", "codex"]);
         let custom_process_ids: Vec<&str> = reg.custom_processes().iter().map(|p| p.id()).collect();
         assert_eq!(custom_process_ids, vec!["vscode", "explorer"]);
         let widget_ids: Vec<&str> = reg.widgets().iter().map(|w| w.id()).collect();

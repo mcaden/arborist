@@ -57,8 +57,9 @@ pub struct ComposeInputs<'a> {
 /// |---------|--------------------------------------------------|-----------|
 /// | Claude  | `claude`                                         | no        |
 /// | Copilot | `copilot` (bare; interactive mode is the default) | no        |
+/// | Codex   | `codex` (bare; interactive TUI is the default)   | no        |
 ///
-/// **Worktree handling**: the worktree path is *never* interpolated into the composed command. In both cases the real `cwd` for `portable-pty` is set
+/// **Worktree handling**: the worktree path is *never* interpolated into the composed command. In all cases the real `cwd` for `portable-pty` is set
 /// separately by the PTY pool; we never emit `cd "<path>" && ...`.
 pub fn compose_command(inputs: &ComposeInputs<'_>) -> Result<ComposedInvocation, Error> {
     let quoter = platform_shell().quoter;
@@ -234,8 +235,12 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
     crate::plugins::ai::env(tool, session_id)
 }
 
-/// Augment a stored `composed_command` with `--resume <ai_session_id>` so the AI conversation continues across an app restart, a user-initiated
+/// Augment a stored `composed_command` with resume logic so the AI conversation continues across an app restart, a user-initiated
 /// restart, or — for Copilot — pre-binds the brand-new session to a pre-allocated uuid at create time.
+///
+/// Resume syntax varies by tool:
+/// * Claude / Copilot: `<cmd> --resume <ai_session_id>` (trailing flag)
+/// * Codex: `<cmd> resume <ai_session_id>` (subcommand — no `--` prefix)
 ///
 /// Used by every spawn site that has an `ai_session_id` to honor: `session_create` (Copilot only — pre-allocated uuid), `session_restart` (Copilot
 /// only — freshly re-allocated uuid), and `restore_all_sessions` (both tools when an id is persisted). The persisted `composed_command` itself stays
@@ -251,12 +256,16 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 /// the surrounding quotes as part of the argument value — `--resume "<uuid>"` reaches the CLI with the quotes attached and resume fails. Defensive
 /// quoting is still applied for any future non-safe id (e.g. Copilot's session-by-name resume).
 #[must_use]
-pub fn with_resume(composed_command: &str, _tool: Tool, ai_session_id: &str) -> String {
+pub fn with_resume(composed_command: &str, tool: Tool, ai_session_id: &str) -> String {
+    let resume_keyword = match tool {
+        Tool::Codex => "resume",
+        Tool::Claude | Tool::Copilot => "--resume",
+    };
     if is_shell_safe_token(ai_session_id) {
-        format!("{composed_command} --resume {ai_session_id}")
+        format!("{composed_command} {resume_keyword} {ai_session_id}")
     } else {
         let quoter = platform_shell().quoter;
-        format!("{composed_command} --resume {}", quoter(ai_session_id))
+        format!("{composed_command} {resume_keyword} {}", quoter(ai_session_id))
     }
 }
 
@@ -421,6 +430,13 @@ pub(crate) fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (Str
     (cli_cmd, Vec::new())
 }
 
+pub(crate) fn build_codex(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+    // Codex CLI starts in interactive TUI mode by default with bare `codex`. It auto-discovers instructions from `cwd` (no flags needed). The PTY
+    // pool sets the worktree as `cwd`, so Codex picks up the repo context automatically.
+    let cli_cmd = cli_program_for_tool(Tool::Codex, inputs.cli_launch_command);
+    (cli_cmd, Vec::new())
+}
+
 /// Resolve the program token for `tool`. Precedence (highest first):
 ///
 /// 1. **User config override** (`config_override`, when `Some` and non-empty):
@@ -428,7 +444,7 @@ pub(crate) fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (Str
 ///    authored by the user — not a single argument — so callers can add flags
 ///    like `--model sonnet` directly. Persisted by the Settings dialog into
 ///    `AppConfig.ai_launch_commands`.
-/// 2. **Default**: the bare CLI name (`claude` / `copilot`).
+/// 2. **Default**: the bare CLI name (`claude` / `copilot` / `codex`).
 fn cli_program_for_tool(tool: Tool, config_override: Option<&str>) -> String {
     if let Some(s) = config_override {
         let trimmed = s.trim();
@@ -546,6 +562,26 @@ mod tests {
         }
     }
 
+    // -- composition: Codex -------------------------------------------
+
+    #[test]
+    fn codex_compose_basic() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\repos\\my-project" } else { "/repos/my-project" });
+        let r = compose_command(&inputs(Tool::Codex, &wt, "wt")).expect("compose");
+        // Bare `codex` — interactive TUI mode is the default. No flags, no worktree path interpolation.
+        assert_eq!(r.composed_command, "codex");
+        assert!(r.temp_files.is_empty());
+    }
+
+    #[test]
+    fn codex_compose_uses_cli_launch_command_override() {
+        let wt = PathBuf::from(if cfg!(windows) { "C:\\wt" } else { "/wt" });
+        let mut i = inputs(Tool::Codex, &wt, "wt");
+        i.cli_launch_command = Some("codex --model gpt-5.4");
+        let r = compose_command(&i).expect("compose");
+        assert_eq!(r.composed_command, "codex --model gpt-5.4");
+    }
+
     // -- with_resume ----------------------------------------------------
 
     #[test]
@@ -590,6 +626,20 @@ mod tests {
         assert_eq!(out, format!("claude --resume {}", host_quote(nasty)));
         // Extra sanity: the raw id substring must not appear unquoted.
         assert!(!out.ends_with(nasty));
+    }
+
+    #[test]
+    fn with_resume_codex_uses_subcommand_syntax() {
+        // Codex CLI uses `codex resume <id>` (a subcommand), not `--resume <id>`.
+        let out = with_resume("codex", Tool::Codex, "abc-123");
+        assert_eq!(out, "codex resume abc-123");
+    }
+
+    #[test]
+    fn with_resume_codex_with_launch_override() {
+        let base = "codex --model gpt-5.4";
+        let out = with_resume(base, Tool::Codex, "sess-uuid");
+        assert_eq!(out, format!("{base} resume sess-uuid"));
     }
 
     // -- POSIX quoting --------------------------------------------------
@@ -864,5 +914,10 @@ mod tests {
             path_a.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
             path_b.get("COPILOT_OTEL_FILE_EXPORTER_PATH"),
         );
+    }
+
+    #[test]
+    fn env_for_tool_codex_is_empty() {
+        assert!(env_for_tool(Tool::Codex, &fixed_id()).is_empty());
     }
 }

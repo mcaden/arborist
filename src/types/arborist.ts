@@ -28,7 +28,7 @@ export type CustomProcessDefId = string;
 export type WorktreeTabId = string;
 
 // MIRROR: src-tauri/src/types.rs::Tool
-export type Tool = 'claude' | 'copilot';
+export type Tool = 'claude' | 'copilot' | 'codex';
 
 // MIRROR: crates/arborist-types/src/lib.rs::ThemeMode
 export type ThemeMode = 'system' | 'light' | 'dark';

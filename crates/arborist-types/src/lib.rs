@@ -144,11 +144,12 @@ pub enum ThemeMode {
 pub enum Tool {
     Claude,
     Copilot,
+    Codex,
 }
 
 impl Tool {
     /// Every persisted `Tool` variant in stable iteration order.
-    pub const ALL: [Self; 2] = [Self::Claude, Self::Copilot];
+    pub const ALL: [Self; 3] = [Self::Claude, Self::Copilot, Self::Codex];
 
     /// Stable serde discriminator used on disk and as the AI-plugin registry id.
     #[must_use]
@@ -156,6 +157,7 @@ impl Tool {
         match self {
             Self::Claude => "claude",
             Self::Copilot => "copilot",
+            Self::Codex => "codex",
         }
     }
 }
@@ -2494,6 +2496,7 @@ mod tests {
     fn tool_serializes_lowercase() {
         assert_eq!(serde_json::to_value(Tool::Claude).expect("v"), json!("claude"));
         assert_eq!(serde_json::to_value(Tool::Copilot).expect("v"), json!("copilot"));
+        assert_eq!(serde_json::to_value(Tool::Codex).expect("v"), json!("codex"));
     }
 
     #[test]

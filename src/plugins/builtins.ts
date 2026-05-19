@@ -1,4 +1,5 @@
 import { ClaudeAiPlugin } from './ai/claude';
+import { CodexAiPlugin } from './ai/codex';
 import { CopilotAiPlugin } from './ai/copilot';
 import { ExplorerCustomProcessPlugin, VsCodeCustomProcessPlugin } from './custom-process';
 import { aiUsageWidget } from './dashboard-widget/ai-usage';
@@ -13,6 +14,7 @@ export function createBuiltinsRegistry(): PluginRegistry {
   const registry = createRegistry();
   registry.registerAi(ClaudeAiPlugin);
   registry.registerAi(CopilotAiPlugin);
+  registry.registerAi(CodexAiPlugin);
   registry.registerCustomProcess(VsCodeCustomProcessPlugin);
   registry.registerCustomProcess(ExplorerCustomProcessPlugin);
   registry.registerWidget(gitStatusWidget);

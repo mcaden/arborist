@@ -13,6 +13,7 @@ use crate::types::Tool;
 use crate::types::{SessionId, TempFileSpec};
 
 pub mod claude;
+pub mod codex;
 pub mod copilot;
 
 /// AI plugin trait. See module-level docs for the full implementor contract.
@@ -97,12 +98,16 @@ fn claude_factory() -> Arc<dyn AiPlugin> {
     Arc::new(claude::ClaudePlugin)
 }
 
+fn codex_factory() -> Arc<dyn AiPlugin> {
+    Arc::new(codex::CodexPlugin)
+}
+
 fn copilot_factory() -> Arc<dyn AiPlugin> {
     Arc::new(copilot::CopilotPlugin)
 }
 
 /// Built-in AI plugins in stable registration order.
-pub const BUILTIN_AI: [BuiltinAi; 2] = [
+pub const BUILTIN_AI: [BuiltinAi; 3] = [
     BuiltinAi {
         tool: Tool::Claude,
         plugin: &claude::PLUGIN,
@@ -112,6 +117,11 @@ pub const BUILTIN_AI: [BuiltinAi; 2] = [
         tool: Tool::Copilot,
         plugin: &copilot::PLUGIN,
         factory: copilot_factory,
+    },
+    BuiltinAi {
+        tool: Tool::Codex,
+        plugin: &codex::PLUGIN,
+        factory: codex_factory,
     },
 ];
 
@@ -124,10 +134,11 @@ pub fn plugin_for_tool(tool: Tool) -> &'static dyn AiPlugin {
     match tool {
         Tool::Claude => &claude::PLUGIN,
         Tool::Copilot => &copilot::PLUGIN,
+        Tool::Codex => &codex::PLUGIN,
     }
 }
 
-/// Resolve a built-in AI plugin by registry id (`"claude"`, `"copilot"`).
+/// Resolve a built-in AI plugin by registry id (`"claude"`, `"copilot"`, `"codex"`).
 #[must_use]
 pub fn plugin_for_id(id: &str) -> Option<&'static dyn AiPlugin> {
     BUILTIN_AI.iter().find(|p| p.plugin.id() == id).map(|p| p.plugin)

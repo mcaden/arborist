@@ -434,7 +434,7 @@ fn default_structured_command(tool: Tool, temp_files: &[crate::types::TempFileSp
             .first()
             .map(|temp| vec!["--system-prompt".to_owned(), temp.path.to_string_lossy().into_owned()])
             .unwrap_or_default(),
-        Tool::Copilot => Vec::new(),
+        Tool::Copilot | Tool::Codex => Vec::new(),
     };
     StructuredCommand { program, args }
 }
@@ -443,8 +443,16 @@ fn with_resume_for_spawn(session: &Session, ai_session_id: &str) -> Session {
     let mut session_to_spawn = session.clone();
     session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, ai_session_id);
     if let Some(structured) = session_to_spawn.structured_command.as_mut() {
-        structured.args.push("--resume".to_owned());
-        structured.args.push(ai_session_id.to_owned());
+        match session.tool {
+            Tool::Codex => {
+                structured.args.push("resume".to_owned());
+                structured.args.push(ai_session_id.to_owned());
+            }
+            Tool::Claude | Tool::Copilot => {
+                structured.args.push("--resume".to_owned());
+                structured.args.push(ai_session_id.to_owned());
+            }
+        }
     }
     session_to_spawn
 }
