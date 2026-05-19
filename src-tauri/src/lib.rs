@@ -146,9 +146,7 @@ pub fn run() {
             let log_guard = init_tracing(Some(&log_dir));
             tracing::info!("Arborist starting up");
 
-            // On macOS, launchd starts .app bundles with a minimal PATH and never sources the user's shell rc files. Recover the user's interactive
-            // PATH by asking the login shell for it before anything else (PTY spawns, PATH-based command probes) inherits this process's env. No-op on
-            // other targets. See `login_path` module doc for the why.
+            // Recover the user's interactive PATH before anything inherits this process's env (macOS only; no-op elsewhere).
             login_path::apply_login_path_macos();
 
             // If this build came from a branch other than `main`, surface the branch name in the window title bar so it's obvious which build is

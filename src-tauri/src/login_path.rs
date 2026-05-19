@@ -19,12 +19,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-/// Sentinel line printed before the actual `PATH` so we can ignore arbitrary noise written by the user's rc files (oh-my-zsh banners, nvm output,
-/// `echo "welcome"` in `.zshrc`, etc.). Must not collide with anything a real PATH could match.
+/// Sentinel printed before the recovered `PATH` so rc-file noise (oh-my-zsh banners, nvm output) ahead of it can be discarded.
 const MARKER: &str = "__ARBORIST_FIXPATH__";
 
-/// Upper bound on how long we'll wait for the login shell to produce its `PATH`. Login zsh with heavy plugins (oh-my-zsh, p10k instant prompt) routinely
-/// takes 200-500ms; pathological setups can hit 2-3s. 5s leaves headroom without freezing the boot UI noticeably.
+/// Upper bound on the login shell query. Empirically, zsh `-ilc` on macOS lands at 50–500ms; 5s is conservative headroom.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
@@ -62,11 +60,10 @@ impl LoginShellQuery for RealLoginShellQuery {
         let script = format!(r#"printf '%s\n%s\n' '{MARKER}' "$PATH""#);
 
         let (tx, rx) = mpsc::channel();
-        let shell_for_thread = shell.clone();
         thread::Builder::new()
             .name("arborist-login-path".into())
             .spawn(move || {
-                let out = Command::new(&shell_for_thread)
+                let out = Command::new(&shell)
                     .args(["-ilc", &script])
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
@@ -103,13 +100,9 @@ fn resolve_shell() -> Result<String, LoginPathError> {
     std::env::var("SHELL").map_err(|_| LoginPathError::NoShell)
 }
 
-/// Compute the `PATH` value to apply, without touching `std::env`. Pure over the trait — used by [`apply_login_path_macos`] and by tests.
-///
-/// Returns:
-/// * `Ok(Some(path))` when the shell returned a non-empty `PATH`.
-/// * `Ok(None)` when the shell returned an empty `PATH` (refuse to clobber).
-/// * `Err(_)` when the query or parse failed.
-pub fn compute<Q: LoginShellQuery + ?Sized>(q: &Q) -> Result<Option<String>, LoginPathError> {
+/// Run the trait, parse its stdout, and return the recovered `PATH` (if any). Pure over `std::env` — used by [`apply_login_path_macos`] and tests.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn compute<Q: LoginShellQuery + ?Sized>(q: &Q) -> Result<Option<String>, LoginPathError> {
     let stdout = q.query()?;
     let path = parse_marker_path(&stdout)?;
     if path.is_empty() {
@@ -119,35 +112,26 @@ pub fn compute<Q: LoginShellQuery + ?Sized>(q: &Q) -> Result<Option<String>, Log
     }
 }
 
-/// Apply the login shell's `PATH` to the host process env on macOS. No-op everywhere else.
+/// Apply the login shell's `PATH` to the host process env on macOS. No-op on other targets.
 ///
-/// Idempotent and best-effort: callers should invoke once per process at boot, before anything spawns a PTY child or probes `PATH`.
+/// Idempotent and best-effort: call once at boot, before anything spawns a PTY child or probes `PATH`.
 #[cfg(target_os = "macos")]
 pub fn apply_login_path_macos() {
-    apply_from(&RealLoginShellQuery);
+    match compute(&RealLoginShellQuery) {
+        Ok(Some(p)) => {
+            tracing::info!(path = %p, "applying login-shell PATH");
+            std::env::set_var("PATH", p);
+        }
+        Ok(None) => tracing::warn!("login-shell PATH was empty; keeping inherited PATH"),
+        Err(e) => tracing::warn!(error = %e, "login-shell PATH query failed; keeping inherited PATH"),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn apply_login_path_macos() {}
 
-/// Inner step of [`apply_login_path_macos`] split out so tests can drive it without depending on the `cfg`-gated entry point.
-#[allow(dead_code)] // Used on macOS and by unit tests; unused on Windows/Linux production builds.
-pub(crate) fn apply_from<Q: LoginShellQuery + ?Sized>(q: &Q) {
-    match compute(q) {
-        Ok(Some(p)) => {
-            tracing::info!(path = %p, "applying login-shell PATH");
-            std::env::set_var("PATH", p);
-        }
-        Ok(None) => {
-            tracing::warn!("login-shell PATH was empty; keeping inherited PATH");
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "login-shell PATH query failed; keeping inherited PATH");
-        }
-    }
-}
-
 /// Pull the first non-empty line following the marker line out of `stdout`. Everything before the marker is treated as rc-file noise and discarded.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn parse_marker_path(stdout: &str) -> Result<String, LoginPathError> {
     let mut lines = stdout.lines();
     let mut saw_marker = false;
@@ -172,17 +156,17 @@ pub(crate) fn parse_marker_path(stdout: &str) -> Result<String, LoginPathError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    struct FakeQuery(Result<String, LoginPathError>);
+    struct FakeQuery(Mutex<Option<Result<String, LoginPathError>>>);
+    impl FakeQuery {
+        fn new(r: Result<String, LoginPathError>) -> Self {
+            Self(Mutex::new(Some(r)))
+        }
+    }
     impl LoginShellQuery for FakeQuery {
         fn query(&self) -> Result<String, LoginPathError> {
-            match &self.0 {
-                Ok(s) => Ok(s.clone()),
-                Err(LoginPathError::NoShell) => Err(LoginPathError::NoShell),
-                Err(LoginPathError::Timeout(d)) => Err(LoginPathError::Timeout(*d)),
-                Err(LoginPathError::MarkerNotFound) => Err(LoginPathError::MarkerNotFound),
-                Err(e) => Err(LoginPathError::NonZeroExit(format!("{e}"))),
-            }
+            self.0.lock().unwrap().take().expect("FakeQuery::query called more than once")
         }
     }
 
@@ -225,19 +209,19 @@ mod tests {
     #[test]
     fn compute_returns_some_for_non_empty_path() {
         let stdout = format!("{MARKER}\n/opt/bin:/usr/bin\n");
-        let q = FakeQuery(Ok(stdout));
+        let q = FakeQuery::new(Ok(stdout));
         assert_eq!(compute(&q).unwrap(), Some("/opt/bin:/usr/bin".to_owned()));
     }
 
     #[test]
     fn compute_propagates_marker_missing() {
-        let q = FakeQuery(Ok("/usr/bin\n".to_owned()));
+        let q = FakeQuery::new(Ok("/usr/bin\n".to_owned()));
         assert!(matches!(compute(&q), Err(LoginPathError::MarkerNotFound)));
     }
 
     #[test]
     fn compute_propagates_query_error() {
-        let q = FakeQuery(Err(LoginPathError::NoShell));
+        let q = FakeQuery::new(Err(LoginPathError::NoShell));
         assert!(matches!(compute(&q), Err(LoginPathError::NoShell)));
     }
 }
