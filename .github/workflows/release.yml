@@ -237,6 +237,18 @@ jobs:
           fi
           echo "Version check passed: all manifests at ${expected} match tag ${TAG}"
 
+      # Remove stale bundle artifacts that may have been restored from the
+      # Cargo cache. Without this, `find` in "Find release artifacts" can
+      # pick up installers from a previous release when Cargo.lock (and
+      # therefore the cache key) hasn't changed between versions.
+      - name: Clean stale bundle artifacts
+        shell: bash
+        run: |
+          rm -rf target/release/bundle
+          for d in target/*/release/bundle; do
+            [ -d "$d" ] && rm -rf "$d"
+          done
+
       - name: Build Tauri app
         shell: bash
         run: pnpm tauri build ${{ matrix.platform.args }}
