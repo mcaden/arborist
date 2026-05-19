@@ -170,27 +170,72 @@ impl MetricsRegistry {
         };
         match join {
             Ok(handle) => {
-                // For Copilot with a known ai_session_id, also spawn the events.jsonl tailer (sibling — same `running` flag).
+                // For tools that arm an activity-events tailer (Copilot today, Claude when the hook helper was wired in at compose time), dispatch
+                // through `activity_events_kind` to resolve the per-tool tailer flavour + path. The watcher thread is spawned with the same
+                // `running` flag and parked in `extra_joins` so `stop` / `stop_and_join` / `stop_all_and_join` tear down everything together.
+                //
+                // Gating note: when the plugin advertises a per-session settings file via `settings_file_path` (i.e. Claude), we additionally
+                // require that file to exist, parse as JSON, and contain an Arborist-owned hook entry whose command path exists *and* whose args
+                // include this session id + hook-events path — see [`crate::claude_hook_events::settings_file_hook_events_path`]. Plain `.exists()`
+                // on the settings file is not enough
+                // because on restart/restore we replay `materialise_temp_files(&session.temp_files)`, so a settings file persisted from a previous
+                // install (or before the helper was moved/uninstalled/repackaged) will be on disk even when the helper itself isn't reachable.
+                // Falling any of those checks disables the watcher so we don't park a per-session polling thread on a `hook-events.jsonl` no one
+                // will write to.
                 let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
                 if crate::plugins::ai::starts_activity_events_watcher(tool) {
-                    if let (Some(home), Some(aid)) = (home_dir(), ai_session_id) {
-                        let events_path = crate::copilot_events::events_path(&home, &aid);
+                    // For Claude, resolve the hook-events path directly from the validated Arborist hook entry in the settings JSON so we tail the
+                    // exact file the helper will append to (instead of assuming the current process's computed temp path string).
+                    let mut claude_hook_events_path: Option<PathBuf> = None;
+                    let hook_integration_disabled = match crate::plugins::ai::settings_file_path(tool, &session_id) {
+                        Some(p) => {
+                            claude_hook_events_path = crate::claude_hook_events::settings_file_hook_events_path(&p, &session_id);
+                            claude_hook_events_path.is_none()
+                        }
+                        None => false,
+                    };
+                    let home_opt = home_dir();
+                    let kind = if hook_integration_disabled {
+                        None
+                    } else if let Some(path) = claude_hook_events_path {
+                        Some(crate::plugins::ai::ActivityEventsKind::ClaudeHookEventsJsonl(path))
+                    } else {
+                        crate::plugins::ai::activity_events_kind(tool, session_id, home_opt.as_deref(), ai_session_id.as_deref())
+                    };
+                    if let Some(kind) = kind {
                         let events_running = Arc::clone(&running);
                         let events_emit = Arc::clone(&activity_emit);
-                        match crate::copilot_events::spawn_watcher(session_id, events_path, events_emit, events_running) {
+                        let spawn_res = match kind {
+                            crate::plugins::ai::ActivityEventsKind::CopilotEventsJsonl(path) => {
+                                crate::copilot_events::spawn_watcher(session_id, path, events_emit, events_running)
+                            }
+                            crate::plugins::ai::ActivityEventsKind::ClaudeHookEventsJsonl(path) => {
+                                crate::claude_hook_events::spawn_watcher(session_id, path, events_emit, events_running)
+                            }
+                        };
+                        match spawn_res {
                             Ok(h) => extra_joins.push(h),
                             Err(e) => {
                                 tracing::warn!(
                                     session_id = %session_id,
                                     error = %e,
-                                    "copilot events watcher thread spawn failed",
+                                    "activity events watcher thread spawn failed",
                                 );
                             }
                         }
+                    } else if hook_integration_disabled {
+                        tracing::debug!(
+                            session_id = %session_id,
+                            ?tool,
+                            "activity events watcher not started (hook integration disabled — settings file missing, unparseable, missing an Arborist hook entry, invalid/missing hook args path, or references a helper command path that doesn't exist in the current process)",
+                        );
                     } else {
                         tracing::debug!(
                             session_id = %session_id,
-                            "copilot events watcher not started (no home dir or ai_session_id)",
+                            ?tool,
+                            home_present = home_opt.is_some(),
+                            ai_session_id_present = ai_session_id.is_some(),
+                            "activity events watcher not started (plugin returned no kind; missing home dir or ai_session_id)",
                         );
                     }
                 }
@@ -281,7 +326,10 @@ fn run_claude_watcher(
     cwd: PathBuf,
     spawn_instant: SystemTime,
     emit: MetricsCb,
-    emit_turn: TurnCb,
+    // Kept in the signature for parity with `run_copilot_watcher` (and so the symmetric `MetricsRegistry::start` dispatch can pass the same
+    // `TurnCb` to both watchers) — but the Claude watcher no longer emits turn-end events. See the inline comment on the `tail_lines` loop body
+    // for the full rationale; in short, hook-events are the authoritative source for Claude turn boundaries now.
+    _emit_turn: TurnCb,
     discover: AiSessionDiscoveryCb,
     running: Arc<AtomicBool>,
 ) {
@@ -327,9 +375,15 @@ fn run_claude_watcher(
                             if let Some(m) = model {
                                 last_model = Some(m);
                             }
-                            // Each new assistant line is one completed agent turn. Claude's transcript does not carry a reliable turn-start timestamp
-                            // distinct from the user message, so duration is omitted.
-                            emit_turn(session_id, None);
+                            // Intentionally do NOT emit a TurnEnd here. Claude's transcript writes one `assistant` line per round-trip with the
+                            // model — so a single user turn that goes user → assistant(tool_use) → user(tool_result) → assistant(tool_use) →
+                            // user(tool_result) → assistant(end_turn) produces three assistant lines. The original code (pre-hook-integration)
+                            // emitted TurnEnd on each, which would clear `inTurn` and promote the sidebar to `awaiting` between tool calls —
+                            // exactly the "thinking → zzz while reading file" symptom users see. Authoritative turn boundaries now come from the
+                            // Claude hook-events tailer ([`crate::claude_hook_events`]) via `UserPromptSubmit` (turnStart) and `Stop` (turnEnd).
+                            // For sessions where hooks aren't active (sidecar missing, partial install) we lose the `awaiting` promotion entirely;
+                            // PTY-byte heuristics still drive `working` / `idle` so the sidebar remains informative, just without the explicit
+                            // "agent finished" cue.
                         }
                     });
                 }

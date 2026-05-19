@@ -38,8 +38,26 @@ pub trait AiPlugin: Plugin {
     /// Resolve which metrics watcher implementation to run.
     fn metrics_watcher_kind(&self, session_id: SessionId, cwd: &Path) -> Option<MetricsWatcherKind>;
 
-    /// Whether this tool should also arm the Copilot activity-events watcher.
+    /// Whether this tool should also arm the activity-events watcher (the events.jsonl tailer for Copilot, or the hook-events.jsonl tailer for
+    /// Claude). When `true`, the host calls [`Self::activity_events_kind`] to discover which tailer flavour to spawn.
     fn starts_activity_events_watcher(&self) -> bool;
+
+    /// Path the activity-events watcher should tail, expressed as the tailer flavour. Returns `None` when no tailer applies for this tool (or when
+    /// the prerequisite inputs — `ai_session_id`, `home` — are missing). Used by [`crate::session_metrics::MetricsRegistry::start`] to spawn the
+    /// appropriate per-tool watcher thread.
+    fn activity_events_kind(&self, session_id: SessionId, home: Option<&Path>, ai_session_id: Option<&str>) -> Option<ActivityEventsKind> {
+        // Default: no tailer. Implementations that want one override.
+        let _ = (session_id, home, ai_session_id);
+        None
+    }
+
+    /// Per-session settings file path written before spawn (when applicable). Returned path is materialised by the host through
+    /// [`crate::types::TempFileSpec`] (the contents come from the plugin's [`Self::compose`]). For tools that do not need a per-session settings
+    /// file (Copilot) this returns `None`.
+    fn settings_file_path(&self, session_id: &SessionId) -> Option<PathBuf> {
+        let _ = session_id;
+        None
+    }
 
     /// Whether create-time spawn should preallocate an AI session id.
     fn create_ai_session_id(&self) -> Option<String>;
@@ -76,6 +94,18 @@ pub enum MetricsWatcherKind {
     Codex { codex_home: PathBuf, cwd: PathBuf },
 }
 
+/// Which activity-events tailer flavour to spawn for a tool, with its resolved on-disk path.
+///
+/// Both flavours implement the same shape (per-session JSONL append-only file, polled at the same cadence, emitting [`crate::types::ActivityEvent`]s
+/// through the shared `session://activity` channel). The variant simply selects which parser the watcher thread runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivityEventsKind {
+    /// Copilot CLI's structured event stream at `~/.copilot/session-state/<ai_session_id>/events.jsonl`.
+    CopilotEventsJsonl(PathBuf),
+    /// Arborist's Claude hook-events file at `<session_temp_dir>/hook-events.jsonl`, populated by the `arborist-claude-hook` helper binary.
+    ClaudeHookEventsJsonl(PathBuf),
+}
+
 /// Spawn-prep side effects run right before PTY spawn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpawnPrep {
@@ -87,6 +117,10 @@ pub struct SpawnPrep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnPrepFile {
     CopilotOtel,
+    /// Claude's per-session `hook-events.jsonl` — the JSONL stream the `arborist-claude-hook` helper appends to and the
+    /// [`crate::claude_hook_events`] tailer reads. Reset removes any leftover file from a prior spawn so the tailer starts clean (matters for
+    /// restart, which re-uses the same session id).
+    ClaudeHookEvents,
 }
 
 /// Built-in AI plugin descriptor used by dispatch sites that need both the
@@ -172,10 +206,22 @@ pub fn metrics_watcher_kind(tool: Tool, session_id: SessionId, cwd: &Path) -> Op
     plugin_for_tool(tool).metrics_watcher_kind(session_id, cwd)
 }
 
-/// Whether the Copilot events tailer should be armed for this tool.
+/// Whether the activity-events watcher should be armed for this tool.
 #[must_use]
 pub fn starts_activity_events_watcher(tool: Tool) -> bool {
     plugin_for_tool(tool).starts_activity_events_watcher()
+}
+
+/// Resolve the activity-events tailer flavour + path for `tool`. Returns `None` when no tailer applies or when prerequisites are missing.
+#[must_use]
+pub fn activity_events_kind(tool: Tool, session_id: SessionId, home: Option<&Path>, ai_session_id: Option<&str>) -> Option<ActivityEventsKind> {
+    plugin_for_tool(tool).activity_events_kind(session_id, home, ai_session_id)
+}
+
+/// Per-session settings file path for `tool`, or `None` if the tool does not use one.
+#[must_use]
+pub fn settings_file_path(tool: Tool, session_id: &SessionId) -> Option<PathBuf> {
+    plugin_for_tool(tool).settings_file_path(session_id)
 }
 
 /// Whether create-time spawn should preallocate an AI session id.

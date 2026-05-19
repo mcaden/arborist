@@ -9,6 +9,13 @@ use crate::plugins::Plugin;
 use crate::types::SessionId;
 use crate::types::Tool;
 
+pub mod hooks;
+
+/// Filename of the per-session `--settings` JSON we hand to Claude (`<session_temp_dir>/claude-settings.json`). Single source of truth — the
+/// structured-argv router in `commands::session::default_structured_command` matches on this basename to decide when to add `--settings <path>`,
+/// and [`ClaudePlugin::settings_file_path`] builds the full path with it.
+pub const CLAUDE_SETTINGS_FILE_NAME: &str = "claude-settings.json";
+
 /// Stable singleton instance for dispatch sites that need a `'static`
 /// [`AiPlugin`] reference without allocating.
 pub static PLUGIN: ClaudePlugin = ClaudePlugin;
@@ -39,7 +46,13 @@ impl AiPlugin for ClaudePlugin {
     }
 
     fn spawn_prep(&self, _session_id: &SessionId) -> crate::plugins::ai::SpawnPrep {
-        crate::plugins::ai::SpawnPrep::default()
+        // We materialise per-session temp files (`claude-settings.json`) under `<session_temp_dir>/`, so the directory must exist. Also wipe any
+        // stale `hook-events.jsonl` from a prior run of the same session id so the tailer starts from a clean state — same pattern Copilot uses for
+        // its OTel JSONL.
+        crate::plugins::ai::SpawnPrep {
+            ensure_temp_dir: true,
+            reset_files: vec![crate::plugins::ai::SpawnPrepFile::ClaudeHookEvents],
+        }
     }
 
     fn metrics_watcher_kind(&self, _session_id: SessionId, cwd: &std::path::Path) -> Option<crate::plugins::ai::MetricsWatcherKind> {
@@ -50,15 +63,38 @@ impl AiPlugin for ClaudePlugin {
     }
 
     fn starts_activity_events_watcher(&self) -> bool {
-        false
+        true
+    }
+
+    fn activity_events_kind(
+        &self,
+        session_id: SessionId,
+        _home: Option<&std::path::Path>,
+        _ai_session_id: Option<&str>,
+    ) -> Option<crate::plugins::ai::ActivityEventsKind> {
+        // Claude's hook tailer reads a per-session file under the session temp dir — no dependency on the home dir or the AI session id, so we
+        // produce the kind whenever we're called. The caller in `session_metrics::MetricsRegistry::start` gates on `settings_file_path` existing
+        // on disk before invoking us, so when this path is followed the helper was wired in at compose time and the JSONL will be populated by
+        // Claude's first hook fire (even if the user never types a message).
+        Some(crate::plugins::ai::ActivityEventsKind::ClaudeHookEventsJsonl(
+            crate::claude_hook_events::hook_events_path(&session_id),
+        ))
+    }
+
+    fn settings_file_path(&self, session_id: &SessionId) -> Option<std::path::PathBuf> {
+        Some(crate::compose::session_temp_dir(session_id).join(CLAUDE_SETTINGS_FILE_NAME))
     }
 
     fn create_ai_session_id(&self) -> Option<String> {
-        None
+        // Pre-allocate at create time so `--session-id <uuid>` can splice on first spawn and `--resume <uuid>` can splice on every subsequent spawn.
+        // The deterministic id also makes the transcript path predictable from spawn-instant 0 (matches Copilot's model).
+        Some(uuid::Uuid::new_v4().to_string())
     }
 
     fn restart_ai_session_policy(&self) -> crate::plugins::ai::RestartAiSessionPolicy {
-        crate::plugins::ai::RestartAiSessionPolicy::Clear
+        // Preserve the existing id so restart re-attaches to the same Claude transcript via `--resume <uuid>`. Was `Clear` before pre-allocation
+        // landed — when the id was discovered after the user's first message rather than created upfront, clearing was the only safe option.
+        crate::plugins::ai::RestartAiSessionPolicy::Preserve
     }
 
     fn resume_requires_preflight(&self) -> bool {

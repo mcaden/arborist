@@ -47,6 +47,15 @@ pub struct ComposeInputs<'a> {
     /// composed command. The string is treated as a verbatim shell snippet — *not* a single quoted token — so users can put extra arguments in it
     /// (e.g. `"npx claude --model sonnet"`). Empty strings behave the same as `None` (use the default).
     pub cli_launch_command: Option<&'a str>,
+    /// Absolute path to the `arborist-claude-hook` helper binary (resolved at `AppContext` startup via
+    /// [`std::env::current_exe()`]'s sibling). When `Some`, Claude's
+    /// compose path materialises a per-session `claude-settings.json` (Claude hook config) and adds `--settings <quoted-path>` to the launch
+    /// command. When `None`, falls back to today's no-hooks behaviour — useful for unit tests and for graceful degradation when the helper binary
+    /// cannot be located at runtime.
+    pub helper_exe_path: Option<&'a Path>,
+    /// Absolute path to the user's home directory. Used by Claude compose to read `~/.claude/settings.json` and deep-merge the user's own hooks
+    /// (PreToolUse formatters, Stop validators, etc.) into the per-session settings file we write. When `None`, user-level settings are skipped.
+    pub user_home: Option<&'a Path>,
 }
 
 /// Compose the shell command for a session.
@@ -270,6 +279,32 @@ pub fn with_resume(composed_command: &str, tool: Tool, ai_session_id: &str) -> S
     format!("{composed_command} {tail}")
 }
 
+/// Splice the pre-allocated `ai_session_id` into a composed_command for the **very first spawn** of a session — i.e. before the AI conversation
+/// exists on disk yet.
+///
+/// The flag we emit is tool-specific:
+///
+/// * **Claude** uses `--session-id <uuid>`, which is documented as "use this id for the (new) conversation". The Claude CLI rejects `--resume
+///   <uuid>` when the transcript file doesn't exist yet (verified). Every spawn *after* the first should use [`with_resume`] so the same
+///   conversation continues.
+/// * **Copilot/Codex** use their resume forms even on first launch — both CLIs treat this as create-if-missing.
+///
+/// The persisted `composed_command` stays bare; this helper produces a temporary version used only for the spawn call.
+#[must_use]
+pub fn with_first_launch_session_id(composed_command: &str, tool: Tool, ai_session_id: &str) -> String {
+    match tool {
+        Tool::Claude => {
+            if is_shell_safe_token(ai_session_id) {
+                format!("{composed_command} --session-id {ai_session_id}")
+            } else {
+                let quoter = platform_shell().quoter;
+                format!("{composed_command} --session-id {}", quoter(ai_session_id))
+            }
+        }
+        Tool::Copilot | Tool::Codex => with_resume(composed_command, tool, ai_session_id),
+    }
+}
+
 /// True for non-empty values composed entirely of characters that have no special meaning to either `sh` or `cmd.exe`: ASCII letters, digits, `-`,
 /// `_`, and `.`. UUIDs and similar slugs trivially satisfy this and can be appended to a composed command without quoting.
 ///
@@ -417,9 +452,30 @@ pub fn platform_shell() -> PlatformShell {
 // --------------------------------------------------------------------------- Per-tool builders
 // ---------------------------------------------------------------------------
 
-pub(crate) fn build_claude(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
+pub(crate) fn build_claude(inputs: &ComposeInputs<'_>, quoter: Quoter) -> (String, Vec<TempFileSpec>) {
     let program = cli_program_for_tool(Tool::Claude, inputs.cli_launch_command);
-    (program, Vec::new())
+    let mut command_parts: Vec<String> = vec![program];
+    let mut temp_files: Vec<TempFileSpec> = Vec::new();
+
+    // Hook integration: when the helper binary is locatable AND the plugin reports a settings-file path, write a per-session
+    // `claude-settings.json` that registers our hooks (plus the user's own merged in) and point Claude at it with `--settings <quoted-path>`.
+    // The path comes from [`crate::plugins::ai::settings_file_path`] so the plugin (not compose) owns the layout under the session temp dir. When
+    // `helper_exe_path` is `None` (unit tests, or a release where the helper wasn't bundled) we silently skip — Claude still works, just without
+    // the richer sidebar status reporting.
+    if let Some(helper) = inputs.helper_exe_path {
+        if let Some(settings_path) = crate::plugins::ai::settings_file_path(inputs.tool, &inputs.session_id) {
+            let events_path = crate::claude_hook_events::hook_events_path(&inputs.session_id);
+            let user_paths = crate::plugins::ai::claude::hooks::user_settings_paths(inputs.user_home, Some(inputs.worktree_path));
+            let body = crate::plugins::ai::claude::hooks::build_settings_string(helper, inputs.session_id, &events_path, &user_paths);
+            command_parts.push(format!("--settings {}", quoter(&settings_path.to_string_lossy())));
+            temp_files.push(TempFileSpec {
+                path: settings_path,
+                contents: body,
+            });
+        }
+    }
+
+    (command_parts.join(" "), temp_files)
 }
 
 pub(crate) fn build_copilot(inputs: &ComposeInputs<'_>, _quoter: Quoter) -> (String, Vec<TempFileSpec>) {
@@ -480,6 +536,8 @@ mod tests {
             worktree_path: worktree,
             worktree_label: label,
             cli_launch_command: None,
+            helper_exe_path: None,
+            user_home: None,
         }
     }
 

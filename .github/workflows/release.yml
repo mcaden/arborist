@@ -251,7 +251,7 @@ jobs:
 
       - name: Build Tauri app
         shell: bash
-        run: pnpm tauri build ${{ matrix.platform.args }}
+        run: pnpm tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.platform.args }}
 
       - name: Find release artifacts
         id: tauri

@@ -907,6 +907,9 @@ impl PtyPool {
                 crate::plugins::ai::SpawnPrepFile::CopilotOtel => {
                     crate::session_temp::prepare_copilot_otel_file(&session.id)?;
                 }
+                crate::plugins::ai::SpawnPrepFile::ClaudeHookEvents => {
+                    crate::session_temp::prepare_claude_hook_events_file(&session.id)?;
+                }
             }
         }
 

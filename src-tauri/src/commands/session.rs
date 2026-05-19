@@ -164,6 +164,20 @@ pub struct AppContext {
     /// Issue #63: in-flight worktree-prep registry. The `worktree_create` wrapper inserts here when it kicks off a prep; the prep watcher task removes
     /// itself on exit. App shutdown / workspace switch can call [`crate::worktree_prep::WorktreePrepRegistry::kill_all`] for best-effort cleanup.
     pub prep_registry: Arc<crate::worktree_prep::WorktreePrepRegistry>,
+    /// Absolute path to the `arborist-claude-hook` helper binary, when locatable at boot.
+    ///
+    /// Resolved once at `AppContext` construction via [`std::env::current_exe()`]'s parent directory. The helper ships as a sibling executable —
+    /// declared as a `[[bin]]` entry in `src-tauri/Cargo.toml`, staged into `src-tauri/binaries/` by `scripts/prepare-claude-hook-sidecar.mjs`,
+    /// and wired into release bundles via `src-tauri/tauri.bundle.conf.json::bundle.externalBin` (merged into the base config only for
+    /// `pnpm tauri:build` and the release workflow — see [`Cargo.toml`] for why the base `tauri.conf.json` stays clean).
+    ///
+    /// When `None`, Claude session compose silently skips writing the per-session `claude-settings.json` and Claude launches without the Arborist
+    /// hook integration. The fallback is intentional: a missing helper (partial installs, dev runs where the helper wasn't built yet) is degraded,
+    /// not fatal — sidebar status reverts to the pre-hooks heuristics.
+    pub claude_hook_helper: Option<PathBuf>,
+    /// Absolute path to the user's home directory. Used by Claude compose to read `~/.claude/settings.json` and merge the user's hooks into the
+    /// per-session settings file. `None` falls back to skipping user-level settings.
+    pub user_home: Option<PathBuf>,
 }
 
 /// RAII counter for [`AppContext::switch_pending`]. Increments on `new`, decrements on drop. Held by `workspace_switch_impl_inner` for the entire
@@ -252,7 +266,18 @@ impl AppContext {
             switch_lock: Arc::new(tokio::sync::RwLock::new(())),
             switch_pending: Arc::new(AtomicUsize::new(0)),
             prep_registry: Arc::new(crate::worktree_prep::WorktreePrepRegistry::new()),
+            claude_hook_helper: None,
+            user_home: None,
         }
+    }
+
+    /// Builder-style: attach the Claude hook helper + user home dir resolved at startup. Production wires both in `lib.rs::run`; tests can omit
+    /// either or both, in which case Claude sessions launch without the hook integration (sidebar falls back to today's heuristics).
+    #[must_use]
+    pub fn with_claude_hook_environment(mut self, helper: Option<PathBuf>, user_home: Option<PathBuf>) -> Self {
+        self.claude_hook_helper = helper;
+        self.user_home = user_home;
+        self
     }
 
     /// True iff `session_close` is currently mid-cascade for `id`. Used by `subsession_create_impl` and the sub-session restore second pass to refuse
@@ -430,10 +455,24 @@ fn repo_worktree_prep_candidate(
 fn default_structured_command(tool: Tool, temp_files: &[crate::types::TempFileSpec]) -> StructuredCommand {
     let program = crate::plugins::ai::plugin_for_tool(tool).default_program().to_owned();
     let args = match tool {
-        Tool::Claude => temp_files
-            .first()
-            .map(|temp| vec!["--system-prompt".to_owned(), temp.path.to_string_lossy().into_owned()])
-            .unwrap_or_default(),
+        Tool::Claude => {
+            // Map each known temp file to its flag. Filename is load-bearing: compose produces a `claude-settings.json` temp file when the
+            // `arborist-claude-hook` sidecar is locatable (and nothing otherwise). The basename comes from `claude::CLAUDE_SETTINGS_FILE_NAME` so
+            // the same constant is shared with the plugin's `settings_file_path` and any future producer. Unknown filenames are silently ignored —
+            // when `structured_command` is in use (every Claude session created by this code path) the PTY pool spawns from the structured argv
+            // and ignores `composed_command` entirely, so an unmapped temp file would never reach the command line. Adding a new temp-file
+            // category therefore requires adding a match arm here (and ideally a compose-level test) alongside the producer in `compose.rs`.
+            let mut args = Vec::new();
+            for temp in temp_files {
+                let name = temp.path.file_name().and_then(|s| s.to_str());
+                let path_str = temp.path.to_string_lossy().into_owned();
+                if name == Some(crate::plugins::ai::claude::CLAUDE_SETTINGS_FILE_NAME) {
+                    args.push("--settings".to_owned());
+                    args.push(path_str);
+                }
+            }
+            args
+        }
         Tool::Copilot | Tool::Codex => Vec::new(),
     };
     StructuredCommand { program, args }
@@ -444,6 +483,29 @@ fn with_resume_for_spawn(session: &Session, ai_session_id: &str) -> Session {
     session_to_spawn.composed_command = compose::with_resume(&session.composed_command, session.tool, ai_session_id);
     if let Some(structured) = session_to_spawn.structured_command.as_mut() {
         structured.args.extend(crate::plugins::ai::resume_args(session.tool, ai_session_id));
+    }
+    session_to_spawn
+}
+
+/// First-launch counterpart to [`with_resume_for_spawn`]: splices the *create-time* flag for the tool into both `composed_command` and the
+/// optional `structured_command`. The first-launch form differs per tool — Claude uses `--session-id <uuid>` to create the conversation at our uuid
+/// (Claude rejects `--resume <uuid>` when the transcript doesn't exist yet), while Copilot/Codex use their resume arguments (create-if-absent).
+///
+/// Only used for the very first spawn of a session. Every subsequent spawn (restart, restore-on-launch) goes through [`with_resume_for_spawn`] so
+/// the conversation continues.
+fn with_first_launch_for_spawn(session: &Session, ai_session_id: &str) -> Session {
+    let mut session_to_spawn = session.clone();
+    session_to_spawn.composed_command = compose::with_first_launch_session_id(&session.composed_command, session.tool, ai_session_id);
+    if let Some(structured) = session_to_spawn.structured_command.as_mut() {
+        match session.tool {
+            Tool::Claude => {
+                structured.args.push("--session-id".to_owned());
+                structured.args.push(ai_session_id.to_owned());
+            }
+            Tool::Copilot | Tool::Codex => {
+                structured.args.extend(crate::plugins::ai::resume_args(session.tool, ai_session_id));
+            }
+        }
     }
     session_to_spawn
 }
@@ -479,6 +541,8 @@ fn session_create_trust_inputs(
         worktree_path: &worktree,
         worktree_label: &label,
         cli_launch_command: Some(cli_override),
+        helper_exe_path: ctx.claude_hook_helper.as_deref(),
+        user_home: ctx.user_home.as_deref(),
     })
     .map_err(AppError::from)?;
 
@@ -608,6 +672,8 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
         worktree_path: &worktree,
         worktree_label: &label,
         cli_launch_command: Some(cli_override),
+        helper_exe_path: ctx.claude_hook_helper.as_deref(),
+        user_home: ctx.user_home.as_deref(),
     })
     .map_err(AppError::from)?;
     let normalized_command = crate::shell_trust::normalize_command_for_session(session_id, &composed.composed_command);
@@ -689,12 +755,12 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     // 10. Announce Starting (synchronous; the pool will follow with Running).
     (ctx.sink.status)(&session.id, SessionStatus::Starting, None, None);
 
-    // 11. Spawn. The pool emits Running with PID through the same sink. For Copilot
-    //     we splice the pre-allocated `--resume <uuid>` here so Copilot creates the
-    //     session-state directory at the known deterministic path from spawn time.
-    //     The persisted `composed_command` stays bare (see step 7).
+    // 11. Spawn. The pool emits Running with PID through the same sink. For tools with a pre-allocated `ai_session_id` we splice the right
+    //     create-time flag into the composed_command (Claude → `--session-id <uuid>` so Claude creates the conversation at our uuid; Copilot →
+    //     `--resume <uuid>` which Copilot treats as create-if-absent). Restart / restore paths use [`compose::with_resume`] instead. The persisted
+    //     `composed_command` stays bare (see step 7).
     let session_to_spawn = if let Some(aid) = preallocated_ai_id.as_deref() {
-        with_resume_for_spawn(&session, aid)
+        with_first_launch_for_spawn(&session, aid)
     } else {
         session.clone()
     };
@@ -1213,7 +1279,9 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // session at that uuid). This keeps the events.jsonl path deterministic across restart (same property as the create path) so restore-on-launch
     // can resume the post-restart conversation.
     //
-    // For Claude we keep today's behavior: clear ai_session_id and let the watcher re-discover the new transcript after the user prompts.
+    // For Claude (post-hook-integration) we **preserve** the pre-allocated uuid and splice `--resume <uuid>` so the same transcript continues
+    // across restart. The legacy Claude path (pre-hook-integration) used `Clear` and a transcript-discovery fallback; that behaviour is preserved
+    // for any tool still configured with `Clear`.
     //
     // Order matters: stop the OLD watcher first, *then* mutate ai_session_id. We need `stop_and_join` (not just `stop`) because the worker only
     // re-checks its `running` flag at the top of each poll iteration — a fire-and-forget stop would let the in-flight iteration call `discover()` one
@@ -1221,21 +1289,25 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
     // below by `metrics.start` will repopulate the field if/when the CLI rotates the conversation (e.g. user-typed `/clear` or `/resume <other-id>`).
     //
     // Persist order:
-    //   - Claude: clear *eagerly* (before respawn). This preserves the pre-Phase-2
-    //     semantics — a crash between here and the new watcher's first discovery
-    //     could otherwise let the next restore `--resume` the pre-restart
-    //     conversation. Cost: a failed Claude restart loses the prior id from the
-    //     persisted record (same as today).
-    //   - Copilot: defer until *after* `respawn_existing` succeeds. The
-    //     pre-allocated uuid is ours and unique; if respawn fails, we keep the old
-    //     conversation id resumable rather than rotating to a uuid with no Copilot
-    //     session-state directory (which would irrevocably orphan the prior
-    //     conversation on a transient respawn failure).
+    //   - `Clear`: clear *eagerly* (before respawn). This preserves the
+    //     pre-Phase-2 semantics — a crash between here and the new watcher's
+    //     first discovery could otherwise let the next restore `--resume` the
+    //     pre-restart conversation. Cost: a failed restart loses the prior
+    //     id from the persisted record.
+    //   - `RotateUuid` (Copilot): defer until *after* `respawn_existing`
+    //     succeeds. The pre-allocated uuid is ours and unique; if respawn
+    //     fails, we keep the old conversation id resumable rather than
+    //     rotating to a uuid with no session-state directory (which would
+    //     irrevocably orphan the prior conversation on a transient failure).
+    //   - `Preserve` (Claude): no persisted change. The existing
+    //     `Session.ai_session_id` is reused verbatim for the `--resume`
+    //     splice, mirroring restore-on-launch's behaviour.
     ctx.metrics.stop_and_join(&id);
     let restart_policy = crate::plugins::ai::restart_ai_session_policy(session.tool);
     let restart_ai_id: Option<String> = match restart_policy {
         crate::plugins::ai::RestartAiSessionPolicy::RotateUuid => Some(uuid::Uuid::new_v4().to_string()),
-        crate::plugins::ai::RestartAiSessionPolicy::Preserve | crate::plugins::ai::RestartAiSessionPolicy::Clear => None,
+        crate::plugins::ai::RestartAiSessionPolicy::Preserve => session.ai_session_id.clone(),
+        crate::plugins::ai::RestartAiSessionPolicy::Clear => None,
     };
     if matches!(restart_policy, crate::plugins::ai::RestartAiSessionPolicy::Clear) {
         if let Err(e) = ctx.store().update_session_ai_session_id(&id, None) {
@@ -2105,8 +2177,58 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
     Ok(WorktreeCreateResult { path: new_path, prep: None })
 }
 
+fn session_temp_file_owner(path: &Path) -> Result<Option<SessionId>, AppError> {
+    let root = crate::compose::session_temp_root();
+    let rel = match path.strip_prefix(&root) {
+        Ok(rel) => rel,
+        Err(_) => return Ok(None),
+    };
+    let mut parts = rel.components();
+    let Some(session_dir) = parts.next() else {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} is missing the session directory segment",
+            path.display()
+        ))));
+    };
+    let session_str = session_dir.as_os_str().to_str().ok_or_else(|| {
+        AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} has a non-UTF-8 session directory segment",
+            path.display()
+        )))
+    })?;
+    let session_uuid = uuid::Uuid::parse_str(session_str).map_err(|e| {
+        AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} has an invalid session directory segment {session_str}: {e}",
+            path.display()
+        )))
+    })?;
+    let Some(file_name) = parts.next() else {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} is missing a file segment",
+            path.display()
+        ))));
+    };
+    if parts.next().is_some() {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} is nested; expected exactly <temp>/arborist/<session-id>/<file>",
+            path.display()
+        ))));
+    }
+    if file_name.as_os_str().is_empty() {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} has an empty file segment",
+            path.display()
+        ))));
+    }
+    Ok(Some(SessionId(session_uuid)))
+}
+
 fn materialise_temp_files(files: &[crate::types::TempFileSpec]) -> Result<(), AppError> {
     for f in files {
+        if let Some(session_id) = session_temp_file_owner(&f.path)? {
+            crate::session_temp::write_session_temp_file(&session_id, &f.path, &f.contents).map_err(AppError::from)?;
+            continue;
+        }
         if let Some(parent) = f.path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| AppError::from(Error::Io(e)))?;
         }

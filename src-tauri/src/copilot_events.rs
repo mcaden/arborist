@@ -325,11 +325,11 @@ fn extract_permission_summary(data: &serde_json::Value) -> Option<String> {
 
 /// Align an EOF snapshot to the last complete-line boundary.
 ///
-/// `metadata().len()` can land mid-line in two cases that both leave a partial trailing line in `events.jsonl`:
+/// `metadata().len()` can land mid-line in two cases that both leave a partial trailing line in the file being tailed:
 ///
-/// 1. **Crash / interrupted write.** The previous Copilot session was killed
+/// 1. **Crash / interrupted write.** The previous writer was killed
 ///    mid-write of a single event line (no trailing `\n`).
-/// 2. **Race with active write.** We polled metadata while Copilot was actively
+/// 2. **Race with active write.** We polled metadata while the writer was actively
 ///    flushing a line (very narrow window on modern OSes but non-zero).
 ///
 /// If the catch-up target lands inside a partial line, the watcher would clamp catch-up reads to that target forever. `tail_lines_pub` only advances
@@ -343,7 +343,11 @@ fn extract_permission_summary(data: &serde_json::Value) -> Option<String> {
 /// If no `\n` exists in the file at all (the entire content is one partial line), returns `0`. Catch-up then completes immediately with an empty
 /// state and the eventual completed line is treated as live. If the file is unreadable for some reason we return the caller's `len` unchanged —
 /// best-effort, the original (pre-fix) behavior is no worse than what we'd otherwise have.
-fn align_snapshot_to_line_boundary(path: &std::path::Path, len: u64) -> u64 {
+///
+/// Shared between the Copilot events.jsonl tailer (this module) and the Claude hook-events.jsonl tailer
+/// ([`crate::claude_hook_events`]) — both consume per-session
+/// append-only JSONL streams with the same partial-line failure mode.
+pub(crate) fn align_snapshot_to_line_boundary(path: &std::path::Path, len: u64) -> u64 {
     if len == 0 {
         return 0;
     }

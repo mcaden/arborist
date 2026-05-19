@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "pnpm run build && node scripts/prepare-claude-hook-sidecar.mjs"
+  },
+  "bundle": {
+    "externalBin": ["binaries/arborist-claude-hook"]
+  }
+}

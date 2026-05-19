@@ -19,6 +19,20 @@ path = "src/lib.rs"
 name = "arborist"
 path = "src/main.rs"
 
+# Helper invoked by Claude Code hooks (registered via `--settings`). Reads the
+# hook payload from stdin and appends a structured JSONL line to the per-session
+# `hook-events.jsonl` that `claude_hook_events.rs` tails. Production-built and
+# shipped alongside `arborist` in the bundle. Placed under `src/bin_hook/` for
+# the same reason the test bins below live under `src/test_bin/`: Tauri's CLI
+# auto-discovers everything under `src/bin/` as a bundle target, and we want to
+# control bundling explicitly via `src-tauri/tauri.bundle.conf.json` (an
+# overlay merged in only for `pnpm tauri:build` — the base `tauri.conf.json`
+# stays free of `externalBin` so plain `cargo build` / `tauri dev` don't
+# require the helper to be pre-staged in `src-tauri/binaries/`).
+[[bin]]
+name = "arborist-claude-hook"
+path = "src/bin_hook/arborist_claude_hook.rs"
+
 # Purpose-built deterministic child process used by the PTY-pool integration
 # tests (`tests/pty_pool.rs`). Gated behind the `test-helpers` feature so
 # `cargo build`/`cargo test` without the feature skip it. Cargo exposes the

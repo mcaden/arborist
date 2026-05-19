@@ -60,6 +60,19 @@ impl AiPlugin for CopilotPlugin {
         true
     }
 
+    fn activity_events_kind(
+        &self,
+        _session_id: SessionId,
+        home: Option<&std::path::Path>,
+        ai_session_id: Option<&str>,
+    ) -> Option<crate::plugins::ai::ActivityEventsKind> {
+        let home = home?;
+        let aid = ai_session_id?;
+        Some(crate::plugins::ai::ActivityEventsKind::CopilotEventsJsonl(
+            crate::copilot_events::events_path(home, aid),
+        ))
+    }
+
     fn create_ai_session_id(&self) -> Option<String> {
         Some(uuid::Uuid::new_v4().to_string())
     }
