@@ -168,20 +168,23 @@ impl MetricsRegistry {
                 // `running` flag and parked in `extra_joins` so `stop` / `stop_and_join` / `stop_all_and_join` tear down everything together.
                 //
                 // Gating note: when the plugin advertises a per-session settings file via `settings_file_path` (i.e. Claude), we additionally
-                // require that file to exist, parse as JSON, contain the Arborist-owned hook entry (identified by `args[2] == hook_events_path`),
-                // *and* reference a `command` path that exists in the current process — see
-                // [`crate::claude_hook_events::settings_file_references_existing_helper`]. Plain `.exists()` is not enough because on
-                // restart/restore we replay `materialise_temp_files(&session.temp_files)`, so a settings file persisted from a previous install
-                // (or before the helper was moved/uninstalled/repackaged) will be on disk even when the helper itself isn't reachable. Falling any
-                // of those checks disables the watcher so we don't park a per-session polling thread on a `hook-events.jsonl` no one will write to.
+                // require that file to exist, parse as JSON, contain a registered hook command whose **basename** is `arborist-claude-hook[.exe]`,
+                // *and* point at a path that exists in the current process — see
+                // [`crate::claude_hook_events::settings_file_references_existing_helper`]. Plain `.exists()` on the settings file is not enough
+                // because on restart/restore we replay `materialise_temp_files(&session.temp_files)`, so a settings file persisted from a previous
+                // install (or before the helper was moved/uninstalled/repackaged) will be on disk even when the helper itself isn't reachable.
+                // Falling any of those checks disables the watcher so we don't park a per-session polling thread on a `hook-events.jsonl` no one
+                // will write to. The validator identifies the Arborist entry by basename rather than by `args[2]` path-equality so it survives
+                // Windows path-string mismatches (short-name vs long-name, `temp_dir()` resolution drift between compose-time and gate-time
+                // processes, trailing-separator variation) that previously fired this gate as a false negative.
                 let mut extra_joins: Vec<thread::JoinHandle<()>> = Vec::new();
                 if crate::plugins::ai::starts_activity_events_watcher(tool) {
                     // Gate the activity-events watcher on the per-session settings file *referencing a helper-binary command path that exists in
                     // the current process*. Plain `.exists()` on the settings file isn't enough: on restart/restore we always replay
                     // `materialise_temp_files(&session.temp_files)`, so a settings file persisted from a previous install (or before the helper
-                    // was moved/uninstalled) will be on disk even when the helper itself isn't reachable. Parsing the settings JSON and looking up
-                    // the Arborist-owned hook entry (identified by `args[2] == hook_events_path`) lets us catch that case and skip spawning a
-                    // tailer that could never receive events.
+                    // was moved/uninstalled) will be on disk even when the helper itself isn't reachable. Parsing the settings JSON and matching
+                    // the Arborist-owned hook by command basename (`arborist-claude-hook[.exe]`) is the robust identification — see the rationale
+                    // on the gating-note block above.
                     let hook_integration_disabled = match crate::plugins::ai::settings_file_path(tool, &session_id) {
                         Some(p) => !crate::claude_hook_events::settings_file_references_existing_helper(&p, &session_id),
                         None => false,
@@ -316,7 +319,10 @@ fn run_claude_watcher(
     cwd: PathBuf,
     spawn_instant: SystemTime,
     emit: MetricsCb,
-    emit_turn: TurnCb,
+    // Kept in the signature for parity with `run_copilot_watcher` (and so the symmetric `MetricsRegistry::start` dispatch can pass the same
+    // `TurnCb` to both watchers) — but the Claude watcher no longer emits turn-end events. See the inline comment on the `tail_lines` loop body
+    // for the full rationale; in short, hook-events are the authoritative source for Claude turn boundaries now.
+    _emit_turn: TurnCb,
     discover: AiSessionDiscoveryCb,
     running: Arc<AtomicBool>,
 ) {
@@ -362,9 +368,15 @@ fn run_claude_watcher(
                             if let Some(m) = model {
                                 last_model = Some(m);
                             }
-                            // Each new assistant line is one completed agent turn. Claude's transcript does not carry a reliable turn-start timestamp
-                            // distinct from the user message, so duration is omitted.
-                            emit_turn(session_id, None);
+                            // Intentionally do NOT emit a TurnEnd here. Claude's transcript writes one `assistant` line per round-trip with the
+                            // model — so a single user turn that goes user → assistant(tool_use) → user(tool_result) → assistant(tool_use) →
+                            // user(tool_result) → assistant(end_turn) produces three assistant lines. The original code (pre-hook-integration)
+                            // emitted TurnEnd on each, which would clear `inTurn` and promote the sidebar to `awaiting` between tool calls —
+                            // exactly the "thinking → zzz while reading file" symptom users see. Authoritative turn boundaries now come from the
+                            // Claude hook-events tailer ([`crate::claude_hook_events`]) via `UserPromptSubmit` (turnStart) and `Stop` (turnEnd).
+                            // For sessions where hooks aren't active (sidecar missing, partial install) we lose the `awaiting` promotion entirely;
+                            // PTY-byte heuristics still drive `working` / `idle` so the sidebar remains informative, just without the explicit
+                            // "agent finished" cue.
                         }
                     });
                 }
