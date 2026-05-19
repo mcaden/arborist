@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ToolIcon } from './ToolIcon';
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
@@ -18,6 +18,13 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
   const sessionActions = useSessionActions();
   const registry = useRegistry();
   const pluginSettings = useConfigStore((s) => s.config.pluginSettings);
+  const isMountedRef = useRef<boolean>(false);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const aiPlugins = useMemo(
     () => registry.ai().filter((plugin) => pluginEnabled(pluginSettings, 'ai', plugin.id, plugin.defaultEnabled ?? true)),
     [registry, pluginSettings],
@@ -47,6 +54,7 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
       .catch((err: unknown) => {
         const message = formatError(err);
         console.warn(`[WorktreeDashboard] sessionCreate(${tool}) failed: ${message}`);
+        if (!isMountedRef.current) return;
         setLaunchError(`Launch ${pluginName} failed: ${message}`);
       });
   };

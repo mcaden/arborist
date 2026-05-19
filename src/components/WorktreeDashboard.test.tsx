@@ -140,6 +140,36 @@ describe('WorktreeDashboard', () => {
     expect(await screen.findByTestId('worktree-dashboard-launch-error')).toHaveTextContent(/launch codex failed/i);
   });
 
+  it('does not update state after unmount when launch rejects', async () => {
+    useWorktreeTabStore.setState({ tabs: [tab()] });
+    let rejectLaunch: ((reason?: unknown) => void) | undefined;
+    bridgeMock.sessionCreate.mockImplementationOnce(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectLaunch = reject;
+        }),
+    );
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { unmount } = renderDashboard();
+    await act(async () => {});
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-launch-codex'));
+    unmount();
+
+    await act(async () => {
+      rejectLaunch?.(new Error('spawn_command failed: program not found'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const hasUnmountedWarning = consoleErrorSpy.mock.calls.some((call) =>
+      call.some((arg) => typeof arg === 'string' && arg.includes("Can't perform a React state update on an unmounted component")),
+    );
+    expect(hasUnmountedWarning).toBe(false);
+    consoleErrorSpy.mockRestore();
+  });
+
   it('mounts widgets in registry order', () => {
     useWorktreeTabStore.setState({ tabs: [tab()] });
     const registry = createRegistry();

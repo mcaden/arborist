@@ -128,6 +128,33 @@ describe('WorktreeTabContextMenu', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('does not update state after unmount when Launch Codex rejects', async () => {
+    let rejectLaunch: ((reason?: unknown) => void) | undefined;
+    bridgeMock.sessionCreate.mockImplementationOnce(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectLaunch = reject;
+        }),
+    );
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { unmount } = renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-codex'));
+    unmount();
+
+    await act(async () => {
+      rejectLaunch?.(new Error('spawn_command failed: program not found'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const hasUnmountedWarning = consoleErrorSpy.mock.calls.some((call) =>
+      call.some((arg) => typeof arg === 'string' && arg.includes("Can't perform a React state update on an unmounted component")),
+    );
+    expect(hasUnmountedWarning).toBe(false);
+    consoleErrorSpy.mockRestore();
+  });
+
   it('returns null when the tab has been removed from the store', () => {
     const onClose = vi.fn();
     useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });

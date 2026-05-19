@@ -61,10 +61,18 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Map<Item, HTMLButtonElement | null>>(new Map());
+  const isMountedRef = useRef<boolean>(false);
 
   const firstMenuItem = itemOrder[0] ?? 'settings';
   const [focusedItem, setFocusedItem] = useState<Item>(firstMenuItem);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const closeMenu = useCallback((): void => {
     onClose();
@@ -141,11 +149,13 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
         rows: dims.rows,
       })
       .then(() => {
+        if (!isMountedRef.current) return;
         closeMenu();
       })
       .catch((err: unknown) => {
         const message = formatError(err);
         console.warn(`[WorktreeTabContextMenu] session_create(${tool}) failed: ${message}`);
+        if (!isMountedRef.current) return;
         setActionError(`Launch ${pluginName} failed: ${message}`);
       });
   };
@@ -261,7 +271,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
             </button>
           );
         })}
-      <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+      <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
       <button
         ref={setItemRef('settings')}
         type="button"
@@ -273,7 +283,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       >
         <span>Custom Processes…</span>
       </button>
-      <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+      <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
       <button
         ref={setItemRef('close')}
         type="button"
@@ -287,7 +297,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
       </button>
       {actionError && (
         <>
-          <div role="separator" className="my-1 border-t border-slate-200 dark:border-slate-700" />
+          <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
           <p role="alert" data-testid="worktree-tab-context-menu-error" className="px-3 py-1.5 text-xs text-red-700 dark:text-red-300">
             {actionError}
           </p>
