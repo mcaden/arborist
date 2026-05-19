@@ -65,6 +65,10 @@ impl AiPlugin for ClaudePlugin {
         true
     }
 
+    fn resume_args(&self, ai_session_id: &str) -> Vec<String> {
+        vec!["--resume".to_owned(), ai_session_id.to_owned()]
+    }
+
     fn ai_session_transcript_path(&self, home: &std::path::Path, worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
         home.join(".claude")
             .join("projects")

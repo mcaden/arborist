@@ -132,6 +132,7 @@ Rust backend owns all PTYs and persistent state; the React frontend communicates
 
 - **Claude**: do **not** pass `--system-prompt` for new sessions. Claude auto-discovers `CLAUDE.md` from the worktree `cwd`.
 - **Copilot**: do **not** pass `--instructions` — it disables auto-discovery of `.github/copilot-instructions.md`.
+- **Codex**: launch is bare `codex`. The CLI starts in interactive TUI mode by default and auto-discovers instructions (`AGENTS.md`) from the worktree `cwd`. Resume syntax is `codex resume <id>` — a **subcommand**, not a `--resume` flag. The metrics watcher discovers the thread id from the rollout file's `SessionMeta` line.
 
 ### Code conventions
 

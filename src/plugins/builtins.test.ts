@@ -14,7 +14,7 @@ const makeDef = (id: string, command: string): CustomProcessDef => ({
 describe('createBuiltinsRegistry()', () => {
   it('registers every built-in plugin kind in deterministic order', () => {
     const registry = createBuiltinsRegistry();
-    expect(registry.ai().map((p) => p.id)).toEqual(['claude', 'copilot']);
+    expect(registry.ai().map((p) => p.id)).toEqual(['claude', 'copilot', 'codex']);
     expect(registry.customProcesses().map((p) => p.id)).toEqual(['vscode', 'explorer']);
     expect(registry.widgets().map((w) => w.id)).toEqual(['git-status', 'ai-usage']);
   });

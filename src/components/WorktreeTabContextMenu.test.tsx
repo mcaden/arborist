@@ -117,6 +117,58 @@ describe('WorktreeTabContextMenu', () => {
     await act(async () => {});
   });
 
+  it('keeps menu open and surfaces an error when Launch Codex fails', async () => {
+    bridgeMock.sessionCreate.mockRejectedValueOnce(new Error('spawn_command failed: program not found'));
+    const onClose = vi.fn();
+    renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-codex'));
+
+    expect(await screen.findByTestId('worktree-tab-context-menu-error')).toHaveTextContent(/launch codex failed/i);
+    expect(screen.getByTestId('worktree-tab-context-menu')).not.toContainElement(screen.getByTestId('worktree-tab-context-menu-error'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('does not treat error-region clicks as outside clicks', async () => {
+    bridgeMock.sessionCreate.mockRejectedValueOnce(new Error('spawn_command failed: program not found'));
+    const onClose = vi.fn();
+    renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
+
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-codex'));
+    const error = await screen.findByTestId('worktree-tab-context-menu-error');
+    fireEvent.mouseDown(error);
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('worktree-tab-context-menu')).toBeInTheDocument();
+  });
+
+  it('does not update state after unmount when Launch Codex rejects', async () => {
+    let rejectLaunch: ((reason?: unknown) => void) | undefined;
+    bridgeMock.sessionCreate.mockImplementationOnce(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectLaunch = reject;
+        }),
+    );
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { unmount } = renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+
+    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-launch-codex'));
+    unmount();
+
+    await act(async () => {
+      rejectLaunch?.(new Error('spawn_command failed: program not found'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const hasUnmountedWarning = consoleErrorSpy.mock.calls.some((call) =>
+      call.some((arg) => typeof arg === 'string' && arg.includes("Can't perform a React state update on an unmounted component")),
+    );
+    expect(hasUnmountedWarning).toBe(false);
+    consoleErrorSpy.mockRestore();
+  });
+
   it('returns null when the tab has been removed from the store', () => {
     const onClose = vi.fn();
     useWorktreeTabStore.setState({ tabs: [], activeId: null, isHydrated: true });
@@ -187,7 +239,7 @@ describe('WorktreeTabContextMenu', () => {
       renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 390, y: 230 }} onClose={noop} />);
 
       const menu = screen.getByTestId('worktree-tab-context-menu');
-      expect(menu).toHaveStyle({ left: '176px', top: '4px' });
+      expect(menu.parentElement).toHaveStyle({ left: '176px', top: '4px' });
     } finally {
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });

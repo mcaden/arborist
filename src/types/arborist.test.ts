@@ -224,7 +224,7 @@ describe('arborist type mirrors', () => {
   });
 
   it('Tool wire values are lowercase string literals', () => {
-    expectTypeOf<Session['tool']>().toEqualTypeOf<'claude' | 'copilot'>();
+    expectTypeOf<Session['tool']>().toEqualTypeOf<'claude' | 'copilot' | 'codex'>();
   });
 
   it('SessionStatus wire values are lowercase string literals', () => {
