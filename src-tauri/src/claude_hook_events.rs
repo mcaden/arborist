@@ -66,12 +66,14 @@ pub fn hook_events_path(session_id: &SessionId) -> PathBuf {
 /// the current process**. Used as the activity-events gate so a stale persisted settings file (app moved or updated since the session was last
 /// spawned, partial install, packaging regression) doesn't park a polling thread on a `hook-events.jsonl` that will never be written to.
 ///
-/// Identifies the Arborist-owned hook entry by `args[2]` matching the expected per-session events path — Arborist always writes the hook's args
-/// as `[<event-kebab>, <session-uuid>, <events-jsonl-path>]`, so any entry whose third arg matches this session's `hook_events_path` is ours
-/// (even after the user's settings are merged in alongside). Returns `false` on missing file, parse error, no matching entry, or a matching entry
-/// whose `command` path doesn't exist as a file.
+/// Identifies an Arborist-owned hook entry by **command basename** equal to `arborist-claude-hook[.exe]`. The basename is unique to us (Claude's
+/// hook contract registers commands by absolute path; no other tool ships a binary by this name), and unlike path-equality on the embedded
+/// `args[2]` events-path it survives the standard Windows path-string mismatches: short-name vs long-name (`AAROMO~1`/`aaromoore`),
+/// `temp_dir()` resolution drift between the compose-time process and the gate-time process (different `TMP`/`TEMP`/`USERPROFILE` env
+/// inheritance from a wrapping shell), and trailing-separator variation. Returns `false` on missing file, parse error, no matching entry, or a
+/// matching entry whose `command` path doesn't exist as a file.
 #[must_use]
-pub fn settings_file_references_existing_helper(settings_path: &std::path::Path, session_id: &SessionId) -> bool {
+pub fn settings_file_references_existing_helper(settings_path: &std::path::Path, _session_id: &SessionId) -> bool {
     let Ok(bytes) = std::fs::read(settings_path) else {
         return false;
     };
@@ -81,8 +83,12 @@ pub fn settings_file_references_existing_helper(settings_path: &std::path::Path,
     let Some(hooks) = json.get("hooks").and_then(|h| h.as_object()) else {
         return false;
     };
-    let expected_events_path = hook_events_path(session_id);
-    let expected_events_str = expected_events_path.to_string_lossy();
+    // Arborist sidecar basename is OS-independent: just `arborist-claude-hook` plus the platform's executable suffix. Compare case-insensitively
+    // because Windows is case-insensitive and the helper path is written using whatever case the file resolver returned (which can differ from
+    // user-typed casing). The helper-name constant is hard-coded here rather than reading from a shared source because the hook-side string is the
+    // **registered** command, not the resolved-at-boot path — they're guaranteed identical in practice (compose builds the registration from the
+    // resolved path) but the constant is the load-bearing string for the validator's correctness.
+    let expected_basename = format!("arborist-claude-hook{}", std::env::consts::EXE_SUFFIX);
 
     for entries in hooks.values() {
         let Some(arr) = entries.as_array() else {
@@ -93,17 +99,17 @@ pub fn settings_file_references_existing_helper(settings_path: &std::path::Path,
                 continue;
             };
             for hook in hook_list {
-                let is_ours = hook
-                    .get("args")
-                    .and_then(|a| a.as_array())
-                    .and_then(|a| a.get(2))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s == expected_events_str)
+                let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) else {
+                    continue;
+                };
+                let cmd_path = std::path::Path::new(cmd);
+                let basename_matches = cmd_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.eq_ignore_ascii_case(&expected_basename))
                     .unwrap_or(false);
-                if is_ours {
-                    if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
-                        return std::path::Path::new(cmd).is_file();
-                    }
+                if basename_matches && cmd_path.is_file() {
+                    return true;
                 }
             }
         }
@@ -671,6 +677,10 @@ mod tests {
 
     // ---- Gate validation for the activity-events watcher (`settings_file_references_existing_helper`).
 
+    fn helper_basename() -> String {
+        format!("arborist-claude-hook{}", std::env::consts::EXE_SUFFIX)
+    }
+
     fn write_settings_with_helper(tmp: &tempfile::TempDir, helper_cmd: &str, sid: &SessionId) -> std::path::PathBuf {
         let events = hook_events_path(sid);
         let body = serde_json::json!({
@@ -689,8 +699,8 @@ mod tests {
     #[test]
     fn settings_validation_passes_when_helper_command_exists() {
         let tmp = tempfile::tempdir().unwrap();
-        // Pretend the helper is an existing file (use the temp dir itself as a stand-in real file).
-        let fake_helper = tmp.path().join("arborist-claude-hook");
+        // Use the platform-appropriate helper basename so the basename-match works on Windows (where EXE_SUFFIX is ".exe") and Unix (where it's "").
+        let fake_helper = tmp.path().join(helper_basename());
         std::fs::write(&fake_helper, b"#!/bin/sh\n").unwrap();
         let sid = SessionId::new();
         let settings = write_settings_with_helper(&tmp, &fake_helper.to_string_lossy(), &sid);
@@ -698,10 +708,40 @@ mod tests {
     }
 
     #[test]
+    fn settings_validation_passes_when_args_path_diverges_from_current_temp_dir() {
+        // Regression: previously the validator required `args[2]` to byte-equal `hook_events_path(session_id).to_string_lossy()`. On Windows that
+        // failed whenever `std::env::temp_dir()` resolved to a different string between the compose-time process (short-name `AAROMO~1`, or
+        // different `TMP`/`TEMP` env inheritance) and the gate-time process (long-name `aaromoore`, or different env). The validator now
+        // identifies our entry by command basename, so a stale or differently-resolved `args[2]` doesn't disable the watcher anymore.
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_helper = tmp.path().join(helper_basename());
+        std::fs::write(&fake_helper, b"#!/bin/sh\n").unwrap();
+        let sid = SessionId::new();
+        let body = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": fake_helper.to_string_lossy(),
+                        // Intentionally bogus events path — does not match what `hook_events_path(sid)` returns.
+                        "args": ["pre-tool-use", sid.0.to_string(), "C:\\TOTALLY\\DIFFERENT\\PATH\\hook-events.jsonl"],
+                    }],
+                }],
+            }
+        });
+        let path = tmp.path().join("claude-settings.json");
+        std::fs::write(&path, serde_json::to_string(&body).unwrap()).unwrap();
+        assert!(settings_file_references_existing_helper(&path, &sid));
+    }
+
+    #[test]
     fn settings_validation_fails_when_helper_command_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let sid = SessionId::new();
-        let settings = write_settings_with_helper(&tmp, "/nonexistent/path/to/arborist-claude-hook", &sid);
+        // Use a non-existent path that still has the right basename so we exercise the "basename matches but file missing" branch.
+        let bogus = tmp.path().join("nonexistent").join(helper_basename());
+        let settings = write_settings_with_helper(&tmp, &bogus.to_string_lossy(), &sid);
         assert!(!settings_file_references_existing_helper(&settings, &sid));
     }
 
@@ -722,9 +762,9 @@ mod tests {
     }
 
     #[test]
-    fn settings_validation_ignores_user_hook_entries_with_unrelated_args() {
-        // A user-added PreToolUse hook (different args, helper doesn't match our shape) must not satisfy the gate even if its `command` happens to
-        // exist on disk. We require the args[2] events-path-match to identify *our* entry.
+    fn settings_validation_ignores_user_hook_entries_with_unrelated_basenames() {
+        // A user-added PreToolUse hook with a different command basename must not satisfy the gate even if its `command` happens to exist on
+        // disk. We require the basename to be `arborist-claude-hook[.exe]` to identify *our* entry.
         let tmp = tempfile::tempdir().unwrap();
         let user_helper = tmp.path().join("user-formatter");
         std::fs::write(&user_helper, b"echo").unwrap();
