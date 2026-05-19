@@ -63,6 +63,7 @@ body:
         - Workspace or Git worktree
         - Claude session
         - Copilot session
+        - Codex session
         - Terminal custom process
         - Application custom process
         - Settings or configuration

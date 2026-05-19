@@ -4,6 +4,22 @@
 //! It starts in TUI mode by default and auto-discovers instructions from `cwd`.
 //! Resume syntax differs from Claude/Copilot: `codex resume <session_id>` (a
 //! subcommand, not a `--resume` flag).
+//!
+//! ## Metrics & session-id discovery
+//!
+//! Codex persists every session as a JSONL "rollout" file under
+//! `<CODEX_HOME>/sessions/` (default `~/.codex/sessions/`), optionally nested
+//! in `YYYY/MM/DD/` date subdirectories. File names follow the pattern
+//! `rollout-<TIMESTAMP>-<UUID>.jsonl`. The first line is a `SessionMeta`
+//! JSON object carrying the thread id, cwd, model, etc. Subsequent lines are
+//! `RolloutItem` records including `TokenCount` events (cumulative and per-turn
+//! token usage) and `TurnComplete` markers.
+//!
+//! The Codex metrics watcher discovers the rollout file matching the session's
+//! `cwd` and spawn-instant, extracts the thread id (fires the AI-session
+//! discovery callback for resume support), and tails `TokenCount` events for
+//! sidebar metrics — achieving feature parity with the Claude and Copilot
+//! watchers.
 
 use crate::plugins::ai::AiPlugin;
 use crate::plugins::Plugin;
@@ -43,8 +59,11 @@ impl AiPlugin for CodexPlugin {
         crate::plugins::ai::SpawnPrep::default()
     }
 
-    fn metrics_watcher_kind(&self, _session_id: SessionId, _cwd: &std::path::Path) -> Option<crate::plugins::ai::MetricsWatcherKind> {
-        None
+    fn metrics_watcher_kind(&self, _session_id: SessionId, cwd: &std::path::Path) -> Option<crate::plugins::ai::MetricsWatcherKind> {
+        crate::session_metrics::home_dir().map(|home| crate::plugins::ai::MetricsWatcherKind::Codex {
+            home,
+            cwd: cwd.to_path_buf(),
+        })
     }
 
     fn starts_activity_events_watcher(&self) -> bool {
@@ -52,6 +71,8 @@ impl AiPlugin for CodexPlugin {
     }
 
     fn create_ai_session_id(&self) -> Option<String> {
+        // Codex manages its own thread IDs internally. The watcher discovers
+        // the thread id from the rollout file's SessionMeta line.
         None
     }
 
@@ -60,10 +81,19 @@ impl AiPlugin for CodexPlugin {
     }
 
     fn resume_requires_preflight(&self) -> bool {
-        true
+        // Codex's `resume <thread_id>` handles missing threads gracefully (prints its own error).
+        // Rollout files use `rollout-<timestamp>-<thread_id>.jsonl` naming in date-nested dirs,
+        // making a quick path existence check impractical. Let the CLI validate.
+        false
     }
 
     fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
+        // Codex stores rollouts at `~/.codex/sessions/<date-nested>/rollout-<ts>-<uuid>.jsonl`.
+        // At preflight time the watcher has already resolved the full path and stored the thread_id.
+        // This method is called to check existence; we store the full path when discovering, so
+        // check in the sessions root using the thread_id as a marker.
+        // The actual file is discovered by scanning the sessions dir — this path is used only for
+        // the `exists()` preflight check at restore time.
         home.join(".codex").join("sessions").join(ai_session_id)
     }
 }

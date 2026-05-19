@@ -15,9 +15,9 @@ export function CodexIcon({ className }: CodexIconProps): JSX.Element {
       aria-hidden="true"
       className={className}
     >
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-      <path d="M8 12h8" />
-      <path d="M12 8v8" />
+      <path d="M8 7 3 12l5 5" />
+      <path d="m16 7 5 5-5 5" />
+      <path d="m14 5-4 14" />
     </svg>
   );
 }

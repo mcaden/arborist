@@ -22,7 +22,7 @@ Success looks like:
 | -------------------------- | ------------------------------------------------------------------------------------------------ |
 | Workspace root             | The primary local Git clone Arborist is bound to. Must contain `.git` as a directory.            |
 | Worktree tab               | A top-level sidebar tab for a worktree path. Its dashboard is shown when no child is active.     |
-| AI session                 | A Claude or Copilot CLI process running in a PTY in the worktree `cwd`.                          |
+| AI session                 | A Claude, Copilot, or Codex CLI process running in a PTY in the worktree `cwd`.                  |
 | Custom-process sub-session | A child tab launched from a configured custom process definition.                                |
 | Worktree prep              | One-shot commands run after `worktree_create`, with output logged and surfaced through a banner. |
 
@@ -40,7 +40,7 @@ Success looks like:
 | S-06 | Active worktree and active child selection must be visually clear and keyboard navigable.                                                                                  |
 | S-07 | Top-level worktree order must persist. Child reordering can be added later.                                                                                                |
 | S-08 | Close actions that terminate processes must require confirmation.                                                                                                          |
-| S-09 | The worktree-tab context menu must expose Launch Claude, Launch Copilot, enabled custom-process entries, custom-process settings, and close.                               |
+| S-09 | The worktree-tab context menu must expose Launch Claude, Launch Copilot, Launch Codex, enabled custom-process entries, custom-process settings, and close.                 |
 
 ### Workspaces and worktrees
 
@@ -69,8 +69,8 @@ Success looks like:
 
 | ID   | Requirement                                                                                                                                               |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| I-01 | Claude and Copilot run in the selected worktree `cwd` so each tool can load its own repository-level instruction files.                                   |
-| I-02 | Arborist must not pass `--system-prompt` to Claude or `--instructions` to Copilot for newly created sessions.                                             |
+| I-01 | Claude, Copilot, and Codex run in the selected worktree `cwd` so each tool can load its own repository-level instruction files.                           |
+| I-02 | Arborist must not pass `--system-prompt` to Claude, `--instructions` to Copilot, or any instruction flag to Codex for newly created sessions.             |
 | I-03 | Custom AI launch commands are plugin-keyed overrides. Missing or empty override means use the plugin default program.                                     |
 | I-04 | Dynamic paths must be canonicalized before use and shell-quoted when inserted into command strings. Worktree paths are passed as `cwd`, not interpolated. |
 
