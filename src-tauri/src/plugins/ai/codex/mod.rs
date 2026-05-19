@@ -5,21 +5,9 @@
 //! Resume syntax differs from Claude/Copilot: `codex resume <session_id>` (a
 //! subcommand, not a `--resume` flag).
 //!
-//! ## Metrics & session-id discovery
-//!
-//! Codex persists every session as a JSONL "rollout" file under
-//! `<CODEX_HOME>/sessions/` (default `~/.codex/sessions/`), optionally nested
-//! in `YYYY/MM/DD/` date subdirectories. File names follow the pattern
-//! `rollout-<TIMESTAMP>-<UUID>.jsonl`. The first line is a `SessionMeta`
-//! JSON object carrying the thread id, cwd, model, etc. Subsequent lines are
-//! `RolloutItem` records including `TokenCount` events (cumulative and per-turn
-//! token usage) and `TurnComplete` markers.
-//!
-//! The Codex metrics watcher discovers the rollout file matching the session's
-//! `cwd` and spawn-instant, extracts the thread id (fires the AI-session
-//! discovery callback for resume support), and tails `TokenCount` events for
-//! sidebar metrics — achieving feature parity with the Claude and Copilot
-//! watchers.
+//! The metrics watcher implementation lives in
+//! [`crate::session_metrics`] (`run_codex_watcher`); that module documents the
+//! rollout-file layout and the event types it consumes.
 
 use crate::plugins::ai::AiPlugin;
 use crate::plugins::Plugin;

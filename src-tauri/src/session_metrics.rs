@@ -882,16 +882,49 @@ fn maybe_invoke_agent_span(line: &[u8]) -> bool {
 
 // --------------------------------------------------------------------------- Codex rollout worker
 // ---------------------------------------------------------------------------
+//
+// Codex persists every session as a JSONL "rollout" file under `<CODEX_HOME>/sessions/` (default `~/.codex/sessions/`), optionally nested in
+// `YYYY/MM/DD/` date subdirectories. Filenames follow `rollout-<TIMESTAMP>-<UUID>.jsonl`. The first line is a `session_meta` envelope carrying the
+// thread id and `cwd`; subsequent lines are `event_msg` / `turn_context` envelopes. The watcher discovers the file by matching `cwd` and spawn
+// instant, fires the AI-session discovery callback with the thread id, then tails `TokenCount` (cumulative usage) and `TurnComplete` (turn duration)
+// events. Only token usage and model name are surfaced to the sidebar — feature parity with the Claude and Copilot watchers.
+
+/// Outer envelope for every rollout JSONL line: `{"timestamp": "...", "type": "...", "payload": {...}}`. Inner-payload shape varies by `type` and is
+/// inspected as `serde_json::Value` to avoid a deserialize match per variant.
+#[derive(Deserialize)]
+struct CodexRolloutLine {
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+}
+
+/// Normalize a path for cross-platform comparison. On Windows, slashes are unified and components are lowercased so `C:\Repos\X` matches
+/// `c:/repos/x/`. On Unix, the input is returned unchanged via `to_path_buf()` equivalence — callers compare with `==` on `Path`.
+fn normalize_path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|c| {
+            let raw = c.as_os_str().to_string_lossy();
+            if cfg!(windows) {
+                raw.replace('/', "\\").to_ascii_lowercase()
+            } else {
+                raw.into_owned()
+            }
+        })
+        .collect()
+}
 
 /// Discover the newest rollout JSONL under `<home>/.codex/sessions/` (and date-nested subdirs) whose first-line `SessionMeta.cwd` matches `cwd` and
-/// whose mtime is >= `after`. Returns the full path when found.
+/// whose mtime is >= `after`. Returns the full path when found. Called only on initial discovery — `run_codex_watcher` then sticks with the tracked
+/// file for the rest of the session, so the directory walk + first-line parse cost is paid at most once per session, not per poll.
 fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> Option<PathBuf> {
     let slack = Duration::from_secs(5);
     let cutoff = after.checked_sub(slack).unwrap_or(after);
+    let expected_norm = normalize_path_components(cwd);
     let mut best: Option<(SystemTime, PathBuf)> = None;
 
     // Helper to check a single directory for rollout files.
-    fn scan_dir(dir: &Path, cwd: &Path, cutoff: SystemTime, best: &mut Option<(SystemTime, PathBuf)>) {
+    fn scan_dir(dir: &Path, expected_norm: &[String], cutoff: SystemTime, best: &mut Option<(SystemTime, PathBuf)>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -908,7 +941,7 @@ fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> O
                 continue;
             }
             // Check if the cwd matches by reading the first line (SessionMeta).
-            if !codex_rollout_cwd_matches(&path, cwd) {
+            if !codex_rollout_cwd_matches_norm(&path, expected_norm) {
                 continue;
             }
             match best {
@@ -919,7 +952,7 @@ fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> O
     }
 
     // Scan top-level `sessions/` directory.
-    scan_dir(sessions_dir, cwd, cutoff, &mut best);
+    scan_dir(sessions_dir, &expected_norm, cutoff, &mut best);
 
     // Also scan date-nested subdirs (YYYY/MM/DD pattern).
     if let Ok(years) = std::fs::read_dir(sessions_dir) {
@@ -938,7 +971,7 @@ fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> O
                         for day_entry in days.flatten() {
                             let day_path = day_entry.path();
                             if day_path.is_dir() {
-                                scan_dir(&day_path, cwd, cutoff, &mut best);
+                                scan_dir(&day_path, &expected_norm, cutoff, &mut best);
                             }
                         }
                     }
@@ -950,58 +983,43 @@ fn newest_codex_rollout(sessions_dir: &Path, cwd: &Path, after: SystemTime) -> O
     best.map(|(_, p)| p)
 }
 
-/// Check if a rollout file's SessionMeta `cwd` field matches the expected cwd. Reads only the first line and does a case-insensitive path comparison
-/// on Windows.
-fn codex_rollout_cwd_matches(path: &Path, expected_cwd: &Path) -> bool {
-    use std::io::{BufRead, BufReader};
-    let Ok(f) = std::fs::File::open(path) else { return false };
-    let mut reader = BufReader::new(f);
-    let mut first_line = String::new();
-    if reader.read_line(&mut first_line).is_err() || first_line.is_empty() {
-        return false;
-    }
-    // The rollout format wraps in a RolloutLine: {"timestamp":"...","type":"session_meta","payload":{...}}
-    // We need to extract the `cwd` from the SessionMeta payload.
-    #[derive(Deserialize)]
-    struct RolloutLine {
-        #[serde(default)]
-        r#type: String,
-        #[serde(default)]
-        payload: Option<serde_json::Value>,
-    }
-    let Ok(line) = serde_json::from_str::<RolloutLine>(&first_line) else {
-        return false;
-    };
-    if line.r#type != "session_meta" {
-        return false;
-    }
-    let Some(payload) = line.payload else { return false };
-    let Some(cwd_str) = payload.get("cwd").and_then(|v| v.as_str()) else {
-        return false;
-    };
-    let rollout_cwd = Path::new(cwd_str);
-    // Case-insensitive comparison on Windows.
-    if cfg!(windows) {
-        rollout_cwd.to_string_lossy().to_ascii_lowercase() == expected_cwd.to_string_lossy().to_ascii_lowercase()
-    } else {
-        rollout_cwd == expected_cwd
-    }
-}
-
-/// Extract the thread_id from the first line of a Codex rollout file.
-fn codex_rollout_thread_id(path: &Path) -> Option<String> {
+/// Read a rollout file's first line and decode it as a `session_meta` `CodexRolloutLine`. Returns the payload (a JSON object) when the line is
+/// well-formed and the type matches; `None` otherwise. Shared by `codex_rollout_cwd_matches_norm` and `codex_rollout_thread_id`.
+fn read_codex_session_meta(path: &Path) -> Option<serde_json::Value> {
     use std::io::{BufRead, BufReader};
     let f = std::fs::File::open(path).ok()?;
     let mut reader = BufReader::new(f);
     let mut first_line = String::new();
     reader.read_line(&mut first_line).ok()?;
-    #[derive(Deserialize)]
-    struct RolloutLine {
-        #[serde(default)]
-        payload: Option<serde_json::Value>,
+    if first_line.is_empty() {
+        return None;
     }
-    let line: RolloutLine = serde_json::from_str(&first_line).ok()?;
-    let payload = line.payload?;
+    let line: CodexRolloutLine = serde_json::from_str(&first_line).ok()?;
+    if line.r#type != "session_meta" {
+        return None;
+    }
+    line.payload
+}
+
+/// Check whether a rollout file's `SessionMeta.cwd` matches the (already-normalized) expected cwd.
+fn codex_rollout_cwd_matches_norm(path: &Path, expected_norm: &[String]) -> bool {
+    let Some(payload) = read_codex_session_meta(path) else { return false };
+    let Some(cwd_str) = payload.get("cwd").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    normalize_path_components(Path::new(cwd_str)) == expected_norm
+}
+
+/// Test-only wrapper around [`codex_rollout_cwd_matches_norm`] that normalizes `expected_cwd` per call. Kept for the unit tests that don't want to
+/// pre-normalize.
+#[cfg(test)]
+fn codex_rollout_cwd_matches(path: &Path, expected_cwd: &Path) -> bool {
+    codex_rollout_cwd_matches_norm(path, &normalize_path_components(expected_cwd))
+}
+
+/// Extract the thread_id from the first line of a Codex rollout file.
+fn codex_rollout_thread_id(path: &Path) -> Option<String> {
+    let payload = read_codex_session_meta(path)?;
     payload.get("id").and_then(|v| v.as_str()).map(|s| s.to_owned())
 }
 
@@ -1030,7 +1048,7 @@ impl CodexState {
     fn snapshot(&self, session_id: SessionId) -> SessionMetricsEvent {
         let used = self.context_tokens_used;
         let pct = match (used, self.context_window) {
-            (Some(u), Some(lim)) if lim > 0 => Some(u.saturating_mul(100).checked_div(lim).map(|raw| raw.min(100) as u8).unwrap_or(0)),
+            (Some(u), Some(lim)) if lim > 0 => Some(((u as u128 * 100 / lim as u128).min(100)) as u8),
             _ => None,
         };
         SessionMetricsEvent {
@@ -1046,20 +1064,27 @@ impl CodexState {
     }
 }
 
+/// Extract token-count fields from a `TokenCount` event's `info` payload. Returns a tuple of `(input, output, total, model_context_window)`, each
+/// `Some` when present and well-typed. The `?` short-circuits at the missing-`info` boundary; nested fields use the same chain.
+fn extract_codex_token_count(payload: &serde_json::Value) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
+    let Some(info) = payload.get("payload").and_then(|p| p.get("info")) else {
+        return (None, None, None, None);
+    };
+    let total = info.get("total_token_usage");
+    let input = total.and_then(|t| t.get("input_tokens")).and_then(|v| v.as_u64());
+    let output = total.and_then(|t| t.get("output_tokens")).and_then(|v| v.as_u64());
+    let total_tokens = total.and_then(|t| t.get("total_tokens")).and_then(|v| v.as_u64());
+    let mcw = info.get("model_context_window").and_then(|v| v.as_u64()).filter(|&v| v > 0);
+    (input, output, total_tokens, mcw)
+}
+
 /// Ingest a single Codex rollout JSONL line. Extracts token usage from `EventMsg::TokenCount` and model from `TurnContext`.
 fn ingest_codex_rollout_line(line: &[u8], state: &mut CodexState) {
     // Lines in the rollout are `{"timestamp":"...","type":"<variant>","payload":{...}}`.
     // We care about:
     // - type = "event_msg" with payload.type = "TokenCount" → token usage
     // - type = "turn_context" → model name and context_window
-    #[derive(Deserialize)]
-    struct RolloutLine {
-        #[serde(default)]
-        r#type: String,
-        #[serde(default)]
-        payload: Option<serde_json::Value>,
-    }
-    let Ok(outer) = serde_json::from_slice::<RolloutLine>(line) else {
+    let Ok(outer) = serde_json::from_slice::<CodexRolloutLine>(line) else {
         return;
     };
 
@@ -1072,36 +1097,30 @@ fn ingest_codex_rollout_line(line: &[u8], state: &mut CodexState) {
             };
             match event_type {
                 "TokenCount" => {
-                    // payload.payload.info.total_token_usage / model_context_window
-                    let inner_payload = payload.get("payload");
-                    let info = inner_payload.and_then(|p| p.get("info"));
-                    if let Some(info) = info {
-                        if let Some(total) = info.get("total_token_usage") {
-                            if let Some(input) = total.get("input_tokens").and_then(|v| v.as_u64()) {
-                                state.sum_input = input;
-                            }
-                            if let Some(output) = total.get("output_tokens").and_then(|v| v.as_u64()) {
-                                state.sum_output = output;
-                            }
-                            if let Some(total_tokens) = total.get("total_tokens").and_then(|v| v.as_u64()) {
-                                state.context_tokens_used = Some(total_tokens);
-                            }
-                        }
-                        if let Some(mcw) = info.get("model_context_window").and_then(|v| v.as_u64()) {
-                            if mcw > 0 {
-                                state.context_window = Some(mcw);
-                            }
-                        }
+                    let (input, output, total, mcw) = extract_codex_token_count(&payload);
+                    if let Some(v) = input {
+                        state.sum_input = v;
+                    }
+                    if let Some(v) = output {
+                        state.sum_output = v;
+                    }
+                    if let Some(v) = total {
+                        state.context_tokens_used = Some(v);
+                    }
+                    if let Some(v) = mcw {
+                        state.context_window = Some(v);
                     }
                     state.seen = true;
                 }
                 "TurnStarted" => {
                     // payload.payload.model_context_window
-                    let inner_payload = payload.get("payload");
-                    if let Some(mcw) = inner_payload.and_then(|p| p.get("model_context_window")).and_then(|v| v.as_u64()) {
-                        if mcw > 0 {
-                            state.context_window = Some(mcw);
-                        }
+                    if let Some(mcw) = payload
+                        .get("payload")
+                        .and_then(|p| p.get("model_context_window"))
+                        .and_then(|v| v.as_u64())
+                        .filter(|&v| v > 0)
+                    {
+                        state.context_window = Some(mcw);
                     }
                 }
                 _ => {}
@@ -1129,14 +1148,7 @@ fn maybe_codex_turn_complete(line: &[u8]) -> bool {
 
 /// Extract the turn duration from a Codex `TurnComplete` event. Returns the duration in ms if present.
 fn parse_codex_turn_duration_ms(line: &[u8]) -> Option<u64> {
-    #[derive(Deserialize)]
-    struct RolloutLine {
-        #[serde(default)]
-        r#type: String,
-        #[serde(default)]
-        payload: Option<serde_json::Value>,
-    }
-    let outer: RolloutLine = serde_json::from_slice(line).ok()?;
+    let outer: CodexRolloutLine = serde_json::from_slice(line).ok()?;
     if outer.r#type != "event_msg" {
         return None;
     }
@@ -1169,33 +1181,47 @@ fn run_codex_watcher(
     let mut state = CodexState::default();
 
     while running.load(Ordering::SeqCst) {
-        let candidate = newest_codex_rollout(&sessions_dir, &cwd, spawn_instant);
-        if let Some(c) = candidate {
-            if tracked_path.as_ref() != Some(&c) {
-                tracked_path = Some(c.clone());
-                tracked_len = 0;
-                state = CodexState::default();
-                // Discover thread_id from the first line.
+        // Discovery runs only while no rollout file is bound. Codex shares one `~/.codex/sessions/` tree across every project and nests files in
+        // dated subdirs, so the scan is O(N) over the user's whole rollout history — keeping it off the steady-state path matters. Once bound, the
+        // tracked file persists for the lifetime of the PTY; if Codex ever begins rotating rollouts mid-session, treat the resulting metrics freeze
+        // as the signal to revisit this.
+        if tracked_path.is_none() {
+            if let Some(c) = newest_codex_rollout(&sessions_dir, &cwd, spawn_instant) {
                 if let Some(thread_id) = codex_rollout_thread_id(&c) {
                     discover(session_id, thread_id);
                 }
+                tracked_path = Some(c);
+                tracked_len = 0;
+                state = CodexState::default();
             }
+        }
 
-            if let Ok(meta) = std::fs::metadata(&c) {
-                let len = meta.len();
-                if len < tracked_len {
+        if let Some(path) = tracked_path.as_ref() {
+            match std::fs::metadata(path) {
+                Ok(meta) => {
+                    let len = meta.len();
+                    // Defensive: handle truncation/rotation. Same shape as the Claude and Copilot watchers.
+                    if len < tracked_len {
+                        tracked_len = 0;
+                        state = CodexState::default();
+                        last_emitted = None;
+                    }
+                    if len > tracked_len {
+                        tracked_len = tail_lines(path, tracked_len, len, |line| {
+                            ingest_codex_rollout_line(line, &mut state);
+                            if maybe_codex_turn_complete(line) {
+                                let duration = parse_codex_turn_duration_ms(line);
+                                emit_turn(session_id, duration);
+                            }
+                        });
+                    }
+                }
+                Err(_) => {
+                    // File disappeared (deletion, rename) — drop tracking so the next tick rediscovers.
+                    tracked_path = None;
                     tracked_len = 0;
                     state = CodexState::default();
                     last_emitted = None;
-                }
-                if len > tracked_len {
-                    tracked_len = tail_lines(&c, tracked_len, len, |line| {
-                        ingest_codex_rollout_line(line, &mut state);
-                        if maybe_codex_turn_complete(line) {
-                            let duration = parse_codex_turn_duration_ms(line);
-                            emit_turn(session_id, duration);
-                        }
-                    });
                 }
             }
         }
@@ -2187,6 +2213,20 @@ mod tests {
     }
 
     #[test]
+    fn codex_state_snapshot_pct_handles_large_values_without_overflow() {
+        let state = CodexState {
+            sum_input: 1000,
+            sum_output: 500,
+            context_window: Some(10_000_000_000_000_000_000),
+            context_tokens_used: Some(5_000_000_000_000_000_000),
+            last_model: Some("o3".into()),
+            seen: true,
+        };
+        let snap = state.snapshot(SessionId::new());
+        assert_eq!(snap.context_used_pct, Some(50));
+    }
+
+    #[test]
     fn parse_codex_turn_complete_duration() {
         let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TurnComplete","payload":{"turn_id":"t1","last_agent_message":"done","duration_ms":4200}}}"#;
         assert_eq!(parse_codex_turn_duration_ms(line), Some(4200));
@@ -2215,6 +2255,38 @@ mod tests {
         assert!(codex_rollout_cwd_matches(&path, Path::new(cwd)));
         assert!(!codex_rollout_cwd_matches(&path, Path::new("/other/path")));
         assert_eq!(codex_rollout_thread_id(&path), Some("thread-uuid-123".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_rollout_cwd_match_normalizes_windows_separators_and_trailing_separator() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout-2025-05-18T10-00-00-abcdef12-3456-7890-abcd-ef1234567890.jsonl");
+        let expected_cwd = r"C:\repos\myproject";
+        let rollout_cwd = format!("{}/", expected_cwd.replace('\\', "/"));
+        let first_line = format!(
+            r#"{{"timestamp":"2025-05-18T10:00:00Z","type":"session_meta","payload":{{"id":"thread-uuid-123","cwd":"{}","originator":"codex","cli_version":"1.0","source":"cli"}}}}"#,
+            rollout_cwd
+        );
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{}", first_line).unwrap();
+        drop(f);
+
+        assert!(codex_rollout_cwd_matches(&path, Path::new(expected_cwd)));
+    }
+
+    #[test]
+    fn codex_rollout_thread_id_requires_session_meta() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout-2025-05-18T10-00-00-abcdef12-3456-7890-abcd-ef1234567890.jsonl");
+        let first_line = r#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"id":"not-a-thread-id"}}"#;
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{}", first_line).unwrap();
+        drop(f);
+
+        assert_eq!(codex_rollout_thread_id(&path), None);
     }
 
     #[test]
