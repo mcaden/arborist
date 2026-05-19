@@ -1146,8 +1146,13 @@ fn maybe_codex_turn_complete(line: &[u8]) -> bool {
     contains(line, b"\"TurnComplete\"") || contains(line, b"\"task_complete\"") || contains(line, b"\"turn_complete\"")
 }
 
-/// Extract the turn duration from a Codex `TurnComplete` event. Returns the duration in ms if present.
-fn parse_codex_turn_duration_ms(line: &[u8]) -> Option<u64> {
+/// Parse a Codex turn-complete event.
+///
+/// Returns:
+/// - `Some(Some(duration_ms))` for a real turn-complete event with duration
+/// - `Some(None)` for a real turn-complete event without duration
+/// - `None` when the line is not a turn-complete event (or cannot be parsed)
+fn parse_codex_turn_duration_ms(line: &[u8]) -> Option<Option<u64>> {
     let outer: CodexRolloutLine = serde_json::from_slice(line).ok()?;
     if outer.r#type != "event_msg" {
         return None;
@@ -1157,8 +1162,8 @@ fn parse_codex_turn_duration_ms(line: &[u8]) -> Option<u64> {
     if event_type != "TurnComplete" && event_type != "task_complete" && event_type != "turn_complete" {
         return None;
     }
-    let inner = payload.get("payload")?;
-    inner.get("duration_ms").and_then(|v| v.as_u64())
+    let duration_ms = payload.get("payload").and_then(|inner| inner.get("duration_ms")).and_then(|v| v.as_u64());
+    Some(duration_ms)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1210,8 +1215,9 @@ fn run_codex_watcher(
                         tracked_len = tail_lines(path, tracked_len, len, |line| {
                             ingest_codex_rollout_line(line, &mut state);
                             if maybe_codex_turn_complete(line) {
-                                let duration = parse_codex_turn_duration_ms(line);
-                                emit_turn(session_id, duration);
+                                if let Some(duration) = parse_codex_turn_duration_ms(line) {
+                                    emit_turn(session_id, duration);
+                                }
                             }
                         });
                     }
@@ -2229,12 +2235,19 @@ mod tests {
     #[test]
     fn parse_codex_turn_complete_duration() {
         let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TurnComplete","payload":{"turn_id":"t1","last_agent_message":"done","duration_ms":4200}}}"#;
-        assert_eq!(parse_codex_turn_duration_ms(line), Some(4200));
+        assert_eq!(parse_codex_turn_duration_ms(line), Some(Some(4200)));
     }
 
     #[test]
     fn parse_codex_turn_complete_no_duration() {
         let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TurnComplete","payload":{"turn_id":"t1","last_agent_message":"done"}}}"#;
+        assert_eq!(parse_codex_turn_duration_ms(line), Some(None));
+    }
+
+    #[test]
+    fn parse_codex_turn_complete_ignores_non_turn_complete_event_with_keyword() {
+        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TokenCount","payload":{"note":"TurnComplete"}}}"#;
+        assert!(maybe_codex_turn_complete(line));
         assert_eq!(parse_codex_turn_duration_ms(line), None);
     }
 

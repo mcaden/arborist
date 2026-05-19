@@ -1,5 +1,5 @@
 // Hand-written TypeScript mirrors of the Rust types in
-// `src-tauri/src/types.rs`. Each interface carries a `MIRROR:` marker
+// `crates/arborist-types/src/lib.rs`. Each interface carries a `MIRROR:` marker
 // pointing at the canonical Rust definition. **When you change a Rust struct,
 // update the matching interface here in the same commit.**
 //
@@ -8,40 +8,40 @@
 // the same key set. A renamed Rust field will fail the fixture round-trip on
 // the Rust side and the satisfies-check here on the TS side.
 
-// MIRROR: src-tauri/src/types.rs::SessionId
+// MIRROR: crates/arborist-types/src/lib.rs::SessionId
 export type SessionId = string;
 
-// MIRROR: src-tauri/src/types.rs::SubSessionId
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionId
 // Wire shape is identical to SessionId (a UUID string) but the Rust side
 // uses a distinct newtype so the compiler enforces the boundary.
 export type SubSessionId = string;
 
-// MIRROR: src-tauri/src/types.rs::CustomProcessDefId
+// MIRROR: crates/arborist-types/src/lib.rs::CustomProcessDefId
 // User-facing slug for a `CustomProcessDef`. Matches `[a-zA-Z0-9_-]+` and
 // is unique within `AppConfig.customProcesses`. Built-in IDs: `shell`,
 // `open-folder`, `vscode`.
 export type CustomProcessDefId = string;
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabId
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabId
 // Stable identifier for a WorktreeTab. Backed by a UUID v4 on the Rust side;
 // distinct from SessionId/SubSessionId at the type level.
 export type WorktreeTabId = string;
 
-// MIRROR: src-tauri/src/types.rs::Tool
+// MIRROR: crates/arborist-types/src/lib.rs::Tool
 export type Tool = 'claude' | 'copilot' | 'codex';
 
 // MIRROR: crates/arborist-types/src/lib.rs::ThemeMode
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-// MIRROR: src-tauri/src/types.rs::SessionStatus
+// MIRROR: crates/arborist-types/src/lib.rs::SessionStatus
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'error';
 
-// MIRROR: src-tauri/src/types.rs::CustomProcessKind
+// MIRROR: crates/arborist-types/src/lib.rs::CustomProcessKind
 // Sub-session flavour. `terminal` runs inside an in-app PTY; `application`
 // spawns an external GUI program detached.
 export type CustomProcessKind = 'terminal' | 'application';
 
-// MIRROR: src-tauri/src/types.rs::SubSessionStatus
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionStatus
 export type SubSessionStatus = 'starting' | 'running' | 'exited' | 'error';
 
 // MIRROR: crates/arborist-types/src/lib.rs::StructuredCommand
@@ -118,13 +118,13 @@ export interface RepoCommandTrustArgs {
   intent: ShellCommandIntent;
 }
 
-// MIRROR: src-tauri/src/types.rs::TempFileSpec
+// MIRROR: crates/arborist-types/src/lib.rs::TempFileSpec
 export interface TempFileSpec {
   path: string;
   contents: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::Session
+// MIRROR: crates/arborist-types/src/lib.rs::Session
 // Backend-only record. Not sent to the frontend in normal flows; included
 // here so persistence/debug tooling can type it correctly.
 export interface Session {
@@ -152,7 +152,7 @@ export interface Session {
   lastMetrics?: SessionMetricsEvent;
 }
 
-// MIRROR: src-tauri/src/types.rs::SessionView
+// MIRROR: crates/arborist-types/src/lib.rs::SessionView
 // Frontend-facing projection: omits `composedCommand` and `tempFiles`.
 export interface SessionView {
   id: SessionId;
@@ -168,12 +168,12 @@ export interface SessionView {
   lastMetrics?: SessionMetricsEvent;
 }
 
-// MIRROR: src-tauri/src/types.rs::ChildId
+// MIRROR: crates/arborist-types/src/lib.rs::ChildId
 // Discriminated child identifier — either a Session or SubSession.
 // Wire shape: `{ kind: 'session', id: SessionId }` or `{ kind: 'subSession', id: SubSessionId }`.
 export type ChildId = { kind: 'session'; id: SessionId } | { kind: 'subSession'; id: SubSessionId };
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTab
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTab
 // First-class worktree tab record. Parent in the sidebar hierarchy.
 // AI sessions are grouped by matching `worktreePath`; sub-sessions are owned by `parentWorktreeTabId`.
 export interface WorktreeTab {
@@ -219,7 +219,7 @@ export interface PluginSettings {
   dashboardWidget: Record<string, PluginSettingState>;
 }
 
-// MIRROR: src-tauri/src/types.rs::AppConfig
+// MIRROR: crates/arborist-types/src/lib.rs::AppConfig
 export interface AppConfig {
   configVersion: number;
   /**
@@ -293,7 +293,7 @@ export interface PartialPluginSettings {
   dashboardWidget?: Record<string, PartialPluginSettingState>;
 }
 
-// MIRROR: src-tauri/src/types.rs::PartialAppConfig
+// MIRROR: crates/arborist-types/src/lib.rs::PartialAppConfig
 // Every field optional so Phase 4's `config_set` can deep-merge updates.
 // `activeSessionId` is tri-state: omit to leave alone, `null` to clear,
 // string to set.
@@ -332,7 +332,7 @@ export interface PartialAppConfig {
   theme?: ThemeMode;
 }
 
-// MIRROR: src-tauri/src/types.rs::CustomProcessDef
+// MIRROR: crates/arborist-types/src/lib.rs::CustomProcessDef
 // Persisted in `AppConfig.customProcesses`. `command` is passed verbatim to
 // `$SHELL -c` (or `%COMSPEC% /c` on Windows); the parent worktree tab path is
 // set as `cwd` and **never** interpolated into the command.
@@ -354,7 +354,7 @@ export interface CustomProcessDef {
   iconDataUri?: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSession
+// MIRROR: crates/arborist-types/src/lib.rs::SubSession
 // In-memory + on-the-wire representation of a sub-tab. Lives in a
 // parallel `SubSessionStore` on the Rust side; the frontend mirrors them
 // in a Zustand slice (Phase 4).
@@ -370,7 +370,7 @@ export interface SubSession {
   createdAt: number;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionRecord
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionRecord
 // Lightweight restore record persisted in
 // `AppConfig.lastOpenSubSessions`. Carries only what the restore pass
 // needs to attempt re-creation.
@@ -391,7 +391,7 @@ export interface SubSessionRecord {
   composedCommand?: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::AppError
+// MIRROR: crates/arborist-types/src/lib.rs::AppError
 // Wire shape of every error coming from a Tauri command. The frontend may
 // branch on `code`; the strings come from `Error::code()` in Rust.
 export interface AppError {
@@ -399,14 +399,14 @@ export interface AppError {
   message: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::SessionOutputEvent
+// MIRROR: crates/arborist-types/src/lib.rs::SessionOutputEvent
 // Payload of the `session://output` Tauri event (docs/architecture.md#command-and-event-contract).
 export interface SessionOutputEvent {
   sessionId: SessionId;
   data: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::SessionStatusEvent
+// MIRROR: crates/arborist-types/src/lib.rs::SessionStatusEvent
 // Payload of the `session://status` Tauri event (docs/architecture.md#command-and-event-contract).
 //
 // `message` is an optional context string the backend includes for
@@ -419,49 +419,49 @@ export interface SessionStatusEvent {
   message?: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionCreateArgs
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCreateArgs
 export interface SubSessionCreateArgs {
   parentWorktreeTabId: WorktreeTabId;
   defId: CustomProcessDefId;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionIdArg
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionIdArg
 export interface SubSessionIdArg {
   id: SubSessionId;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionCloseIntent
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseIntent
 //
 // Discriminated tag describing what should happen to the underlying
 // process when the user closes a sub-tab. Terminal kind ignores the
 // variant; application kind branches on it.
 export type SubSessionCloseIntent = 'tabOnly' | 'requestAppClose' | 'forceKill';
 
-// MIRROR: src-tauri/src/types.rs::SubSessionCloseArgs
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseArgs
 export interface SubSessionCloseArgs {
   id: SubSessionId;
   intent?: SubSessionCloseIntent;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionListArgs
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionListArgs
 export interface SubSessionListArgs {
   parentWorktreeTabId?: WorktreeTabId;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionInputArgs
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionInputArgs
 export interface SubSessionInputArgs {
   id: SubSessionId;
   data: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionResizeArgs
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionResizeArgs
 export interface SubSessionResizeArgs {
   id: SubSessionId;
   cols: number;
   rows: number;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionStatusEvent
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionStatusEvent
 // Payload of the `subsession://status` Tauri event (Phase 2).
 export interface SubSessionStatusEvent {
   id: SubSessionId;
@@ -470,7 +470,7 @@ export interface SubSessionStatusEvent {
   message?: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionExitedEvent
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionExitedEvent
 // Payload of the `subsession://exited` Tauri event (Phase 3 application
 // sub-tabs). Phase 2's terminal sub-tabs use `subsession://status` with
 // `SubSessionStatus = 'exited'` instead.
@@ -479,7 +479,7 @@ export interface SubSessionExitedEvent {
   exitCode?: number;
 }
 
-// MIRROR: src-tauri/src/types.rs::SubSessionRestoredEvent
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionRestoredEvent
 // Payload of the `subsession://restored` Tauri event (Phase 7).
 //
 // Emitted once per sub-session by the restore-on-launch second pass
@@ -492,18 +492,18 @@ export interface SubSessionRestoredEvent {
   subSession: SubSession;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabOpenArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabOpenArgs
 export interface WorktreeTabOpenArgs {
   path: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabAppClosePolicy
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabAppClosePolicy
 //
 // Policy for application-kind sub-sessions during worktree-tab cascade close.
 // Terminal sub-sessions and AI sessions are always terminated by their own paths.
 export type WorktreeTabAppClosePolicy = 'detach' | 'terminate';
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabCloseArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabCloseArgs
 export interface WorktreeTabCloseArgs {
   id: WorktreeTabId;
   /**
@@ -522,23 +522,23 @@ export interface WorktreeTabCloseArgs {
   appClosePolicy?: WorktreeTabAppClosePolicy;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabFocusArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabFocusArgs
 export interface WorktreeTabFocusArgs {
   id: WorktreeTabId;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabReorderArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabReorderArgs
 export interface WorktreeTabReorderArgs {
   ids: WorktreeTabId[];
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabSetActiveChildArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabSetActiveChildArgs
 export interface WorktreeTabSetActiveChildArgs {
   id: WorktreeTabId;
   childId?: ChildId;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeTabCloseResult
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeTabCloseResult
 export interface WorktreeTabCloseResult {
   childErrors?: string[];
   /**
@@ -574,13 +574,13 @@ export type ActivityEvent =
     }
   | { kind: 'permissionResolved'; requestId: string; approved: boolean };
 
-// MIRROR: src-tauri/src/types.rs::SessionActivityEvent
+// MIRROR: crates/arborist-types/src/lib.rs::SessionActivityEvent
 // Payload of the `session://activity` Tauri event (docs/architecture.md#command-and-event-contract). The
 // `ActivityEvent` fields are flattened into the payload alongside
 // `sessionId`.
 export type SessionActivityEvent = { sessionId: SessionId } & ActivityEvent;
 
-// MIRROR: src-tauri/src/types.rs::SessionMetricsEvent
+// MIRROR: crates/arborist-types/src/lib.rs::SessionMetricsEvent
 // Payload of the `session://metrics` Tauri event (Issue #3). All fields
 // except `sessionId` and `observedAt` are optional — the watcher emits
 // only what it can resolve. The same shape doubles as the in-memory
@@ -606,7 +606,7 @@ export interface SessionMetricsEvent {
 /** In-memory alias — sidebar reads the same shape it received over the wire. */
 export type SessionMetrics = SessionMetricsEvent;
 
-// MIRROR: src-tauri/src/types.rs::WorktreeInfo
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeInfo
 // Returned by the `worktrees_list` command.
 // `branch` is omitted by the backend when the worktree has a detached HEAD,
 // so we model it as an optional string.
@@ -617,19 +617,19 @@ export interface WorktreeInfo {
   isLocked: boolean;
 }
 
-// MIRROR: src-tauri/src/types.rs::GitStatusFileKind
+// MIRROR: crates/arborist-types/src/lib.rs::GitStatusFileKind
 // Categorical state of a single file in a worktree's working tree (Issue #55).
 // A file with both X and Y dirty surfaces as both `staged` and `unstaged`
 // entries in `WorktreeGitStatus.files`.
 export type GitStatusFileKind = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
 
-// MIRROR: src-tauri/src/types.rs::WorktreeGitStatusArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeGitStatusArgs
 // Args for the `worktree_git_status` command (Issue #55).
 export interface WorktreeGitStatusArgs {
   path: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::GitStatusFile
+// MIRROR: crates/arborist-types/src/lib.rs::GitStatusFile
 // One file entry in `WorktreeGitStatus.files` (Issue #55). `status` is the
 // raw porcelain-v2 XY code (e.g. `"M."`, `"MM"`, `"??"`, `"UU"`); `kind` is
 // the digestible category the dashboard groups by.
@@ -639,7 +639,7 @@ export interface GitStatusFile {
   status: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeGitStatus
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeGitStatus
 // Returned by the `worktree_git_status` command (Issue #55: worktree
 // dashboard). All counts are `0` and `files` is empty when the working tree
 // is clean. On any backend discovery failure the backend returns a
@@ -673,7 +673,7 @@ export interface WorktreeGitStatus {
   error?: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorkspaceValidateResult
+// MIRROR: crates/arborist-types/src/lib.rs::WorkspaceValidateResult
 // Returned by the `workspace_validate` command (Roadmap §1.1). `error` is
 // only populated when `valid === false`.
 //
@@ -700,7 +700,7 @@ export interface WorkspaceValidateResult {
   alreadyOpenInAnotherInstance?: boolean;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreeCreateResult
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreeCreateResult
 // Returned by the `worktree_create` command (Roadmap §2.2). `path` is the
 // canonical absolute path to the newly-created worktree directory. `prep`
 // is `null` when the user has no `worktreePrepCommands` configured (issue
@@ -711,11 +711,11 @@ export interface WorktreeCreateResult {
   prep: WorktreePrepInfo | null;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreePrepId
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreePrepId
 // UUID v4 identifying a single prep run. Distinct from SessionId.
 export type WorktreePrepId = string;
 
-// MIRROR: src-tauri/src/types.rs::WorktreePrepInfo
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreePrepInfo
 // Returned in `WorktreeCreateResult.prep` and echoed in `WorktreePrepEvent`
 // payloads so the frontend can correlate events to the originating create.
 export interface WorktreePrepInfo {
@@ -724,7 +724,7 @@ export interface WorktreePrepInfo {
   logPath: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorktreePrepEvent
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreePrepEvent
 // Lifecycle event for a worktree-prep run, emitted on `worktree://prep`.
 // Both variants carry `prepId`/`worktreePath`/`logPath` so the frontend
 // store can render a completed-prep banner even if it missed the matching
@@ -753,7 +753,7 @@ export type WorktreePrepEvent =
       finishedAt: number;
     };
 
-// MIRROR: src-tauri/src/types.rs::WorktreePrepOpenLogArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreePrepOpenLogArgs
 // Args for the `worktree_prep_open_log` command — the backend canonicalises
 // the path and asserts it lives under `<app_data_dir>/worktree-prep-logs/`
 // before invoking the OS-default opener.
@@ -761,7 +761,7 @@ export interface WorktreePrepOpenLogArgs {
   logPath: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorkspaceSwitchArgs
+// MIRROR: crates/arborist-types/src/lib.rs::WorkspaceSwitchArgs
 // Argument struct for the `workspace_switch` command. The Tauri invoke
 // wrapper passes this as `{ args: { path } }` to match the Rust handler
 // signature `workspace_switch(args: WorkspaceSwitchArgs)`.
@@ -769,7 +769,7 @@ export interface WorkspaceSwitchArgs {
   path: string;
 }
 
-// MIRROR: src-tauri/src/types.rs::WorkspaceSwitchResult
+// MIRROR: crates/arborist-types/src/lib.rs::WorkspaceSwitchResult
 // Resolves on success of `workspace_switch`. `workspaceRoot` is the
 // **canonical** path the backend bound to. `noOp` is `true` if the
 // requested path matched the workspace already in use — in that case

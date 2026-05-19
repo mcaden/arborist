@@ -70,18 +70,16 @@ impl AiPlugin for CodexPlugin {
 
     fn resume_requires_preflight(&self) -> bool {
         // Codex's `resume <thread_id>` handles missing threads gracefully (prints its own error).
-        // Rollout files use `rollout-<timestamp>-<thread_id>.jsonl` naming in date-nested dirs,
-        // making a quick path existence check impractical. Let the CLI validate.
+        // Rollout files use `rollout-<timestamp>-<uuid>.jsonl` naming in date-nested dirs, with
+        // thread_id living in the first-line `session_meta` payload, so a cheap path probe by id
+        // is not reliable. Let the CLI validate.
         false
     }
 
     fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
-        // Codex stores rollouts at `~/.codex/sessions/<date-nested>/rollout-<ts>-<uuid>.jsonl`.
-        // At preflight time the watcher has already resolved the full path and stored the thread_id.
-        // This method is called to check existence; we store the full path when discovering, so
-        // check in the sessions root using the thread_id as a marker.
-        // The actual file is discovered by scanning the sessions dir — this path is used only for
-        // the `exists()` preflight check at restore time.
+        // `resume_requires_preflight()` is false for Codex, so this is currently not used to gate
+        // restore. Keep a stable placeholder path to satisfy the trait contract; if Codex preflight
+        // is ever enabled, this needs a real rollout-file lookup strategy.
         home.join(".codex").join("sessions").join(ai_session_id)
     }
 }
