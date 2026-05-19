@@ -1,10 +1,10 @@
 //! `arborist-claude-hook` — sidecar binary registered as a Claude Code hook handler.
 //!
 //! Claude Code spawns this process at every hook fire point we register (PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest, Stop,
-//! UserPromptSubmit, SessionEnd). The hook payload (JSON) arrives on stdin; the JSONL events file path and the Arborist session id arrive as
-//! `args` baked into the per-session `claude-settings.json` Arborist materialised at session-create time. The helper translates the payload to a
-//! single structured line and atomically appends it to the events file. The backend tailer
-//! ([`arborist_lib::claude_hook_events`]) consumes that file.
+//! UserPromptSubmit, SessionEnd, and Notification scoped to the `idle_prompt` matcher). The hook payload (JSON) arrives on stdin; the JSONL
+//! events file path and the Arborist session id arrive as `args` baked into the per-session `claude-settings.json` Arborist materialised at
+//! session-create time. The helper translates the payload to a single structured line and atomically appends it to the events file. The backend
+//! tailer ([`arborist_lib::claude_hook_events`]) consumes that file.
 //!
 //! ## CLI contract
 //!
@@ -23,6 +23,7 @@
 //! | `user-prompt`        | `turnStart`           | Drops the payload's `prompt` content — we only care about the lifecycle marker.    |
 //! | `stop`               | `turnEnd`             | No duration available from Claude's Stop event.                                    |
 //! | `session-end`        | `sessionEnd`          | Hard reset for the tailer state machine.                                           |
+//! | `notification-idle`  | `attention`           | Claude's `Notification` event, scoped at registration time to matcher `idle_prompt` (agent is idle, waiting on the user). |
 //!
 //! Unknown `<event>` values are silently treated as no-ops (still exit 0). The helper **never** blocks Claude — every exit path returns 0,
 //! including on malformed JSON, missing fields, or unwritable events file. A non-zero exit would interrupt Claude's tool execution, which is far
@@ -129,6 +130,12 @@ pub fn build_line(event: &str, payload: &serde_json::Value) -> Option<String> {
         }
         "session-end" => {
             obj.insert("kind".to_owned(), "sessionEnd".into());
+        }
+        "notification-idle" => {
+            // Claude fired a `Notification` whose matcher scoped us to `idle_prompt` — i.e. Claude finished its turn with a question and is parked
+            // waiting on the user. Map to the existing `attention` activity so the sidebar promotes the tab to its "look at this" state until
+            // the user focuses it. Payload's `message` field could be surfaced as a summary in the future; today we just record the marker.
+            obj.insert("kind".to_owned(), "attention".into());
         }
         _ => return None,
     }
@@ -295,6 +302,16 @@ mod tests {
     fn session_end_emits_session_end() {
         let line = build_line("session-end", &serde_json::Value::Null).unwrap();
         assert_eq!(parse(&line)["kind"], "sessionEnd");
+    }
+
+    #[test]
+    fn notification_idle_emits_attention() {
+        // Claude registers our Notification hook with matcher `idle_prompt`, so by the time the helper is invoked with `notification-idle`,
+        // Claude has already filtered to the "agent is idle, waiting on user" case. Payload may include a `message` field but we don't need it
+        // to construct the activity marker.
+        let payload = serde_json::json!({ "message": "Claude is waiting for your input" });
+        let line = build_line("notification-idle", &payload).unwrap();
+        assert_eq!(parse(&line)["kind"], "attention");
     }
 
     #[test]

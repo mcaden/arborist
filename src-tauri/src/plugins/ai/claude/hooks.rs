@@ -24,15 +24,23 @@ use serde_json::{json, Map, Value};
 
 use crate::types::SessionId;
 
-/// Claude hook event names we register. These map 1:1 to the helper binary's first-positional argument; keep the two lists in sync.
-pub const HOOK_EVENTS: &[(&str, &str)] = &[
-    ("PreToolUse", "pre-tool-use"),
-    ("PostToolUse", "post-tool-use"),
-    ("PostToolUseFailure", "post-tool-failure"),
-    ("PermissionRequest", "permission-request"),
-    ("UserPromptSubmit", "user-prompt"),
-    ("Stop", "stop"),
-    ("SessionEnd", "session-end"),
+/// Claude hook event names we register: `(<EventName>, <helper-arg>, <matcher>)`. The first two fields map 1:1 to the helper binary's first
+/// positional argument; the third is the Claude `matcher` field, which scopes *which* sub-variant of the event we want to be fired for. Most
+/// events use `""` (match every fire); `Notification` uses `"idle_prompt"` to scope to the "Claude is idle waiting on the user" sub-event and
+/// skip the noisier siblings (`permission_prompt`, `elicitation_*`, `auth_success`).
+pub const HOOK_EVENTS: &[(&str, &str, &str)] = &[
+    ("PreToolUse", "pre-tool-use", ""),
+    ("PostToolUse", "post-tool-use", ""),
+    ("PostToolUseFailure", "post-tool-failure", ""),
+    ("PermissionRequest", "permission-request", ""),
+    ("UserPromptSubmit", "user-prompt", ""),
+    ("Stop", "stop", ""),
+    ("SessionEnd", "session-end", ""),
+    // `idle_prompt` is Claude's "agent is idle, waiting on the user" notification — the case where Claude finishes its message with a question
+    // and parks at its prompt. Mapped to `ActivityEvent::Attention` by the tailer so the sidebar promotes the tab to the attention state until
+    // the user focuses it. Other `Notification` matchers (`permission_prompt`, `elicitation_*`, `auth_success`) are deliberately not subscribed:
+    // permission flow is already covered by `PermissionRequest` above, and the rest would be noise.
+    ("Notification", "notification-idle", "idle_prompt"),
 ];
 
 /// Build the per-session `claude-settings.json` payload as a string ready to drop into a [`crate::types::TempFileSpec`].
@@ -148,9 +156,9 @@ fn append_arborist_hooks(base: &mut Value, helper_exe: &Path, arborist_session_i
     let exe_str = helper_exe.to_string_lossy().into_owned();
     let session_id_str = arborist_session_id.0.to_string();
     let events_str = events_path.to_string_lossy().into_owned();
-    for (event_name, helper_arg) in HOOK_EVENTS {
+    for (event_name, helper_arg, matcher) in HOOK_EVENTS {
         let entry = json!({
-            "matcher": "",
+            "matcher": *matcher,
             "hooks": [
                 {
                     "type": "command",
@@ -207,7 +215,7 @@ mod tests {
         );
         let v = parse(&s);
         let hooks = &v["hooks"];
-        for (event_name, _) in HOOK_EVENTS {
+        for (event_name, _, _) in HOOK_EVENTS {
             assert!(
                 hooks.get(*event_name).and_then(|a| a.as_array()).map(|a| !a.is_empty()).unwrap_or(false),
                 "event {event_name} missing"
@@ -316,7 +324,7 @@ mod tests {
         );
         let v = parse(&s);
         // Even with a broken user file, our hooks must register.
-        for (event_name, _) in HOOK_EVENTS {
+        for (event_name, _, _) in HOOK_EVENTS {
             assert!(
                 v["hooks"].get(*event_name).is_some(),
                 "event {event_name} missing after malformed user file"

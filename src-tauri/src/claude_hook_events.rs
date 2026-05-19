@@ -17,6 +17,7 @@
 //! {"kind":"awaitingPermission","toolUseId":"tu_abc","toolName":"Bash","permissionKind":"bash:execute","summary":"git push"}
 //! {"kind":"toolStart","toolUseId":"tu_abc","toolName":"Bash"}
 //! {"kind":"toolEnd","toolUseId":"tu_abc","success":true}
+//! {"kind":"attention"}
 //! {"kind":"sessionEnd"}
 //! ```
 //!
@@ -278,8 +279,20 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
             state.open_tools.clear();
             state.open_permissions.clear();
         }
+        "attention" if !suppress_resolved => {
+            // Fired when the helper saw a `Notification` event whose matcher scoped to `idle_prompt` — Claude is idle, parked at its prompt
+            // waiting on the user (typically after finishing its response with a question). Forward as-is; the frontend reducer routes
+            // `ActivityEvent::Attention` to the per-session `activity` map, where it sits at display priority 2 (above `runningTool` /
+            // `thinking`, below `awaitingPermission`) until the user focuses the tab. The tailer keeps no in-memory state for this — there's
+            // nothing to "close" or pair against; the next user prompt (`turnStart`) implicitly supersedes it.
+            //
+            // Suppressed during catch-up (the `suppress_resolved` guard above) — replaying a stale `attention` from a prior poll window would
+            // re-promote the sidebar long after the user already saw and dismissed it.
+            emit(ActivityEvent::Attention);
+        }
         _ => {
-            // Unknown kinds are silently ignored (forward compat with newer hook helpers).
+            // Unknown kinds (and `attention` during catch-up) are silently ignored — forward compat with newer hook helpers, and the
+            // attention-suppression case is handled by the match guard above.
         }
     }
 }
@@ -600,6 +613,26 @@ mod tests {
         assert!(!s.in_turn);
         assert!(s.open_tools.is_empty());
         assert!(s.open_permissions.is_empty());
+    }
+
+    #[test]
+    fn attention_emits_attention_activity_event() {
+        let mut s = EventsState::new();
+        let evs = collect(&mut s, &[br#"{"kind":"attention"}"#], false);
+        assert_eq!(evs, vec![ActivityEvent::Attention]);
+        // No in-memory state tracked for attention — there's nothing to "close" against; turnStart implicitly supersedes it.
+        assert!(!s.in_turn);
+        assert!(s.open_tools.is_empty());
+        assert!(s.open_permissions.is_empty());
+    }
+
+    #[test]
+    fn attention_suppressed_during_catch_up() {
+        // Replaying a stale `attention` from a prior poll window would re-promote the sidebar long after the user already dismissed it. Catch-up
+        // must drop the event.
+        let mut s = EventsState::new();
+        let evs = collect(&mut s, &[br#"{"kind":"attention"}"#], true);
+        assert!(evs.is_empty());
     }
 
     #[test]
