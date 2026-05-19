@@ -2158,8 +2158,58 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
     Ok(WorktreeCreateResult { path: new_path, prep: None })
 }
 
+fn session_temp_file_owner(path: &Path) -> Result<Option<SessionId>, AppError> {
+    let root = crate::compose::session_temp_root();
+    let rel = match path.strip_prefix(&root) {
+        Ok(rel) => rel,
+        Err(_) => return Ok(None),
+    };
+    let mut parts = rel.components();
+    let Some(session_dir) = parts.next() else {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} is missing the session directory segment",
+            path.display()
+        ))));
+    };
+    let session_str = session_dir.as_os_str().to_str().ok_or_else(|| {
+        AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} has a non-UTF-8 session directory segment",
+            path.display()
+        )))
+    })?;
+    let session_uuid = uuid::Uuid::parse_str(session_str).map_err(|e| {
+        AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} has an invalid session directory segment {session_str}: {e}",
+            path.display()
+        )))
+    })?;
+    let Some(file_name) = parts.next() else {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} is missing a file segment",
+            path.display()
+        ))));
+    };
+    if parts.next().is_some() {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} is nested; expected exactly <temp>/arborist/<session-id>/<file>",
+            path.display()
+        ))));
+    }
+    if file_name.as_os_str().is_empty() {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "session temp file path {} has an empty file segment",
+            path.display()
+        ))));
+    }
+    Ok(Some(SessionId(session_uuid)))
+}
+
 fn materialise_temp_files(files: &[crate::types::TempFileSpec]) -> Result<(), AppError> {
     for f in files {
+        if let Some(session_id) = session_temp_file_owner(&f.path)? {
+            crate::session_temp::write_session_temp_file(&session_id, &f.path, &f.contents).map_err(AppError::from)?;
+            continue;
+        }
         if let Some(parent) = f.path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| AppError::from(Error::Io(e)))?;
         }

@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -65,6 +66,30 @@ pub fn prepare_claude_hook_events_file(id: &SessionId) -> Result<PathBuf, Error>
     validate_claude_hook_events_path(id, &path, &dir)?;
     remove_regular_file_no_follow(&path)?;
     Ok(path)
+}
+
+/// Materialize a managed session-temp file under `<os-temp>/arborist/<session-uuid>/` with no-follow path checks and owner-only permissions.
+pub fn write_session_temp_file(id: &SessionId, path: &Path, contents: &str) -> Result<(), Error> {
+    let dir = ensure_session_temp_dir(id)?;
+    validate_session_temp_file_path(id, path, &dir)?;
+    ensure_regular_file_or_missing_no_follow(path)?;
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        options.mode(PRIVATE_FILE_MODE);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+
+    let mut file = options
+        .open(path)
+        .map_err(|e| map_temp_permission_error(path, "open managed session temp file", e))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| map_temp_permission_error(path, "write managed session temp file", e))?;
+    drop(file);
+    set_private_file_permissions(path)?;
+    Ok(())
 }
 
 /// Remove the exact Copilot OTel JSONL file for a session, if present.
@@ -275,6 +300,27 @@ fn remove_regular_file_no_follow(path: &Path) -> Result<bool, Error> {
     Ok(true)
 }
 
+fn ensure_regular_file_or_missing_no_follow(path: &Path) -> Result<(), Error> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    if is_symlink_or_reparse_point(&meta) {
+        return Err(Error::InvalidPath(format!(
+            "refusing to write managed session temp file via symlink or reparse point {}",
+            path.display()
+        )));
+    }
+    if !meta.is_file() {
+        return Err(Error::InvalidPath(format!(
+            "refusing to write managed session temp file to non-file {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn remove_dir_tree_no_follow(path: &Path) -> Result<bool, Error> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -335,6 +381,25 @@ fn validate_claude_hook_events_path(id: &SessionId, path: &Path, dir: &Path) -> 
     if path != expected {
         return Err(Error::InvalidPath(format!(
             "Claude hook-events path {} did not match expected {}",
+            path.display(),
+            expected.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_session_temp_file_path(id: &SessionId, path: &Path, dir: &Path) -> Result<(), Error> {
+    validate_session_dir_path(id, dir)?;
+    let Some(file_name) = path.file_name() else {
+        return Err(Error::InvalidPath(format!(
+            "managed session temp file path {} has no file name",
+            path.display()
+        )));
+    };
+    let expected = dir.join(file_name);
+    if path != expected {
+        return Err(Error::InvalidPath(format!(
+            "managed session temp file path {} did not match expected {}",
             path.display(),
             expected.display()
         )));

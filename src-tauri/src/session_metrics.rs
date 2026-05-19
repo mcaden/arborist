@@ -220,7 +220,7 @@ impl MetricsRegistry {
                         tracing::debug!(
                             session_id = %session_id,
                             ?tool,
-                            "activity events watcher not started (hook integration disabled — settings file missing, unparseable, or references a helper command path that doesn't exist in the current process)",
+                            "activity events watcher not started (hook integration disabled — settings file missing, unparseable, missing an Arborist hook entry, or references a helper command path that doesn't exist in the current process)",
                         );
                     } else {
                         tracing::debug!(

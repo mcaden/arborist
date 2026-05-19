@@ -23,7 +23,7 @@
 // the helper; this puts dev on equal footing.
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,12 +68,18 @@ console.log(`[arborist] tauri dev on port ${port}`);
 
 const isWindows = process.platform === 'win32';
 
-// Resolve `cargo` under `$CARGO_HOME/bin/` so we don't depend on PATH (and so a writable directory earlier on PATH can't shadow the toolchain). Same
-// pattern the release sidecar prep script uses (`scripts/prepare-claude-hook-sidecar.mjs`).
+// Prefer a rustup-style absolute cargo path when present, but fall back to user override / PATH so Homebrew/Nix/system installs still work.
 function cargoBin() {
+  const explicitCargo = process.env.CARGO?.trim();
+  if (explicitCargo) {
+    return explicitCargo;
+  }
   const cargoHome = process.env.CARGO_HOME ?? join(homedir(), '.cargo');
-  const name = isWindows ? 'cargo.exe' : 'cargo';
-  return join(cargoHome, 'bin', name);
+  const rustupCargo = join(cargoHome, 'bin', isWindows ? 'cargo.exe' : 'cargo');
+  if (existsSync(rustupCargo)) {
+    return rustupCargo;
+  }
+  return isWindows ? 'cargo.exe' : 'cargo';
 }
 
 // Build the Claude hook sidecar before `tauri dev` so the helper sits next to `arborist.exe` in `target/debug/` on first launch. Synchronous because
