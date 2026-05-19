@@ -167,16 +167,23 @@ struct HookLine<'a> {
     success: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestOutcome {
+    None,
+    ResetDedup,
+}
+
 /// Process a single hook-events.jsonl line. Pure — no I/O, no clock. The closure receives every [`ActivityEvent`] this line should produce given the
 /// current state.
 ///
 /// `suppress_resolved` mirrors [`crate::copilot_events::ingest_line`]: when `true` we still update internal state for pairs that resolve within the
 /// replay (so open counts stay correct) but emit nothing. Set `true` during catch-up and `false` thereafter.
-pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8], suppress_resolved: bool, mut emit: F) {
+pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8], suppress_resolved: bool, mut emit: F) -> IngestOutcome {
     let env = match serde_json::from_slice::<HookLine<'_>>(line) {
         Ok(e) => e,
-        Err(_) => return, // malformed — skip silently for forward compat
+        Err(_) => return IngestOutcome::None, // malformed — skip silently for forward compat
     };
+    let mut outcome = IngestOutcome::None;
 
     match env.kind {
         "turnStart" => {
@@ -213,7 +220,7 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
         }
         "awaitingPermission" => {
             let Some(request_id) = env.tool_use_id else {
-                return;
+                return IngestOutcome::None;
             };
             let kind = env
                 .permission_kind
@@ -238,7 +245,7 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
         }
         "toolStart" => {
             let Some(tool_call_id) = env.tool_use_id else {
-                return;
+                return IngestOutcome::None;
             };
             let tool_name = env.tool_name.unwrap_or("tool").to_owned();
             // If the same tool_use_id had an open permission request, the user just approved it. Emit PermissionResolved(approved=true) before
@@ -260,7 +267,7 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
         }
         "toolEnd" => {
             let Some(tool_call_id) = env.tool_use_id else {
-                return;
+                return IngestOutcome::None;
             };
             let was_open = state.open_tools.remove(tool_call_id).is_some();
             // Defensive: drop a tool_use_id we never saw a start for (catch-up began mid-file).
@@ -278,6 +285,7 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
             state.in_turn = false;
             state.open_tools.clear();
             state.open_permissions.clear();
+            outcome = IngestOutcome::ResetDedup;
         }
         "attention" if !suppress_resolved => {
             // Fired when the helper saw a `Notification` event whose matcher scoped to `idle_prompt` — Claude is idle, parked at its prompt
@@ -295,6 +303,7 @@ pub fn ingest_line<F: FnMut(ActivityEvent)>(state: &mut EventsState, line: &[u8]
             // attention-suppression case is handled by the match guard above.
         }
     }
+    outcome
 }
 
 /// Emit the *current* open state as a synthesized event after catch-up, so the sidebar reflects reality even when the watcher started mid-file.
@@ -356,7 +365,7 @@ pub fn run_watcher(session_id: SessionId, events_path: PathBuf, emit: ClaudeActi
             if read_end > cursor {
                 let suppress = !catch_up_done;
                 cursor = crate::session_metrics::tail_lines_pub(&events_path, cursor, read_end, |line| {
-                    ingest_line(&mut state, line, suppress, |ev| {
+                    let outcome = ingest_line(&mut state, line, suppress, |ev| {
                         let should_emit = match &ev {
                             ActivityEvent::ToolStart { tool_call_id, .. } => announced_tools.insert(tool_call_id.clone()),
                             ActivityEvent::ToolEnd { tool_call_id, .. } => {
@@ -374,6 +383,10 @@ pub fn run_watcher(session_id: SessionId, events_path: PathBuf, emit: ClaudeActi
                             emit(&session_id, ev);
                         }
                     });
+                    if outcome == IngestOutcome::ResetDedup {
+                        announced_tools.clear();
+                        announced_perms.clear();
+                    }
                 });
             }
             if !catch_up_done {
@@ -422,7 +435,7 @@ mod tests {
     fn collect(state: &mut EventsState, lines: &[&[u8]], suppress: bool) -> Vec<ActivityEvent> {
         let mut out = Vec::new();
         for l in lines {
-            ingest_line(state, l, suppress, |ev| out.push(ev));
+            let _ = ingest_line(state, l, suppress, |ev| out.push(ev));
         }
         out
     }
@@ -908,5 +921,65 @@ mod tests {
             .filter(|(_, ev)| matches!(ev, ActivityEvent::AwaitingPermission { .. }))
             .collect();
         assert_eq!(perms.len(), 1, "expected exactly one synthesized AwaitingPermission, got {got:?}");
+    }
+
+    #[test]
+    fn run_watcher_session_end_clears_announced_dedup_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("hook-events.jsonl");
+        std::fs::write(&path, b"").unwrap();
+
+        let bag = Arc::new(Mutex::new(Vec::new()));
+        let bag_for_cb = Arc::clone(&bag);
+        let emit: ClaudeActivityCb = Arc::new(move |sid, ev| {
+            bag_for_cb.lock().unwrap().push((*sid, ev));
+        });
+
+        let session_id = SessionId::new();
+        let running = Arc::new(AtomicBool::new(true));
+        let r = Arc::clone(&running);
+        let p = path.clone();
+        let join = thread::spawn(move || run_watcher(session_id, p, emit, r));
+
+        thread::sleep(POLL_INTERVAL * 3);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(br#"{"kind":"toolStart","toolUseId":"tuRepeat","toolName":"Read"}"#).unwrap();
+        f.write_all(b"\n").unwrap();
+        f.write_all(br#"{"kind":"sessionEnd"}"#).unwrap();
+        f.write_all(b"\n").unwrap();
+        f.write_all(br#"{"kind":"toolStart","toolUseId":"tuRepeat","toolName":"Read"}"#).unwrap();
+        f.write_all(b"\n").unwrap();
+        drop(f);
+
+        let got = drain(
+            &bag,
+            |b| {
+                b.lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, ev)| {
+                        matches!(
+                            ev,
+                            ActivityEvent::ToolStart { tool_call_id, .. }
+                                if tool_call_id == "tuRepeat"
+                        )
+                    })
+                    .count()
+                    >= 2
+            },
+            Duration::from_secs(5),
+        );
+        running.store(false, Ordering::SeqCst);
+        let _ = join.join();
+
+        let starts: Vec<_> = got
+            .iter()
+            .filter(|(_, ev)| matches!(ev, ActivityEvent::ToolStart { tool_call_id, .. } if tool_call_id == "tuRepeat"))
+            .collect();
+        assert_eq!(
+            starts.len(),
+            2,
+            "expected two ToolStart emissions for same id around sessionEnd reset, got {got:?}"
+        );
     }
 }

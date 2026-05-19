@@ -8,8 +8,10 @@
 //   1. Runs `cargo build --release --bin arborist-claude-hook` so the artifact exists on disk regardless of whether the surrounding `tauri build`
 //      invocation passed `--bin arborist` (which it does — Tauri's CLI restricts the cargo target).
 //   2. Asks Cargo for the workspace `target_directory` (it differs between a standalone crate and a workspace member — this repo is a workspace
-//      and builds into the *repo-root* `target/`, not `src-tauri/target/`), and resolves the host target triple via `rustc -vV`.
-//   3. Copies the built binary to `src-tauri/binaries/arborist-claude-hook-<triple>{.exe}` so `externalBin` picks it up.
+//      and builds into the *repo-root* `target/`, not `src-tauri/target/`), resolves the active Tauri build target triple, and builds the helper
+//      for that target.
+//   3. Copies (or for macOS universal, lipo-merges) the built helper to `src-tauri/binaries/arborist-claude-hook-<triple>{.exe}` so `externalBin`
+//      picks it up.
 //
 // Wired via `src-tauri/tauri.bundle.conf.json::build.beforeBuildCommand`, which is merged into the base config only for `pnpm tauri:build`
 // (and the release workflow). The base `tauri.conf.json` is left clean so plain `cargo build`, `cargo test`, and `tauri dev` never trigger
@@ -34,8 +36,9 @@ const repoRoot = resolve(__dirname, '..');
 const tauriDir = join(repoRoot, 'src-tauri');
 const outDir = join(tauriDir, 'binaries');
 
-function exe(name) {
-  return process.platform === 'win32' ? `${name}.exe` : name;
+function exe(name, targetTriple) {
+  const windowsTarget = targetTriple?.includes('windows') ?? false;
+  return process.platform === 'win32' || windowsTarget ? `${name}.exe` : name;
 }
 
 // Resolve a rustup-installed binary (cargo, rustc) to an absolute path under `$CARGO_HOME/bin/`. Avoids PATH-based program resolution so a poisoned
@@ -53,6 +56,14 @@ function rustcHostTriple() {
     }
   }
   throw new Error('could not parse host target triple from `rustc -vV`');
+}
+
+function tauriBuildTargetTriple() {
+  const fromTauri = process.env.TAURI_ENV_TARGET_TRIPLE?.trim();
+  if (fromTauri) {
+    return fromTauri;
+  }
+  return rustcHostTriple();
 }
 
 // Ask Cargo for the canonical workspace target directory. Hardcoding `src-tauri/target/release` is wrong for a workspace member —
@@ -73,20 +84,45 @@ function ensureDir(path) {
   if (!existsSync(path)) mkdirSync(path, { recursive: true });
 }
 
-console.log('[prepare-claude-hook-sidecar] building arborist-claude-hook (release)…');
-execFileSync(cargoBin('cargo'), ['build', '--release', '--bin', 'arborist-claude-hook'], {
-  cwd: tauriDir,
-  stdio: 'inherit',
-});
+function buildHelperForTarget(targetDir, targetTriple) {
+  console.log(`[prepare-claude-hook-sidecar] building arborist-claude-hook (release, target=${targetTriple})…`);
+  execFileSync(cargoBin('cargo'), ['build', '--release', '--bin', 'arborist-claude-hook', '--target', targetTriple], {
+    cwd: tauriDir,
+    stdio: 'inherit',
+  });
 
-const src = join(cargoTargetDir(), 'release', exe('arborist-claude-hook'));
-if (!existsSync(src) || !statSync(src).isFile()) {
-  throw new Error(`expected built helper at ${src} but did not find one`);
+  const src = join(targetDir, targetTriple, 'release', exe('arborist-claude-hook', targetTriple));
+  if (!existsSync(src) || !statSync(src).isFile()) {
+    throw new Error(`expected built helper at ${src} but did not find one`);
+  }
+  return src;
 }
 
-const triple = rustcHostTriple();
+const UNIVERSAL_MACOS_TARGET = 'universal-apple-darwin';
+const MACOS_UNIVERSAL_TARGETS = ['aarch64-apple-darwin', 'x86_64-apple-darwin'];
+const targetDir = cargoTargetDir();
+const triple = tauriBuildTargetTriple();
+
 ensureDir(outDir);
 const dstBase = `arborist-claude-hook-${triple}`;
-const dst = join(outDir, exe(dstBase));
-copyFileSync(src, dst);
-console.log(`[prepare-claude-hook-sidecar] copied ${src} -> ${dst}`);
+const dst = join(outDir, exe(dstBase, triple));
+
+if (triple === UNIVERSAL_MACOS_TARGET) {
+  if (process.platform !== 'darwin') {
+    throw new Error(`target ${UNIVERSAL_MACOS_TARGET} requires a darwin host for lipo`);
+  }
+  const thinBinaries = MACOS_UNIVERSAL_TARGETS.map((target) => buildHelperForTarget(targetDir, target));
+  console.log(`[prepare-claude-hook-sidecar] creating universal helper ${dst}`);
+  execFileSync('/usr/bin/lipo', ['-create', ...thinBinaries, '-output', dst], {
+    cwd: tauriDir,
+    stdio: 'inherit',
+  });
+  if (!existsSync(dst) || !statSync(dst).isFile()) {
+    throw new Error(`expected universal helper at ${dst} but did not find one`);
+  }
+  console.log(`[prepare-claude-hook-sidecar] created universal helper ${dst}`);
+} else {
+  const src = buildHelperForTarget(targetDir, triple);
+  copyFileSync(src, dst);
+  console.log(`[prepare-claude-hook-sidecar] copied ${src} -> ${dst}`);
+}
