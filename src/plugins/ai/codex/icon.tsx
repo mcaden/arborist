@@ -1,5 +1,5 @@
 interface CodexIconProps {
-  className?: string;
+  readonly className?: string;
 }
 
 export function CodexIcon({ className }: CodexIconProps): JSX.Element {

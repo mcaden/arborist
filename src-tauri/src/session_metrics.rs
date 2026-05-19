@@ -1020,7 +1020,11 @@ fn codex_rollout_cwd_matches(path: &Path, expected_cwd: &Path) -> bool {
 /// Extract the thread_id from the first line of a Codex rollout file.
 fn codex_rollout_thread_id(path: &Path) -> Option<String> {
     let payload = read_codex_session_meta(path)?;
-    payload.get("id").and_then(|v| v.as_str()).map(|s| s.to_owned())
+    payload
+        .get("thread_id")
+        .or_else(|| payload.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned())
 }
 
 /// Codex rollout watcher state accumulated from `TokenCount` and `TurnContext` events.
@@ -2300,6 +2304,19 @@ mod tests {
         drop(f);
 
         assert_eq!(codex_rollout_thread_id(&path), None);
+    }
+
+    #[test]
+    fn codex_rollout_thread_id_accepts_thread_id_field() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout-2025-05-18T10-00-00-abcdef12-3456-7890-abcd-ef1234567890.jsonl");
+        let first_line = r#"{"timestamp":"2025-05-18T10:00:00Z","type":"session_meta","payload":{"thread_id":"thread-from-thread-id","cwd":"/tmp"}}"#;
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{}", first_line).unwrap();
+        drop(f);
+
+        assert_eq!(codex_rollout_thread_id(&path), Some("thread-from-thread-id".to_owned()));
     }
 
     #[test]

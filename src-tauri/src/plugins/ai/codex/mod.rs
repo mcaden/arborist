@@ -76,6 +76,10 @@ impl AiPlugin for CodexPlugin {
         false
     }
 
+    fn resume_args(&self, ai_session_id: &str) -> Vec<String> {
+        vec!["resume".to_owned(), ai_session_id.to_owned()]
+    }
+
     fn ai_session_transcript_path(&self, home: &std::path::Path, _worktree_path: &std::path::Path, ai_session_id: &str) -> std::path::PathBuf {
         // `resume_requires_preflight()` is false for Codex, so this is currently not used to gate
         // restore. Keep a stable placeholder path to satisfy the trait contract; if Codex preflight

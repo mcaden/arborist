@@ -50,6 +50,9 @@ pub trait AiPlugin: Plugin {
     /// Whether restore-time `--resume` should verify transcript/session-state first.
     fn resume_requires_preflight(&self) -> bool;
 
+    /// Structured-command args to resume the AI session id for this tool.
+    fn resume_args(&self, ai_session_id: &str) -> Vec<String>;
+
     /// Resolve the expected transcript/session-state path for `ai_session_id`.
     fn ai_session_transcript_path(&self, home: &Path, worktree_path: &Path, ai_session_id: &str) -> PathBuf;
 }
@@ -195,8 +198,26 @@ pub fn resume_requires_preflight(tool: Tool) -> bool {
     plugin_for_tool(tool).resume_requires_preflight()
 }
 
+/// Structured-command args to resume `ai_session_id` for `tool`.
+#[must_use]
+pub fn resume_args(tool: Tool, ai_session_id: &str) -> Vec<String> {
+    plugin_for_tool(tool).resume_args(ai_session_id)
+}
+
 /// Resolve the expected transcript/session-state path for `ai_session_id`.
 #[must_use]
 pub fn ai_session_transcript_path(tool: Tool, home: &Path, worktree_path: &Path, ai_session_id: &str) -> PathBuf {
     plugin_for_tool(tool).ai_session_transcript_path(home, worktree_path, ai_session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_args_dispatch_per_tool() {
+        assert_eq!(resume_args(Tool::Claude, "aid-1"), vec!["--resume".to_owned(), "aid-1".to_owned()]);
+        assert_eq!(resume_args(Tool::Copilot, "aid-2"), vec!["--resume".to_owned(), "aid-2".to_owned()]);
+        assert_eq!(resume_args(Tool::Codex, "aid-3"), vec!["resume".to_owned(), "aid-3".to_owned()]);
+    }
 }
