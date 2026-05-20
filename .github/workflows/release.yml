@@ -244,9 +244,10 @@ jobs:
       - name: Clean stale bundle artifacts
         shell: bash
         run: |
+          shopt -s nullglob
           rm -rf target/release/bundle
           for d in target/*/release/bundle; do
-            [ -d "$d" ] && rm -rf "$d"
+            rm -rf "$d"
           done
 
       - name: Build Tauri app
@@ -258,13 +259,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          shopt -s nullglob
           # Account for --target placing bundles in target/<triple>/release/bundle/
           search_dirs=()
           if [ -d "target/release/bundle" ]; then
             search_dirs+=("target/release/bundle")
           fi
           for d in target/*/release/bundle; do
-            [ -d "$d" ] && search_dirs+=("$d")
+            search_dirs+=("$d")
           done
           if [ ${#search_dirs[@]} -eq 0 ]; then
             echo "::error::No bundle directories found under target/"
