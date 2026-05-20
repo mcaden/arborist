@@ -206,6 +206,16 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "RUSTFLAGS=" >> "$GITHUB_ENV"
 
+      # On windows-latest (currently windows-2025-vs2026), the auto-downloaded
+      # WiX binaries under %LOCALAPPDATA%\tauri can fail to execute. Install a
+      # known WiX toolset and point Tauri bundler at it explicitly.
+      - name: Install WiX toolset for bundling
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install wixtoolset --version=3.14.1 --no-progress -y
+          "WIX=C:\Program Files (x86)\WiX Toolset v3.14\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - run: pnpm install --frozen-lockfile
 
       - name: Verify version matches tag

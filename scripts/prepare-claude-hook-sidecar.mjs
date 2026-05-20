@@ -125,9 +125,17 @@ if (triple === UNIVERSAL_MACOS_TARGET) {
   if (process.platform !== 'darwin') {
     throw new Error(`target ${UNIVERSAL_MACOS_TARGET} requires a darwin host for lipo`);
   }
-  const thinBinaries = MACOS_UNIVERSAL_TARGETS.map((target) => buildHelperForTarget(targetDir, target));
+  const thinBinaries = MACOS_UNIVERSAL_TARGETS.map((target) => ({
+    target,
+    src: buildHelperForTarget(targetDir, target),
+  }));
+  for (const { target, src } of thinBinaries) {
+    const thinDst = join(outDir, exe(`arborist-claude-hook-${target}`, target));
+    copyFileSync(src, thinDst);
+    console.log(`[prepare-claude-hook-sidecar] copied ${src} -> ${thinDst}`);
+  }
   console.log(`[prepare-claude-hook-sidecar] creating universal helper ${dst}`);
-  execFileSync('/usr/bin/lipo', ['-create', ...thinBinaries, '-output', dst], {
+  execFileSync('/usr/bin/lipo', ['-create', ...thinBinaries.map(({ src }) => src), '-output', dst], {
     cwd: tauriDir,
     stdio: 'inherit',
   });
