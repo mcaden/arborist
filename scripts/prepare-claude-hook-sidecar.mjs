@@ -84,10 +84,24 @@ function ensureDir(path) {
   if (!existsSync(path)) mkdirSync(path, { recursive: true });
 }
 
+function helperBuildEnv() {
+  const env = { ...process.env };
+  // Helper builds run inside Tauri's beforeBuildCommand. Strip Tauri_* vars so the
+  // helper's Cargo build doesn't read the release overlay config (externalBin) and
+  // fail before this script has staged the sidecar into src-tauri/binaries/.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('TAURI_')) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
 function buildHelperForTarget(targetDir, targetTriple) {
   console.log(`[prepare-claude-hook-sidecar] building arborist-claude-hook (release, target=${targetTriple})…`);
   execFileSync(cargoBin('cargo'), ['build', '--release', '--bin', 'arborist-claude-hook', '--target', targetTriple], {
     cwd: tauriDir,
+    env: helperBuildEnv(),
     stdio: 'inherit',
   });
 
