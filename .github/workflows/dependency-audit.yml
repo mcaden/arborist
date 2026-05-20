@@ -35,6 +35,8 @@ jobs:
   rust-security:
     name: Rust advisory/license audit
     runs-on: ubuntu-latest
+    env:
+      CARGO_DENY_VERSION: '0.19.6'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
       - name: Install Rust toolchain
@@ -42,7 +44,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
+        run: cargo install --locked --version "$CARGO_DENY_VERSION" cargo-deny
       - name: Run cargo-deny checks
         run: cargo deny check advisories licenses
 

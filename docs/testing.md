@@ -87,6 +87,7 @@ These checks are separate from unit/integration tests and target supply-chain ri
 ```sh
 pnpm audit --prod --audit-level=moderate
 pnpm audit --audit-level=high
+cargo install --locked --version 0.19.6 cargo-deny
 cargo deny check advisories licenses
 ```
 

@@ -73,7 +73,7 @@ cargo test --workspace --features test-helpers <test-name-prefix>
 ```sh
 pnpm audit --prod --audit-level=moderate
 pnpm audit --audit-level=high
-cargo install --locked cargo-deny
+cargo install --locked --version 0.19.6 cargo-deny
 cargo deny check advisories licenses
 ```
 
