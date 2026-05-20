@@ -142,6 +142,10 @@ if (triple === UNIVERSAL_MACOS_TARGET) {
   if (!existsSync(dst) || !statSync(dst).isFile()) {
     throw new Error(`expected universal helper at ${dst} but did not find one`);
   }
+  const cargoUniversalDst = join(targetDir, UNIVERSAL_MACOS_TARGET, 'release', exe('arborist-claude-hook', UNIVERSAL_MACOS_TARGET));
+  ensureDir(dirname(cargoUniversalDst));
+  copyFileSync(dst, cargoUniversalDst);
+  console.log(`[prepare-claude-hook-sidecar] copied ${dst} -> ${cargoUniversalDst}`);
   console.log(`[prepare-claude-hook-sidecar] created universal helper ${dst}`);
 } else {
   const src = buildHelperForTarget(targetDir, triple);
