@@ -443,6 +443,29 @@ export interface SubSessionCloseArgs {
   intent?: SubSessionCloseIntent;
 }
 
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseOutcome
+//
+// Coarse-grained verb describing what the close path actually did. Pair with
+// `SubSessionCloseStatus` for the verification detail.
+export type SubSessionCloseOutcome = 'tabRemoved' | 'terminalKill' | 'politeClose' | 'forceKill';
+
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseStatus
+//
+// Verification status that pairs with `SubSessionCloseOutcome`. Together they
+// form the user-visible result of `subsession_close`.
+export type SubSessionCloseStatus = 'confirmed' | 'unconfirmed' | 'unsupported' | 'unavailable' | 'refusedShared';
+
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseResult
+//
+// Compact `(outcome, status, pid?, message?)` shape so the UI branches on a
+// small grid instead of a dozen fine-grained enum variants.
+export interface SubSessionCloseResult {
+  outcome: SubSessionCloseOutcome;
+  status: SubSessionCloseStatus;
+  pid?: number;
+  message?: string;
+}
+
 // MIRROR: crates/arborist-types/src/lib.rs::SubSessionListArgs
 export interface SubSessionListArgs {
   parentWorktreeTabId?: WorktreeTabId;
@@ -547,6 +570,15 @@ export interface WorktreeTabCloseResult {
    * the deletion failed. The tab itself is always removed regardless.
    */
   worktreeDeleteError?: string;
+  /**
+   * Per-sub-session close outcomes. Populated for every sub-session the
+   * cascade touched (one entry per sub-tab under the closed worktree tab),
+   * so the UI can render the same per-sub copy as the single-sub close
+   * dialog ("Force-kill refused: shared editor process N still running",
+   * etc.). Distinct from `childErrors` — expected outcomes belong here
+   * and should NOT block worktree deletion.
+   */
+  subOutcomes?: Record<SubSessionId, SubSessionCloseResult>;
 }
 
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent

@@ -173,7 +173,9 @@ pub async fn worktree_tab_close_impl(
     let _tab_guard = ctx.mark_worktree_tab_closing(id);
 
     // Cascade-close sub-sessions directly (they belong to the worktree tab, not to any agent session).
-    let mut child_errors = super::subsession::close_for_worktree_tab_impl(ctx, &sub_ctx, id, app_close_policy).await;
+    let cascade_result = super::subsession::close_for_worktree_tab_impl(ctx, &sub_ctx, id, app_close_policy).await;
+    let mut child_errors = cascade_result.errors;
+    let sub_outcomes = cascade_result.outcomes;
 
     // Close each child agent session. Sub-sessions are already torn down above; session_close no longer cascades subs.
     for sid in &child_session_ids {
@@ -235,14 +237,26 @@ pub async fn worktree_tab_close_impl(
                 "worktree deletion refused after worktree tab close",
             );
             worktree_delete_error = Some(msg);
-        } else if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root) {
-            warn!(
-                worktree_tab_id = %id,
-                worktree_path = %tab_path.display(),
-                error = %error.message,
-                "worktree deletion failed after worktree tab close",
-            );
-            worktree_delete_error = Some(error.message);
+        } else {
+            // Windows-only settle delay: even after `pool.kill` returns `Reaped` (i.e. every descendant has been observed exiting via
+            // `WaitForSingleObject`), the OS releases file handles asynchronously. AI CLIs like claude/copilot routinely keep file watchers,
+            // language-server children, and indexer processes inside the worktree directory, so the first `git worktree remove --force` almost always
+            // races against a still-locked file. A short pre-delete sleep cheaply skips that doomed first attempt and the cascading "is not a working
+            // tree" recovery branch in the retry path. The follow-up retry budget in `git::remove_worktree_with_retry` handles the rest.
+            #[cfg(windows)]
+            if !child_session_ids.is_empty() || !sub_outcomes.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+
+            if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root) {
+                warn!(
+                    worktree_tab_id = %id,
+                    worktree_path = %tab_path.display(),
+                    error = %error.message,
+                    "worktree deletion failed after worktree tab close",
+                );
+                worktree_delete_error = Some(error.message);
+            }
         }
     }
 
@@ -250,6 +264,7 @@ pub async fn worktree_tab_close_impl(
     Ok(WorktreeTabCloseResult {
         child_errors,
         worktree_delete_error,
+        sub_outcomes,
     })
 }
 

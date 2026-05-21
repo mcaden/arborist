@@ -14,9 +14,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio::time::{sleep, Instant};
 use tracing::{info, warn};
 
 use crate::commands::session::acquire_switch_read;
@@ -24,8 +22,8 @@ use crate::commands::worktree_tab::clear_active_child_in_config;
 use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
-    AppError, ChildId, CustomProcessKind, Error, PartialAppConfig, SubSession, SubSessionCloseIntent, SubSessionCreateArgs, SubSessionId,
-    SubSessionRecord, SubSessionStatus, WorktreeTabAppClosePolicy, WorktreeTabId,
+    AppError, ChildId, CustomProcessKind, Error, PartialAppConfig, SubSession, SubSessionCloseIntent, SubSessionCloseOutcome, SubSessionCloseResult,
+    SubSessionCloseStatus, SubSessionCreateArgs, SubSessionId, SubSessionRecord, SubSessionStatus, WorktreeTabAppClosePolicy, WorktreeTabId,
 };
 
 /// Create a new sub-session under `parent_worktree_tab_id` using the `CustomProcessDef` identified by `def_id`. Validates:
@@ -148,7 +146,7 @@ pub async fn subsession_close_impl(
     sub_ctx: Arc<SubAppContext>,
     id: SubSessionId,
     intent: SubSessionCloseIntent,
-) -> Result<(), AppError> {
+) -> Result<SubSessionCloseResult, AppError> {
     // Reject while a workspace switch is queued or active. Held for the full body (including across `pool.kill().await`) so the switch's
     // `write().await` cannot proceed until our teardown completes against the old store. NOTE: the parent-cascade path uses `close_for_parent_impl`
     // directly (not this function), so adding the gate here does not block parent-close cascades.
@@ -158,11 +156,16 @@ pub async fn subsession_close_impl(
         .store
         .get(&id)
         .ok_or_else(|| AppError::new("NotFound", format!("sub session {id} not found")))?;
-    match snapshot.kind {
+    let result = match snapshot.kind {
         CustomProcessKind::Terminal => {
             if sub_ctx.pool.contains(&id) {
                 match sub_ctx.pool.kill(&id).await {
-                    Ok(crate::pty_pool::KillOutcome::Reaped) => {}
+                    Ok(crate::pty_pool::KillOutcome::Reaped) => SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::TerminalKill,
+                        status: SubSessionCloseStatus::Confirmed,
+                        pid: snapshot.pid,
+                        message: None,
+                    },
                     Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
                         // User clicked close — proceed with prune. Log loudly so a human can find and clean up the orphan PID. Mirrors the
                         // session-park policy: an Unconfirmed kill still issued the signal, so the failure mode is "child may linger", not "child is
@@ -172,8 +175,23 @@ pub async fn subsession_close_impl(
                             pid,
                             "subsession_close: PTY kill issued but reap unconfirmed; pruning record anyway (orphan PID may need manual cleanup)"
                         );
+                        SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::TerminalKill,
+                            status: SubSessionCloseStatus::Unconfirmed,
+                            pid: Some(pid),
+                            message: Some(format!("PTY kill issued but the OS did not confirm exit; pid {pid} may still be alive")),
+                        }
                     }
                     Err(e) => return Err(AppError::from(e)),
+                }
+            } else {
+                // Terminal child already exited on its own — nothing to kill, just prune the record. Confirmed is the user-facing truth: the process
+                // is gone.
+                SubSessionCloseResult {
+                    outcome: SubSessionCloseOutcome::TerminalKill,
+                    status: SubSessionCloseStatus::Confirmed,
+                    pid: snapshot.pid,
+                    message: None,
                 }
             }
         }
@@ -182,27 +200,119 @@ pub async fn subsession_close_impl(
                 // Drop our tracking; do NOT kill the external app. Rationale: a launcher like `code .` or `explorer .` delegates to a long-lived GUI
                 // process the user is actively interacting with. The "X" on the sub-tab is tab-removal, not "close my editor".
                 sub_ctx.app_pool.detach(&id);
+                SubSessionCloseResult {
+                    outcome: SubSessionCloseOutcome::TabRemoved,
+                    status: SubSessionCloseStatus::Confirmed,
+                    pid: snapshot.pid,
+                    message: None,
+                }
             }
             SubSessionCloseIntent::RequestAppClose => {
-                // Best-effort polite close. Errors are logged but swallowed — we still want to detach the tab.
-                if let Err(e) = sub_ctx.app_pool.request_window_close(&id, &*sub_ctx.focuser) {
-                    tracing::warn!(
-                        sub_session_id = %id,
-                        error = %e,
-                        "request_window_close failed; detaching tab anyway",
-                    );
+                if !sub_ctx.app_pool.contains(&id) {
+                    // The app already exited on its own — nothing to politely close. Detach is a no-op in that case but keeps the pool tidy.
+                    sub_ctx.app_pool.detach(&id);
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::PoliteClose,
+                        status: SubSessionCloseStatus::Confirmed,
+                        pid: snapshot.pid,
+                        message: None,
+                    }
+                } else {
+                    let outcome = sub_ctx
+                        .app_pool
+                        .request_window_close_then_wait_async(&id, &*sub_ctx.focuser)
+                        .await
+                        .map_err(AppError::from)?;
+                    // Always detach the sub-tab regardless of the outcome — the user clicked close and the contract is "the tab goes away".
+                    sub_ctx.app_pool.detach(&id);
+                    match outcome {
+                        crate::app_launcher::PoliteCloseOutcome::Confirmed { pid } => SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::PoliteClose,
+                            status: SubSessionCloseStatus::Confirmed,
+                            pid: Some(pid),
+                            message: None,
+                        },
+                        crate::app_launcher::PoliteCloseOutcome::Posted { pid } => SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::PoliteClose,
+                            status: SubSessionCloseStatus::Unconfirmed,
+                            pid: Some(pid),
+                            message: Some(format!(
+                                "asked the app to close (pid {pid}) but it did not exit within the grace window; \
+                                 it may be showing a save-changes prompt or declined to close"
+                            )),
+                        },
+                        crate::app_launcher::PoliteCloseOutcome::Unsupported => SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::PoliteClose,
+                            status: SubSessionCloseStatus::Unsupported,
+                            pid: snapshot.pid,
+                            message: Some("this platform does not support requesting an app close; the tab was detached only".into()),
+                        },
+                        crate::app_launcher::PoliteCloseOutcome::NoTarget => SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::PoliteClose,
+                            status: SubSessionCloseStatus::Unavailable,
+                            pid: snapshot.pid,
+                            message: Some("no matched window is known for this app; the tab was detached only".into()),
+                        },
+                        crate::app_launcher::PoliteCloseOutcome::Gone => SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::PoliteClose,
+                            status: SubSessionCloseStatus::Confirmed,
+                            pid: snapshot.pid,
+                            message: None,
+                        },
+                    }
                 }
-                sub_ctx.app_pool.detach(&id);
             }
             SubSessionCloseIntent::ForceKill => {
-                if sub_ctx.app_pool.contains(&id) {
-                    sub_ctx.app_pool.kill(&id).map_err(AppError::from)?;
-                } else {
+                if !sub_ctx.app_pool.contains(&id) {
                     sub_ctx.app_pool.detach(&id);
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::ForceKill,
+                        status: SubSessionCloseStatus::Confirmed,
+                        pid: snapshot.pid,
+                        message: None,
+                    }
+                } else if matches!(sub_ctx.app_pool.is_retargeted(&id), Some(true)) {
+                    // Refuse to force-kill a re-targeted owner: that PID is typically a shared editor process serving multiple windows / workspaces
+                    // (e.g. VS Code's `Code.exe`). Killing it would close every workspace open in that editor, not just this sub-tab. Detach and
+                    // surface to the user instead — they can still use the OS's task manager / `kill -9` if they really mean it.
+                    let pid = sub_ctx.app_pool.pid(&id);
+                    sub_ctx.app_pool.detach(&id);
+                    tracing::warn!(
+                        sub_session_id = %id,
+                        pid = ?pid,
+                        "subsession_close: refused to force-kill a retargeted shared owner process; detaching tab instead",
+                    );
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::ForceKill,
+                        status: SubSessionCloseStatus::RefusedShared,
+                        pid,
+                        message: Some(
+                            "refused to terminate a shared editor process (this would close every window of that editor); the tab was detached only"
+                                .into(),
+                        ),
+                    }
+                } else {
+                    match sub_ctx.app_pool.kill_async(&id).await {
+                        Ok(crate::app_launcher::AppKillOutcome::Reaped { pid }) => SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::ForceKill,
+                            status: SubSessionCloseStatus::Confirmed,
+                            pid: Some(pid),
+                            message: None,
+                        },
+                        Ok(crate::app_launcher::AppKillOutcome::Unconfirmed { pid }) => SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::ForceKill,
+                            status: SubSessionCloseStatus::Unconfirmed,
+                            pid: Some(pid),
+                            message: Some(format!(
+                                "force-kill signal was sent but the OS did not confirm exit; pid {pid} may still be alive"
+                            )),
+                        },
+                        Err(e) => return Err(AppError::from(e)),
+                    }
                 }
             }
         },
-    }
+    };
     sub_ctx.store.remove(&id);
     // Best-effort config cleanup AFTER the irreversible kill + in-memory removal above. We *log and continue* instead of propagating, by design:
     //
@@ -229,7 +339,7 @@ pub async fn subsession_close_impl(
              may persist on a worktree tab until the next focus change.",
         );
     }
-    Ok(())
+    Ok(result)
 }
 
 /// Focus handler. Terminal kind is a frontend-only tab swap (no backend state to update). Application kind delegates to
@@ -307,8 +417,13 @@ pub fn subsession_resize_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: c
 // --------------------------------------------------------------------------- Worktree-tab-close cascade
 // ---------------------------------------------------------------------------
 
-const APP_CLOSE_GRACE: Duration = Duration::from_millis(600);
-const APP_CLOSE_POLL: Duration = Duration::from_millis(25);
+/// Cascade result: per-sub outcomes plus operational errors. The cascade always continues; per-sub failures land in `errors`, expected outcomes
+/// land in `outcomes`. Callers (typically `worktree_tab_close_impl`) project both into the wire-level [`crate::types::WorktreeTabCloseResult`].
+#[derive(Debug)]
+pub struct CascadeResult {
+    pub outcomes: BTreeMap<SubSessionId, SubSessionCloseResult>,
+    pub errors: Vec<String>,
+}
 
 /// Tear down every sub-session belonging to `tab_id`. Called from the `worktree_tab_close` wrapper BEFORE closing child agent sessions so the
 /// sidebar can converge on "tab and all its children gone" in a single round trip.
@@ -319,19 +434,25 @@ const APP_CLOSE_POLL: Duration = Duration::from_millis(25);
 ///   keep the in-memory record + persistence + flip status to `Error` — better
 ///   a visible orphan than a silently-leaked PTY child. `NotFound` from the
 ///   pool (sub-session already exited on its own) counts as success.
-/// * **Application**: obey `app_close_policy` (`Detach` vs `Terminate`).
+/// * **Application + Detach**: drop tracking only; outcome `TabRemoved`.
+/// * **Application + Terminate**: polite-close → grace wait → if still alive
+///   and NOT retargeted, force-kill (async). If retargeted, refuse with the
+///   `RefusedShared` status so the cascade neither blocks nor kills a shared
+///   editor process.
 ///
-/// Returns a best-effort list of per-child failures to surface via
-/// `WorktreeTabCloseResult.childErrors`. The cascade always continues.
+/// Returns per-sub outcomes plus operational errors (see [`CascadeResult`]).
 pub async fn close_for_worktree_tab_impl(
     ctx: &AppContext,
     sub_ctx: &SubAppContext,
     tab_id: crate::types::WorktreeTabId,
     app_close_policy: WorktreeTabAppClosePolicy,
-) -> Vec<String> {
+) -> CascadeResult {
     let subs = sub_ctx.store.list_for_worktree_tab(&tab_id);
     if subs.is_empty() {
-        return Vec::new();
+        return CascadeResult {
+            outcomes: BTreeMap::new(),
+            errors: Vec::new(),
+        };
     }
     info!(
         worktree_tab_id = %tab_id,
@@ -365,101 +486,17 @@ pub async fn close_for_worktree_tab_impl(
         }
     }
 
-    let mut child_errors: Vec<String> = Vec::new();
+    let mut outcomes: BTreeMap<SubSessionId, SubSessionCloseResult> = BTreeMap::new();
+    let mut errors: Vec<String> = Vec::new();
     for sub in subs {
-        match sub.kind {
-            CustomProcessKind::Terminal => {
-                if sub_ctx.pool.contains(&sub.id) {
-                    match sub_ctx.pool.kill(&sub.id).await {
-                        Ok(crate::pty_pool::KillOutcome::Reaped) => {}
-                        Err(Error::NotFound(_)) => {
-                            // already exited — drop through to prune
-                        }
-                        Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
-                            warn!(
-                                worktree_tab_id = %tab_id,
-                                sub_session_id = %sub.id,
-                                pid,
-                                "cascade: PTY kill issued but reap unconfirmed within grace; \
-                                 keeping orphan record visible (CP-07)"
-                            );
-                            (sub_ctx.sink.status)(
-                                &sub.id,
-                                SubSessionStatus::Error,
-                                Some(pid),
-                                Some(format!("PTY kill unconfirmed during worktree tab close (pid {pid} may still be alive)")),
-                            );
-                            child_errors.push(format!("sub-session {}: PTY kill unconfirmed (pid {pid} may still be alive)", sub.id));
-                            continue;
-                        }
-                        Err(e) => {
-                            warn!(
-                                worktree_tab_id = %tab_id,
-                                sub_session_id = %sub.id,
-                                error = ?e,
-                                "cascade: PTY kill failed; keeping orphan record visible"
-                            );
-                            (sub_ctx.sink.status)(
-                                &sub.id,
-                                SubSessionStatus::Error,
-                                None,
-                                Some(format!("PTY kill failed during worktree tab close: {e}")),
-                            );
-                            child_errors.push(format!("sub-session {}: PTY kill failed: {e}", sub.id));
-                            continue;
-                        }
-                    }
-                }
-            }
-            CustomProcessKind::Application => {
-                match app_close_policy {
-                    WorktreeTabAppClosePolicy::Detach => {
-                        sub_ctx.app_pool.detach(&sub.id);
-                    }
-                    WorktreeTabAppClosePolicy::Terminate => {
-                        if sub_ctx.app_pool.contains(&sub.id) {
-                            match sub_ctx.app_pool.request_window_close(&sub.id, &*sub_ctx.focuser) {
-                                Ok(()) => {
-                                    let deadline = Instant::now() + APP_CLOSE_GRACE;
-                                    while sub_ctx.app_pool.contains(&sub.id) && Instant::now() < deadline {
-                                        sleep(APP_CLOSE_POLL).await;
-                                    }
-                                }
-                                Err(Error::NotFound(_)) | Err(Error::Unsupported(_)) => {
-                                    // No close-capable window target on this runtime/platform; may still be killable below.
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        worktree_tab_id = %tab_id,
-                                        sub_session_id = %sub.id,
-                                        error = ?e,
-                                        "cascade: request_window_close failed for app sub-session"
-                                    );
-                                    child_errors.push(format!("sub-session {}: graceful app-close request failed: {e}", sub.id));
-                                }
-                            }
-                        }
-
-                        if sub_ctx.app_pool.contains(&sub.id) {
-                            if matches!(sub_ctx.app_pool.is_retargeted(&sub.id), Some(true)) {
-                                sub_ctx.app_pool.detach(&sub.id);
-                                child_errors.push(format!(
-                                    "sub-session {}: detached instead of force-killing a re-targeted/shared app owner",
-                                    sub.id
-                                ));
-                            } else if let Err(e) = sub_ctx.app_pool.kill(&sub.id) {
-                                warn!(
-                                    worktree_tab_id = %tab_id,
-                                    sub_session_id = %sub.id,
-                                    error = ?e,
-                                    "cascade: app terminate failed"
-                                );
-                                child_errors.push(format!("sub-session {}: app terminate failed: {e}", sub.id));
-                            }
-                        }
-                    }
-                }
-            }
+        let (outcome, keep_visible) = match sub.kind {
+            CustomProcessKind::Terminal => terminal_cascade_close(sub_ctx, &sub, &mut errors).await,
+            CustomProcessKind::Application => application_cascade_close(sub_ctx, &sub, app_close_policy, &mut errors).await,
+        };
+        outcomes.insert(sub.id, outcome);
+        if keep_visible {
+            // Orphan record stays in the in-memory store + persistence so the user can see the runaway PID and clean it up manually. CP-07.
+            continue;
         }
         sub_ctx.store.remove(&sub.id);
         if let Err(e) = ctx.store().remove_last_open_sub_session(&sub.id) {
@@ -471,7 +508,221 @@ pub async fn close_for_worktree_tab_impl(
             );
         }
     }
-    child_errors
+    CascadeResult { outcomes, errors }
+}
+
+async fn terminal_cascade_close(sub_ctx: &SubAppContext, sub: &SubSession, errors: &mut Vec<String>) -> (SubSessionCloseResult, bool) {
+    if !sub_ctx.pool.contains(&sub.id) {
+        // Already exited on its own; nothing to kill, no error.
+        return (
+            SubSessionCloseResult {
+                outcome: SubSessionCloseOutcome::TerminalKill,
+                status: SubSessionCloseStatus::Confirmed,
+                pid: sub.pid,
+                message: None,
+            },
+            false,
+        );
+    }
+    match sub_ctx.pool.kill(&sub.id).await {
+        Ok(crate::pty_pool::KillOutcome::Reaped) => (
+            SubSessionCloseResult {
+                outcome: SubSessionCloseOutcome::TerminalKill,
+                status: SubSessionCloseStatus::Confirmed,
+                pid: sub.pid,
+                message: None,
+            },
+            false,
+        ),
+        Err(Error::NotFound(_)) => (
+            SubSessionCloseResult {
+                outcome: SubSessionCloseOutcome::TerminalKill,
+                status: SubSessionCloseStatus::Confirmed,
+                pid: sub.pid,
+                message: None,
+            },
+            false,
+        ),
+        Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
+            warn!(
+                sub_session_id = %sub.id,
+                pid,
+                "cascade: PTY kill issued but reap unconfirmed within grace; keeping orphan record visible (CP-07)",
+            );
+            (sub_ctx.sink.status)(
+                &sub.id,
+                SubSessionStatus::Error,
+                Some(pid),
+                Some(format!("PTY kill unconfirmed during worktree tab close (pid {pid} may still be alive)")),
+            );
+            // Unconfirmed is an expected outcome (the OS just didn't confirm in time); do NOT push to `errors` — that gate blocks worktree deletion
+            // and the user has already accepted the kill semantics by closing the tab. The outcome map carries the per-sub detail, and we keep the
+            // row visible so the user can find the orphan PID in the sidebar.
+            (
+                SubSessionCloseResult {
+                    outcome: SubSessionCloseOutcome::TerminalKill,
+                    status: SubSessionCloseStatus::Unconfirmed,
+                    pid: Some(pid),
+                    message: Some(format!("PTY kill issued but the OS did not confirm exit; pid {pid} may still be alive")),
+                },
+                true,
+            )
+        }
+        Err(e) => {
+            warn!(
+                sub_session_id = %sub.id,
+                error = ?e,
+                "cascade: PTY kill failed; keeping orphan record visible",
+            );
+            (sub_ctx.sink.status)(
+                &sub.id,
+                SubSessionStatus::Error,
+                None,
+                Some(format!("PTY kill failed during worktree tab close: {e}")),
+            );
+            // A real kill failure (not just unconfirmed) IS an operational error worth blocking worktree deletion AND we keep the row visible so
+            // the user sees the surviving PID rather than a silently-leaked PTY child.
+            errors.push(format!("sub-session {}: PTY kill failed: {e}", sub.id));
+            (
+                SubSessionCloseResult {
+                    outcome: SubSessionCloseOutcome::TerminalKill,
+                    status: SubSessionCloseStatus::Unconfirmed,
+                    pid: sub.pid,
+                    message: Some(format!("PTY kill failed: {e}")),
+                },
+                true,
+            )
+        }
+    }
+}
+
+async fn application_cascade_close(
+    sub_ctx: &SubAppContext,
+    sub: &SubSession,
+    app_close_policy: WorktreeTabAppClosePolicy,
+    errors: &mut Vec<String>,
+) -> (SubSessionCloseResult, bool) {
+    match app_close_policy {
+        WorktreeTabAppClosePolicy::Detach => {
+            sub_ctx.app_pool.detach(&sub.id);
+            (
+                SubSessionCloseResult {
+                    outcome: SubSessionCloseOutcome::TabRemoved,
+                    status: SubSessionCloseStatus::Confirmed,
+                    pid: sub.pid,
+                    message: None,
+                },
+                false,
+            )
+        }
+        WorktreeTabAppClosePolicy::Terminate => {
+            if !sub_ctx.app_pool.contains(&sub.id) {
+                sub_ctx.app_pool.detach(&sub.id);
+                return (
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::TabRemoved,
+                        status: SubSessionCloseStatus::Confirmed,
+                        pid: sub.pid,
+                        message: None,
+                    },
+                    false,
+                );
+            }
+
+            // Step 1: polite close + verified wait (off-lock async). Refuse to honour the request if we can't post the message at all.
+            let polite = match sub_ctx.app_pool.request_window_close_then_wait_async(&sub.id, &*sub_ctx.focuser).await {
+                Ok(o) => o,
+                Err(e) => {
+                    warn!(
+                        sub_session_id = %sub.id,
+                        error = ?e,
+                        "cascade: request_window_close_then_wait_async failed for app sub-session",
+                    );
+                    errors.push(format!("sub-session {}: graceful app-close request failed: {e}", sub.id));
+                    // Fall through to the kill step regardless — the user asked us to terminate.
+                    crate::app_launcher::PoliteCloseOutcome::NoTarget
+                }
+            };
+
+            // If polite close confirmed exit, we're done — detach and report.
+            if let crate::app_launcher::PoliteCloseOutcome::Confirmed { pid } = polite {
+                sub_ctx.app_pool.detach(&sub.id);
+                return (
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::PoliteClose,
+                        status: SubSessionCloseStatus::Confirmed,
+                        pid: Some(pid),
+                        message: None,
+                    },
+                    false,
+                );
+            }
+
+            // Step 2: still alive (or unsupported / no-target). Decide between force-kill and detach.
+            if matches!(sub_ctx.app_pool.is_retargeted(&sub.id), Some(true)) {
+                // Shared editor process — never force-kill. Surface in the outcome map so the UI can warn, but DON'T push to `errors` (that would
+                // refuse worktree deletion for what is, by design, a safe non-action).
+                let pid = sub_ctx.app_pool.pid(&sub.id);
+                sub_ctx.app_pool.detach(&sub.id);
+                return (
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::ForceKill,
+                        status: SubSessionCloseStatus::RefusedShared,
+                        pid,
+                        message: Some(
+                            "refused to terminate a shared editor process; the tab was detached only (the editor process remains running with its \
+                             other open windows)"
+                                .into(),
+                        ),
+                    },
+                    false,
+                );
+            }
+
+            // Non-retargeted: escalate to force-kill (async, verified).
+            match sub_ctx.app_pool.kill_async(&sub.id).await {
+                Ok(crate::app_launcher::AppKillOutcome::Reaped { pid }) => (
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::ForceKill,
+                        status: SubSessionCloseStatus::Confirmed,
+                        pid: Some(pid),
+                        message: None,
+                    },
+                    false,
+                ),
+                Ok(crate::app_launcher::AppKillOutcome::Unconfirmed { pid }) => (
+                    SubSessionCloseResult {
+                        outcome: SubSessionCloseOutcome::ForceKill,
+                        status: SubSessionCloseStatus::Unconfirmed,
+                        pid: Some(pid),
+                        message: Some(format!(
+                            "force-kill signal sent but the OS did not confirm exit; pid {pid} may still be alive"
+                        )),
+                    },
+                    // Force-kill on an app: pool already detached inside kill_async. The runtime is gone from arborist's tracking either way; the
+                    // user's surviving PID, if any, is purely an OS-level orphan. Drop the row so we don't leave a stale tab pointer behind.
+                    false,
+                ),
+                Err(e) => {
+                    warn!(
+                        sub_session_id = %sub.id,
+                        error = ?e,
+                        "cascade: app force-kill failed",
+                    );
+                    errors.push(format!("sub-session {}: app terminate failed: {e}", sub.id));
+                    (
+                        SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::ForceKill,
+                            status: SubSessionCloseStatus::Unconfirmed,
+                            pid: sub.pid,
+                            message: Some(format!("app terminate failed: {e}")),
+                        },
+                        false,
+                    )
+                }
+            }
+        }
+    }
 }
 
 // --------------------------------------------------------------------------- Phase 7: restore-on-launch second pass

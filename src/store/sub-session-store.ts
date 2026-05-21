@@ -30,6 +30,7 @@ import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type {
   SubSession,
   SubSessionCloseIntent,
+  SubSessionCloseResult,
   SubSessionCreateArgs,
   SubSessionExitedEvent,
   SubSessionId,
@@ -71,9 +72,11 @@ export interface SubSessionStoreActions {
    * underlying process (see [`SubSessionCloseIntent`]); when omitted
    * the backend defaults to `tabOnly`. Removes the row from the
    * cache regardless of intent — failure to terminate the external
-   * window is logged but doesn't keep the tab visible.
+   * window is logged but doesn't keep the tab visible. Returns the
+   * backend's [`SubSessionCloseResult`] so callers (typically the
+   * close-confirm dialog) can show an outcome-aware toast.
    */
-  close: (id: SubSessionId, intent?: SubSessionCloseIntent) => Promise<void>;
+  close: (id: SubSessionId, intent?: SubSessionCloseIntent) => Promise<SubSessionCloseResult>;
   /**
    * Open the close-confirmation dialog for `id`. Used by
    * `SidebarSubTab` for app-kind sub-tabs whose underlying window we
@@ -208,11 +211,14 @@ export const useSubSessionStore = create<Store>((set, get) => {
       const closingSub = get().subSessions.find((s) => s.id === id);
       pendingFocus.delete(id);
       try {
-        await subSessionClose(id, intent);
+        const result = await subSessionClose(id, intent);
+        return result;
       } finally {
         // Always converge local state — same rationale as session-store
         // close: leaving a stale row in the sidebar is worse than briefly
-        // out-of-sync with the backend.
+        // out-of-sync with the backend. Runs on both the success and
+        // failure paths; if `subSessionClose` threw, the throw resumes
+        // after this block instead of the `return` above.
         const { subSessions, statusMessages, pendingClose } = get();
         const next = subSessions.filter((s) => s.id !== id);
         const nextMsgs: Record<SubSessionId, string> = { ...statusMessages };

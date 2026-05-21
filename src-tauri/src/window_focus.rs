@@ -63,6 +63,18 @@ pub trait WindowFocuser: Send + Sync + 'static {
     fn post_close_message(&self, _hwnd: usize) -> Result<(), Error> {
         Err(Error::Unsupported("post_close_message not implemented for this platform".into()))
     }
+
+    /// Cheap, non-blocking check: is `hwnd` still a real OS window? Used by the polite-close verification path to tell "the window disappeared, the
+    /// app honoured WM_CLOSE" from "the WM_CLOSE was queued but the user clicked Cancel in the save-changes prompt". Verifying by window (rather than
+    /// by owner PID) is critical for multi-window apps like VS Code where the owner process keeps running as long as any other window is open.
+    ///
+    /// Returns:
+    /// * `Ok(true)` if the handle still refers to a live window.
+    /// * `Ok(false)` if the window is gone.
+    /// * `Err(Error::Unsupported)` on platforms that don't expose stable window handles. Callers should fall back to PID liveness in that case.
+    fn is_window_alive(&self, _hwnd: usize) -> Result<bool, Error> {
+        Err(Error::Unsupported("is_window_alive not implemented for this platform".into()))
+    }
 }
 
 /// Recording fake for tests. Captures the sequence of `focus_pid` arguments and returns whatever result was queued (defaulting to `Ok(())`).
@@ -77,6 +89,8 @@ struct RecordingState {
     next_hwnd_results: std::collections::VecDeque<Result<(), Error>>,
     close_calls: Vec<usize>,
     next_close_results: std::collections::VecDeque<Result<(), Error>>,
+    alive_calls: Vec<usize>,
+    next_alive_results: std::collections::VecDeque<Result<bool, Error>>,
 }
 
 impl RecordingFocuser {
@@ -90,6 +104,8 @@ impl RecordingFocuser {
                 next_hwnd_results: std::collections::VecDeque::new(),
                 close_calls: Vec::new(),
                 next_close_results: std::collections::VecDeque::new(),
+                alive_calls: Vec::new(),
+                next_alive_results: std::collections::VecDeque::new(),
             }),
         }
     }
@@ -105,6 +121,10 @@ impl RecordingFocuser {
     pub fn queue_close(&self, result: Result<(), Error>) {
         self.inner.lock().unwrap().next_close_results.push_back(result);
     }
+    /// Queue a result for the next `is_window_alive` call.
+    pub fn queue_alive(&self, result: Result<bool, Error>) {
+        self.inner.lock().unwrap().next_alive_results.push_back(result);
+    }
     pub fn calls(&self) -> Vec<u32> {
         self.inner.lock().unwrap().calls.clone()
     }
@@ -113,6 +133,9 @@ impl RecordingFocuser {
     }
     pub fn close_calls(&self) -> Vec<usize> {
         self.inner.lock().unwrap().close_calls.clone()
+    }
+    pub fn alive_calls(&self) -> Vec<usize> {
+        self.inner.lock().unwrap().alive_calls.clone()
     }
 }
 
@@ -137,6 +160,12 @@ impl WindowFocuser for RecordingFocuser {
         let mut g = self.inner.lock().unwrap();
         g.close_calls.push(hwnd);
         g.next_close_results.pop_front().unwrap_or(Ok(()))
+    }
+    fn is_window_alive(&self, hwnd: usize) -> Result<bool, Error> {
+        let mut g = self.inner.lock().unwrap();
+        g.alive_calls.push(hwnd);
+        // Default when the queue is empty: report alive (`true`). Tests that want "window died" semantics queue `Ok(false)` explicitly.
+        g.next_alive_results.pop_front().unwrap_or(Ok(true))
     }
 }
 
@@ -333,6 +362,16 @@ mod platform {
         }
         Ok(())
     }
+
+    pub(super) fn is_window_alive(hwnd: usize) -> Result<bool, Error> {
+        if hwnd == 0 {
+            return Ok(false);
+        }
+        let h = hwnd as HWND;
+        // SAFETY: IsWindow accepts any HWND value and returns 0 for invalid handles without side-effects.
+        let alive = unsafe { IsWindow(h) != 0 };
+        Ok(alive)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -451,6 +490,11 @@ impl WindowFocuser for RealFocuser {
     fn post_close_message(&self, hwnd: usize) -> Result<(), Error> {
         platform::post_close_message(hwnd)
     }
+
+    #[cfg(target_os = "windows")]
+    fn is_window_alive(&self, hwnd: usize) -> Result<bool, Error> {
+        platform::is_window_alive(hwnd)
+    }
 }
 
 #[cfg(test)]
@@ -491,6 +535,19 @@ mod tests {
         let f = OnlyPid;
         assert!(matches!(f.focus_hwnd(0x1234), Err(Error::Unsupported(_))));
         assert!(matches!(f.post_close_message(0x1234), Err(Error::Unsupported(_))));
+        assert!(matches!(f.is_window_alive(0x1234), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn recording_focuser_alive_returns_queued_then_defaults_to_true() {
+        let f = RecordingFocuser::new();
+        f.queue_alive(Ok(false));
+        f.queue_alive(Err(Error::NotFound("gone".into())));
+        assert!(matches!(f.is_window_alive(0xAA), Ok(false)));
+        assert!(matches!(f.is_window_alive(0xBB), Err(Error::NotFound(_))));
+        // Default when queue empty.
+        assert!(matches!(f.is_window_alive(0xCC), Ok(true)));
+        assert_eq!(f.alive_calls(), vec![0xAA, 0xBB, 0xCC]);
     }
 
     #[test]

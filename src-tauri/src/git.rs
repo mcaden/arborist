@@ -24,8 +24,12 @@ use tracing::{debug, warn};
 
 use crate::types::{Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
 
+// On Windows, file handles can linger briefly after a child process exits — file watchers, antivirus scanners, and language-server indexers in the
+// AI CLI subtree all hold handles inside the worktree. The retry budget below sums to ~15s so we ride out those handle-release races and only
+// surface a hard failure when something genuinely sticks (e.g. another Explorer window pinning the directory). On non-Windows there is no equivalent
+// race — file deletion unlinks immediately even if handles are still open — so we skip the retry loop entirely.
 #[cfg(windows)]
-const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[25, 50, 100, 200, 400, 800, 1_000];
+const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[25, 50, 100, 200, 400, 800, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500];
 #[cfg(not(windows))]
 const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[];
 
@@ -403,8 +407,10 @@ fn remove_residual_worktree_dir_with_retry(
     }
 
     Err(Error::Internal(format!(
-        "git worktree remove unregistered the worktree but residual directory cleanup failed for {}: {last_error}",
-        worktree_path.display()
+        "git unregistered the worktree but residual directory cleanup failed for {path}: {last_error}. The directory is likely still pinned by a \
+         background process (file watcher, antivirus, editor, file explorer). Close any tools still holding it open and delete `{path}` manually, \
+         or retry the close from the worktree tab menu.",
+        path = worktree_path.display(),
     )))
 }
 

@@ -1,5 +1,5 @@
 // Confirmation modal shown when the user clicks the close (×) on a
-// running application sub-tab. The user has three options:
+// running application sub-tab. The user has four options:
 //
 //   * **Cancel** — leave both the tab and the external app alone.
 //   * **Close tab only** — detach our tracking; the external window
@@ -10,6 +10,16 @@
 //     to close the matched window (Windows: WM_CLOSE). The app may
 //     show a save-changes prompt and decline; our tab is removed
 //     regardless.
+//   * **Force kill process** — bypass polite close and send a
+//     terminate-process signal (Windows: TerminateProcess; Unix:
+//     SIGKILL). The user loses any unsaved work in the killed app.
+//     Refused for *retargeted* shared editors (e.g. an existing
+//     VS Code workspace window) because killing the editor would
+//     also kill the user's other workspaces.
+//
+// After the close completes, an outcome-aware alert summarises what
+// actually happened (e.g. "asked the app to close but it may show a
+// save prompt", "force-kill issued but the OS didn't confirm exit").
 //
 // Mirrors `CloseConfirmDialog`'s native-`<dialog>` pattern (focus
 // trap, Esc-to-cancel) and jsdom-safe `showModal()` fallback.
@@ -20,6 +30,37 @@
 import { useEffect, useRef } from 'react';
 
 import { usePendingSubClose, useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
+import type { SubSessionCloseIntent, SubSessionCloseResult } from '@/types/arborist';
+
+/**
+ * Translate the backend's `(outcome, status)` grid into a user-facing
+ * sentence. `null` means "no follow-up alert needed" — the close did
+ * exactly what the button promised.
+ */
+function describeOutcome(result: SubSessionCloseResult): string | null {
+  const pidSuffix = result.pid !== undefined ? ` (pid ${result.pid})` : '';
+  switch (result.status) {
+    case 'confirmed':
+      // The action succeeded exactly as labelled — no alert noise.
+      return null;
+    case 'unsupported':
+      return `This operating system doesn't support requesting an app close. The tab was removed; the app is still running${pidSuffix}.`;
+    case 'unavailable':
+      return `Arborist couldn't identify the exact app window to close. The tab was removed; the app is still running${pidSuffix}.`;
+    case 'refusedShared':
+      return `Refused to terminate a shared editor process${pidSuffix}: killing it would also close your other workspace windows. The tab was detached.`;
+    case 'unconfirmed':
+      if (result.outcome === 'forceKill') {
+        return `Force-kill signal sent${pidSuffix}, but the operating system didn't confirm the process exited within the grace window. The process may still be alive — check Task Manager / Activity Monitor.`;
+      }
+      if (result.outcome === 'politeClose') {
+        return `Asked the app to close${pidSuffix}, but it's still running after the grace window — it may be showing a "Save changes?" prompt. The tab was removed.`;
+      }
+      return `Close signal sent${pidSuffix}, but the operating system didn't confirm the process exited within the grace window.`;
+    default:
+      return null;
+  }
+}
 
 export function SubCloseConfirmDialog(): JSX.Element | null {
   const pendingId = usePendingSubClose();
@@ -59,10 +100,11 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
     actions.cancelClose();
   };
 
-  const closeWith = async (intent: 'tabOnly' | 'requestAppClose'): Promise<void> => {
-    let alertMessage: string | null = null;
+  const closeWith = async (intent: SubSessionCloseIntent): Promise<void> => {
+    let alertMessage: string | null;
     try {
-      await actions.close(pendingId, intent);
+      const result = await actions.close(pendingId, intent);
+      alertMessage = describeOutcome(result);
     } catch (error: unknown) {
       const detail = error instanceof Error && error.message.length > 0 ? error.message : String(error);
       alertMessage = `Close request failed:\n\n${detail}`;
@@ -89,8 +131,12 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
       <h2 id="sub-close-confirm-title" className="mb-3 text-base font-semibold">
         Close sub-session &ldquo;{sub.label}&rdquo;?
       </h2>
-      <p className="mb-4 max-w-md text-sm text-slate-600 dark:text-slate-300">
-        You can close just the Arborist tab and leave the application running, or also ask the application to close its window.
+      <p className="mb-2 max-w-md text-sm text-slate-600 dark:text-slate-300">
+        You can close just the Arborist tab and leave the application running, ask the application to close its window, or force-kill the process.
+      </p>
+      <p className="mb-4 max-w-md text-xs text-slate-500 dark:text-slate-400">
+        Force-kill bypasses any save-changes prompt and may leave the application&rsquo;s data in an inconsistent state. Arborist refuses to
+        force-kill a shared editor process (e.g. an existing VS Code workspace window).
       </p>
       <div className="flex flex-wrap justify-end gap-2">
         <button
@@ -118,6 +164,15 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
           className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
         >
           Close tab &amp; app window
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            void closeWith('forceKill');
+          }}
+          className="rounded-md bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+        >
+          Force kill process
         </button>
       </div>
     </dialog>

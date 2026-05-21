@@ -127,7 +127,7 @@ export const onSessionMetrics: Mock<typeof realBridge.onSessionMetrics> = vi.fn(
 // Phase 2: sub-session command/event mocks.
 export const subSessionCreate: Mock<typeof realBridge.subSessionCreate> = vi.fn(rejectNotImplemented);
 
-export const subSessionClose: Mock<typeof realBridge.subSessionClose> = vi.fn(() => Promise.resolve());
+export const subSessionClose: Mock<typeof realBridge.subSessionClose> = vi.fn(() => Promise.resolve({ outcome: 'tabRemoved', status: 'confirmed' }));
 
 export const subSessionFocus: Mock<typeof realBridge.subSessionFocus> = vi.fn(() => Promise.resolve());
 
@@ -196,7 +196,7 @@ export function resetBridgeMocks(): void {
   onSessionActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionMetrics.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   subSessionCreate.mockReset().mockImplementation(rejectNotImplemented);
-  subSessionClose.mockReset().mockImplementation(() => Promise.resolve());
+  subSessionClose.mockReset().mockImplementation(() => Promise.resolve({ outcome: 'tabRemoved', status: 'confirmed' }));
   subSessionFocus.mockReset().mockImplementation(() => Promise.resolve());
   subSessionList.mockReset().mockImplementation(() => Promise.resolve([]));
   subSessionInput.mockReset().mockImplementation(() => Promise.resolve());

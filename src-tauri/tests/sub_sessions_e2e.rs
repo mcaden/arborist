@@ -24,7 +24,8 @@ use arborist_lib::pty_pool::{ChildCommand, PtyKiller, PtyPool, PtyResize, PtySin
 use arborist_lib::sub_sessions::{SubPtyPool, SubPtySink, SubSessionStore};
 use arborist_lib::types::{
     ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, PartialAppConfig, SessionCreateArgs, SessionId, SessionStatus,
-    SubSessionCloseIntent, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeInfo, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabId,
+    SubSessionCloseIntent, SubSessionCloseOutcome, SubSessionCloseStatus, SubSessionCreateArgs, SubSessionStatus, Tool, WorktreeInfo, WorktreeTab,
+    WorktreeTabAppClosePolicy, WorktreeTabId,
 };
 use arborist_lib::window_focus::RecordingFocuser;
 use portable_pty::{ExitStatus, PtySize};
@@ -595,9 +596,9 @@ async fn cascade_terminate_policy_still_kills_terminal_subs() {
     let sub = create_sub(&h, h.worktree_tab_id).expect("sub created");
     assert!(wait_until(|| h.sub_pool.contains(&sub.id), Duration::from_secs(2)));
 
-    let child_errors = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Terminate).await;
+    let cascade = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Terminate).await;
 
-    assert!(child_errors.is_empty(), "unexpected child errors: {child_errors:?}");
+    assert!(cascade.errors.is_empty(), "unexpected child errors: {cascade:?}");
     assert!(!h.sub_pool.contains(&sub.id), "terminal sub should be killed regardless of app policy");
     assert!(h.sub_ctx.store.list_for_worktree_tab(&h.worktree_tab_id).is_empty(), "store not pruned");
     assert!(h.ctx.store().load_config().last_open_sub_sessions.is_empty(), "persistence not pruned");
@@ -611,9 +612,9 @@ async fn cascade_detach_policy_keeps_application_process_running() {
     let app_pid = app_sub.pid.expect("app pid");
     assert!(wait_until(|| h.sub_ctx.app_pool.contains(&app_sub.id), Duration::from_secs(1)));
 
-    let child_errors = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
+    let cascade = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Detach).await;
 
-    assert!(child_errors.is_empty(), "unexpected child errors: {child_errors:?}");
+    assert!(cascade.errors.is_empty(), "unexpected child errors: {cascade:?}");
     assert_eq!(h.app_spawner.kill_calls_for_pid(app_pid), 0, "detach policy must not kill app runtimes");
     assert!(!h.sub_ctx.app_pool.contains(&app_sub.id), "app runtime should be detached from pool");
     assert!(
@@ -630,9 +631,9 @@ async fn cascade_terminate_policy_kills_non_retargeted_application_runtime() {
     let app_pid = app_sub.pid.expect("app pid");
     assert!(wait_until(|| h.sub_ctx.app_pool.contains(&app_sub.id), Duration::from_secs(1)));
 
-    let child_errors = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Terminate).await;
+    let cascade = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Terminate).await;
 
-    assert!(child_errors.is_empty(), "unexpected child errors: {child_errors:?}");
+    assert!(cascade.errors.is_empty(), "unexpected child errors: {cascade:?}");
     assert_eq!(
         h.app_spawner.kill_calls_for_pid(app_pid),
         1,
@@ -642,6 +643,55 @@ async fn cascade_terminate_policy_kills_non_retargeted_application_runtime() {
     assert!(
         h.sub_ctx.store.get(&app_sub.id).is_none(),
         "app sub should be removed from in-memory store"
+    );
+
+    // The cascade outcome map should record this as ForceKill/Confirmed (the FakeApp's PID is fabricated and not really alive on the host, so the
+    // post-kill PID-liveness probe in kill_async returns immediately with Reaped).
+    let outcome = cascade.outcomes.get(&app_sub.id).expect("outcome for app sub");
+    assert_eq!(outcome.outcome, SubSessionCloseOutcome::ForceKill);
+    assert_eq!(outcome.status, SubSessionCloseStatus::Confirmed);
+    assert_eq!(outcome.pid, Some(app_pid));
+}
+
+/// Issue #132: cascade-close with Terminate policy MUST refuse to force-kill a retargeted app sub-session (the runtime has been handed off to a
+/// shared editor process like `Code.exe` that owns multiple windows). The kill must not be issued, the tab must be detached, and the cascade outcome
+/// map must surface `ForceKill / RefusedShared` so the UI can warn the user.
+#[tokio::test]
+async fn cascade_terminate_policy_refuses_to_kill_retargeted_application_runtime() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let app_sub = create_app_sub(&h, h.worktree_tab_id).expect("app sub created");
+    let app_pid = app_sub.pid.expect("app pid");
+    assert!(wait_until(|| h.sub_ctx.app_pool.contains(&app_sub.id), Duration::from_secs(1)));
+
+    // Force the runtime into the retargeted state without driving a real resolver flow.
+    assert!(h.sub_ctx.app_pool.force_retargeted_for_test(&app_sub.id, true));
+
+    let cascade = close_for_worktree_tab_impl(&h.ctx, &h.sub_ctx, h.worktree_tab_id, WorktreeTabAppClosePolicy::Terminate).await;
+
+    assert!(
+        cascade.errors.is_empty(),
+        "RefusedShared is an expected outcome and must NOT block worktree deletion: {cascade:?}"
+    );
+    assert_eq!(
+        h.app_spawner.kill_calls_for_pid(app_pid),
+        0,
+        "retargeted runtime must NOT receive a kill — the shared editor process must keep running"
+    );
+    assert!(!h.sub_ctx.app_pool.contains(&app_sub.id), "app runtime should be detached from the pool");
+    assert!(
+        h.sub_ctx.store.get(&app_sub.id).is_none(),
+        "app sub should be removed from in-memory store regardless of refusal"
+    );
+
+    let outcome = cascade.outcomes.get(&app_sub.id).expect("outcome for app sub");
+    assert_eq!(outcome.outcome, SubSessionCloseOutcome::ForceKill);
+    assert_eq!(outcome.status, SubSessionCloseStatus::RefusedShared);
+    assert_eq!(outcome.pid, Some(app_pid));
+    assert!(
+        outcome.message.as_deref().unwrap_or("").contains("shared editor"),
+        "RefusedShared message should explain why the kill was skipped, got: {:?}",
+        outcome.message
     );
 }
 
