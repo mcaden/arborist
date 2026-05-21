@@ -68,6 +68,22 @@ cargo test --workspace --features test-helpers
 cargo test --workspace --features test-helpers <test-name-prefix>
 ```
 
+### Dependency audits
+
+```sh
+pnpm audit --prod --audit-level=moderate
+pnpm audit --audit-level=high || true
+cargo install --locked --version 0.19.6 cargo-deny
+cargo deny check advisories licenses
+```
+
+Policy:
+
+- Production dependency vulnerabilities (`pnpm audit --prod`) at `moderate` or higher are blocking and should be fixed before merge/release.
+- Development dependency vulnerabilities (`pnpm audit`) are non-blocking unless they impact shipped artifacts; track remediation through follow-up issues.
+- `pnpm audit --audit-level=high` exits non-zero when findings exist. Use `|| true` when you want report-only output during routine checks.
+- Rust dependency advisories/licenses are enforced by `cargo deny check advisories licenses`.
+
 ### Acceptance gate
 
 Before a PR is ready for review, run the applicable local gate:
@@ -97,18 +113,19 @@ Do not bypass hooks on `main`. If you must use `--no-verify` on a personal WIP b
 
 ## CI
 
-| Workflow        | Trigger                              | Purpose                                                                           |
-| --------------- | ------------------------------------ | --------------------------------------------------------------------------------- |
-| `ci.yml`        | Pull requests and pushes to `main`   | Frontend install, lint, and Vitest run.                                           |
-| `rust-gate.yml` | PR review approval                   | Dispatches the Rust workflow against the PR head branch for same-repo PRs.        |
-| `rust.yml`      | Manual dispatch, or via rust gate    | Multi-platform Rust format, clippy, and tests after building the frontend bundle. |
-| `release.yml`   | Manual dispatch with an existing tag | Builds draft release artifacts and GitHub build attestations.                     |
+| Workflow               | Trigger                                                             | Purpose                                                                           |
+| ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `ci.yml`               | Pull requests and pushes to `main`                                  | Frontend install, lint, and Vitest run.                                           |
+| `dependency-audit.yml` | Weekly schedule, manual dispatch, and dependency-related pushes/PRs | Runs Rust advisory/license checks (`cargo deny`) and production npm audit.        |
+| `rust-gate.yml`        | PR review approval                                                  | Dispatches the Rust workflow against the PR head branch for same-repo PRs.        |
+| `rust.yml`             | Manual dispatch, or via rust gate                                   | Multi-platform Rust format, clippy, and tests after building the frontend bundle. |
+| `release.yml`          | Manual dispatch with an existing tag                                | Builds draft release artifacts and GitHub build attestations.                     |
 
 The Rust workflow is approval-gated because it is heavier and multi-platform. Reviewers should ensure it ran against the head SHA they approved.
 
 Workflow `uses:` dependencies are pinned to full commit SHAs. Each pin keeps an inline comment with the intended upstream action ref, and Dependabot is
-configured to open weekly `github-actions` update PRs. Review those PRs like code changes: confirm the new SHA belongs to the commented upstream ref,
-keep the comment accurate, and run the relevant workflow before merging.
+configured to open weekly update PRs for GitHub Actions, npm, and Cargo dependencies. Review those PRs like code changes: confirm each update is
+expected for the ecosystem/group, keep inline action-ref comments accurate, and run the relevant workflows before merging.
 
 ## Debugging
 

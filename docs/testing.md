@@ -80,6 +80,19 @@ cargo test --workspace --features test-helpers <test-name-prefix>
 `cargo test --workspace --features test-helpers` builds the helper binaries and exposes paths such as
 `CARGO_BIN_EXE_arborist-test-child` to integration tests.
 
+## Dependency audit checks
+
+These checks are separate from unit/integration tests and target supply-chain risk:
+
+```sh
+pnpm audit --prod --audit-level=moderate
+pnpm audit --audit-level=high || true
+cargo install --locked --version 0.19.6 cargo-deny
+cargo deny check advisories licenses
+```
+
+`pnpm audit --audit-level=high` exits non-zero when findings are present; the `|| true` form keeps this check report-only in local test runs.
+
 ## Linux E2E harness
 
 The Dockerized Linux E2E harness lives under `dev/e2e/linux/`.
