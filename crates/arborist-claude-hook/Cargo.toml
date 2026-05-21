@@ -1,0 +1,31 @@
+[package]
+name = "arborist-claude-hook"
+version = "0.1.11"
+edition = "2021"
+description = "Claude Code hook handler sidecar invoked by the Arborist app to translate Claude hook payloads into the per-session events JSONL."
+authors = ["Aaron Moore", "Arborist contributors"]
+license = "MIT"
+repository = "https://github.com/mcaden/arborist"
+homepage = "https://arborist.tools"
+readme = "../../README.md"
+publish = false
+
+# Lives in its own workspace crate (not as a `[[bin]]` of the `arborist` package) on purpose. Tauri's MSI bundler
+# (`crates/tauri-bundler/src/bundle/windows/msi/mod.rs::generate_binaries_data`) emits one WiX `<Component>` per
+# entry in `settings.external_binaries()` AND another per non-main entry in `settings.binaries()` (the active
+# package's Cargo bin list). Having `arborist-claude-hook` in both lists generated two components installing the
+# same `arborist-claude-hook.exe` into `INSTALLDIR`, which `light.exe` rejects with `LGHT0204: ICE30` because
+# Windows treats `arborist_claude_hook` and `arborist_claude_hook.exe` as colliding component identities on an
+# LFN volume. Moving the sidecar out of the `arborist` package removes the second component entirely while the
+# `externalBin = ["binaries/arborist-claude-hook"]` overlay continues to bundle the staged file.
+
+[[bin]]
+name = "arborist-claude-hook"
+path = "src/main.rs"
+
+[dependencies]
+fs2 = "0.4"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

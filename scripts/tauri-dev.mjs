@@ -11,7 +11,7 @@
 //     binds to the right port (no env var required).
 //   - `build.devUrl` is set to the matching URL so the desktop shell loads it.
 //
-// Sidecar build: before launching `tauri dev`, we run `cargo build --bin
+// Sidecar build: before launching `tauri dev`, we run `cargo build -p
 // arborist-claude-hook` so the helper binary exists at `target/debug/` as a
 // sibling of the about-to-be-built `arborist` binary. `tauri dev` only
 // compiles the main `arborist` target via cargo, so without this step the
@@ -90,7 +90,7 @@ const projectRoot = join(__dirname, '..');
 const tauriDir = join(projectRoot, 'src-tauri');
 console.log('[arborist] building arborist-claude-hook (debug)…');
 try {
-  execFileSync(cargoBin(), ['build', '--bin', 'arborist-claude-hook'], {
+  execFileSync(cargoBin(), ['build', '-p', 'arborist-claude-hook'], {
     cwd: tauriDir,
     stdio: 'inherit',
   });
