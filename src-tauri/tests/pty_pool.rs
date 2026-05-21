@@ -165,22 +165,21 @@ fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
     (sink, outs, stats)
 }
 
-/// `recording_sink` plus an inline responder for ConPTY's DSR cursor-position queries.
+/// Wraps `recording_sink` with a DSR cursor-position responder.
 ///
-/// `portable-pty 0.9+` enables `PSUEDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit `ESC[6n` (DSR — cursor
-/// position report) at startup and stall all child stdout until the host answers with `ESC[<row>;<col>R`. xterm.js handles this transparently in
-/// production; real-PTY tests that wait on child output must respond explicitly or the child's banner never reaches the sink.
+/// **Why this exists**: `portable-pty 0.9+` enables `PSUEDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit
+/// `ESC[6n` at startup and refuse to forward any child stdout until the host answers with `ESC[<row>;<col>R`. xterm.js answers transparently in
+/// production, but a passive `recording_sink` would deadlock — the seven real-PTY tests in this file would hang waiting for a banner ConPTY
+/// is holding back. See <https://github.com/mcaden/arborist/issues/215>.
 ///
-/// The helper:
-///   * Pushes every chunk to the output log (same as `recording_sink`).
-///   * Maintains a tiny stateful scanner that survives chunk boundaries (a query can split across two reads as `"\x1b["` + `"6n"`).
-///   * For every query observed, calls `pool.write(id, b"\x1b[1;1R")` with a bounded retry loop, because `PtyPool::spawn` inserts the runtime
-///     entry **after** spawning the read thread — the very first chunk can theoretically reach this closure before the entry exists. ConPTY
-///     blocks further stdout until our reply arrives, so the channel cannot fill while we sleep.
-///
-/// The chosen `"1;1"` (top-left) answer is the least-surprising canned value for a headless harness: it reports the host cursor as if a fresh
-/// terminal had just been opened, which is the semantic the new `PSUEDOCONSOLE_INHERIT_CURSOR` flag is trying to capture. See
-/// <https://github.com/mcaden/arborist/issues/215> for the full investigation.
+/// **Design choices worth noting**:
+/// - Streaming `DsrScanner` (not a per-chunk substring search) — ConPTY is free to flush the query across two reads, e.g. `"\x1b["` + `"6n"`.
+/// - Reply is `"1;1"` (top-left). The value only affects ConPTY's internal wrap state; tests never assert on it, so the least-surprising
+///   "fresh terminal" answer keeps the rest of the harness boring.
+/// - Reply dispatch is offloaded onto a `tokio::spawn` so a retry never blocks the drain-task tokio worker (which is what dispatches every
+///   other PTY chunk for every other live session in the same runtime). The retry is necessary because `PtyPool::spawn` inserts the runtime
+///   entry **after** spawning the read thread — the first chunk can theoretically reach this closure before `pool.write` would find the
+///   session — but it has no business holding up the drain task while it waits.
 fn dsr_responding_sink(pool: Arc<PtyPool>) -> (PtySink, OutputLog, StatusLog) {
     let outs: OutputLog = Arc::new(Mutex::new(Vec::new()));
     let stats: StatusLog = Arc::new(Mutex::new(Vec::new()));
@@ -189,20 +188,27 @@ fn dsr_responding_sink(pool: Arc<PtyPool>) -> (PtySink, OutputLog, StatusLog) {
     let scanner: Arc<Mutex<DsrScanner>> = Arc::new(Mutex::new(DsrScanner::default()));
     let sink = PtySink::new(
         Arc::new(move |id, chunk| {
-            // Scan against the byte view before the chunk is moved into the log so we can preserve cross-chunk state without cloning.
             let count = scanner.lock().unwrap().feed(chunk.as_bytes());
             outs_cb.lock().unwrap().push(chunk);
-            for _ in 0..count {
-                // Bounded retry: 50 × 1ms is more than enough for the spawn-vs-insert race (a few µs in practice). Silent fall-through after the
-                // budget is intentional — letting the test's own wait_for budget produce a clean timeout with `outs` containing the unanswered
-                // DSR query is more diagnostic than panicking inside a drain-task closure.
-                for _ in 0..50 {
-                    if pool.write(id, b"\x1b[1;1R").is_ok() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+            if count == 0 {
+                return;
             }
+            // SessionId is Copy, so capture by value into the spawned task and stay off the drain worker for the retry.
+            let pool_for_write = Arc::clone(&pool);
+            let id_owned = *id;
+            tokio::spawn(async move {
+                for _ in 0..count {
+                    // Bounded retry guards the spawn-vs-insert race in `PtyPool::spawn`. Silent fall-through after the budget is intentional:
+                    // letting the test's own `wait_for` deadline produce a clean timeout with `outs` containing the unanswered DSR query is
+                    // more diagnostic than panicking inside a spawned task.
+                    for _ in 0..50 {
+                        if pool_for_write.write(&id_owned, b"\x1b[1;1R").is_ok() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                }
+            });
         }),
         Arc::new(move |_id, status, pid, _msg| {
             stats_cb.lock().unwrap().push((status, pid));
