@@ -19,19 +19,18 @@ path = "src/lib.rs"
 name = "arborist"
 path = "src/main.rs"
 
-# Helper invoked by Claude Code hooks (registered via `--settings`). Reads the
-# hook payload from stdin and appends a structured JSONL line to the per-session
-# `hook-events.jsonl` that `claude_hook_events.rs` tails. Production-built and
-# shipped alongside `arborist` in the bundle. Placed under `src/bin_hook/` for
-# the same reason the test bins below live under `src/test_bin/`: Tauri's CLI
-# auto-discovers everything under `src/bin/` as a bundle target, and we want to
-# control bundling explicitly via `src-tauri/tauri.bundle.conf.json` (an
-# overlay merged in only for `pnpm tauri:build` — the base `tauri.conf.json`
-# stays free of `externalBin` so plain `cargo build` / `tauri dev` don't
-# require the helper to be pre-staged in `src-tauri/binaries/`).
-[[bin]]
-name = "arborist-claude-hook"
-path = "src/bin_hook/arborist_claude_hook.rs"
+# Helper invoked by Claude Code hooks (registered via `--settings`) lives in its own workspace crate at
+# `crates/arborist-claude-hook/` — NOT as a `[[bin]]` of this package. Tauri's MSI bundler
+# (`crates/tauri-bundler/src/bundle/windows/msi/mod.rs::generate_binaries_data`) emits one WiX
+# `<Component>` per entry in `settings.external_binaries()` AND another per non-main entry in
+# `settings.binaries()` (the active package's Cargo bin list). If the sidecar were declared here
+# both would fire, producing two components installing the same `arborist-claude-hook.exe` into
+# `INSTALLDIR` and tripping `light.exe` with `LGHT0204: ICE30` (the LFN component-collision error
+# at https://github.com/tauri-apps/tauri/issues/6209). Keeping the sidecar in its own crate keeps
+# it out of `settings.binaries()` so only the `externalBin = ["binaries/arborist-claude-hook"]`
+# overlay-driven component bundles the file. See the crate README/Cargo.toml for the staging
+# script that turns `target/<triple>/release/arborist-claude-hook[.exe]` into the
+# `src-tauri/binaries/arborist-claude-hook-<triple>[.exe]` shape `externalBin` expects.
 
 # Purpose-built deterministic child process used by the PTY-pool integration
 # tests (`tests/pty_pool.rs`). Gated behind the `test-helpers` feature so

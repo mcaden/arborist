@@ -5,7 +5,7 @@
 // `tauri.conf.json::bundle.externalBin`. `externalBin` expects each binary to live at `<base>-<target-triple>{.exe}` relative to the
 // `tauri.conf.json` directory. This script:
 //
-//   1. Runs `cargo build --release --bin arborist-claude-hook` so the artifact exists on disk regardless of whether the surrounding `tauri build`
+//   1. Runs `cargo build --release -p arborist-claude-hook` so the artifact exists on disk regardless of whether the surrounding `tauri build`
 //      invocation passed `--bin arborist` (which it does — Tauri's CLI restricts the cargo target).
 //   2. Asks Cargo for the workspace `target_directory` (it differs between a standalone crate and a workspace member — this repo is a workspace
 //      and builds into the *repo-root* `target/`, not `src-tauri/target/`), resolves the active Tauri build target triple, and builds the helper
@@ -99,7 +99,7 @@ function helperBuildEnv() {
 
 function buildHelperForTarget(targetDir, targetTriple) {
   console.log(`[prepare-claude-hook-sidecar] building arborist-claude-hook (release, target=${targetTriple})…`);
-  execFileSync(cargoBin('cargo'), ['build', '--release', '--bin', 'arborist-claude-hook', '--target', targetTriple], {
+  execFileSync(cargoBin('cargo'), ['build', '--release', '-p', 'arborist-claude-hook', '--target', targetTriple], {
     cwd: tauriDir,
     env: helperBuildEnv(),
     stdio: 'inherit',

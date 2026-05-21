@@ -38,6 +38,13 @@
 //!
 //! Per the implementation plan: the binary is bundled alongside `arborist.exe` so Tauri-installed deployments find it next to the main app. A
 //! subcommand of `arborist` would force every hook fire to load the Tauri runtime — pointless overhead for what should be a sub-millisecond write.
+//!
+//! ## Why a separate crate (not a `[[bin]]` of the `arborist` package)
+//!
+//! See the comment block on this crate's `Cargo.toml`. Tauri's MSI bundler emits one WiX component per entry in `settings.external_binaries()`
+//! **and** another per non-main entry in `settings.binaries()` (the active package's Cargo bin list). Keeping the sidecar in its own crate keeps
+//! it out of the latter, so the only WiX component that bundles `arborist-claude-hook.exe` is the externalBin one — avoiding the `LGHT0204:
+//! ICE30` duplicate-component error.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;

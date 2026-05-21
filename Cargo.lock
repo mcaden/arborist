@@ -80,6 +80,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arborist-claude-hook"
+version = "0.1.11"
+dependencies = [
+ "fs2",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "arborist-types"
 version = "0.1.11"
 dependencies = [
