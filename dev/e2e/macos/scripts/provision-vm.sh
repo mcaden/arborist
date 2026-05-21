@@ -55,8 +55,8 @@ fi
 # ---- 4. Node.js + pnpm -----------------------------------------------------
 echo "[4/7] Installing Node.js and pnpm..."
 if ! command -v node &>/dev/null; then
-  brew install node@22
-  brew link node@22 --force --overwrite
+  brew install node@24
+  brew link node@24 --force --overwrite
 else
   echo "  ✓ Node.js already installed ($(node --version))"
 fi

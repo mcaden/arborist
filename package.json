@@ -17,7 +17,7 @@
   },
   "homepage": "https://arborist.tools",
   "engines": {
-    "node": ">=21.2.0"
+    "node": ">=22.22.1"
   },
   "type": "module",
   "packageManager": "pnpm@10.33.0",
@@ -65,29 +65,29 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@tailwindcss/postcss": "^4.3.0",
-    "@tauri-apps/cli": "^2.11.1",
+    "@tauri-apps/cli": "^2.11.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@types/node": "^25.6.2",
-    "@types/react": "^19.2.14",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
-    "@typescript-eslint/eslint-plugin": "^8.59.2",
-    "@typescript-eslint/parser": "^8.59.2",
-    "@vitejs/plugin-react": "^6.0.1",
-    "eslint": "^10.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.4",
+    "@typescript-eslint/parser": "^8.59.4",
+    "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^10.4.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^16.5.0",
+    "globals": "^17.6.0",
     "husky": "^9.1.7",
     "jsdom": "^29.1.1",
-    "lint-staged": "^17.0.3",
-    "postcss": "^8.4.49",
+    "lint-staged": "^17.0.5",
+    "postcss": "^8.5.15",
     "prettier": "^3.8.3",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.11",
-    "vitest": "^4.1.5"
+    "vite": "^8.0.13",
+    "vitest": "^4.1.7"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": [

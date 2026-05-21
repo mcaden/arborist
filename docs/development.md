@@ -5,13 +5,13 @@ and [runtime flows](./runtime-flows.md).
 
 ## Prerequisites
 
-| Tool             | Version                       | Notes                                                        |
-| ---------------- | ----------------------------- | ------------------------------------------------------------ |
-| Node.js          | 20+; repo pins 24 in `.nvmrc` | CI currently uses Node 22. Local `nvm use` follows `.nvmrc`. |
-| pnpm             | 10.33.0                       | Declared in `package.json`. Use pnpm, not npm.               |
-| Rust             | stable                        | Toolchain is pinned by `rust-toolchain.toml`.                |
-| Git              | 2.30+                         | Required at runtime for worktree operations.                 |
-| Tauri build deps | platform-specific             | Follow Tauri v2 prerequisites for your OS.                   |
+| Tool             | Version                            | Notes                                              |
+| ---------------- | ---------------------------------- | -------------------------------------------------- |
+| Node.js          | 22.22.1+; repo pins 24 in `.nvmrc` | CI uses Node 24. Local `nvm use` follows `.nvmrc`. |
+| pnpm             | 10.33.0                            | Declared in `package.json`. Use pnpm, not npm.     |
+| Rust             | stable                             | Toolchain is pinned by `rust-toolchain.toml`.      |
+| Git              | 2.30+                              | Required at runtime for worktree operations.       |
+| Tauri build deps | platform-specific                  | Follow Tauri v2 prerequisites for your OS.         |
 
 Platform notes:
 

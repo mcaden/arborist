@@ -149,9 +149,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Node 22 LTS (needed for WebdriverIO — only stage that needs a fresh Node install
+# Node 24 LTS (needed for WebdriverIO — only stage that needs a fresh Node install
 # since this stage does NOT extend the Tauri base image)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -165,8 +165,8 @@ COPY --from=builder /usr/local/bin/arborist-test-child /usr/local/bin/arborist-t
 
 # Install WebdriverIO deps via pnpm (matches the rest of the repo — root
 # package.json pins `packageManager: pnpm@10.33.0` and the canonical lockfile
-# format here is pnpm-lock.yaml). pnpm ships with Node 22 via Corepack; we
-# activate the pinned version so installs are reproducible.
+# format here is pnpm-lock.yaml). Corepack ships with Node and provides pnpm;
+# we activate the pinned version so installs are reproducible.
 #
 # `--ignore-workspace` is defensive — there is no pnpm-workspace.yaml inside
 # this image, but the flag makes the install bulletproof against any future
