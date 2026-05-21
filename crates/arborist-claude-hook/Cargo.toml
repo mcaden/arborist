@@ -24,7 +24,6 @@ name = "arborist-claude-hook"
 path = "src/main.rs"
 
 [dependencies]
-fs2 = "0.4"
 serde_json = "1"
 
 [dev-dependencies]
