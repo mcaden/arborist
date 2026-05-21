@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream upstream metadata for the Arborist Linux AppImage / .deb / .rpm
+  bundles. This file is copied into `usr/share/metainfo/` of each Linux bundle
+  via the `bundle.linux.{appimage,deb,rpm}.files` map in
+  `src-tauri/tauri.conf.json`. The companion `appstream` apt package (installed
+  in `.github/workflows/release.yml` and `release-verify-builds.yml`) provides
+  the `appstreamcli` validator used by `linuxdeploy-plugin-appimage` so the
+  release build log no longer emits the
+  "AppStream upstream metadata is missing" / "appstreamcli command is missing"
+  warnings tracked in issue #207.
+
+  The component `<id>` is rDNS-style and matches the app `identifier`
+  configured in `tauri.conf.json` (`io.github.mcaden.arborist`).
+  `<launchable>` references the actual desktop entry filename emitted by the
+  Tauri bundler (`Arborist.desktop`, derived from `productName`).
+
+  Copyright (c) 2026 Aaron Moore. Metadata licensed under CC0-1.0; the project
+  itself is MIT-licensed (see `<project_license>` below).
+-->
+<component type="desktop-application">
+  <id>io.github.mcaden.arborist</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Arborist</name>
+  <summary>Manage AI coding-assistant sessions across Git worktrees</summary>
+
+  <description>
+    <p>
+      Arborist is a cross-platform desktop app that manages multiple Claude CLI,
+      GitHub Copilot CLI, and custom process sessions, each bound to its own
+      Git worktree. The sidebar shows worktree tabs with child AI-agent
+      sessions, and the main area shows one PTY terminal at a time while every
+      session keeps running in the background.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>One persistent PTY per session, surviving tab switches.</li>
+      <li>Native Git worktree integration for parallel feature work.</li>
+      <li>Launches Claude CLI, GitHub Copilot CLI, OpenAI Codex, and custom processes.</li>
+      <li>Restore-on-launch resumes every prior session in place.</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">Arborist.desktop</launchable>
+
+  <url type="homepage">https://arborist.tools</url>
+  <url type="bugtracker">https://github.com/mcaden/arborist/issues</url>
+  <url type="vcs-browser">https://github.com/mcaden/arborist</url>
+
+  <developer id="io.github.mcaden">
+    <name>Aaron Moore</name>
+  </developer>
+
+  <categories>
+    <category>Development</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>git</keyword>
+    <keyword>worktree</keyword>
+    <keyword>ai</keyword>
+    <keyword>terminal</keyword>
+    <keyword>claude</keyword>
+    <keyword>copilot</keyword>
+    <keyword>codex</keyword>
+  </keywords>
+
+  <provides>
+    <binary>arborist</binary>
+  </provides>
+
+  <!--
+    OARS content rating: developer tool with no objectionable content. All
+    categories default to "none" when omitted; an empty element is the
+    standard way to declare this for AppStream 1.0+.
+  -->
+  <content_rating type="oars-1.1" />
+
+  <!--
+    Releases are intentionally minimal: AppStream 1.0+ permits a single
+    `<release>` entry, and we update it alongside the version bumps in
+    `package.json` / `Cargo.toml` / `tauri.conf.json` during release prep.
+    See `scripts/release-prep.mjs`.
+  -->
+  <releases>
+    <release version="0.1.12" date="2026-05-21" />
+  </releases>
+</component>

@@ -202,10 +202,30 @@ try {
     console.log(`  ${relPath}: ${currentVersion} → ${nextVersion}`);
   }
 
+  // Update the AppStream metainfo `<release>` entry so the Linux bundles
+  // ship metadata that matches the upcoming version. The file lives at
+  // `src-tauri/metainfo/io.github.mcaden.arborist.metainfo.xml` (see
+  // issue #207) and uses a single self-closing `<release version="X" date="Y" />`
+  // line. Date is in `YYYY-MM-DD` UTC so the release log is reproducible.
+  function updateMetainfo(relPath) {
+    const filePath = resolve(root, relPath);
+    const content = readFileSync(filePath, 'utf8');
+    const today = new Date().toISOString().slice(0, 10);
+    const re = /<release\s+version="[^"]+"\s+date="[^"]+"\s*\/>/;
+    if (!re.test(content)) {
+      console.error(`  ${relPath}: no <release version="…" date="…" /> entry found!`);
+      process.exit(1);
+    }
+    const updated = content.replace(re, `<release version="${nextVersion}" date="${today}" />`);
+    writeFileSync(filePath, updated);
+    console.log(`  ${relPath}: ${currentVersion} → ${nextVersion} (date ${today})`);
+  }
+
   updateJson('package.json', 'version');
   updateJson('src-tauri/tauri.conf.json', 'version');
   updateCargoToml('src-tauri/Cargo.toml');
   updateCargoToml('crates/arborist-types/Cargo.toml');
+  updateMetainfo('src-tauri/metainfo/io.github.mcaden.arborist.metainfo.xml');
 
   // Update Cargo.lock for workspace crates only
   console.log('\n  Updating Cargo.lock (workspace crates only)...');
