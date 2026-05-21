@@ -2,9 +2,6 @@ name: Release Verify Builds
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - claude-codex-release-troubleshoot-wix
 
 concurrency:
   group: release-verify-${{ github.ref }}
