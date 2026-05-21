@@ -164,8 +164,25 @@ describe('SettingsDialog', () => {
     seedConfig();
     const onClose = vi.fn();
     renderWithPlugins(<SettingsDialog onClose={onClose} />);
-    fireEvent.keyDown(screen.getByTestId('settings-dialog'), { key: 'Escape' });
+    // The dialog auto-focuses its close button on mount; fire Escape from there so the test exercises the real bubble path (focused
+    // control → onKeyDown on the wrapper) instead of synthesising the event directly on the wrapper element.
+    const focused = document.activeElement as HTMLElement | null;
+    expect(focused).toBe(screen.getByRole('button', { name: /close settings/i }));
+    fireEvent.keyDown(focused!, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape during IME composition does not dismiss the dialog (CJK candidate selection)', () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    const textarea = screen.getByLabelText(/worktree prep commands/i);
+    textarea.focus();
+    // Modern path: native KeyboardEvent.isComposing is true mid-composition.
+    fireEvent.keyDown(textarea, { key: 'Escape', isComposing: true });
+    // Legacy fallback: older browsers don't surface `isComposing` reliably but do set keyCode 229 during composition.
+    fireEvent.keyDown(textarea, { key: 'Escape', keyCode: 229 });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('Escape is ignored while the workspace picker overlay is open (picker owns its own dismiss)', () => {
@@ -173,8 +190,14 @@ describe('SettingsDialog', () => {
     const onClose = vi.fn();
     renderWithPlugins(<SettingsDialog onClose={onClose} />);
     fireEvent.click(screen.getByRole('button', { name: /change…/i }));
-    fireEvent.keyDown(screen.getByTestId('settings-dialog'), { key: 'Escape' });
+    // The picker auto-focuses its workspace-path input. Firing Escape from there reproduces the real DOM path: the event
+    // never bubbles into the SettingsDialog wrapper (the picker is a sibling node), so the wrapper's onKeyDown stays silent.
+    const focused = document.activeElement as HTMLElement | null;
+    expect(focused?.tagName).toBe('INPUT');
+    fireEvent.keyDown(focused!, { key: 'Escape' });
     expect(onClose).not.toHaveBeenCalled();
+    // The picker itself doesn't handle Escape today (separate concern); make sure we didn't accidentally close it either.
+    expect(screen.getByRole('heading', { name: /change workspace/i })).toBeInTheDocument();
   });
 
   it('Cancel button closes the dialog without saving', () => {

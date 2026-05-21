@@ -178,11 +178,12 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
           if (e.target === e.currentTarget) onClose();
         }}
         onKeyDown={(e) => {
-          // Keyboard parity for the backdrop click-to-dismiss above
-          // (SonarCloud S1082 / WAI-ARIA APG modal pattern: Escape closes).
-          // Skip when the workspace picker is open — it owns its own
-          // focused surface (sibling node) and its own dismiss flow.
-          if (e.key === 'Escape' && !picking) {
+          // Keyboard parity for the backdrop click-to-dismiss above (SonarCloud S1082 / WAI-ARIA APG modal pattern: Escape closes). Skip when the
+          // workspace picker is open — it owns its own focused surface (sibling node) and its own dismiss flow. Also bail out during IME composition
+          // so CJK users can press Escape to cancel candidate selection in an input/textarea without accidentally dismissing the dialog.
+          // (`isComposing` lives on the native KeyboardEvent — React's synthetic event doesn't expose it; `e.keyCode === 229` is the legacy fallback
+          // for older browsers that don't surface `isComposing` reliably.)
+          if (e.key === 'Escape' && !picking && !e.nativeEvent.isComposing && e.keyCode !== 229) {
             e.preventDefault();
             onClose();
           }
