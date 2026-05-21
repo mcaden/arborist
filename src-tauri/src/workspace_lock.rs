@@ -9,16 +9,16 @@
 //!
 //! ## Handle ownership (Windows footgun)
 //!
-//! Hold the locked `File` handle for the lifetime of the lock; do NOT clone or duplicate it. `fs2` documents that lock state is tied to the
-//! underlying OS handle, so duplicating it can produce surprising behaviour around release. The guard's inner `File` is private and not exposed.
+//! Hold the locked `File` handle for the lifetime of the lock; do NOT clone or duplicate it. `std::fs::File::lock` documents that lock state is tied
+//! to the underlying OS handle, so duplicating it can produce surprising behaviour around release. The guard's inner `File` is private and not
+//! exposed.
 //!
 //! ## Crash semantics
 //!
 //! When the process exits (cleanly or by crash), the OS closes its file handles, which releases the lock. There is no stale-lock cleanup needed.
 //! Verified by [`tests::acquire_after_drop_succeeds`].
 
-use fs2::FileExt as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -65,10 +65,11 @@ pub struct WorkspaceLockGuard {
 }
 
 impl Drop for WorkspaceLockGuard {
-    /// Explicitly release the OS-level advisory lock before the inner `File` is dropped. Closing the handle would also release the lock (per `fs2`'s
-    /// contract), but on some Unix platforms closing *any* fd referring to the file is sufficient to release all `flock()`s held against that inode —
-    /// calling `unlock()` here makes the release point deterministic and matches the safety note inside [`Self::acquire_inner`]. Errors are
-    /// swallowed: if the file handle is already closed or the OS rejects the request, the subsequent `File` drop will release anyway.
+    /// Explicitly release the OS-level advisory lock before the inner `File` is dropped. Closing the handle would also release the lock (per the
+    /// `std::fs::File::lock` contract), but on some Unix platforms closing *any* fd referring to the file is sufficient to release all `flock()`s
+    /// held against that inode — calling `unlock()` here makes the release point deterministic and matches the safety note inside
+    /// [`Self::acquire_inner`]. Errors are swallowed: if the file handle is already closed or the OS rejects the request, the subsequent `File` drop
+    /// will release anyway.
     fn drop(&mut self) {
         let _ = self._file.unlock();
     }
@@ -106,19 +107,23 @@ impl WorkspaceLockGuard {
             .truncate(false)
             .open(&lock_path)
             .map_err(LockError::Io)?;
-        let result = if blocking { file.lock_exclusive() } else { file.try_lock_exclusive() };
-        // SAFETY: code between a successful `lock_exclusive()` / `try_lock_exclusive()` and the `Ok(Self { ... })` return MUST NOT panic. If it did,
-        // the raw `file` would be dropped *outside* a `WorkspaceLockGuard`, so the explicit `unlock()` in `WorkspaceLockGuard::Drop` (defined below)
-        // wouldn't fire; the OS lock would still be released when the OS reclaims the handle, but the release point would no longer be deterministic.
-        // The current branches only do infallible moves; keep it that way.
-        match result {
-            Ok(()) => Ok(Self {
-                _file: file,
-                path: lock_path,
-            }),
-            Err(e) if !blocking && is_contention_error(&e) => Err(LockError::Contention),
-            Err(e) => Err(LockError::Io(e)),
+        // SAFETY: code between a successful `lock()` / `try_lock()` and the `Ok(Self { ... })` return MUST NOT panic. If it did, the raw `file` would
+        // be dropped *outside* a `WorkspaceLockGuard`, so the explicit `unlock()` in `WorkspaceLockGuard::Drop` (defined above) wouldn't fire; the OS
+        // lock would still be released when the OS reclaims the handle, but the release point would no longer be deterministic. The current branches
+        // only do infallible moves; keep it that way.
+        if blocking {
+            file.lock().map_err(LockError::Io)?;
+        } else {
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => return Err(LockError::Contention),
+                Err(TryLockError::Error(e)) => return Err(LockError::Io(e)),
+            }
         }
+        Ok(Self {
+            _file: file,
+            path: lock_path,
+        })
     }
 
     /// Path of the lock file this guard holds. Useful for diagnostics and for log messages identifying which (branch, workspace) is bound to the
@@ -158,15 +163,9 @@ impl WorkspaceLockGuard {
     }
 }
 
-/// Cross-platform detection of "lock is held by someone else" vs a real I/O failure on `try_lock_exclusive`.
-///
-/// Unix returns `WouldBlock`; Windows returns a different OS error code (`ERROR_LOCK_VIOLATION` / `ERROR_IO_PENDING` depending on which lock API).
-/// Rather than hard-code platform-specific kinds, we compare against the platform-correct error that `fs2::lock_contended_error` constructs.
-fn is_contention_error(e: &io::Error) -> bool {
-    let contended = fs2::lock_contended_error();
-    e.kind() == contended.kind() && e.raw_os_error() == contended.raw_os_error()
-}
-
+/// Cross-platform detection of "lock is held by someone else" vs a real I/O failure is now handled directly by [`std::fs::TryLockError`] — the
+/// `WouldBlock` variant means "another holder right now", any other variant is a real I/O failure. See the `try_lock` branch in
+/// [`WorkspaceLockGuard::acquire_inner`].
 #[cfg(test)]
 mod tests {
     use super::*;

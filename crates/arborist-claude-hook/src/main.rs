@@ -32,7 +32,7 @@
 //! ## Concurrency
 //!
 //! Claude can fire multiple hooks concurrently in a session (e.g. parallel tool calls). Each invocation acquires an OS advisory write lock
-//! (`fs2::FileExt::lock_exclusive`) on the events file for the brief append, so concurrent writers serialise without losing lines.
+//! (`std::fs::File::lock`) on the events file for the brief append, so concurrent writers serialise without losing lines.
 //!
 //! ## Why a separate binary (not a subcommand of `arborist`)
 //!
@@ -50,8 +50,6 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use fs2::FileExt;
 
 fn main() -> ExitCode {
     // Args: program, event, arborist-session-id, events-jsonl-path. Any error here is silent — see the module docs for why we always exit 0.
@@ -220,7 +218,7 @@ fn try_append_locked(path: &std::path::Path, line: &str) -> std::io::Result<()> 
         .write(true)
         .truncate(false)
         .open(path)?;
-    f.lock_exclusive()?;
+    f.lock()?;
     // Seek to end *after* taking the lock so a concurrent process that beat us to write doesn't make us overwrite its bytes.
     let res = f.seek(std::io::SeekFrom::End(0)).and_then(|_| f.write_all(line.as_bytes()));
     let _ = f.unlock();

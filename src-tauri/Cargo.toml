@@ -69,13 +69,19 @@ arborist-types = { path = "../crates/arborist-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread", "process", "io-util"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread", "process"] }
+# Note: do NOT bump to 0.9 without a strategy for the new `PSUEDOCONSOLE_INHERIT_CURSOR`
+# flag enabled in 0.9 on Windows. The flag makes ConPTY emit a DSR cursor-position query
+# (`ESC [ 6 n`) at startup and stall stdout until the terminal host responds. xterm.js in
+# production answers, but the `recording_sink` used by `tests/pty_pool.rs` does not, so all
+# real-PTY tests time out waiting on the banner. See the dependency-audit branch for the
+# investigation that revealed this. Saving the ~4 transitive crates that 0.9 drops
+# (serial/serial-core/serial-windows/memoffset) is not worth the regression.
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 dunce = "1"
 sha2 = "0.10"
-fs2 = "0.4"
 # `rfd` is used directly for boot-time dialogs and the runtime `dialog_pick_directory`
 # command. Keep `default-features = false` and explicitly enable `gtk3` to avoid
 # backend auto-selection surprises on Linux.
@@ -83,7 +89,7 @@ rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = "0.7"
 base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
