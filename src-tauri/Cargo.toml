@@ -70,7 +70,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread", "process", "io-util"] }
-portable-pty = "0.8"
+# portable-pty 0.9 enables `PSUEDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which
+# makes the pseudo-console emit `ESC[6n` (DSR — cursor position report) at startup
+# and stall all child stdout until the host answers with `ESC[<row>;<col>R`. xterm.js
+# handles this transparently in production, but any **test** that waits for child
+# output via a passive sink will hang. Use `tests/pty_pool.rs::dsr_responding_sink`
+# (not the bare `recording_sink`) for real-PTY tests that synchronise on child bytes.
+# See https://github.com/mcaden/arborist/issues/215 for the full investigation.
+portable-pty = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 dunce = "1"
