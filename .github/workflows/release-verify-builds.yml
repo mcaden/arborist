@@ -19,6 +19,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # We pass `--target` explicitly on every platform so the sidecar
+        # build (scripts/prepare-claude-hook-sidecar.mjs, which always uses
+        # `--target <triple>`) and the main Tauri build share the same
+        # `target/<triple>/` directory. Without this, the helper's artifacts
+        # land in `target/<triple>/release/` while Tauri's main build (no
+        # `--target`) writes to `target/release/`, forcing Cargo to recompile
+        # `arborist` and `arborist-types` from scratch a second time.
         platform:
           - name: macos-universal
             os: macos-latest
@@ -26,16 +33,16 @@ jobs:
             args: '--target universal-apple-darwin'
           - name: linux-x86_64
             os: ubuntu-22.04
-            rust-targets: ''
-            args: ''
+            rust-targets: 'x86_64-unknown-linux-gnu'
+            args: '--target x86_64-unknown-linux-gnu'
           - name: windows-x86_64
             # windows-latest currently points at a transitional image
             # (windows-2025-vs2026) where WiX v3 light.exe fails at bundle
             # time. Pin to the last known-good image until the image/tooling
             # regression is resolved upstream.
             os: windows-2025
-            rust-targets: ''
-            args: ''
+            rust-targets: 'x86_64-pc-windows-msvc'
+            args: '--target x86_64-pc-windows-msvc'
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
@@ -146,7 +153,37 @@ jobs:
 
       - name: Build Tauri app
         shell: bash
-        run: pnpm tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.platform.args }}
+        # `--verbose` makes the bundler propagate WiX `light.exe` / `candle.exe`
+        # stderr (e.g. ICE0204 / LGHT errors) to the workflow log. Without it,
+        # MSI bundling failures surface only as the opaque
+        # `failed to run … light.exe` line and the actual error is lost.
+        run: pnpm tauri build --verbose --config src-tauri/tauri.bundle.conf.json ${{ matrix.platform.args }}
+
+      # Surface what actually landed under target/ before the verification
+      # step so failures are easier to diagnose without re-running the build.
+      - name: List built bundle artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dirs=()
+          if [ -d "target/release/bundle" ]; then
+            dirs+=("target/release/bundle")
+          fi
+          for d in target/*/release/bundle; do
+            dirs+=("$d")
+          done
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "(no bundle directories found under target/)"
+            exit 0
+          fi
+          for d in "${dirs[@]}"; do
+            echo "::group::${d}"
+            # `-printf` is GNU-find only; use the default output (path per line)
+            # so this step also works on the macOS runner (BSD find).
+            find "$d" -maxdepth 3 -mindepth 1 | sort
+            echo "::endgroup::"
+          done
 
       - name: Verify platform installers were produced
         shell: bash
@@ -176,8 +213,12 @@ jobs:
               has_match "*.exe" || { echo "::error::Expected an NSIS .exe artifact"; exit 1; }
               ;;
             macos-universal)
+              # Tauri only emits `.app.tar.gz` when the updater is configured
+              # (requires signing keys). Without it the macOS bundle output is
+              # the .app directory + the .dmg. v0.1.6 — the last fully
+              # successful release — shipped only the .dmg, so that's the
+              # required artifact here.
               has_match "*.dmg" || { echo "::error::Expected a macOS .dmg artifact"; exit 1; }
-              has_match "*.app.tar.gz" || { echo "::error::Expected a macOS app archive (.app.tar.gz)"; exit 1; }
               ;;
             linux-x86_64)
               has_match "*.deb" || { echo "::error::Expected a Linux .deb artifact"; exit 1; }

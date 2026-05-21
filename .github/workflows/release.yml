@@ -126,6 +126,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # We pass `--target` explicitly on every platform so the sidecar
+        # build (scripts/prepare-claude-hook-sidecar.mjs, which always uses
+        # `--target <triple>`) and the main Tauri build share the same
+        # `target/<triple>/` directory. Without this, the helper's artifacts
+        # land in `target/<triple>/release/` while Tauri's main build (no
+        # `--target`) writes to `target/release/`, forcing Cargo to recompile
+        # `arborist` and `arborist-types` from scratch a second time.
         platform:
           - name: macos-universal
             os: macos-latest
@@ -133,16 +140,16 @@ jobs:
             args: '--target universal-apple-darwin'
           - name: linux-x86_64
             os: ubuntu-22.04
-            rust-targets: ''
-            args: ''
+            rust-targets: 'x86_64-unknown-linux-gnu'
+            args: '--target x86_64-unknown-linux-gnu'
           - name: windows-x86_64
             # windows-latest currently points at a transitional image
             # (windows-2025-vs2026) where WiX v3 light.exe fails at bundle
             # time. Pin to the last known-good image until the image/tooling
             # regression is resolved upstream.
             os: windows-2025
-            rust-targets: ''
-            args: ''
+            rust-targets: 'x86_64-pc-windows-msvc'
+            args: '--target x86_64-pc-windows-msvc'
     runs-on: ${{ matrix.platform.os }}
     steps:
       # Check out the exact tag the user requested (normalized by the verify
@@ -271,7 +278,11 @@ jobs:
 
       - name: Build Tauri app
         shell: bash
-        run: pnpm tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.platform.args }}
+        # `--verbose` makes the bundler propagate WiX `light.exe` / `candle.exe`
+        # stderr (e.g. ICE0204 / LGHT errors) to the workflow log. Without it,
+        # MSI bundling failures surface only as the opaque
+        # `failed to run … light.exe` line and the actual error is lost.
+        run: pnpm tauri build --verbose --config src-tauri/tauri.bundle.conf.json ${{ matrix.platform.args }}
 
       - name: Find release artifacts
         id: tauri
