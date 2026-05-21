@@ -75,10 +75,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-release-verify-${{ matrix.platform.name }}-cargo-
 
-      # Tauri's Linux build needs system libraries (must match ci.yml). `lld`
-      # + `clang` are required by the workspace `.cargo/config.toml` for the
-      # faster linker. `appstream` provides `appstreamcli` used by `linuxdeploy-plugin-appimage` to validate the bundled AppStream metainfo file
-      # (see `src-tauri/metainfo/`); without it the release log emits "appstreamcli command is missing" — see issue #207.
+      # Tauri's Linux build needs system libraries — the baseline list is owned by `rust.yml` (the apt-get step in its `rust` job);
+      # this release-verify job extends it with `appstream`. `lld` + `clang` are required by the workspace `.cargo/config.toml`
+      # for the faster linker. `appstream` provides `appstreamcli` used by `linuxdeploy-plugin-appimage` to validate the bundled
+      # AppStream metainfo file (see `src-tauri/metainfo/`); without it the release log emits "appstreamcli command is missing" — see issue #207.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
