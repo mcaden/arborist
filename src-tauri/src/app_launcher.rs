@@ -930,20 +930,33 @@ impl AppPool {
             Err(other) => return Err(other),
         }
 
-        // Verify. Prefer window-handle liveness; fall back to PID liveness when the platform doesn't expose `is_window_alive`.
+        // Verify the window actually went away. Verification by window handle is the only correct check for multi-window apps — closing one VS Code
+        // workspace doesn't kill `Code.exe`, so PID liveness would falsely report "still alive" and we'd wait the full grace for nothing. The
+        // platform error contract is:
+        //   - `Ok(true)`  — window still up, keep polling
+        //   - `Ok(false)` — window is gone → `Confirmed`
+        //   - `Err(Unsupported)` — platform doesn't expose `is_window_alive` (non-Windows today). Permanently fall back to PID liveness; that's the
+        //     best we can do without a stable handle concept.
+        //   - `Err(NotFound)` — the OS rejected the handle as no longer a window. That is the user-visible-correct "window gone" signal, so treat
+        //     it identically to `Ok(false)` → `Confirmed`. Falling back to PID liveness here would be wrong for shared/multi-window apps (we'd wait
+        //     the full grace and then report `Posted`, which suppresses the cascade's skip-kill optimisation and shows the user a "may still be
+        //     prompting to save" toast for a window that demonstrably closed).
+        //   - `Err(other)` — the liveness probe is broken. Don't degrade silently to PID liveness (same multi-window mis-report risk). Log loudly
+        //     and return `Posted` immediately so the user gets a fast, honest "we asked, can't verify" answer instead of waiting the grace.
         let mut window_check_supported = true;
         let deadline = Instant::now() + grace;
         loop {
             if window_check_supported {
                 match focuser.is_window_alive(hwnd) {
-                    Ok(false) => return Ok(PoliteCloseOutcome::Confirmed { pid }),
                     Ok(true) => {}
+                    Ok(false) => return Ok(PoliteCloseOutcome::Confirmed { pid }),
                     Err(Error::Unsupported(_)) => {
                         window_check_supported = false;
                     }
-                    Err(_) => {
-                        // Any other error: fall back to PID check too.
-                        window_check_supported = false;
+                    Err(Error::NotFound(_)) => return Ok(PoliteCloseOutcome::Confirmed { pid }),
+                    Err(other) => {
+                        tracing::warn!(pid, hwnd, error = %other, "is_window_alive failed; reporting Posted without further verification");
+                        return Ok(PoliteCloseOutcome::Posted { pid });
                     }
                 }
             }
@@ -2283,5 +2296,65 @@ mod tests {
         assert!(matches!(outcome, PoliteCloseOutcome::Confirmed { pid } if pid == runtime_pid));
         assert_eq!(focuser.close_calls(), vec![0x1111, 0x9999]);
         assert_eq!(finder.call_count(), 1, "refinder should be called exactly once on stale handle");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_confirmed_when_verification_reports_window_gone_via_not_found() {
+        // Regression for the verification-loop fallback: if `is_window_alive` ever returns `Err(NotFound)` (e.g. a future platform that surfaces
+        // stale-handle errors instead of `Ok(false)`), the user-correct interpretation is "the window is gone" → `Confirmed`. Previously we silently
+        // demoted to PID liveness, which for shared/multi-window apps would have waited the full grace and returned `Posted` instead.
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: std::process::id(), // host PID stays alive → ensures we are not accidentally relying on PID-liveness
+            hwnd: 0xDEAD,
+            refinder: None,
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Ok(()));
+        focuser.queue_alive(Ok(true)); // first poll: still up
+        focuser.queue_alive(Err(Error::NotFound("window vanished between polls".into())));
+
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_secs(5))
+            .await
+            .expect("polite close");
+        assert!(matches!(outcome, PoliteCloseOutcome::Confirmed { pid } if pid == runtime_pid));
+        assert_eq!(focuser.alive_calls(), vec![0xDEAD, 0xDEAD]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_posted_immediately_when_liveness_check_is_broken() {
+        // Regression for the verification-loop fallback: a non-Unsupported/NotFound error from `is_window_alive` means the probe is broken. We must
+        // NOT silently degrade to PID liveness (wrong for multi-window apps) nor force the user to wait the full grace on a broken check. Returning
+        // `Posted` immediately yields the fast, honest "we asked, can't verify" answer.
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: std::process::id(),
+            hwnd: 0xBABE,
+            refinder: None,
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Ok(()));
+        focuser.queue_alive(Err(Error::Internal("probe failed".into())));
+
+        let started = Instant::now();
+        let outcome = pool
+            // 5s grace would make the test slow if we wrongly waited it out.
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_secs(5))
+            .await
+            .expect("polite close");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "should return immediately on broken liveness probe; took {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(outcome, PoliteCloseOutcome::Posted { pid } if pid == runtime_pid));
+        assert_eq!(focuser.alive_calls(), vec![0xBABE]);
     }
 }
