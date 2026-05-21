@@ -17,7 +17,7 @@
   },
   "homepage": "https://arborist.tools",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.22.1"
   },
   "type": "module",
   "packageManager": "pnpm@10.33.0",
