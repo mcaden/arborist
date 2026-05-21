@@ -258,8 +258,8 @@ impl DsrScanner {
 
 #[cfg(test)]
 mod dsr_scanner_tests {
-    // The outer file is already an integration test crate (everything is `#[cfg(test)]`), but the inner module keeps the unit-style helper tests
-    // grouped so they're easy to find and don't pollute the file's flat test list.
+    // The outer file is an integration test crate built under `cargo test` and gated by the `test-helpers` feature; this inner module keeps the
+    // helper-focused tests grouped so they're easy to find and don't pollute the file's flat test list.
     use super::DsrScanner;
 
     #[test]
