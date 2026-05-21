@@ -140,7 +140,7 @@ sudo systemsetup -setremotelogin on
 pnpm e2e:macos:provision
 ```
 
-This installs Xcode CLI Tools, Homebrew, Rust, Node.js 22, pnpm, LLVM/LLD, and
+This installs Xcode CLI Tools, Homebrew, Rust, Node.js 24, pnpm, LLVM/LLD, and
 tauri-driver. Takes ~15 minutes on first run.
 
 ### Step 5: Verify

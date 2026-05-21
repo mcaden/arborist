@@ -149,9 +149,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Node 22 LTS (needed for WebdriverIO — only stage that needs a fresh Node install
+# Node 24 LTS (needed for WebdriverIO — only stage that needs a fresh Node install
 # since this stage does NOT extend the Tauri base image)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
