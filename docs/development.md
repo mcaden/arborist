@@ -72,7 +72,7 @@ cargo test --workspace --features test-helpers <test-name-prefix>
 
 ```sh
 pnpm audit --prod --audit-level=moderate
-pnpm audit --audit-level=high
+pnpm audit --audit-level=high || true
 cargo install --locked --version 0.19.6 cargo-deny
 cargo deny check advisories licenses
 ```
@@ -81,6 +81,7 @@ Policy:
 
 - Production dependency vulnerabilities (`pnpm audit --prod`) at `moderate` or higher are blocking and should be fixed before merge/release.
 - Development dependency vulnerabilities (`pnpm audit`) are non-blocking unless they impact shipped artifacts; track remediation through follow-up issues.
+- `pnpm audit --audit-level=high` exits non-zero when findings exist. Use `|| true` when you want report-only output during routine checks.
 - Rust dependency advisories/licenses are enforced by `cargo deny check advisories licenses`.
 
 ### Acceptance gate

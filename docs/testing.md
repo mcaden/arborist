@@ -86,10 +86,12 @@ These checks are separate from unit/integration tests and target supply-chain ri
 
 ```sh
 pnpm audit --prod --audit-level=moderate
-pnpm audit --audit-level=high
+pnpm audit --audit-level=high || true
 cargo install --locked --version 0.19.6 cargo-deny
 cargo deny check advisories licenses
 ```
+
+`pnpm audit --audit-level=high` exits non-zero when findings are present; the `|| true` form keeps this check report-only in local test runs.
 
 ## Linux E2E harness
 
