@@ -3,6 +3,9 @@
 Arborist releases are built by the manual `Release` GitHub Actions workflow from an existing tag on `main`. The workflow uploads artifacts to a draft
 GitHub Release and generates GitHub build attestations.
 
+For branch-level validation (without publishing), use the manual `Release Verify Builds` workflow. It can be run from any branch and verifies macOS,
+Windows, and Linux installer artifacts are produced.
+
 ## Version convention
 
 The version in manifests on `main` is always the **upcoming** release version. When you're ready to release, the `release:prep` script tags the current
@@ -148,7 +151,13 @@ Attestations prove the artifact was produced by the repository workflow for the 
 
 ## Dry runs
 
-Use a throwaway tag to validate workflow changes. Delete the draft release and tag afterward.
+Use the manual `Release Verify Builds` workflow to validate release build changes without creating a draft release.
+
+```sh
+gh workflow run release-verify-builds.yml
+```
+
+Use a throwaway tag with `Release` only when you specifically need to exercise draft release creation or attestation/upload behavior.
 
 Run a dry release whenever release workflow action pins change, especially for Tauri publishing or build-attestation actions. The workflow pins every
 `uses:` dependency to a full commit SHA with an inline comment naming the upstream action ref; Dependabot opens update PRs, but maintainers should verify

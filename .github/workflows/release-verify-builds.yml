@@ -1,0 +1,189 @@
+name: Release Verify Builds
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: macos-universal
+            os: macos-latest
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+            args: '--target universal-apple-darwin'
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            rust-targets: ''
+            args: ''
+          - name: windows-x86_64
+            # windows-latest currently points at a transitional image
+            # (windows-2025-vs2026) where WiX v3 light.exe fails at bundle
+            # time. Pin to the last known-good image until the image/tooling
+            # regression is resolved upstream.
+            os: windows-2025
+            rust-targets: ''
+            args: ''
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
+      - run: corepack enable
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # actions/setup-node@v6.4.0
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Add Rust targets
+        if: matrix.platform.rust-targets != ''
+        shell: bash
+        run: |
+          for target in $(echo "${{ matrix.platform.rust-targets }}" | tr ',' ' '); do
+            rustup target add "$target"
+          done
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # actions/cache@v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-release-verify-${{ matrix.platform.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-verify-${{ matrix.platform.name }}-cargo-
+
+      # Tauri's Linux build needs system libraries (must match ci.yml). `lld`
+      # + `clang` are required by the workspace `.cargo/config.toml` for the
+      # faster linker.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            lld \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential
+
+      # macOS: `.cargo/config.toml` sets `-fuse-ld=lld` via per-target
+      # rustflags for faster dev builds. GitHub runners don't have lld for
+      # Mach-O, so override with RUSTFLAGS (takes precedence over config.toml
+      # target rustflags). Empty value = no extra flags → system linker.
+      - name: Override macOS linker config for CI
+        if: runner.os == 'macOS'
+        run: echo "RUSTFLAGS=" >> "$GITHUB_ENV"
+
+      # Prefer runner-installed WiX and only install via Chocolatey when the
+      # image does not already include candle.exe.
+      - name: Configure WiX toolset for bundling
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
+          if (-not $candle) {
+            choco install wixtoolset --no-progress -y
+            $candle = Get-Command candle.exe -ErrorAction Stop
+          }
+          $wixBin = Split-Path $candle.Source
+          $wixRoot = Split-Path $wixBin
+          "WIX=$wixRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify manifest versions are aligned
+        shell: bash
+        run: |
+          set -euo pipefail
+          tauri_ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")
+          pkg_ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('package.json','utf8')).version)")
+          cargo_ver=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          types_ver=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' crates/arborist-types/Cargo.toml | head -1)
+          if [ "$tauri_ver" != "$pkg_ver" ] || [ "$tauri_ver" != "$cargo_ver" ] || [ "$tauri_ver" != "$types_ver" ]; then
+            echo "::error::Version mismatch across manifests:"
+            echo "::error::src-tauri/tauri.conf.json=$tauri_ver"
+            echo "::error::package.json=$pkg_ver"
+            echo "::error::src-tauri/Cargo.toml=$cargo_ver"
+            echo "::error::crates/arborist-types/Cargo.toml=$types_ver"
+            exit 1
+          fi
+          echo "Manifest versions aligned at $tauri_ver"
+
+      # Remove stale bundle artifacts that may have been restored from the
+      # Cargo cache. Without this, artifact checks can pick up installers from
+      # previous runs where Cargo.lock hasn't changed.
+      - name: Clean stale bundle artifacts
+        shell: bash
+        run: |
+          shopt -s nullglob
+          rm -rf target/release/bundle
+          for d in target/*/release/bundle; do
+            rm -rf "$d"
+          done
+
+      - name: Build Tauri app
+        shell: bash
+        run: pnpm tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.platform.args }}
+
+      - name: Verify platform installers were produced
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          search_dirs=()
+          if [ -d "target/release/bundle" ]; then
+            search_dirs+=("target/release/bundle")
+          fi
+          for d in target/*/release/bundle; do
+            search_dirs+=("$d")
+          done
+          if [ ${#search_dirs[@]} -eq 0 ]; then
+            echo "::error::No bundle directories found under target/"
+            exit 1
+          fi
+
+          has_match() {
+            local pattern="$1"
+            find "${search_dirs[@]}" -type f -name "$pattern" | grep -q .
+          }
+
+          case "${{ matrix.platform.name }}" in
+            windows-x86_64)
+              has_match "*.msi" || { echo "::error::Expected a WiX .msi artifact"; exit 1; }
+              has_match "*.exe" || { echo "::error::Expected an NSIS .exe artifact"; exit 1; }
+              ;;
+            macos-universal)
+              has_match "*.dmg" || { echo "::error::Expected a macOS .dmg artifact"; exit 1; }
+              has_match "*.app.tar.gz" || { echo "::error::Expected a macOS app archive (.app.tar.gz)"; exit 1; }
+              ;;
+            linux-x86_64)
+              has_match "*.deb" || { echo "::error::Expected a Linux .deb artifact"; exit 1; }
+              has_match "*.AppImage" || { echo "::error::Expected a Linux .AppImage artifact"; exit 1; }
+              ;;
+            *)
+              echo "::error::Unknown platform '${{ matrix.platform.name }}'"
+              exit 1
+              ;;
+          esac
+
+          echo "Installer verification passed for ${{ matrix.platform.name }}"

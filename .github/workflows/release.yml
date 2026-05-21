@@ -136,7 +136,11 @@ jobs:
             rust-targets: ''
             args: ''
           - name: windows-x86_64
-            os: windows-latest
+            # windows-latest currently points at a transitional image
+            # (windows-2025-vs2026) where WiX v3 light.exe fails at bundle
+            # time. Pin to the last known-good image until the image/tooling
+            # regression is resolved upstream.
+            os: windows-2025
             rust-targets: ''
             args: ''
     runs-on: ${{ matrix.platform.os }}
@@ -206,10 +210,8 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "RUSTFLAGS=" >> "$GITHUB_ENV"
 
-      # On windows-latest (currently windows-2025-vs2026), the auto-downloaded
-      # WiX binaries under %LOCALAPPDATA%\tauri can fail to execute. Prefer the
-      # runner-installed WiX and only install via Chocolatey if candle.exe is
-      # missing.
+      # Prefer runner-installed WiX and only install via Chocolatey when the
+      # image does not already include candle.exe.
       - name: Configure WiX toolset for bundling
         if: runner.os == 'Windows'
         shell: pwsh
@@ -220,7 +222,8 @@ jobs:
             $candle = Get-Command candle.exe -ErrorAction Stop
           }
           $wixBin = Split-Path $candle.Source
-          "WIX=$wixBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $wixRoot = Split-Path $wixBin
+          "WIX=$wixRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - run: pnpm install --frozen-lockfile
 
