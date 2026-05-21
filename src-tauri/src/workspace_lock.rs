@@ -76,7 +76,7 @@ impl Drop for WorkspaceLockGuard {
 }
 
 impl WorkspaceLockGuard {
-    /// Try to acquire an exclusive lock on `lock_path`. Non-blocking (`try_lock_exclusive`); contention returns
+    /// Try to acquire an exclusive lock on `lock_path`. Non-blocking (`File::try_lock`); contention returns
     /// [`LockError::Contention`] rather than blocking.
     ///
     /// Creates `lock_path` and any missing parent directories. Hold the returned guard for the lifetime of the bound (branch, workspace) scope.
@@ -181,7 +181,7 @@ mod tests {
     }
 
     /// Same-process double-acquire MUST return `Contention` on Windows, where `LockFileEx` semantics are per-handle. On Unix, `flock(2)` is
-    /// per-process: a second `try_lock_exclusive` from the same PID against the same inode succeeds even via a separate `File` handle. The
+    /// per-process: a second `File::try_lock` from the same PID against the same inode succeeds even via a separate `File` handle. The
     /// cross-process guarantee that matters at boot is verified by the multi-process integration test in `tests/workspace_lock_multiprocess.rs`,
     /// which spawns `arborist-test-locker` as a real second process.
     #[cfg(target_os = "windows")]
