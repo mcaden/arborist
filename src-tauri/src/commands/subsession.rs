@@ -182,6 +182,17 @@ pub async fn subsession_close_impl(
                             message: Some(format!("PTY kill issued but the OS did not confirm exit; pid {pid} may still be alive")),
                         }
                     }
+                    Err(Error::NotFound(_)) => {
+                        // Race between `contains(&id)` above and the actual `kill(&id)` — the PTY child exited on its own in the gap (e.g. user typed
+                        // `exit` simultaneously, OOM killer fired). User-visible truth is identical to the `contains==false` branch below: the
+                        // process is gone, the terminal close succeeded. Mirrors the cascade-terminal path's treatment of this race.
+                        SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::TerminalKill,
+                            status: SubSessionCloseStatus::Confirmed,
+                            pid: snapshot.pid,
+                            message: None,
+                        }
+                    }
                     Err(e) => return Err(AppError::from(e)),
                 }
             } else {
@@ -307,6 +318,18 @@ pub async fn subsession_close_impl(
                                 "force-kill signal was sent but the OS did not confirm exit; pid {pid} may still be alive"
                             )),
                         },
+                        Err(Error::NotFound(_)) => {
+                            // Race between `contains(&id)` above and `kill_async(&id)` — the app's launcher exited on its own in the gap (e.g.
+                            // launcher `code.cmd` returned right after `contains` evaluated, before `kill_async` could remove the runtime). The
+                            // runtime is already gone from arborist's tracking; user-visible truth is "force-kill request reached a process that's
+                            // already gone" → Confirmed.
+                            SubSessionCloseResult {
+                                outcome: SubSessionCloseOutcome::ForceKill,
+                                status: SubSessionCloseStatus::Confirmed,
+                                pid: snapshot.pid,
+                                message: None,
+                            }
+                        }
                         Err(e) => return Err(AppError::from(e)),
                     }
                 }
@@ -703,6 +726,20 @@ async fn application_cascade_close(
                     // user's surviving PID, if any, is purely an OS-level orphan. Drop the row so we don't leave a stale tab pointer behind.
                     false,
                 ),
+                Err(Error::NotFound(_)) => {
+                    // Race: the app's launcher exited on its own between the retargeted-check above and `kill_async`. The runtime is already gone,
+                    // so user-visible truth is "we asked for force-kill on a process that's already gone" → Confirmed. Do NOT push to `errors` —
+                    // `errors` gates worktree deletion, and the cascade's `contains`+kill race is an expected outcome, not an operational failure.
+                    (
+                        SubSessionCloseResult {
+                            outcome: SubSessionCloseOutcome::ForceKill,
+                            status: SubSessionCloseStatus::Confirmed,
+                            pid: sub.pid,
+                            message: None,
+                        },
+                        false,
+                    )
+                }
                 Err(e) => {
                     warn!(
                         sub_session_id = %sub.id,

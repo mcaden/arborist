@@ -297,17 +297,28 @@ pub fn pid_alive(pid: u32) -> bool {
         type BOOL = i32;
         const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
         const STILL_ACTIVE: DWORD = 259;
+        // Win32 error code (winerror.h): "no such process for this PID". The only code we treat as proof-of-death after a NULL `OpenProcess`.
+        const ERROR_INVALID_PARAMETER: DWORD = 87;
 
         #[link(name = "kernel32")]
         extern "system" {
             fn OpenProcess(access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
             fn GetExitCodeProcess(handle: HANDLE, code: *mut DWORD) -> BOOL;
             fn CloseHandle(handle: HANDLE) -> BOOL;
+            fn GetLastError() -> DWORD;
         }
-        // SAFETY: OpenProcess accepts any PID; NULL handle just means "no such pid / access denied" which we treat as "not alive enough to care".
+        // SAFETY: OpenProcess accepts any PID; a NULL return means it failed and we discriminate the cause via GetLastError below.
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if h.is_null() {
-            return false;
+            // SAFETY: GetLastError reads thread-local state populated by the preceding OpenProcess call; documented Win32 idiom.
+            let err = unsafe { GetLastError() };
+            // Discriminate the failure modes. Reporting "dead" (`false`) when the process is in fact alive would synthesise a fake "Reaped/Confirmed"
+            // outcome for the close-verification callers (`kill_async`, polite-close fallback) and silently drop a still-running orphan from the
+            // user's awareness — so the bar for `false` is high. Only `ERROR_INVALID_PARAMETER` (87) means "no process with this PID"; every other
+            // code (`ERROR_ACCESS_DENIED` = 5 for elevated/sandboxed apps, `ERROR_PARTIAL_COPY` mid-exit, etc.) means the PID exists but we can't
+            // open it → treat as alive. The function-level comment promises "we'd rather report Unconfirmed than synthesise Reaped"; this
+            // default-alive policy is what makes that promise hold.
+            return err != ERROR_INVALID_PARAMETER;
         }
         let mut code: DWORD = 0;
         // SAFETY: `h` is a valid handle from OpenProcess; `code` is a stack-allocated u32 we can write into.
@@ -2127,6 +2138,33 @@ mod tests {
         let mut g = pool.inner.lock().unwrap();
         let rt = g.get_mut(id).expect("runtime in pool");
         rt.pid = pid;
+    }
+
+    #[test]
+    fn pid_alive_reports_dead_for_clearly_invalid_pid() {
+        assert!(!pid_alive(DEAD_PID), "DEAD_PID must report dead on every platform");
+    }
+
+    #[test]
+    fn pid_alive_reports_alive_for_own_process() {
+        assert!(pid_alive(std::process::id()), "the test's own PID must always report alive");
+    }
+
+    /// Regression for the Windows `OpenProcess` failure-mode discrimination fix. The System process (PID 4) is guaranteed to exist on every Windows
+    /// machine but is unopenable by an ordinary user — `OpenProcess` returns `NULL` with `GetLastError() == ERROR_ACCESS_DENIED`. The pre-fix
+    /// behavior collapsed every NULL return to `false`, which would have synthesised a fake "Reaped" outcome for any close-verification path
+    /// (kill_async or polite-close fallback) that happened to be tracking a privileged PID. The fix treats only `ERROR_INVALID_PARAMETER` as proof
+    /// of death; everything else (including `ERROR_ACCESS_DENIED`) errs toward "alive" so we report `Unconfirmed` instead.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pid_alive_reports_alive_for_inaccessible_system_pid_on_windows() {
+        // PID 4 is the Windows kernel "System" process. It is always alive while Windows is running, and an ordinary user token cannot open it via
+        // `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)` — the call fails with ERROR_ACCESS_DENIED. That is exactly the discrimination case
+        // the fix protects against.
+        assert!(
+            pid_alive(4),
+            "Windows System process (PID 4) must report alive even though OpenProcess returns ACCESS_DENIED"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
