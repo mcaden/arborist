@@ -165,6 +165,149 @@ fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
     (sink, outs, stats)
 }
 
+/// Wraps `recording_sink` with a DSR cursor-position responder.
+///
+/// **Why this exists**: `portable-pty 0.9+` enables `PSUEDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit
+/// `ESC[6n` at startup and refuse to forward any child stdout until the host answers with `ESC[<row>;<col>R`. xterm.js answers transparently in
+/// production, but a passive `recording_sink` would deadlock — the seven real-PTY tests in this file would hang waiting for a banner ConPTY
+/// is holding back. See <https://github.com/mcaden/arborist/issues/215>.
+///
+/// **Design choices worth noting**:
+/// - Streaming `DsrScanner` (not a per-chunk substring search) — ConPTY is free to flush the query across two reads, e.g. `"\x1b["` + `"6n"`.
+/// - Reply is `"1;1"` (top-left). The value only affects ConPTY's internal wrap state; tests never assert on it, so the least-surprising
+///   "fresh terminal" answer keeps the rest of the harness boring.
+/// - Reply dispatch is offloaded onto a `tokio::spawn` so a retry never blocks the drain-task tokio worker (which is what dispatches every
+///   other PTY chunk for every other live session in the same runtime). The retry is necessary because `PtyPool::spawn` inserts the runtime
+///   entry **after** spawning the read thread — the first chunk can theoretically reach this closure before `pool.write` would find the
+///   session — but it has no business holding up the drain task while it waits.
+fn dsr_responding_sink(pool: Arc<PtyPool>) -> (PtySink, OutputLog, StatusLog) {
+    let outs: OutputLog = Arc::new(Mutex::new(Vec::new()));
+    let stats: StatusLog = Arc::new(Mutex::new(Vec::new()));
+    let outs_cb = Arc::clone(&outs);
+    let stats_cb = Arc::clone(&stats);
+    let scanner: Arc<Mutex<DsrScanner>> = Arc::new(Mutex::new(DsrScanner::default()));
+    let sink = PtySink::new(
+        Arc::new(move |id, chunk| {
+            let count = scanner.lock().unwrap().feed(chunk.as_bytes());
+            outs_cb.lock().unwrap().push(chunk);
+            if count == 0 {
+                return;
+            }
+            // SessionId is Copy, so capture by value into the spawned task and stay off the drain worker for the retry.
+            let pool_for_write = Arc::clone(&pool);
+            let id_owned = *id;
+            tokio::spawn(async move {
+                for _ in 0..count {
+                    // Bounded retry guards the spawn-vs-insert race in `PtyPool::spawn`. Silent fall-through after the budget is intentional:
+                    // letting the test's own `wait_for` deadline produce a clean timeout with `outs` containing the unanswered DSR query is
+                    // more diagnostic than panicking inside a spawned task.
+                    for _ in 0..50 {
+                        if pool_for_write.write(&id_owned, b"\x1b[1;1R").is_ok() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                }
+            });
+        }),
+        Arc::new(move |_id, status, pid, _msg| {
+            stats_cb.lock().unwrap().push((status, pid));
+        }),
+        Arc::new(|_id, _evt| {}),
+    );
+    (sink, outs, stats)
+}
+
+/// Streaming `ESC[6n` (DSR cursor-position request) detector. Keeps the last `NEEDLE.len() - 1` bytes of the unconsumed suffix so a query that
+/// splits across two PTY reads (e.g. `"\x1b["` then `"6n"`) is still detected exactly once.
+#[derive(Default)]
+struct DsrScanner {
+    tail: Vec<u8>,
+}
+
+impl DsrScanner {
+    const NEEDLE: &'static [u8] = b"\x1b[6n";
+
+    /// Feed the next chunk, returning the count of newly-detected queries. Updates internal state so that bytes spanning the next chunk boundary
+    /// continue to be detected.
+    fn feed(&mut self, bytes: &[u8]) -> usize {
+        // Combined = previous tail + new bytes. The tail is dropped on each call; we rebuild it from the unconsumed suffix below.
+        let mut combined = std::mem::take(&mut self.tail);
+        combined.extend_from_slice(bytes);
+
+        let mut count = 0;
+        let mut i = 0;
+        let mut last_consumed_end = 0;
+        while i + Self::NEEDLE.len() <= combined.len() {
+            if &combined[i..i + Self::NEEDLE.len()] == Self::NEEDLE {
+                count += 1;
+                i += Self::NEEDLE.len();
+                last_consumed_end = i;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Keep at most `NEEDLE.len() - 1` trailing bytes — that's the longest prefix that could still complete a query in the next chunk.
+        let unconsumed = &combined[last_consumed_end..];
+        let keep = unconsumed.len().min(Self::NEEDLE.len() - 1);
+        self.tail = unconsumed[unconsumed.len() - keep..].to_vec();
+        count
+    }
+}
+
+#[cfg(test)]
+mod dsr_scanner_tests {
+    // The outer file is an integration test crate built under `cargo test` and gated by the `test-helpers` feature; this inner module keeps the
+    // helper-focused tests grouped so they're easy to find and don't pollute the file's flat test list.
+    use super::DsrScanner;
+
+    #[test]
+    fn single_chunk_single_match() {
+        let mut s = DsrScanner::default();
+        assert_eq!(s.feed(b"ARBORIST-READY\x1b[6nmore"), 1);
+        // Tail keeps up to 3 trailing bytes of the unconsumed suffix — "ore".
+        assert_eq!(s.feed(b""), 0);
+    }
+
+    #[test]
+    fn split_across_two_chunks() {
+        let mut s = DsrScanner::default();
+        assert_eq!(s.feed(b"abc\x1b["), 0);
+        assert_eq!(s.feed(b"6n!"), 1);
+    }
+
+    #[test]
+    fn two_queries_in_one_chunk() {
+        let mut s = DsrScanner::default();
+        assert_eq!(s.feed(b"\x1b[6nfoo\x1b[6nbar"), 2);
+    }
+
+    #[test]
+    fn no_match_when_no_query() {
+        let mut s = DsrScanner::default();
+        assert_eq!(s.feed(b"ARBORIST-TEST-CHILD READY\n"), 0);
+        assert_eq!(s.feed(b"echo: hello\r\n"), 0);
+    }
+
+    #[test]
+    fn does_not_double_match_across_boundary() {
+        let mut s = DsrScanner::default();
+        assert_eq!(s.feed(b"abc\x1b[6n"), 1);
+        // Even if the next chunk starts with bytes that the previous tail could have consumed, we don't re-match.
+        assert_eq!(s.feed(b"xyz"), 0);
+    }
+
+    #[test]
+    fn split_one_byte_at_a_time() {
+        let mut s = DsrScanner::default();
+        assert_eq!(s.feed(b"\x1b"), 0);
+        assert_eq!(s.feed(b"["), 0);
+        assert_eq!(s.feed(b"6"), 0);
+        assert_eq!(s.feed(b"n"), 1);
+    }
+}
+
 /// Block (with a budget) until `pred(joined_output)` is true. Returns the joined output on success.
 fn wait_for<F: FnMut(&str) -> bool>(log: &OutputLog, mut pred: F, budget: Duration) -> Option<String> {
     let start = Instant::now();
@@ -209,8 +352,8 @@ fn rt() -> tokio::runtime::Runtime {
 fn spawn_banner_then_quit_yields_exited_status() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
-    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
-    let (sink, outs, stats) = recording_sink();
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner::new())));
+    let (sink, outs, stats) = dsr_responding_sink(Arc::clone(&pool));
 
     let rt = rt();
     let _g = rt.enter();
@@ -246,8 +389,8 @@ fn spawn_banner_then_quit_yields_exited_status() {
 fn echoes_input_back_through_sink() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
-    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
-    let (sink, outs, _stats) = recording_sink();
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner::new())));
+    let (sink, outs, _stats) = dsr_responding_sink(Arc::clone(&pool));
 
     let _rt = rt();
     let _g = _rt.enter();
@@ -267,8 +410,8 @@ fn echoes_input_back_through_sink() {
 fn resize_calls_do_not_disrupt_io() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
-    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
-    let (sink, outs, _stats) = recording_sink();
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner::new())));
+    let (sink, outs, _stats) = dsr_responding_sink(Arc::clone(&pool));
 
     let _rt = rt();
     let _g = _rt.enter();
@@ -291,8 +434,8 @@ fn resize_calls_do_not_disrupt_io() {
 fn nonzero_exit_yields_error_status() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
-    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
-    let (sink, outs, stats) = recording_sink();
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner::new())));
+    let (sink, outs, stats) = dsr_responding_sink(Arc::clone(&pool));
 
     let _rt = rt();
     let _g = _rt.enter();
@@ -315,8 +458,8 @@ fn nonzero_exit_yields_error_status() {
 fn kill_terminates_child_and_removes_entry_and_temp_dir() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
-    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
-    let (sink, outs, _stats) = recording_sink();
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner::new())));
+    let (sink, outs, _stats) = dsr_responding_sink(Arc::clone(&pool));
 
     // Pre-create the temp dir so kill has something to delete.
     let temp = session_temp_dir(&session.id);
@@ -342,8 +485,8 @@ fn kill_terminates_child_and_removes_entry_and_temp_dir() {
 fn respawn_existing_yields_a_new_pid() {
     let dir = tempfile::tempdir().unwrap();
     let session = make_session(dir.path());
-    let pool = PtyPool::new(Arc::new(PortablePtySpawner::new()));
-    let (sink, outs, _stats) = recording_sink();
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner::new())));
+    let (sink, outs, _stats) = dsr_responding_sink(Arc::clone(&pool));
 
     let rt = rt();
     let _g = rt.enter();
@@ -351,7 +494,7 @@ fn respawn_existing_yields_a_new_pid() {
     wait_for(&outs, |s| s.contains("READY"), Duration::from_secs(5)).expect("ready 1");
     rt.block_on(async { pool.kill(&session.id).await.expect("kill") });
 
-    let (sink2, outs2, _stats2) = recording_sink();
+    let (sink2, outs2, _stats2) = dsr_responding_sink(Arc::clone(&pool));
     let pid2 = pool.respawn_existing(&session, sink2, DEFAULT_PTY_SIZE).expect("respawn");
     assert_ne!(pid1, pid2, "respawn should yield a new pid");
     assert!(
@@ -1114,11 +1257,11 @@ fn kill_returns_unconfirmed_when_killer_errors() {
 #[test]
 #[serial_test::serial(real_pty)]
 fn kill_terminates_shell_descendants_on_windows() {
-    let pool = PtyPool::new(Arc::new(PortablePtySpawner));
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner)));
     let dir = tempfile::tempdir().unwrap();
     let mut session = make_session(dir.path());
     session.composed_command = format!("{} --spawn-grandchild", quote_program(TEST_CHILD_PATH));
-    let (sink, outs, _stats) = recording_sink();
+    let (sink, outs, _stats) = dsr_responding_sink(Arc::clone(&pool));
 
     let rt = rt();
     let _g = rt.enter();
