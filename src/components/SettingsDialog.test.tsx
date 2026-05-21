@@ -160,6 +160,23 @@ describe('SettingsDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('Escape inside the dialog closes it (keyboard parity for backdrop click)', () => {
+    seedConfig();
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    fireEvent.keyDown(screen.getByTestId('settings-dialog'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape is ignored while the workspace picker overlay is open (picker owns its own dismiss)', () => {
+    seedConfig({ workspaceRoot: '/work' });
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+    fireEvent.click(screen.getByRole('button', { name: /change…/i }));
+    fireEvent.keyDown(screen.getByTestId('settings-dialog'), { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('Cancel button closes the dialog without saving', () => {
     seedConfig();
     const onClose = vi.fn();

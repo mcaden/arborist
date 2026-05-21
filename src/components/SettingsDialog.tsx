@@ -177,6 +177,16 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
         onClick={(e) => {
           if (e.target === e.currentTarget) onClose();
         }}
+        onKeyDown={(e) => {
+          // Keyboard parity for the backdrop click-to-dismiss above
+          // (SonarCloud S1082 / WAI-ARIA APG modal pattern: Escape closes).
+          // Skip when the workspace picker is open — it owns its own
+          // focused surface (sibling node) and its own dismiss flow.
+          if (e.key === 'Escape' && !picking) {
+            e.preventDefault();
+            onClose();
+          }
+        }}
       >
         <div className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded border border-slate-300 bg-white p-5 text-sm shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
           <div className="mb-4 flex shrink-0 items-start justify-between gap-3">
