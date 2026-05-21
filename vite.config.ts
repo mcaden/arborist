@@ -51,5 +51,14 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: true,
+    // Arborist is a Tauri desktop app: bundles are loaded from local disk via
+    // the `asset://` scheme, not fetched over a network, so the default
+    // 500 kB chunk-size warning (which is calibrated for first-paint latency
+    // on the public web) is not a meaningful signal here. Splitting our
+    // single eagerly-imported bundle into multiple chunks would just trade
+    // one disk read for several without improving startup, so we raise the
+    // threshold to 1500 kB to suppress the noise while still flagging
+    // genuinely unbounded growth. See issue #207.
+    chunkSizeWarningLimit: 1500,
   },
 });
