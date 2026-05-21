@@ -91,7 +91,7 @@
     "linux": {
       "appimage": {
         "files": {
-          "usr/share/metainfo/io.github.mcaden.arborist.metainfo.xml": "metainfo/io.github.mcaden.arborist.metainfo.xml"
+          "/usr/share/metainfo/io.github.mcaden.arborist.metainfo.xml": "metainfo/io.github.mcaden.arborist.metainfo.xml"
         }
       },
       "deb": {

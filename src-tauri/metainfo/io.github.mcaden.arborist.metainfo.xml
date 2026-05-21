@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   AppStream upstream metadata for the Arborist Linux AppImage / .deb / .rpm
-  bundles. This file is copied into `usr/share/metainfo/` of each Linux bundle
-  via the `bundle.linux.{appimage,deb,rpm}.files` map in
-  `src-tauri/tauri.conf.json`. The companion `appstream` apt package (installed
+  bundles. This file is copied into `/usr/share/metainfo/` of each Linux
+  bundle via the `bundle.linux.{appimage,deb,rpm}.files` map in
+  `src-tauri/tauri.conf.json` (absolute paths used uniformly — AppImage and
+  .deb strip the leading `/` internally, but the `rpm-rs` crate stores the
+  path verbatim and needs an absolute target for the installer to land the
+  file in the right place). The companion `appstream` apt package (installed
   in `.github/workflows/release.yml` and `release-verify-builds.yml`) provides
   the `appstreamcli` validator used by `linuxdeploy-plugin-appimage` so the
   release build log no longer emits the
