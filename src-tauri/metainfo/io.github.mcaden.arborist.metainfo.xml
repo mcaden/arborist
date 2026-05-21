@@ -80,11 +80,17 @@
 
   <!--
     Releases are intentionally minimal: AppStream 1.0+ permits a single
-    `<release>` entry, and we update it alongside the version bumps in
-    `package.json` / `Cargo.toml` / `tauri.conf.json` during release prep.
-    See `scripts/release-prep.mjs`.
+    `<release>` entry, and we update the version in lockstep with the four
+    version manifests during release prep. See `scripts/release-prep.mjs`.
+
+    The `date` attribute is intentionally omitted: the metainfo file is
+    bumped to the *next* version at the same time as the bump PR, but the
+    actual release tag may not be cut until much later, so any date we
+    stamped at bump time would belong to the previous release's day rather
+    than this one. The AppStream spec allows omitting the date (appstreamcli
+    emits at most an info-level "release-time-missing" hint).
   -->
   <releases>
-    <release version="0.1.12" date="2026-05-21" />
+    <release version="0.1.12" />
   </releases>
 </component>

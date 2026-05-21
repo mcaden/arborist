@@ -202,23 +202,25 @@ try {
     console.log(`  ${relPath}: ${currentVersion} → ${nextVersion}`);
   }
 
-  // Update the AppStream metainfo `<release>` entry so the Linux bundles
-  // ship metadata that matches the upcoming version. The file lives at
-  // `src-tauri/metainfo/io.github.mcaden.arborist.metainfo.xml` (see
-  // issue #207) and uses a single self-closing `<release version="X" date="Y" />`
-  // line. Date is in `YYYY-MM-DD` UTC so the release log is reproducible.
+  // Update the AppStream metainfo `<release>` entry so the Linux bundles ship metadata that matches the upcoming version. The file lives
+  // at `src-tauri/metainfo/io.github.mcaden.arborist.metainfo.xml` (see issue #207) and uses a single self-closing
+  // `<release version="X" />` line.
+  //
+  // The `date` attribute is intentionally NOT stamped here: this script runs when bumping main to `nextVersion`, but the actual release
+  // of `nextVersion` may happen much later. Stamping today's date would give every released version the date of its bump PR, not its
+  // tag — see PR #216 review feedback. AppStream allows omitting the date; appstreamcli emits at most an info-level
+  // "release-time-missing" hint.
   function updateMetainfo(relPath) {
     const filePath = resolve(root, relPath);
     const content = readFileSync(filePath, 'utf8');
-    const today = new Date().toISOString().slice(0, 10);
-    const re = /<release\s+version="[^"]+"\s+date="[^"]+"\s*\/>/;
+    const re = /<release\s+version="[^"]+"\s*\/>/;
     if (!re.test(content)) {
-      console.error(`  ${relPath}: no <release version="…" date="…" /> entry found!`);
+      console.error(`  ${relPath}: no <release version="…" /> entry found!`);
       process.exit(1);
     }
-    const updated = content.replace(re, `<release version="${nextVersion}" date="${today}" />`);
+    const updated = content.replace(re, `<release version="${nextVersion}" />`);
     writeFileSync(filePath, updated);
-    console.log(`  ${relPath}: ${currentVersion} → ${nextVersion} (date ${today})`);
+    console.log(`  ${relPath}: ${currentVersion} → ${nextVersion}`);
   }
 
   updateJson('package.json', 'version');
