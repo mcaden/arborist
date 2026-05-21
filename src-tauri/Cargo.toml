@@ -74,7 +74,7 @@ portable-pty = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 dunce = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 # `rfd` is used directly for boot-time dialogs and the runtime `dialog_pick_directory`
 # command. Keep `default-features = false` and explicitly enable `gtk3` to avoid
 # backend auto-selection surprises on Linux.
@@ -89,7 +89,7 @@ base64 = "0.22"
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-png = "0.17"
+png = "0.18"
 
 [dev-dependencies]
 pretty_assertions = "1"
