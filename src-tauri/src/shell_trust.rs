@@ -5,6 +5,7 @@
 //! created from them are revalidated before restart/restore.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,7 +58,17 @@ pub fn fingerprint(candidate: &RepoCommandCandidate) -> String {
     hash_field(&mut hasher, "kind", kind_key(candidate.kind));
     hash_field(&mut hasher, "scope", candidate.scope.as_deref().unwrap_or(""));
     hash_field(&mut hasher, "command", &candidate.command);
-    format!("{:x}", hasher.finalize())
+    // `sha2 = "0.11"` returns a `hybrid_array::Array<u8, _>` from `finalize()`, which (unlike
+    // generic-array in 0.10) does NOT implement `LowerHex` — so `format!("{:x}", …)` no longer
+    // compiles. Hand-roll the lowercase hex encoding the same way `store_layout::path_hash`
+    // does to avoid pulling in the `hex` crate as a direct dependency.
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in &digest {
+        // Infallible: writing to a String never errors.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 fn hash_field(hasher: &mut Sha256, name: &str, value: &str) {
