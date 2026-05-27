@@ -1,3 +1,4 @@
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +19,7 @@ function seedStores(workspaceRoot: string | null): void {
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -87,6 +89,7 @@ describe('WorkspaceIndicator', () => {
         aiLaunchCommands: { commands: {}, iconDataUris: {} },
         pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
         repoCommandTrust: { records: {} },
+        mcp: makeDefaultMcpConfig(),
         lastOpenSessions: [],
         tabOrder: [],
         activeSessionId: null,

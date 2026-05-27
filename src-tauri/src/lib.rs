@@ -15,6 +15,7 @@ pub mod copilot_events;
 pub mod git;
 pub mod icon_backfill;
 pub mod login_path;
+pub mod mcp;
 pub mod plugins;
 pub mod process_icon;
 pub mod pty_pool;
@@ -302,7 +303,32 @@ pub fn run() {
             // Hold a local Arc so the startup backfill below can share the *same* `ConfigStore` (and its write lock) that subsequent `config_set`
             // calls will use.
             let ctx_for_backfill = ctx.clone();
-            app.manage(ctx);
+            app.manage(ctx.clone());
+
+            let mcp_state_dir = if is_bound {
+                ctx.store()
+                    .layout()
+                    .map(crate::store_layout::StoreLayout::workspace_dir)
+                    .unwrap_or_else(|| app_data_dir.join("mcp"))
+            } else {
+                app_data_dir.join("mcp-unbound")
+            };
+            let mcp_context_config = if is_bound {
+                crate::mcp::types::McpContextConfig::from(&ctx.store().load_config().mcp)
+            } else {
+                crate::mcp::types::McpContextConfig::default()
+            };
+            let mcp_ctx = match crate::mcp::McpContext::new(ctx.clone(), mcp_context_config, mcp_state_dir) {
+                Ok(mcp_ctx) => std::sync::Arc::new(mcp_ctx),
+                Err(err) => {
+                    tracing::error!(%err, "failed to initialise MCP runtime state");
+                    eprintln!("Arborist failed to initialise MCP runtime state: {err}");
+                    std::process::exit(1);
+                }
+            };
+            let mcp_registry = std::sync::Arc::new(crate::mcp::McpSessionRegistry::new(mcp_ctx.clone()));
+            app.manage(mcp_ctx);
+            app.manage(mcp_registry);
 
             // Plugin registry wiring: built-in AI, custom-process, and dashboard-widget plugins all register through `plugins::build_registry()`.
             //
@@ -395,6 +421,16 @@ pub fn run() {
             commands::repo_command_trust,
             commands::repo_command_allow_once,
             commands::dialog_pick_directory,
+            commands::mcp_status,
+            commands::mcp_set_enabled,
+            commands::mcp_set_session_mode,
+            commands::mcp_get_effective_config,
+            commands::mcp_pending_actions,
+            commands::mcp_approve,
+            commands::mcp_deny,
+            commands::mcp_trust_list,
+            commands::mcp_trust_revoke,
+            commands::mcp_audit_recent,
             commands::session_create,
             commands::session_list,
             commands::session_close,

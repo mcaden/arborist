@@ -75,6 +75,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 dunce = "1"
 sha2 = "0.10"
+hex = "0.4"
+time = { version = "0.3.47", features = ["formatting", "parsing"] }
 # `rfd` is used directly for boot-time dialogs and the runtime `dialog_pick_directory`
 # command. Keep `default-features = false` and explicitly enable `gtk3` to avoid
 # backend auto-selection surprises on Linux.
@@ -84,6 +86,7 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 tokio-util = "0.7"
 base64 = "0.22"
+interprocess = { version = "2", features = ["tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -5,6 +5,7 @@ dist-ssr
 coverage
 src-tauri/gen
 target
+target-*
 crates
 package-lock.json
 pnpm-lock.yaml

@@ -16,6 +16,8 @@ import { resetBridgeMocks, workspaceSwitch } from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
 import { useWorkspaceSwitchUiStore } from '@/store/workspace-switch-ui-store';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { AppConfig, SessionView, WorkspaceSwitchResult } from '@/types/arborist';
 
 vi.mock('@/lib/tauri-bridge', () => import('@/lib/tauri-bridge.mock'));
@@ -32,6 +34,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
     repoCommandTrust: { records: {} },
+    mcp: makeDefaultMcpConfig(),
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

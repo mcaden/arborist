@@ -1,0 +1,26 @@
+[package]
+name = "arborist-mcp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "arborist-mcp"
+path = "src/main.rs"
+
+[dependencies]
+arborist-types = { path = "../arborist-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "io-std", "net", "process", "time", "fs"] }
+interprocess = { version = "2", features = ["tokio"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+hex = "0.4"
+
+[features]
+default = []
+dev-allow-mismatch = []

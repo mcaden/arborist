@@ -13,21 +13,47 @@
 //! ```
 //! Blocks are separated by blank lines; the very first one is the main worktree.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use thiserror::Error as ThisError;
 use tracing::{debug, warn};
 
 use crate::types::{Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
+
+// Re-export the canonical wire types. Their definitions live in `arborist-types` so that the
+// MCP sidecar, the frontend MIRROR, and the host backend all see the same structure (a single
+// canonical Rust wire type per shape — see `.github/copilot-instructions.md`).
+pub use arborist_types::git::{DefaultBranchInfo, DefaultBranchSource, MergeFromBranchOutcome, MergeTreeOutcome, WorktreeGitStatusSummary};
 
 #[cfg(windows)]
 const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[25, 50, 100, 200, 400, 800, 1_000];
 #[cfg(not(windows))]
 const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[];
+
+#[derive(Debug, ThisError)]
+pub enum GitError {
+    #[error("git invocation failed ({context}): {source}")]
+    Io {
+        context: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("git command failed ({context}): {message}")]
+    CommandFailed { context: &'static str, message: String },
+    #[error("git command timed out ({context}) after {timeout:?}")]
+    TimedOut { context: &'static str, timeout: Duration },
+    #[error("default branch unknown")]
+    DefaultBranchUnknown,
+    #[error("ref not found: {ref_expr}")]
+    RefNotFound { ref_expr: String },
+}
+
+static MERGE_TREE_CAPABILITY: std::sync::LazyLock<Mutex<Option<bool>>> = std::sync::LazyLock::new(|| Mutex::new(None));
 
 /// Build a `git` [`Command`] with the repo-selection environment variables stripped.
 ///
@@ -59,6 +85,53 @@ pub(crate) fn git_command() -> Command {
     ] {
         cmd.env_remove(var);
     }
+    cmd
+}
+
+pub(crate) fn git_command_mcp(root: &Path) -> Command {
+    let mut cmd = git_command();
+    cmd.current_dir(root).arg("-C").arg(root);
+    for var in [
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_ASKPASS",
+        "GIT_EDITOR",
+        "GIT_SEQUENCE_EDITOR",
+        "SSH_ASKPASS",
+    ] {
+        cmd.env_remove(var);
+    }
+    for (key, _) in std::env::vars_os() {
+        if let Some(name) = key.to_str() {
+            if name.starts_with("GIT_CONFIG_") {
+                cmd.env_remove(&key);
+            }
+        }
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_EDITOR", "true");
+    cmd.env("GIT_MERGE_AUTOEDIT", "no");
+    cmd
+}
+
+pub(crate) fn git_command_mcp_ro(root: &Path) -> Command {
+    let mut cmd = git_command_mcp(root);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
+pub(crate) fn git_command_mcp_mut(root: &Path) -> Command {
+    let mut cmd = git_command_mcp(root);
+    let hooks_path = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
+    cmd.arg("-c")
+        .arg(format!("core.hooksPath={hooks_path}"))
+        .arg("-c")
+        .arg("merge.tool=false");
     cmd
 }
 
@@ -97,6 +170,23 @@ pub trait GitRunner: Send + Sync {
     /// records are silently skipped (see [`parse_status_v2`]), so callers never see a "parse error" — the worst case is missing entries, not a
     /// signalled failure. The dashboard distinguishes "clean tree" from "unreadable" by inspecting `error`.
     fn git_status(&self, worktree_path: &Path) -> Result<WorktreeGitStatus, Error>;
+
+    fn fetch_origin(&self, root: &Path, timeout: Duration) -> Result<(), GitError>;
+    fn branches_merged_into(&self, root: &Path, target_oid: &str) -> Result<HashSet<String>, GitError>;
+    fn cherry_empty(&self, root: &Path, upstream_oid: &str, branch: &str) -> Result<bool, GitError>;
+    fn merge_from_branch(
+        &self,
+        worktree: &Path,
+        source_oid: &str,
+        leave_conflicts: bool,
+        timeout: Duration,
+    ) -> Result<MergeFromBranchOutcome, GitError>;
+    fn default_branch(&self, root: &Path) -> Result<DefaultBranchInfo, GitError>;
+    fn rev_parse_verify(&self, root: &Path, ref_expr: &str) -> Result<String, GitError>;
+    fn git_status_mcp(&self, worktree: &Path) -> Result<WorktreeGitStatusSummary, GitError>;
+    fn merge_tree_dry_run(&self, root: &Path, base_oid: &str, source_oid: &str) -> Result<MergeTreeOutcome, GitError>;
+    fn merge_abort(&self, worktree: &Path) -> Result<(), GitError>;
+    fn has_merge_head(&self, worktree: &Path) -> Result<bool, GitError>;
 }
 
 /// Production [`GitRunner`] that shells out to the system `git`.
@@ -290,12 +380,461 @@ impl GitRunner for RealGitRunner {
         enrich_with_source_branch(&mut status, worktree_path);
         Ok(status)
     }
+
+    fn fetch_origin(&self, root: &Path, timeout: Duration) -> Result<(), GitError> {
+        let mut cmd = git_command_mcp(root);
+        cmd.args(["fetch", "--quiet", "origin"]);
+        match run_git_with_timeout(cmd, "git fetch --quiet origin", timeout)? {
+            TimedGitOutput::Completed(output) if output.status.success() => Ok(()),
+            TimedGitOutput::Completed(output) => Err(git_command_failed("git fetch --quiet origin", &output)),
+            TimedGitOutput::TimedOut => Err(GitError::TimedOut {
+                context: "git fetch --quiet origin",
+                timeout,
+            }),
+        }
+    }
+
+    fn branches_merged_into(&self, root: &Path, target_oid: &str) -> Result<HashSet<String>, GitError> {
+        let mut cmd = git_command_mcp_ro(root);
+        cmd.args(["branch", "--merged", target_oid]);
+        let output = run_git_success(cmd, "git branch --merged")?;
+        Ok(parse_merged_branches(&output.stdout))
+    }
+
+    fn cherry_empty(&self, root: &Path, upstream_oid: &str, branch: &str) -> Result<bool, GitError> {
+        let mut cmd = git_command_mcp_ro(root);
+        cmd.args(["cherry", "-v", upstream_oid, branch]);
+        let output = run_git_success(cmd, "git cherry -v")?;
+        Ok(!String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.trim_start().starts_with('+')))
+    }
+
+    fn merge_from_branch(
+        &self,
+        worktree: &Path,
+        source_oid: &str,
+        leave_conflicts: bool,
+        timeout: Duration,
+    ) -> Result<MergeFromBranchOutcome, GitError> {
+        if is_ancestor(worktree, source_oid, "HEAD")? {
+            return Ok(MergeFromBranchOutcome::AlreadyUpToDate);
+        }
+
+        let mut cmd = git_command_mcp_mut(worktree);
+        cmd.args(["merge", "--no-edit", "--no-stat", "--no-progress", "--no-rerere-autoupdate", source_oid]);
+        match run_git_with_timeout(cmd, "git merge", timeout)? {
+            TimedGitOutput::Completed(output) if output.status.success() => {
+                let (ahead, behind) = rev_list_left_right_count_refs(worktree, source_oid, "HEAD")?;
+                Ok(MergeFromBranchOutcome::MergedCleanly { ahead, behind })
+            }
+            TimedGitOutput::Completed(output) => {
+                let files = conflicted_files(worktree)?;
+                if files.is_empty() {
+                    return Err(git_command_failed("git merge", &output));
+                }
+                if leave_conflicts {
+                    Ok(MergeFromBranchOutcome::LeftConflicted { files })
+                } else {
+                    self.merge_abort(worktree)?;
+                    Ok(MergeFromBranchOutcome::AutoAborted { files })
+                }
+            }
+            TimedGitOutput::TimedOut => {
+                let recovered = if leave_conflicts {
+                    !self.has_merge_head(worktree)?
+                } else {
+                    match self.merge_abort(worktree) {
+                        Ok(()) => true,
+                        Err(_) => !self.has_merge_head(worktree)?,
+                    }
+                };
+                Ok(MergeFromBranchOutcome::TimedOut { recovered })
+            }
+        }
+    }
+
+    fn default_branch(&self, root: &Path) -> Result<DefaultBranchInfo, GitError> {
+        let mut origin_head = git_command();
+        origin_head
+            .current_dir(root)
+            .arg("-C")
+            .arg(root)
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD"]);
+        let output = run_git_output(origin_head, "git symbolic-ref refs/remotes/origin/HEAD")?;
+        if output.status.success() {
+            let ref_name = trim_output(&output.stdout);
+            if let Some(branch) = ref_name.strip_prefix("refs/remotes/origin/") {
+                if !branch.is_empty() {
+                    return Ok(DefaultBranchInfo {
+                        branch: branch.to_owned(),
+                        source: DefaultBranchSource::OriginHead,
+                    });
+                }
+            }
+        }
+
+        for (ref_name, source) in [
+            ("refs/heads/main", DefaultBranchSource::Main),
+            ("refs/heads/master", DefaultBranchSource::Master),
+        ] {
+            let mut probe_cmd = git_command();
+            probe_cmd
+                .current_dir(root)
+                .arg("-C")
+                .arg(root)
+                .args(["show-ref", "--verify", "--quiet", ref_name]);
+            let probe = run_git_output(probe_cmd, "git show-ref --verify")?;
+            if probe.status.success() {
+                return Ok(DefaultBranchInfo {
+                    branch: ref_name.trim_start_matches("refs/heads/").to_owned(),
+                    source,
+                });
+            }
+        }
+
+        Err(GitError::DefaultBranchUnknown)
+    }
+
+    fn rev_parse_verify(&self, root: &Path, ref_expr: &str) -> Result<String, GitError> {
+        let rev = format!("{ref_expr}^{{commit}}");
+        let mut cmd = git_command();
+        cmd.current_dir(root)
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--verify", "--end-of-options"])
+            .arg(&rev);
+        let output = run_git_output(cmd, "git rev-parse --verify")?;
+        if !output.status.success() {
+            return Err(GitError::RefNotFound {
+                ref_expr: ref_expr.to_owned(),
+            });
+        }
+        let oid = trim_output(&output.stdout);
+        if oid.is_empty() {
+            return Err(GitError::RefNotFound {
+                ref_expr: ref_expr.to_owned(),
+            });
+        }
+        Ok(oid)
+    }
+
+    fn git_status_mcp(&self, worktree: &Path) -> Result<WorktreeGitStatusSummary, GitError> {
+        let mut cmd = git_command_mcp_ro(worktree);
+        cmd.args(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]);
+        let output = run_git_success(cmd, "git status --porcelain=v2")?;
+        Ok(parse_status_summary(&output.stdout))
+    }
+
+    fn merge_tree_dry_run(&self, root: &Path, base_oid: &str, source_oid: &str) -> Result<MergeTreeOutcome, GitError> {
+        if !merge_tree_supported(root)? {
+            return Ok(MergeTreeOutcome::Unsupported);
+        }
+        if is_ancestor(root, source_oid, base_oid)? {
+            return Ok(MergeTreeOutcome::AlreadyUpToDate);
+        }
+
+        let mut cmd = git_command_mcp_ro(root);
+        cmd.args(["merge-tree", "--write-tree", "--no-messages", base_oid, source_oid]);
+        let output = run_git_output(cmd, "git merge-tree --write-tree --no-messages")?;
+        if output.status.success() {
+            return Ok(MergeTreeOutcome::Clean);
+        }
+        if is_merge_tree_write_tree_unsupported(&output) {
+            return merge_tree_legacy_dry_run(root, source_oid);
+        }
+
+        let files = parse_merge_tree_conflict_files(&output);
+        if !files.is_empty() {
+            return Ok(MergeTreeOutcome::Conflict { files });
+        }
+
+        match merge_tree_legacy_dry_run(root, source_oid)? {
+            MergeTreeOutcome::Unsupported => Err(git_command_failed("git merge-tree --write-tree --no-messages", &output)),
+            outcome => Ok(outcome),
+        }
+    }
+
+    fn merge_abort(&self, worktree: &Path) -> Result<(), GitError> {
+        let mut cmd = git_command_mcp_mut(worktree);
+        cmd.args(["merge", "--abort"]);
+        let output = run_git_output(cmd, "git merge --abort")?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let message = output_message(&output);
+        if message.contains("There is no merge to abort") {
+            return Ok(());
+        }
+        Err(git_command_failed("git merge --abort", &output))
+    }
+
+    fn has_merge_head(&self, worktree: &Path) -> Result<bool, GitError> {
+        let mut cmd = git_command_mcp_ro(worktree);
+        cmd.args(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]);
+        let output = run_git_output(cmd, "git rev-parse --verify --quiet MERGE_HEAD")?;
+        if output.status.success() {
+            return Ok(true);
+        }
+        if output_message(&output).is_empty() {
+            return Ok(false);
+        }
+        Err(git_command_failed("git rev-parse --verify --quiet MERGE_HEAD", &output))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GitCommandResult {
     success: bool,
     stderr: String,
+}
+
+enum TimedGitOutput {
+    Completed(Output),
+    TimedOut,
+}
+
+fn trim_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_owned()
+}
+
+fn output_message(output: &Output) -> String {
+    let stdout = trim_output(&output.stdout);
+    let stderr = trim_output(&output.stderr);
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{stderr}\n{stdout}"),
+    }
+}
+
+fn git_command_failed(context: &'static str, output: &Output) -> GitError {
+    let message = output_message(output);
+    GitError::CommandFailed {
+        context,
+        message: if message.is_empty() { "<no output>".to_owned() } else { message },
+    }
+}
+
+fn run_git_output(mut cmd: Command, context: &'static str) -> Result<Output, GitError> {
+    cmd.output().map_err(|source| GitError::Io { context, source })
+}
+
+fn run_git_success(cmd: Command, context: &'static str) -> Result<Output, GitError> {
+    let output = run_git_output(cmd, context)?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(git_command_failed(context, &output))
+    }
+}
+
+fn run_git_with_timeout(mut cmd: Command, context: &'static str, timeout: Duration) -> Result<TimedGitOutput, GitError> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|source| GitError::Io { context, source })?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait().map_err(|source| GitError::Io { context, source })? {
+            Some(_) => {
+                let output = child.wait_with_output().map_err(|source| GitError::Io { context, source })?;
+                return Ok(TimedGitOutput::Completed(output));
+            }
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                child.wait_with_output().map_err(|source| GitError::Io { context, source })?;
+                return Ok(TimedGitOutput::TimedOut);
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}
+
+fn parse_merged_branches(output: &[u8]) -> HashSet<String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| {
+            let name = line.trim_start_matches('*').trim();
+            if name.is_empty() || name.starts_with('(') {
+                None
+            } else {
+                Some(name.to_owned())
+            }
+        })
+        .collect()
+}
+
+fn conflicted_files(worktree: &Path) -> Result<Vec<String>, GitError> {
+    let mut cmd = git_command_mcp_ro(worktree);
+    cmd.args(["diff", "--name-only", "--diff-filter=U"]);
+    let output = run_git_success(cmd, "git diff --name-only --diff-filter=U")?;
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_owned()) {
+            files.push(trimmed.to_owned());
+        }
+    }
+    Ok(files)
+}
+
+fn rev_list_left_right_count_refs(worktree: &Path, left: &str, right: &str) -> Result<(u32, u32), GitError> {
+    let range = format!("{left}...{right}");
+    let mut cmd = git_command_mcp_ro(worktree);
+    cmd.args(["rev-list", "--left-right", "--count", &range]);
+    let output = run_git_success(cmd, "git rev-list --left-right --count")?;
+    parse_rev_list_count(&output.stdout).ok_or_else(|| git_command_failed("git rev-list --left-right --count", &output))
+}
+
+fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<bool, GitError> {
+    let mut cmd = git_command_mcp_ro(root);
+    cmd.args(["merge-base", "--is-ancestor", ancestor, descendant]);
+    let output = run_git_output(cmd, "git merge-base --is-ancestor")?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) && output_message(&output).is_empty() {
+        return Ok(false);
+    }
+    Err(git_command_failed("git merge-base --is-ancestor", &output))
+}
+
+fn merge_base(root: &Path, left: &str, right: &str) -> Result<String, GitError> {
+    let mut cmd = git_command_mcp_ro(root);
+    cmd.args(["merge-base", left, right]);
+    let output = run_git_success(cmd, "git merge-base")?;
+    let oid = trim_output(&output.stdout);
+    if oid.is_empty() {
+        return Err(git_command_failed("git merge-base", &output));
+    }
+    Ok(oid)
+}
+
+fn merge_tree_supported(root: &Path) -> Result<bool, GitError> {
+    let mut cache = MERGE_TREE_CAPABILITY.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(supported) = *cache {
+        return Ok(supported);
+    }
+    let mut cmd = git_command_mcp_ro(root);
+    cmd.args(["merge-tree", "--version"]);
+    let output = run_git_output(cmd, "git merge-tree --version")?;
+    let text = output_message(&output).to_ascii_lowercase();
+    let supported = output.status.success()
+        || text.contains("usage: git merge-tree")
+        || text.contains("unknown option `version'")
+        || text.contains("unknown option 'version'");
+    *cache = Some(supported);
+    Ok(supported)
+}
+
+fn is_merge_tree_write_tree_unsupported(output: &Output) -> bool {
+    if output.status.code() != Some(129) {
+        return false;
+    }
+    let text = output_message(output).to_ascii_lowercase();
+    text.contains("usage: git merge-tree") || text.contains("unknown option")
+}
+
+fn parse_merge_tree_conflict_files(output: &Output) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    for source in [&output.stdout[..], &output.stderr[..]] {
+        for line in String::from_utf8_lossy(source).lines() {
+            if let Some(path) = parse_merge_tree_conflict_line(line) {
+                if seen.insert(path.clone()) {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files
+}
+
+fn parse_merge_tree_conflict_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("base ") || trimmed.starts_with("our ") || trimmed.starts_with("their ") {
+        return trimmed.split_whitespace().last().map(ToOwned::to_owned);
+    }
+    if trimmed.chars().next()?.is_ascii_digit() {
+        return trimmed.split_whitespace().last().and_then(|token| {
+            if token.chars().all(|ch| ch.is_ascii_digit()) {
+                None
+            } else {
+                Some(token.to_owned())
+            }
+        });
+    }
+    None
+}
+
+fn merge_tree_legacy_dry_run(root: &Path, source_oid: &str) -> Result<MergeTreeOutcome, GitError> {
+    let base = merge_base(root, "HEAD", source_oid)?;
+    let mut cmd = git_command_mcp_ro(root);
+    cmd.args(["merge-tree", &base, "HEAD", source_oid]);
+    let output = run_git_output(cmd, "git merge-tree")?;
+    if !output.status.success() {
+        return Err(git_command_failed("git merge-tree", &output));
+    }
+    let files = parse_merge_tree_conflict_files(&output);
+    if files.is_empty() {
+        Ok(MergeTreeOutcome::Clean)
+    } else {
+        Ok(MergeTreeOutcome::Conflict { files })
+    }
+}
+
+fn parse_status_summary(input: &[u8]) -> WorktreeGitStatusSummary {
+    let mut summary = WorktreeGitStatusSummary::default();
+    let mut iter = input.split(|b| *b == 0).peekable();
+    while let Some(rec) = iter.next() {
+        if rec.is_empty() {
+            continue;
+        }
+        let line = String::from_utf8_lossy(rec);
+        let line = line.as_ref();
+        if let Some(rest) = line.strip_prefix("# ") {
+            parse_status_summary_branch_header(&mut summary, rest);
+            continue;
+        }
+        match line.chars().next() {
+            Some('1') | Some('u') | Some('?') => {
+                summary.dirty = true;
+                summary.file_count += 1;
+            }
+            Some('2') => {
+                summary.dirty = true;
+                summary.file_count += 1;
+                let _ = iter.next();
+            }
+            _ => {}
+        }
+    }
+    summary
+}
+
+fn parse_status_summary_branch_header(summary: &mut WorktreeGitStatusSummary, rest: &str) {
+    let Some((key, value)) = rest.split_once(' ') else {
+        return;
+    };
+    match key {
+        "branch.upstream" if !value.trim().is_empty() => {
+            summary.has_upstream = true;
+        }
+        "branch.ab" => {
+            let mut parts = value.split_whitespace();
+            if let Some(ahead) = parts.next().and_then(|part| part.strip_prefix('+')).and_then(|part| part.parse().ok()) {
+                summary.ahead_of_upstream = Some(ahead);
+            }
+            if let Some(behind) = parts.next().and_then(|part| part.strip_prefix('-')).and_then(|part| part.parse().ok()) {
+                summary.behind_upstream = Some(behind);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn run_git_worktree_remove(repo_root: &Path, worktree_path: &Path) -> Result<GitCommandResult, Error> {
@@ -1074,28 +1613,114 @@ locked migrating to slow disk
         cmd
     }
 
+    fn run_clean_git_output(dir: &Path, args: &[&str]) -> Output {
+        clean_test_git_command()
+            // Pin process CWD to the tempdir as well as `-C`. On Windows, `git worktree add` resolves the new worktree's relative path *and*
+            // picks the repo to register against using the process CWD, not just `-C`. Without this, a test run from inside another git repo
+            // (which is the normal case for `cargo test`) can end up registering a worktree against the *outer* repo, polluting it with stale
+            // entries.
+            .current_dir(dir)
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git invocation")
+    }
+
+    fn run_clean_git(dir: &Path, args: &[&str]) {
+        let output = run_clean_git_output(dir, args);
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let output = run_clean_git_output(dir, args);
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
     /// Initialise a fresh git repo in `dir`, with a single committed file so `worktree add -b` succeeds (it requires HEAD to point at a commit).
     fn init_git_repo(dir: &Path) {
-        let run = |args: &[&str]| {
-            let s = clean_test_git_command()
-                // Pin process CWD to the tempdir as well as `-C`. On Windows, `git worktree add` resolves the new worktree's relative path *and*
-                // picks the repo to register against using the process CWD, not just `-C`. Without this, a test run from inside another git repo
-                // (which is the normal case for `cargo test`) can end up registering a worktree against the *outer* repo, polluting it with stale
-                // entries.
-                .current_dir(dir)
-                .arg("-C")
-                .arg(dir)
-                .args(args)
-                .output()
-                .expect("git invocation");
-            assert!(s.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&s.stderr));
-        };
-        run(&["init", "-q", "-b", "main"]);
-        run(&["config", "user.email", "test@arborist.local"]);
-        run(&["config", "user.name", "Arborist Test"]);
+        init_git_repo_on_branch(dir, "main");
+    }
+
+    fn init_git_repo_on_branch(dir: &Path, branch: &str) {
+        run_clean_git(dir, &["init", "-q", "-b", branch]);
+        run_clean_git(dir, &["config", "user.email", "test@arborist.local"]);
+        run_clean_git(dir, &["config", "user.name", "Arborist Test"]);
         std::fs::write(dir.join("README"), b"hi").unwrap();
-        run(&["add", "README"]);
-        run(&["commit", "-q", "-m", "init"]);
+        run_clean_git(dir, &["add", "README"]);
+        run_clean_git(dir, &["commit", "-q", "-m", "init"]);
+    }
+
+    fn init_bare_git_repo(dir: &Path) {
+        let output = clean_test_git_command()
+            .current_dir(dir)
+            .args(["init", "-q", "--bare"])
+            .output()
+            .expect("git invocation");
+        assert!(
+            output.status.success(),
+            "git init --bare failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn commit_file(dir: &Path, relative_path: &str, contents: &str, message: &str) {
+        let path = dir.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, contents.as_bytes()).unwrap();
+        run_clean_git(dir, &["add", relative_path]);
+        run_clean_git(dir, &["commit", "-q", "-m", message]);
+    }
+
+    fn checkout(dir: &Path, branch: &str) {
+        run_clean_git(dir, &["checkout", "-q", branch]);
+    }
+
+    fn create_branch(dir: &Path, branch: &str) {
+        run_clean_git(dir, &["checkout", "-q", "-b", branch]);
+    }
+
+    fn current_head(dir: &Path) -> String {
+        git_stdout(dir, &["rev-parse", "HEAD"])
+    }
+
+    fn git_status_porcelain(dir: &Path) -> String {
+        git_stdout(dir, &["status", "--porcelain"])
+    }
+
+    struct MergeTreeCacheGuard {
+        previous: Option<bool>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    static MERGE_TREE_TEST_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
+
+    impl MergeTreeCacheGuard {
+        fn new(temp: Option<bool>) -> Self {
+            let lock = MERGE_TREE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = MERGE_TREE_CAPABILITY.lock().unwrap_or_else(|e| e.into_inner());
+            let previous = *cache;
+            *cache = temp;
+            drop(cache);
+            Self { previous, _lock: lock }
+        }
+    }
+
+    impl Drop for MergeTreeCacheGuard {
+        fn drop(&mut self) {
+            *MERGE_TREE_CAPABILITY.lock().unwrap_or_else(|e| e.into_inner()) = self.previous;
+        }
     }
 
     /// RAII guard that force-removes any worktrees registered against `repo_root` and prunes stale entries before the underlying `TempDir` is
@@ -1311,6 +1936,385 @@ locked migrating to slow disk
                 "clean_test_git_command() must remove {var}; got {removed:?}"
             );
         }
+    }
+
+    #[test]
+    fn git_command_mcp_strips_config_and_prompting_env_vars() {
+        let root = Path::new(if cfg!(windows) { r"C:\repo" } else { "/repo" });
+        let cmd = git_command_mcp(root);
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| if v.is_none() { Some(k.to_string_lossy().into_owned()) } else { None })
+            .collect();
+        for var in [
+            "GIT_CONFIG",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+            "GIT_ASKPASS",
+            "GIT_SEQUENCE_EDITOR",
+            "SSH_ASKPASS",
+        ] {
+            assert!(removed.iter().any(|r| r == var), "git_command_mcp() must remove {var}; got {removed:?}");
+        }
+        let envs: HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|value| (k.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())))
+            .collect();
+        assert_eq!(envs.get("GIT_TERMINAL_PROMPT").map(String::as_str), Some("0"));
+        assert_eq!(envs.get("GIT_EDITOR").map(String::as_str), Some("true"));
+        assert_eq!(envs.get("GIT_MERGE_AUTOEDIT").map(String::as_str), Some("no"));
+    }
+
+    #[test]
+    fn git_command_mcp_ro_sets_optional_locks_zero() {
+        let root = Path::new(if cfg!(windows) { r"C:\repo" } else { "/repo" });
+        let cmd = git_command_mcp_ro(root);
+        let envs: HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|value| (k.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())))
+            .collect();
+        assert_eq!(envs.get("GIT_OPTIONAL_LOCKS").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn git_command_mcp_mut_adds_hook_and_merge_tool_overrides() {
+        let root = Path::new(if cfg!(windows) { r"C:\repo" } else { "/repo" });
+        let cmd = git_command_mcp_mut(root);
+        let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let hooks = format!("core.hooksPath={}", if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" });
+        assert!(
+            args.windows(2).any(|pair| pair[0] == "-c" && pair[1] == hooks),
+            "expected hooks override in {args:?}"
+        );
+        assert!(
+            args.windows(2).any(|pair| pair[0] == "-c" && pair[1] == "merge.tool=false"),
+            "expected merge.tool override in {args:?}"
+        );
+    }
+
+    #[test]
+    fn fetch_origin_succeeds_against_local_bare_remote() {
+        let origin = tempfile::TempDir::new().unwrap();
+        init_bare_git_repo(origin.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        let origin_path = origin.path().to_string_lossy().to_string();
+        run_clean_git(repo.path(), &["remote", "add", "origin", &origin_path]);
+        run_clean_git(repo.path(), &["push", "-u", "origin", "main"]);
+
+        let runner = RealGitRunner;
+        runner
+            .fetch_origin(repo.path(), Duration::from_secs(5))
+            .expect("fetch origin should succeed");
+    }
+
+    #[test]
+    fn fetch_origin_returns_error_when_origin_missing() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        let runner = RealGitRunner;
+        let err = runner
+            .fetch_origin(repo.path(), Duration::from_secs(5))
+            .expect_err("missing origin should fail");
+        assert!(matches!(err, GitError::CommandFailed { .. }));
+    }
+
+    #[test]
+    fn branches_merged_into_returns_only_merged_branches() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "merged-branch");
+        commit_file(repo.path(), "merged.txt", "merged", "merged branch");
+        checkout(repo.path(), "main");
+        run_clean_git(repo.path(), &["merge", "-q", "--no-edit", "merged-branch"]);
+        create_branch(repo.path(), "unmerged-branch");
+        commit_file(repo.path(), "unmerged.txt", "unmerged", "unmerged branch");
+        checkout(repo.path(), "main");
+
+        let runner = RealGitRunner;
+        let head = current_head(repo.path());
+        let branches = runner.branches_merged_into(repo.path(), &head).expect("branch --merged should succeed");
+        assert!(branches.contains("main"));
+        assert!(branches.contains("merged-branch"));
+        assert!(!branches.contains("unmerged-branch"));
+    }
+
+    #[test]
+    fn cherry_empty_true_for_cherry_picked_branch_and_false_for_diverged_branch() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "source");
+        commit_file(repo.path(), "shared.txt", "source", "source commit");
+        let source_oid = current_head(repo.path());
+        checkout(repo.path(), "main");
+        create_branch(repo.path(), "cherry");
+        run_clean_git(repo.path(), &["cherry-pick", &source_oid]);
+        checkout(repo.path(), "main");
+        create_branch(repo.path(), "diverged");
+        commit_file(repo.path(), "diverged.txt", "diverged", "diverged commit");
+        checkout(repo.path(), "main");
+
+        let runner = RealGitRunner;
+        assert!(runner
+            .cherry_empty(repo.path(), &source_oid, "cherry")
+            .expect("cherry compare should succeed"));
+        assert!(!runner
+            .cherry_empty(repo.path(), &source_oid, "diverged")
+            .expect("diverged compare should succeed"));
+    }
+
+    #[test]
+    fn default_branch_prefers_origin_head() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        run_clean_git(repo.path(), &["remote", "add", "origin", "."]);
+        run_clean_git(repo.path(), &["fetch", "origin"]);
+        run_clean_git(repo.path(), &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+
+        let runner = RealGitRunner;
+        let info = runner.default_branch(repo.path()).expect("origin/HEAD should win");
+        assert_eq!(
+            info,
+            DefaultBranchInfo {
+                branch: "main".to_owned(),
+                source: DefaultBranchSource::OriginHead,
+            }
+        );
+    }
+
+    #[test]
+    fn default_branch_falls_back_to_main() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo_on_branch(repo.path(), "main");
+
+        let runner = RealGitRunner;
+        let info = runner.default_branch(repo.path()).expect("main fallback should succeed");
+        assert_eq!(
+            info,
+            DefaultBranchInfo {
+                branch: "main".to_owned(),
+                source: DefaultBranchSource::Main,
+            }
+        );
+    }
+
+    #[test]
+    fn default_branch_falls_back_to_master() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo_on_branch(repo.path(), "master");
+
+        let runner = RealGitRunner;
+        let info = runner.default_branch(repo.path()).expect("master fallback should succeed");
+        assert_eq!(
+            info,
+            DefaultBranchInfo {
+                branch: "master".to_owned(),
+                source: DefaultBranchSource::Master,
+            }
+        );
+    }
+
+    #[test]
+    fn default_branch_errors_when_unknown() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo_on_branch(repo.path(), "dev");
+
+        let runner = RealGitRunner;
+        let err = runner.default_branch(repo.path()).expect_err("unknown default branch should error");
+        assert!(matches!(err, GitError::DefaultBranchUnknown));
+    }
+
+    #[test]
+    fn rev_parse_verify_resolves_commits() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+
+        let runner = RealGitRunner;
+        let head = current_head(repo.path());
+        assert_eq!(runner.rev_parse_verify(repo.path(), "HEAD").unwrap(), head);
+    }
+
+    #[test]
+    fn rev_parse_verify_rejects_missing_refs() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+
+        let runner = RealGitRunner;
+        let err = runner.rev_parse_verify(repo.path(), "missing-ref").expect_err("missing ref should error");
+        assert!(matches!(err, GitError::RefNotFound { ref_expr } if ref_expr == "missing-ref"));
+    }
+
+    #[test]
+    fn merge_from_branch_merges_cleanly() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "feature");
+        commit_file(repo.path(), "feature.txt", "feature", "feature commit");
+        let source_oid = current_head(repo.path());
+        checkout(repo.path(), "main");
+
+        let runner = RealGitRunner;
+        let outcome = runner
+            .merge_from_branch(repo.path(), &source_oid, false, Duration::from_secs(5))
+            .expect("clean merge should succeed");
+        match outcome {
+            MergeFromBranchOutcome::MergedCleanly { behind, .. } => assert_eq!(behind, 0),
+            other => panic!("expected clean merge outcome, got {other:?}"),
+        }
+        assert_eq!(current_head(repo.path()), source_oid);
+        assert_eq!(git_status_porcelain(repo.path()), "");
+    }
+
+    #[test]
+    fn merge_from_branch_auto_aborts_conflicts_and_restores_clean_repo() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "feature");
+        commit_file(repo.path(), "README", "feature", "feature change");
+        let source_oid = current_head(repo.path());
+        checkout(repo.path(), "main");
+        commit_file(repo.path(), "README", "main", "main change");
+        let main_before_merge = current_head(repo.path());
+
+        let runner = RealGitRunner;
+        let outcome = runner
+            .merge_from_branch(repo.path(), &source_oid, false, Duration::from_secs(5))
+            .expect("conflicted merge should return an outcome");
+        match outcome {
+            MergeFromBranchOutcome::AutoAborted { files } => assert!(files.iter().any(|file| file == "README")),
+            other => panic!("expected auto-aborted conflict outcome, got {other:?}"),
+        }
+        assert_eq!(current_head(repo.path()), main_before_merge);
+        assert_eq!(git_status_porcelain(repo.path()), "");
+        assert!(!runner.has_merge_head(repo.path()).unwrap());
+    }
+
+    #[test]
+    fn merge_from_branch_can_leave_conflicts_in_place() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "feature");
+        commit_file(repo.path(), "README", "feature", "feature change");
+        let source_oid = current_head(repo.path());
+        checkout(repo.path(), "main");
+        commit_file(repo.path(), "README", "main", "main change");
+
+        let runner = RealGitRunner;
+        let outcome = runner
+            .merge_from_branch(repo.path(), &source_oid, true, Duration::from_secs(5))
+            .expect("conflicted merge should return an outcome");
+        match outcome {
+            MergeFromBranchOutcome::LeftConflicted { files } => assert!(files.iter().any(|file| file == "README")),
+            other => panic!("expected left-conflicted outcome, got {other:?}"),
+        }
+        assert!(runner.has_merge_head(repo.path()).unwrap());
+        assert!(git_status_porcelain(repo.path()).contains("README"));
+        runner.merge_abort(repo.path()).unwrap();
+    }
+
+    #[test]
+    fn git_status_mcp_summarizes_dirty_state() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        std::fs::write(repo.path().join("README"), b"changed").unwrap();
+        std::fs::write(repo.path().join("new.txt"), b"new").unwrap();
+
+        let runner = RealGitRunner;
+        let summary = runner.git_status_mcp(repo.path()).expect("git status summary should succeed");
+        assert!(summary.dirty);
+        assert_eq!(summary.file_count, 2);
+        assert!(!summary.has_upstream);
+        assert_eq!(summary.ahead_of_upstream, None);
+        assert_eq!(summary.behind_upstream, None);
+        assert_eq!(summary.error, None);
+    }
+
+    #[test]
+    fn merge_tree_dry_run_reports_clean_merges() {
+        let _guard = MergeTreeCacheGuard::new(None);
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "feature");
+        commit_file(repo.path(), "feature.txt", "feature", "feature commit");
+        let source_oid = current_head(repo.path());
+        checkout(repo.path(), "main");
+        let base_oid = current_head(repo.path());
+
+        let runner = RealGitRunner;
+        let outcome = runner
+            .merge_tree_dry_run(repo.path(), &base_oid, &source_oid)
+            .expect("merge-tree clean probe should succeed");
+        assert_eq!(outcome, MergeTreeOutcome::Clean);
+    }
+
+    #[test]
+    fn merge_tree_dry_run_reports_conflicts_with_file_names() {
+        let _guard = MergeTreeCacheGuard::new(None);
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "feature");
+        commit_file(repo.path(), "README", "feature", "feature change");
+        let source_oid = current_head(repo.path());
+        checkout(repo.path(), "main");
+        commit_file(repo.path(), "README", "main", "main change");
+        let base_oid = current_head(repo.path());
+
+        let runner = RealGitRunner;
+        let outcome = runner
+            .merge_tree_dry_run(repo.path(), &base_oid, &source_oid)
+            .expect("merge-tree conflict probe should succeed");
+        match outcome {
+            MergeTreeOutcome::Conflict { files } => assert!(files.iter().any(|file| file == "README")),
+            other => panic!("expected conflict outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_tree_dry_run_returns_unsupported_when_capability_is_disabled() {
+        let _guard = MergeTreeCacheGuard::new(Some(false));
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        let base_oid = current_head(repo.path());
+
+        let runner = RealGitRunner;
+        let outcome = runner
+            .merge_tree_dry_run(repo.path(), &base_oid, &base_oid)
+            .expect("unsupported outcome should not error");
+        assert_eq!(outcome, MergeTreeOutcome::Unsupported);
+    }
+
+    #[test]
+    fn merge_abort_is_no_op_when_not_merging() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+
+        let runner = RealGitRunner;
+        runner
+            .merge_abort(repo.path())
+            .expect("merge abort should be a no-op when no merge is active");
+        assert!(!runner.has_merge_head(repo.path()).unwrap());
+    }
+
+    #[test]
+    fn has_merge_head_tracks_merge_state() {
+        let repo = tempfile::TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        create_branch(repo.path(), "feature");
+        commit_file(repo.path(), "README", "feature", "feature change");
+        checkout(repo.path(), "main");
+        commit_file(repo.path(), "README", "main", "main change");
+
+        let runner = RealGitRunner;
+        assert!(!runner.has_merge_head(repo.path()).unwrap());
+        let merge = run_clean_git_output(repo.path(), &["merge", "--no-edit", "feature"]);
+        assert!(!merge.status.success(), "setup merge should conflict");
+        assert!(runner.has_merge_head(repo.path()).unwrap());
+        runner.merge_abort(repo.path()).unwrap();
+        assert!(!runner.has_merge_head(repo.path()).unwrap());
     }
 
     // --- parse_status_v2 unit tests --- //

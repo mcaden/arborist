@@ -9,6 +9,7 @@
     "allow-ping",
     "allow-config",
     "allow-shell-command-trust",
+    "allow-mcp",
     "allow-session",
     "allow-frontend-ready",
     "allow-worktrees-list",

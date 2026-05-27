@@ -235,6 +235,45 @@ impl GitRunner for RecordingGitRunner {
     fn git_status(&self, _worktree_path: &Path) -> Result<arborist_lib::types::WorktreeGitStatus, arborist_lib::types::Error> {
         Ok(arborist_lib::types::WorktreeGitStatus::default())
     }
+    fn fetch_origin(&self, _: &Path, _: std::time::Duration) -> Result<(), arborist_lib::git::GitError> {
+        Ok(())
+    }
+    fn branches_merged_into(&self, _: &Path, _: &str) -> Result<std::collections::HashSet<String>, arborist_lib::git::GitError> {
+        Ok(std::collections::HashSet::new())
+    }
+    fn cherry_empty(&self, _: &Path, _: &str, _: &str) -> Result<bool, arborist_lib::git::GitError> {
+        Ok(true)
+    }
+    fn merge_from_branch(
+        &self,
+        _: &Path,
+        _: &str,
+        _: bool,
+        _: std::time::Duration,
+    ) -> Result<arborist_lib::git::MergeFromBranchOutcome, arborist_lib::git::GitError> {
+        Ok(arborist_lib::git::MergeFromBranchOutcome::AlreadyUpToDate)
+    }
+    fn default_branch(&self, _: &Path) -> Result<arborist_lib::git::DefaultBranchInfo, arborist_lib::git::GitError> {
+        Ok(arborist_lib::git::DefaultBranchInfo {
+            branch: "main".to_owned(),
+            source: arborist_lib::git::DefaultBranchSource::Main,
+        })
+    }
+    fn rev_parse_verify(&self, _: &Path, _: &str) -> Result<String, arborist_lib::git::GitError> {
+        Ok("deadbeef".to_owned())
+    }
+    fn git_status_mcp(&self, _: &Path) -> Result<arborist_lib::git::WorktreeGitStatusSummary, arborist_lib::git::GitError> {
+        Ok(arborist_lib::git::WorktreeGitStatusSummary::default())
+    }
+    fn merge_tree_dry_run(&self, _: &Path, _: &str, _: &str) -> Result<arborist_lib::git::MergeTreeOutcome, arborist_lib::git::GitError> {
+        Ok(arborist_lib::git::MergeTreeOutcome::Unsupported)
+    }
+    fn merge_abort(&self, _: &Path) -> Result<(), arborist_lib::git::GitError> {
+        Ok(())
+    }
+    fn has_merge_head(&self, _: &Path) -> Result<bool, arborist_lib::git::GitError> {
+        Ok(false)
+    }
 }
 
 fn build_harness() -> Harness {

@@ -9,6 +9,8 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { AppConfig, WorktreeInfo, WorktreeTab } from '@/types/arborist';
 
 import { NewSessionDialog } from './NewSessionDialog';
@@ -24,6 +26,7 @@ function defaultConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
     repoCommandTrust: { records: {} },
+    mcp: makeDefaultMcpConfig(),
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

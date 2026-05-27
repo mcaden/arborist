@@ -8,6 +8,8 @@ import { act, renderHook } from '@testing-library/react';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { AppConfig, ChildId, SessionId, SubSessionId, WorktreeTab, WorktreeTabId } from '@/types/arborist';
 
 import { useWorktreeTabActions, useWorktreeTabStore } from './worktree-tab-store';
@@ -39,6 +41,7 @@ function configWith(activeWorktreeTabId: WorktreeTabId | null = null): AppConfig
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
     repoCommandTrust: { records: {} },
+    mcp: makeDefaultMcpConfig(),
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

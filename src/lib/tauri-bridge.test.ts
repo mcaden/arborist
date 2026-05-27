@@ -16,6 +16,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import * as bridge from './tauri-bridge';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { AppConfig, PartialAppConfig, SessionOutputEvent, SessionStatusEvent, SessionView, WorkspaceSwitchResult } from '@/types/arborist';
 
 beforeEach(() => {
@@ -150,6 +152,7 @@ describe('configGet', () => {
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -180,6 +183,7 @@ describe('configSet', () => {
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -229,6 +233,7 @@ describe('repo command trust commands', () => {
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -348,6 +353,7 @@ describe('workspaceSwitch', () => {
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
     repoCommandTrust: { records: {} },
+    mcp: makeDefaultMcpConfig(),
     lastOpenSessions: ['sid-restored'],
     tabOrder: ['sid-restored'],
     activeSessionId: 'sid-restored',

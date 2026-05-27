@@ -6,6 +6,7 @@
 // migration was forced at that point.
 
 import type { WorkspaceSwitchResult } from '../arborist';
+import { makeDefaultMcpConfig } from '../arborist';
 
 export const workspaceSwitchResultFixture = {
   workspaceRoot: '/tmp/repo',
@@ -18,6 +19,7 @@ export const workspaceSwitchResultFixture = {
     aiLaunchCommands: { commands: {}, iconDataUris: {} },
     pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
     repoCommandTrust: { records: {} },
+    mcp: makeDefaultMcpConfig(),
     lastOpenSessions: [],
     tabOrder: [],
     activeSessionId: null,

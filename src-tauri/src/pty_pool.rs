@@ -304,7 +304,7 @@ impl PtyKiller for PortableKiller {
 }
 
 #[cfg(windows)]
-mod windows_process_tree {
+pub(crate) mod windows_process_tree {
     use std::collections::{HashMap, HashSet};
     use std::ffi::c_void;
     use std::io;
@@ -423,6 +423,10 @@ mod windows_process_tree {
         }
 
         result
+    }
+
+    pub(crate) fn parent_pid_snapshot() -> io::Result<Vec<(u32, u32)>> {
+        snapshot_process_parent_pairs().map(|entries| entries.into_iter().map(|entry| (entry.pid, entry.parent_pid)).collect())
     }
 
     fn collect_process_parent_pairs(snapshot: Handle) -> io::Result<Vec<ProcessSnapshotEntry>> {

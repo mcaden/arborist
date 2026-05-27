@@ -23,7 +23,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 // which is the module being mocked, deadlocking Vitest's module resolver.
 import * as tauriError from '@/lib/tauri-error';
 import type * as realBridge from './tauri-bridge';
-import type { AppConfig, WorktreeGitStatus } from '@/types/arborist';
+import type { AppConfig, McpAuditPage, McpEffectiveConfig, McpStatus, WorktreeGitStatus } from '@/types/arborist';
 
 // Pure helpers (no Tauri side effects) — re-export so tests get the same
 // formatting as production. Indirected through `tauriError.*` instead of named
@@ -60,8 +60,61 @@ export const frontendReady: Mock<typeof realBridge.frontendReady> = vi.fn(() => 
 
 // `config_get`/`config_set` are real implementations; their default mock behaviour returns benign empty values so tests don't need to wire each call
 // individually unless they care.
+const defaultMcpConfig = () =>
+  ({
+    enabled: false,
+    tools: {
+      cleanup_merged_worktrees: { enabled: true, requiresConfirmation: 'always' },
+      create_worktree: { enabled: true, requiresConfirmation: 'firstUse' },
+      list_worktrees: { enabled: true, requiresConfirmation: 'never' },
+      merge_main_into_worktrees: { enabled: true, requiresConfirmation: 'always' },
+      workspace_status: { enabled: true, requiresConfirmation: 'never' },
+    },
+    rateLimits: {
+      perSession: {
+        structuralReadPerMin: 30,
+        expensiveReadPerMin: 30,
+        destructivePerMin: 5,
+        totalPerMin: 30,
+        createWorktreePerHour: 10,
+        fetchPer60s: 0,
+      },
+      perWorkspace: {
+        structuralReadPerMin: 100,
+        expensiveReadPerMin: 6,
+        destructivePerMin: 15,
+        totalPerMin: 100,
+        createWorktreePerHour: 30,
+        fetchPer60s: 1,
+      },
+      perHost: {
+        structuralReadPerMin: 500,
+        expensiveReadPerMin: 500,
+        destructivePerMin: 500,
+        totalPerMin: 500,
+        createWorktreePerHour: 0,
+        fetchPer60s: 0,
+      },
+    },
+    allowRemoteFetch: true,
+    perSession: {},
+  }) as const;
+
+const defaultMcpStatus = (): McpStatus => ({
+  config: { ...defaultMcpConfig() },
+  tamperedLogs: [],
+});
+
+const defaultMcpEffectiveConfig = (): McpEffectiveConfig => ({
+  tools: [],
+});
+
+const defaultMcpAuditPage = (): McpAuditPage => ({
+  records: [],
+});
+
 const defaultAppConfig = (): AppConfig => ({
-  configVersion: 11,
+  configVersion: 12,
   // Tests assume the main UI is reachable by default. The first-boot
   // picker is exercised explicitly when a test overrides this to `null`.
   workspaceRoot: '/mock/workspace',
@@ -70,6 +123,7 @@ const defaultAppConfig = (): AppConfig => ({
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
   pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
   repoCommandTrust: { records: {} },
+  mcp: { ...defaultMcpConfig() },
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -84,6 +138,26 @@ const defaultAppConfig = (): AppConfig => ({
 export const configGet: Mock<typeof realBridge.configGet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
 
 export const configSet: Mock<typeof realBridge.configSet> = vi.fn(() => Promise.resolve(defaultAppConfig()));
+
+export const mcpStatus: Mock<typeof realBridge.mcpStatus> = vi.fn(() => Promise.resolve(defaultMcpStatus()));
+
+export const mcpSetEnabled: Mock<typeof realBridge.mcpSetEnabled> = vi.fn(() => Promise.resolve(defaultMcpStatus()));
+
+export const mcpSetSessionMode: Mock<typeof realBridge.mcpSetSessionMode> = vi.fn(() => Promise.resolve(defaultMcpStatus()));
+
+export const mcpGetEffectiveConfig: Mock<typeof realBridge.mcpGetEffectiveConfig> = vi.fn(() => Promise.resolve(defaultMcpEffectiveConfig()));
+
+export const mcpPendingActions: Mock<typeof realBridge.mcpPendingActions> = vi.fn(() => Promise.resolve([]));
+
+export const mcpApprove: Mock<typeof realBridge.mcpApprove> = vi.fn(rejectNotImplemented);
+
+export const mcpDeny: Mock<typeof realBridge.mcpDeny> = vi.fn(() => Promise.resolve(true));
+
+export const mcpTrustList: Mock<typeof realBridge.mcpTrustList> = vi.fn(() => Promise.resolve([]));
+
+export const mcpTrustRevoke: Mock<typeof realBridge.mcpTrustRevoke> = vi.fn(() => Promise.resolve(true));
+
+export const mcpAuditRecent: Mock<typeof realBridge.mcpAuditRecent> = vi.fn(() => Promise.resolve(defaultMcpAuditPage()));
 
 export const shellCommandPreview: Mock<typeof realBridge.shellCommandPreview> = vi.fn(() =>
   Promise.resolve({ targetWorktreePath: '/mock/workspace', commands: [], trustRecords: [], trustRequired: false }),
@@ -123,6 +197,8 @@ export const onSessionStatus: Mock<typeof realBridge.onSessionStatus> = vi.fn(()
 export const onSessionActivity: Mock<typeof realBridge.onSessionActivity> = vi.fn(() => Promise.resolve(noopUnlisten));
 
 export const onSessionMetrics: Mock<typeof realBridge.onSessionMetrics> = vi.fn(() => Promise.resolve(noopUnlisten));
+
+export const onMcpActivity: Mock<typeof realBridge.onMcpActivity> = vi.fn(() => Promise.resolve(noopUnlisten));
 
 // Phase 2: sub-session command/event mocks.
 export const subSessionCreate: Mock<typeof realBridge.subSessionCreate> = vi.fn(rejectNotImplemented);
@@ -180,6 +256,16 @@ export function resetBridgeMocks(): void {
   frontendReady.mockReset().mockImplementation(() => Promise.resolve());
   configGet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   configSet.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
+  mcpStatus.mockReset().mockImplementation(() => Promise.resolve(defaultMcpStatus()));
+  mcpSetEnabled.mockReset().mockImplementation(() => Promise.resolve(defaultMcpStatus()));
+  mcpSetSessionMode.mockReset().mockImplementation(() => Promise.resolve(defaultMcpStatus()));
+  mcpGetEffectiveConfig.mockReset().mockImplementation(() => Promise.resolve(defaultMcpEffectiveConfig()));
+  mcpPendingActions.mockReset().mockImplementation(() => Promise.resolve([]));
+  mcpApprove.mockReset().mockImplementation(rejectNotImplemented);
+  mcpDeny.mockReset().mockImplementation(() => Promise.resolve(true));
+  mcpTrustList.mockReset().mockImplementation(() => Promise.resolve([]));
+  mcpTrustRevoke.mockReset().mockImplementation(() => Promise.resolve(true));
+  mcpAuditRecent.mockReset().mockImplementation(() => Promise.resolve(defaultMcpAuditPage()));
   shellCommandPreview
     .mockReset()
     .mockImplementation(() => Promise.resolve({ targetWorktreePath: '/mock/workspace', commands: [], trustRecords: [], trustRequired: false }));
@@ -195,6 +281,7 @@ export function resetBridgeMocks(): void {
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionMetrics.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+  onMcpActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   subSessionCreate.mockReset().mockImplementation(rejectNotImplemented);
   subSessionClose.mockReset().mockImplementation(() => Promise.resolve());
   subSessionFocus.mockReset().mockImplementation(() => Promise.resolve());
@@ -233,6 +320,16 @@ const _shapeCheck = {
   frontendReady,
   configGet,
   configSet,
+  mcpStatus,
+  mcpSetEnabled,
+  mcpSetSessionMode,
+  mcpGetEffectiveConfig,
+  mcpPendingActions,
+  mcpApprove,
+  mcpDeny,
+  mcpTrustList,
+  mcpTrustRevoke,
+  mcpAuditRecent,
   shellCommandPreview,
   repoCommandTrust,
   repoCommandAllowOnce,
@@ -246,6 +343,7 @@ const _shapeCheck = {
   onSessionStatus,
   onSessionActivity,
   onSessionMetrics,
+  onMcpActivity,
   subSessionCreate,
   subSessionClose,
   subSessionFocus,

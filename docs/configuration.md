@@ -59,7 +59,7 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 
 ```json
 {
-  "configVersion": 11,
+  "configVersion": 12,
   "workspaceRoot": "/absolute/path/to/primary-clone",
   "worktreeRoots": [],
   "worktreePrepCommands": [],
@@ -74,6 +74,14 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
     },
     "customProcess": {},
     "dashboardWidget": {}
+  },
+  "repoCommandTrust": { "records": {} },
+  "mcp": {
+    "enabled": false,
+    "tools": {},
+    "rateLimits": { "perSession": {}, "perWorkspace": {}, "perHost": {} },
+    "allowRemoteFetch": true,
+    "perSession": {}
   },
   "lastOpenSessions": [],
   "tabOrder": [],
@@ -93,21 +101,22 @@ Legacy `config.json` and `sessions.json` directly under app data are used only a
 
 ## Important fields
 
-| Field                                                     | Notes                                                                                                                           |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                         |
-| `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                                    |
-| `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                         |
-| `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                             |
-| `pluginSettings`                                          | Per-plugin enable flags and plugin-owned settings. AI launch overrides live at `pluginSettings.ai.<id>.settings.launchCommand`. |
-| `repoCommandTrust`                                        | User-local trust records for executable values read from repo-owned `.arborist/settings.json`.                                  |
-| `aiLaunchCommands.commands`                               | Legacy input compatibility for AI launch overrides. Migrated into `pluginSettings` on load or save.                             |
-| `aiLaunchCommands.iconDataUris`                           | Backend-managed icon cache. Frontend patches do not write this map.                                                             |
-| `lastOpenSessions`, `tabOrder`, `activeSessionId`         | AI session restore and focus state. Managed by the app.                                                                         |
-| `worktreeTabs`, `worktreeTabOrder`, `activeWorktreeTabId` | Top-level sidebar state. Managed by the app.                                                                                    |
-| `theme`                                                   | Colour-scheme preference: `"system"` (default, follows OS), `"light"`, or `"dark"`. Absent defaults to `"system"`.              |
-| `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                       |
-| `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                                    |
+| Field                                                     | Notes                                                                                                                                                                                                                            |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `configVersion`                                           | Current schema version. Future versions are quarantined to protect downgrade scenarios.                                                                                                                                          |
+| `workspaceRoot`                                           | Active primary Git clone. Cleared if missing. Must not be a linked worktree.                                                                                                                                                     |
+| `worktreeRoots`                                           | Legacy discovery companion. New behavior should prefer `workspaceRoot`.                                                                                                                                                          |
+| `worktreePrepCommands`                                    | Non-blank commands joined with `&&` and run once after `worktree_create` in the new worktree `cwd`.                                                                                                                              |
+| `pluginSettings`                                          | Per-plugin enable flags and plugin-owned settings. AI launch overrides live at `pluginSettings.ai.<id>.settings.launchCommand`.                                                                                                  |
+| `repoCommandTrust`                                        | User-local trust records for executable values read from repo-owned `.arborist/settings.json`.                                                                                                                                   |
+| `aiLaunchCommands.commands`                               | Legacy input compatibility for AI launch overrides. Migrated into `pluginSettings` on load or save.                                                                                                                              |
+| `aiLaunchCommands.iconDataUris`                           | Backend-managed icon cache. Frontend patches do not write this map.                                                                                                                                                              |
+| `lastOpenSessions`, `tabOrder`, `activeSessionId`         | AI session restore and focus state. Managed by the app.                                                                                                                                                                          |
+| `worktreeTabs`, `worktreeTabOrder`, `activeWorktreeTabId` | Top-level sidebar state. Managed by the app.                                                                                                                                                                                     |
+| `theme`                                                   | Colour-scheme preference: `"system"` (default, follows OS), `"light"`, or `"dark"`. Absent defaults to `"system"`.                                                                                                               |
+| `customProcesses`                                         | User-editable custom process definitions. Built-ins are seeded but not special afterward.                                                                                                                                        |
+| `lastOpenSubSessions`                                     | Lightweight restore records for custom-process sub-tabs. Managed by the app.                                                                                                                                                     |
+| `mcp`                                                     | MCP server configuration: master `enabled` toggle (off by default), per-tool enable + confirmation mode, rate limits, and per-session overrides. See [docs/architecture.md](./architecture.md#mcp-server) for the runtime model. |
 
 ## Repo overlay
 

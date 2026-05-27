@@ -19,6 +19,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod git;
+pub mod mcp;
+pub use git::*;
+pub use mcp::*;
+
 // --------------------------------------------------------------------------- IDs
 // ---------------------------------------------------------------------------
 
@@ -630,7 +635,8 @@ pub const MAX_GIT_STATUS_FILES: usize = 200;
 ///   `pluginSettings.ai[pluginId].settings.launchCommand`; `ai_launch_commands.commands` is retained only as legacy input compatibility.
 /// * `11` — removed Arborist-managed instruction-set configuration. Claude and Copilot now rely on repository instruction discovery from `cwd`;
 ///   legacy session `tempFiles` are still loaded so existing sessions can restore.
-pub const CONFIG_VERSION_CURRENT: u32 = 11;
+/// * `12` — added `mcp` configuration for the Arborist MCP server. Missing `mcp` in legacy configs deserializes to the opt-in disabled default.
+pub const CONFIG_VERSION_CURRENT: u32 = 12;
 
 /// Setting key used by AI plugins for the user-editable CLI launch override.
 pub const AI_LAUNCH_COMMAND_SETTING: &str = "launchCommand";
@@ -844,6 +850,9 @@ pub struct AppConfig {
     /// cannot grant trust to itself.
     #[serde(default)]
     pub repo_command_trust: RepoCommandTrustState,
+    /// MCP server configuration. Added in `configVersion = 12`; missing legacy field deserializes to the opt-in disabled default.
+    #[serde(default)]
+    pub mcp: AppConfigMcp,
     pub last_open_sessions: Vec<SessionId>,
     pub tab_order: Vec<SessionId>,
     /// ID of the most recently focused session. Persisted by `session_focus` and consulted by Phase 8+ on launch to decide which tab to show active.
@@ -901,6 +910,7 @@ impl Default for AppConfig {
             ai_launch_commands: AiLaunchCommands::default(),
             plugin_settings: PluginSettings::default(),
             repo_command_trust: RepoCommandTrustState::default(),
+            mcp: AppConfigMcp::default(),
             last_open_sessions: Vec::new(),
             tab_order: Vec::new(),
             active_session_id: None,
@@ -1037,6 +1047,8 @@ pub struct PartialAppConfig {
     pub ai_launch_commands: Option<PartialAiLaunchCommands>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub plugin_settings: Option<PartialPluginSettings>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mcp: Option<PartialAppConfigMcp>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_open_sessions: Option<Vec<SessionId>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -2053,8 +2065,10 @@ mod tests {
     }
 
     fn app_config_fixture() -> (AppConfig, Value) {
+        let mcp = AppConfigMcp::default();
+        let mcp_json = serde_json::to_value(&mcp).expect("serialize");
         let value = AppConfig {
-            config_version: 11,
+            config_version: 12,
             workspace_root: Some(PathBuf::from("/repo")),
             worktree_roots: vec![PathBuf::from("/repo")],
             worktree_prep_commands: vec!["npm install".to_owned()],
@@ -2074,6 +2088,7 @@ mod tests {
                 dashboard_widget: BTreeMap::new(),
             },
             repo_command_trust: RepoCommandTrustState::default(),
+            mcp: mcp.clone(),
             last_open_sessions: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             tab_order: vec![SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))],
             active_session_id: Some(SessionId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("uuid"))),
@@ -2102,7 +2117,7 @@ mod tests {
             theme: ThemeMode::System,
         };
         let fixture = json!({
-            "configVersion": 11,
+            "configVersion": 12,
             "workspaceRoot": "/repo",
             "worktreeRoots": ["/repo"],
             "worktreePrepCommands": ["npm install"],
@@ -2125,6 +2140,7 @@ mod tests {
             "repoCommandTrust": {
                 "records": {}
             },
+            "mcp": mcp_json,
             "lastOpenSessions": ["550e8400-e29b-41d4-a716-446655440000"],
             "tabOrder": ["550e8400-e29b-41d4-a716-446655440000"],
             "activeSessionId": "550e8400-e29b-41d4-a716-446655440000",
@@ -2241,6 +2257,16 @@ mod tests {
                 custom_process: BTreeMap::new(),
                 dashboard_widget: BTreeMap::new(),
             }),
+            mcp: Some(PartialAppConfigMcp {
+                enabled: Some(true),
+                per_session: BTreeMap::from([(
+                    "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+                    PartialMcpSessionConfig {
+                        mode: Some(McpSessionMode::ReadOnly),
+                    },
+                )]),
+                ..Default::default()
+            }),
             last_open_sessions: None,
             tab_order: None,
             active_session_id: None,
@@ -2261,6 +2287,14 @@ mod tests {
                         "settings": {
                             "launchCommand": "npx claude"
                         }
+                    }
+                }
+            },
+            "mcp": {
+                "enabled": true,
+                "perSession": {
+                    "550e8400-e29b-41d4-a716-446655440000": {
+                        "mode": "readOnly"
                     }
                 }
             }

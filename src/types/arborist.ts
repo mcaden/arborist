@@ -219,6 +219,342 @@ export interface PluginSettings {
   dashboardWidget: Record<string, PluginSettingState>;
 }
 
+// MIRROR: crates/arborist-types/src/mcp.rs::McpDisabledBy
+export type McpDisabledBy = 'global' | 'tool' | 'session';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpErrorCode
+export type McpErrorCode =
+  | 'workspace-unbound'
+  | 'invalid-name'
+  | 'invalid-arg'
+  | 'invalid-from-branch'
+  | 'invalid-source-branch'
+  | 'invalid-target-branch'
+  | 'invalid-path'
+  | 'invalid-confirmation'
+  | 'name-in-use'
+  | 'tool-not-configured'
+  | 'prep-not-configured'
+  | 'prep-failed'
+  | 'confirmation-required'
+  | 'confirmation-expired'
+  | 'confirmation-stale'
+  | 'repo-command-trust-required'
+  | 'spawn-lineage-limit-exceeded'
+  | 'worktree-vanished'
+  | 'worktree-missing'
+  | 'own-worktree-refused'
+  | 'stale-remote-data'
+  | 'default-branch-unknown'
+  | 'rate-limited'
+  | 'busy'
+  | 'tool-disabled'
+  | 'tool-not-implemented'
+  | 'host-unavailable'
+  | 'dry-run-unsupported'
+  | 'too-many-pending-actions'
+  | 'unauthenticated'
+  | 'session-revoked'
+  | 'internal';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpRateScope
+export type McpRateScope = 'perSession' | 'perWorkspace' | 'perHost';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpBudgetRemaining
+export interface McpBudgetRemaining {
+  scope: McpRateScope;
+  remaining: number;
+  windowMs: number;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::MCPError
+export interface MCPError {
+  code: McpErrorCode;
+  message: string;
+  recoverable: boolean;
+  userAction?: string;
+  retryAfterMs?: number;
+  budgetRemaining?: McpBudgetRemaining;
+  auditId?: string;
+  disabledBy?: McpDisabledBy;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpConfirmationMode
+export type McpConfirmationMode = 'always' | 'firstUse' | 'never';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpSessionMode
+export type McpSessionMode = 'full' | 'readOnly' | 'off';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpToolConfig
+export interface McpToolConfig {
+  enabled: boolean;
+  requiresConfirmation: McpConfirmationMode;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpSessionConfig
+export interface McpSessionConfig {
+  mode: McpSessionMode;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpRateLimits
+export interface McpRateLimits {
+  structuralReadPerMin: number;
+  expensiveReadPerMin: number;
+  destructivePerMin: number;
+  totalPerMin: number;
+  createWorktreePerHour: number;
+  fetchPer60s: number;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpRateLimitsConfig
+export interface McpRateLimitsConfig {
+  perSession: McpRateLimits;
+  perWorkspace: McpRateLimits;
+  perHost: McpRateLimits;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::AppConfigMcp
+export interface AppConfigMcp {
+  enabled: boolean;
+  tools: Record<string, McpToolConfig>;
+  rateLimits: McpRateLimitsConfig;
+  allowRemoteFetch: boolean;
+  disclosureAcknowledgedAt?: string;
+  perSession: Record<string, McpSessionConfig>;
+}
+
+export function makeDefaultMcpConfig(): AppConfigMcp {
+  return {
+    enabled: false,
+    tools: {
+      cleanup_merged_worktrees: { enabled: true, requiresConfirmation: 'always' },
+      create_worktree: { enabled: true, requiresConfirmation: 'firstUse' },
+      list_worktrees: { enabled: true, requiresConfirmation: 'never' },
+      merge_main_into_worktrees: { enabled: true, requiresConfirmation: 'always' },
+      workspace_status: { enabled: true, requiresConfirmation: 'never' },
+    },
+    rateLimits: {
+      perSession: {
+        structuralReadPerMin: 30,
+        expensiveReadPerMin: 30,
+        destructivePerMin: 5,
+        totalPerMin: 30,
+        createWorktreePerHour: 10,
+        fetchPer60s: 0,
+      },
+      perWorkspace: {
+        structuralReadPerMin: 100,
+        expensiveReadPerMin: 6,
+        destructivePerMin: 15,
+        totalPerMin: 100,
+        createWorktreePerHour: 30,
+        fetchPer60s: 1,
+      },
+      perHost: {
+        structuralReadPerMin: 500,
+        expensiveReadPerMin: 500,
+        destructivePerMin: 500,
+        totalPerMin: 500,
+        createWorktreePerHour: 0,
+        fetchPer60s: 0,
+      },
+    },
+    allowRemoteFetch: true,
+    perSession: {},
+  };
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::PartialMcpToolConfig
+export interface PartialMcpToolConfig {
+  enabled?: boolean;
+  requiresConfirmation?: McpConfirmationMode;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::PartialMcpRateLimits
+export interface PartialMcpRateLimits {
+  structuralReadPerMin?: number;
+  expensiveReadPerMin?: number;
+  destructivePerMin?: number;
+  totalPerMin?: number;
+  createWorktreePerHour?: number;
+  fetchPer60s?: number;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::PartialMcpRateLimitsConfig
+export interface PartialMcpRateLimitsConfig {
+  perSession?: PartialMcpRateLimits;
+  perWorkspace?: PartialMcpRateLimits;
+  perHost?: PartialMcpRateLimits;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::PartialMcpSessionConfig
+export interface PartialMcpSessionConfig {
+  mode?: McpSessionMode;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::PartialAppConfigMcp
+export interface PartialAppConfigMcp {
+  enabled?: boolean;
+  tools?: Record<string, PartialMcpToolConfig>;
+  rateLimits?: PartialMcpRateLimitsConfig;
+  allowRemoteFetch?: boolean;
+  disclosureAcknowledgedAt?: string;
+  perSession?: Record<string, PartialMcpSessionConfig>;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpToolDescriptor
+export interface McpToolDescriptor {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpToolCallParams
+export interface McpToolCallParams {
+  name: string;
+  arguments: unknown;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpEffectiveSourceLayer
+export type McpEffectiveSourceLayer = 'global' | 'session' | 'repo';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpEffectiveSourceEffect
+export type McpEffectiveSourceEffect = 'enabled' | 'disabled' | 'requiresConfirmation';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpEffectiveSource
+export interface McpEffectiveSource {
+  layer: McpEffectiveSourceLayer;
+  effect: McpEffectiveSourceEffect;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpEffectiveTool
+export interface McpEffectiveTool {
+  id: string;
+  enabled: boolean;
+  requiresConfirmation: boolean;
+  sources: McpEffectiveSource[];
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpEffectiveConfig
+export interface McpEffectiveConfig {
+  tools: McpEffectiveTool[];
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpActivityPhase
+export type McpActivityPhase =
+  | 'requested'
+  | 'awaiting-confirmation'
+  | 'approved'
+  | 'denied'
+  | 'auto-approved'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'rate-limited'
+  | 'host-unavailable'
+  | 'expired';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpActivityEvent
+export interface McpActivityEvent {
+  id: string;
+  sessionId: SessionId;
+  workspaceId?: string;
+  tool: string;
+  phase: McpActivityPhase;
+  startedAt: string;
+  updatedAt: string;
+  summary?: string;
+  error?: MCPError;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpConfirmRequestPayload
+export interface McpConfirmRequestPayload {
+  id: string;
+  sessionId: SessionId;
+  tool: string;
+  summary: string;
+  argsPreview: unknown;
+  scopeHints: string[];
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpPendingAction
+export interface McpPendingAction {
+  id: string;
+  sessionId: SessionId;
+  tool: string;
+  /** Short one-line summary (≤200 chars). For long arg payloads the full detail lives in `details`. */
+  summary: string;
+  /**
+   * Optional full args dump for the confirmation UI's "View full request" panel. Arbitrary
+   * JSON; the frontend renders it as a key/value tree. Undefined if `summary` already conveys
+   * the full request (typical for short tools like `list_worktrees` confirmation).
+   */
+  details?: unknown;
+  argsFingerprintHex: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpTrustRecord
+export interface McpTrustRecord {
+  id: string;
+  sessionId: SessionId;
+  tool: string;
+  argsFingerprintHex: string;
+  createdAt: string;
+  expiresAt: string;
+  summary: string;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpAuditDecision
+export type McpAuditDecision = 'notRequired' | 'pending' | 'approved' | 'autoApproved' | 'denied' | 'expired' | 'stale';
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpAuditRecord
+export interface McpAuditRecord {
+  seq: number;
+  prevHashHex: string;
+  ts: string;
+  sessionId: SessionId;
+  sessionLabel: string;
+  tool: string;
+  decision: McpAuditDecision;
+  argsSummary: string;
+  result: unknown;
+  durationMs: number;
+  requestId: string;
+  confirmationTokenSha256?: string;
+  auditId: string;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpAuditFilter
+export interface McpAuditFilter {
+  sessionId?: SessionId;
+  tool?: string;
+  decision?: McpAuditDecision;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpAuditPage
+export interface McpAuditPage {
+  records: McpAuditRecord[];
+  nextCursor?: string;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::ConfirmationToken
+export interface ConfirmationToken {
+  token: string;
+  expiresAt: string;
+}
+
+// MIRROR: crates/arborist-types/src/mcp.rs::McpStatus
+export interface McpStatus {
+  config: AppConfigMcp;
+  tamperedLogs?: string[];
+}
+
 // MIRROR: crates/arborist-types/src/lib.rs::AppConfig
 export interface AppConfig {
   configVersion: number;
@@ -243,6 +579,8 @@ export interface AppConfig {
   pluginSettings: PluginSettings;
   /** User trust for executable settings read from repo-owned `.arborist/settings.json`; never written to repo settings. */
   repoCommandTrust: RepoCommandTrustState;
+  /** MCP policy and audit/rate-limit settings. */
+  mcp: AppConfigMcp;
   lastOpenSessions: SessionId[];
   tabOrder: SessionId[];
   /** Persisted active-session selection. `null` when no session is active. */
@@ -310,6 +648,7 @@ export interface PartialAppConfig {
   worktreePrepCommands?: string[];
   aiLaunchCommands?: PartialAiLaunchCommands;
   pluginSettings?: PartialPluginSettings;
+  mcp?: PartialAppConfigMcp;
   lastOpenSessions?: SessionId[];
   tabOrder?: SessionId[];
   activeSessionId?: SessionId | null;

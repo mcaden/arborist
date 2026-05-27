@@ -4,6 +4,6 @@
     "beforeBuildCommand": "pnpm run build && node scripts/prepare-claude-hook-sidecar.mjs"
   },
   "bundle": {
-    "externalBin": ["binaries/arborist-claude-hook"]
+    "externalBin": ["binaries/arborist-claude-hook", "binaries/arborist-mcp"]
   }
 }

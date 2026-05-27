@@ -5,6 +5,7 @@
 // inside the union.
 
 import type { AppConfig } from '../arborist';
+import { makeDefaultMcpConfig } from '../arborist';
 
 export const appConfigFixture = {
   configVersion: 11,
@@ -28,6 +29,7 @@ export const appConfigFixture = {
     dashboardWidget: {},
   },
   repoCommandTrust: { records: {} },
+  mcp: makeDefaultMcpConfig(),
   lastOpenSessions: ['550e8400-e29b-41d4-a716-446655440000'],
   tabOrder: ['550e8400-e29b-41d4-a716-446655440000'],
   activeSessionId: '550e8400-e29b-41d4-a716-446655440000',

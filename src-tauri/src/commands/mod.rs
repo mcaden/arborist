@@ -11,6 +11,7 @@
 //! file under `src-tauri/permissions/` referenced from `src-tauri/capabilities/main.json`. Adding a new command without the matching permission entry
 //! will cause the `invoke()` call to be rejected at runtime with no compile-time warning.
 
+pub mod mcp;
 pub mod session;
 pub mod subsession;
 pub mod worktree_tab;
@@ -583,6 +584,80 @@ fn sub_ctx_of(app: &tauri::AppHandle) -> Result<Arc<SubAppContext>, AppError> {
     app.try_state::<Arc<SubAppContext>>()
         .map(|s| Arc::clone(&*s))
         .ok_or_else(|| AppError::new("Internal", "SubAppContext not initialised"))
+}
+
+fn mcp_ctx_of(app: &tauri::AppHandle) -> Result<Arc<crate::mcp::McpContext>, AppError> {
+    app.try_state::<Arc<crate::mcp::McpContext>>()
+        .map(|s| Arc::clone(&*s))
+        .ok_or_else(|| AppError::new("Internal", "McpContext not initialised"))
+}
+
+#[tauri::command]
+pub async fn mcp_status(app: tauri::AppHandle) -> Result<crate::mcp::types::McpStatus, AppError> {
+    let ctx = ctx_of(&app)?;
+    let mcp = mcp_ctx_of(&app)?;
+    Ok(mcp::mcp_status_impl(&ctx, &mcp))
+}
+
+#[tauri::command]
+pub async fn mcp_set_enabled(app: tauri::AppHandle, enabled: bool) -> Result<crate::mcp::types::McpStatus, AppError> {
+    let ctx = ctx_of(&app)?;
+    let mcp = mcp_ctx_of(&app)?;
+    mcp::mcp_set_enabled_impl(&ctx, &mcp, enabled)
+}
+
+#[tauri::command]
+pub async fn mcp_set_session_mode(
+    app: tauri::AppHandle,
+    session_id: SessionId,
+    mode: crate::mcp::types::McpSessionMode,
+) -> Result<crate::mcp::types::McpStatus, AppError> {
+    let ctx = ctx_of(&app)?;
+    let mcp = mcp_ctx_of(&app)?;
+    mcp::mcp_set_session_mode_impl(&ctx, &mcp, session_id, mode)
+}
+
+#[tauri::command]
+pub async fn mcp_get_effective_config(app: tauri::AppHandle, session_id: SessionId) -> Result<crate::mcp::types::McpEffectiveConfig, AppError> {
+    let ctx = ctx_of(&app)?;
+    Ok(mcp::mcp_get_effective_config_impl(&ctx, session_id))
+}
+
+#[tauri::command]
+pub async fn mcp_pending_actions(app: tauri::AppHandle, session_id: Option<SessionId>) -> Result<Vec<crate::mcp::types::McpPendingAction>, AppError> {
+    let mcp = mcp_ctx_of(&app)?;
+    Ok(mcp::mcp_pending_actions_impl(&mcp, session_id))
+}
+
+#[tauri::command]
+pub async fn mcp_approve(app: tauri::AppHandle, action_id: String) -> Result<crate::mcp::types::ConfirmationToken, AppError> {
+    let mcp = mcp_ctx_of(&app)?;
+    mcp::mcp_approve_impl(&mcp, &action_id)
+}
+
+#[tauri::command]
+pub async fn mcp_deny(app: tauri::AppHandle, action_id: String) -> Result<bool, AppError> {
+    let mcp = mcp_ctx_of(&app)?;
+    Ok(mcp::mcp_deny_impl(&mcp, &action_id))
+}
+
+#[tauri::command]
+pub async fn mcp_trust_list(app: tauri::AppHandle, session_id: SessionId) -> Result<Vec<crate::mcp::types::McpTrustRecord>, AppError> {
+    let mcp = mcp_ctx_of(&app)?;
+    Ok(mcp::mcp_trust_list_impl(&mcp, session_id))
+}
+
+#[tauri::command]
+pub async fn mcp_trust_revoke(app: tauri::AppHandle, session_id: SessionId, id: String) -> Result<bool, AppError> {
+    let mcp = mcp_ctx_of(&app)?;
+    Ok(mcp::mcp_trust_revoke_impl(&mcp, session_id, &id))
+}
+
+#[tauri::command]
+pub async fn mcp_audit_recent(app: tauri::AppHandle, filter: crate::mcp::types::McpAuditFilter) -> Result<crate::mcp::types::McpAuditPage, AppError> {
+    let ctx = ctx_of(&app)?;
+    let mcp = mcp_ctx_of(&app)?;
+    mcp::mcp_audit_recent_impl(&ctx, &mcp, filter)
 }
 
 #[tauri::command]

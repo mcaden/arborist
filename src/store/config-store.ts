@@ -17,6 +17,8 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import { configGet, configSet, formatError } from '@/lib/tauri-bridge';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { AppConfig, CustomProcessDef, PartialAppConfig, SubSessionRecord, ThemeMode } from '@/types/arborist';
 
 const EMPTY_CONFIG: AppConfig = {
@@ -27,6 +29,7 @@ const EMPTY_CONFIG: AppConfig = {
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
   pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
   repoCommandTrust: { records: {} },
+  mcp: makeDefaultMcpConfig(),
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,

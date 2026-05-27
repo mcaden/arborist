@@ -15,6 +15,7 @@ export default [
       'node_modules',
       'src-tauri',
       'target',
+      'target-*',
       'crates',
       'website',
       'docs',

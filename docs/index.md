@@ -38,6 +38,7 @@ at the repository root using GitHub's conventional filenames.
 | ----------------------------------- | ---------------------------------------------------------------------------------------- |
 | [configuration](./configuration.md) | App-data layout, config fields, repo overlays, and quarantine recovery.                  |
 | [worktrees](./worktrees.md)         | Workspace-root requirements, `.arborist/.worktrees/`, validation, and deletion behavior. |
+| [mcp](./mcp.md)                     | MCP server overview, tool catalogue, security posture, and Settings panel.               |
 
 ## Documentation policy
 

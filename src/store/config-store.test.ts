@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { AppConfig, PartialAppConfig } from '@/types/arborist';
 
 import { useConfigStore } from './config-store';
@@ -18,6 +20,7 @@ const SAMPLE: AppConfig = {
   aiLaunchCommands: { commands: {}, iconDataUris: {} },
   pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
   repoCommandTrust: { records: {} },
+  mcp: makeDefaultMcpConfig(),
   lastOpenSessions: [],
   tabOrder: [],
   activeSessionId: null,
@@ -39,6 +42,7 @@ function resetStore(): void {
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,

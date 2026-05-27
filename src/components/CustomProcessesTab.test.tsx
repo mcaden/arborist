@@ -6,6 +6,8 @@ vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'
 import { CustomProcessesTab } from './CustomProcessesTab';
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { CustomProcessDef } from '@/types/arborist';
 
 function seedDefs(defs: CustomProcessDef[]): void {
@@ -18,6 +20,7 @@ function seedDefs(defs: CustomProcessDef[]): void {
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,

@@ -8,6 +8,8 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
 import { useSessionStore } from '@/store/session-store';
+
+import { makeDefaultMcpConfig } from '@/types/arborist';
 import type { PluginSettings, ThemeMode } from '@/types/arborist';
 
 function seedConfig(
@@ -28,6 +30,7 @@ function seedConfig(
       aiLaunchCommands: overrides.aiLaunchCommands ?? { commands: {}, iconDataUris: {} },
       pluginSettings: overrides.pluginSettings ?? { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -67,6 +70,7 @@ beforeEach(() => {
       aiLaunchCommands: { commands: {}, iconDataUris: {} },
       pluginSettings: { ai: {}, customProcess: {}, dashboardWidget: {} },
       repoCommandTrust: { records: {} },
+      mcp: makeDefaultMcpConfig(),
       lastOpenSessions: [],
       tabOrder: [],
       activeSessionId: null,
@@ -253,6 +257,7 @@ describe('SettingsDialog', () => {
     const generalTab = screen.getByTestId('settings-tab-general');
     const pluginsTab = screen.getByTestId('settings-tab-plugins');
     const customTab = screen.getByTestId('settings-tab-custom-processes');
+    const mcpTab = screen.getByTestId('settings-tab-mcp');
     const aboutTab = screen.getByTestId('settings-tab-about');
     generalTab.focus();
     fireEvent.keyDown(generalTab, { key: 'ArrowRight' });
@@ -262,9 +267,15 @@ describe('SettingsDialog', () => {
     expect(customTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     fireEvent.keyDown(customTab, { key: 'ArrowRight' });
+    expect(mcpTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-mcp')).toBeInTheDocument();
+    fireEvent.keyDown(mcpTab, { key: 'ArrowRight' });
     expect(aboutTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-about')).toBeInTheDocument();
     fireEvent.keyDown(aboutTab, { key: 'ArrowLeft' });
+    expect(mcpTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('settings-panel-mcp')).toBeInTheDocument();
+    fireEvent.keyDown(mcpTab, { key: 'ArrowLeft' });
     expect(customTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
     fireEvent.keyDown(customTab, { key: 'ArrowLeft' });

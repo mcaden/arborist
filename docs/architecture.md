@@ -68,6 +68,7 @@ flowchart TB
 | `commands/session.rs`                                     | Session, workspace, worktree-create, restore, and switch implementation logic.                                                      |
 | `commands/worktree_tab.rs`                                | Worktree tab open, close, focus, reorder, and active-child logic.                                                                   |
 | `commands/subsession.rs`                                  | Custom-process sub-session lifecycle and restore logic.                                                                             |
+| `commands/mcp.rs`, `mcp/`                                 | MCP config/status commands, audit/trust/confirmation state, and authenticated local-socket host IPC scaffolding.                    |
 | `compose.rs`                                              | CLI command composition, path validation, worktree-name validation, shell quoting, and tool-specific launch behavior.               |
 | `session_temp.rs`                                         | Hardened per-session temp directory and Copilot OTel file creation, reset, orphan cleanup, and symlink/reparse refusal.             |
 | `pty_pool.rs`                                             | PTY spawn/read/write/resize/kill, deferred spawn, backpressure, wait threads, and orphan cleanup.                                   |
@@ -112,7 +113,7 @@ Rust wire/persistence type must update the TypeScript mirror in the same commit.
 | `PartialAppConfig` | Request payload         | Yes              | Deep-merge patch for `config_set`.                                                                                                 |
 | `AppError`         | Command error payload   | Yes              | Stable `{ code, message }` shape for frontend branching.                                                                           |
 
-Current `AppConfig.configVersion` is `11`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
+Current `AppConfig.configVersion` is `12`. See [configuration](./configuration.md) for the on-disk shape and migration behavior.
 
 ## Command and event contract
 
@@ -137,6 +138,16 @@ Every command must be present in all of these places:
 | `repo_command_trust`            | `RepoCommandTrustArgs`          | `AppConfig`               | Persist trust for the current repo-provided command preview in user config.                                        |
 | `repo_command_allow_once`       | `RepoCommandTrustArgs`          | `void`                    | Allow the current repo-provided command preview to run once without persisting trust.                              |
 | `dialog_pick_directory`         | none                            | `string \| null`          | Open native directory picker.                                                                                      |
+| `mcp_status`                    | none                            | `McpStatus`               | Return current MCP config plus any audit-log tamper warnings for the bound workspace.                              |
+| `mcp_set_enabled`               | `enabled: bool`                 | `McpStatus`               | Persist the workspace-level MCP master switch and return the updated status snapshot.                              |
+| `mcp_set_session_mode`          | `sessionId`, `mode`             | `McpStatus`               | Persist the coarse per-session MCP mode override (`full`, `readOnly`, `off`).                                      |
+| `mcp_get_effective_config`      | `sessionId`                     | `McpEffectiveConfig`      | Compute the enabled/disabled/confirmation-effective MCP tool surface for one session.                              |
+| `mcp_pending_actions`           | `sessionId?`                    | `McpPendingAction[]`      | List pending MCP confirmation requests, optionally filtered to one session.                                        |
+| `mcp_approve`                   | `actionId`                      | `ConfirmationToken`       | Approve a pending MCP action and mint the short-lived replay token bound to that action.                           |
+| `mcp_deny`                      | `actionId`                      | `bool`                    | Deny and remove a pending MCP action.                                                                              |
+| `mcp_trust_list`                | `sessionId`                     | `McpTrustRecord[]`        | List remembered per-session MCP trust records.                                                                     |
+| `mcp_trust_revoke`              | `sessionId`, `id`               | `bool`                    | Revoke one remembered MCP trust record.                                                                            |
+| `mcp_audit_recent`              | `McpAuditFilter`                | `McpAuditPage`            | Read a filtered, paginated slice across the read and destructive MCP audit logs.                                   |
 | `frontend_ready`                | none                            | `void`                    | Signal that event listeners are attached; triggers restore registration once.                                      |
 | `session_create`                | `SessionCreateArgs`             | `SessionView`             | Compose, persist, and spawn a Claude/Copilot PTY in the selected worktree.                                         |
 | `session_list`                  | none                            | `SessionView[]`           | Return persisted sessions sorted for the sidebar.                                                                  |
@@ -174,6 +185,7 @@ Every command must be present in all of these places:
 | `session://status`      | `SessionStatusEvent`      | AI session lifecycle status and optional explanatory message.                                                                                                                                                                                                                                                                                       |
 | `session://activity`    | `SessionActivityEvent`    | Attention, working/idle, title, prompt/command, turn, tool, and permission activity. Sources: PTY-byte heuristics ([`activity::ActivityScanner`]), Copilot `events.jsonl` tailer ([`copilot_events`]), and Claude hook tailer ([`claude_hook_events`], fed by the `arborist-claude-hook` helper binary that Claude spawns at each hook fire point). |
 | `session://metrics`     | `SessionMetricsEvent`     | Token/context-window snapshot for a session. Also persisted on `Session.last_metrics` for restore.                                                                                                                                                                                                                                                  |
+| `mcp://activity`        | `McpActivityEvent`        | MCP tool-call lifecycle emitted by the host IPC layer (`requested`, `running`, `failed`, `rateLimited`, etc.) so the frontend can surface live MCP activity.                                                                                                                                                                                        |
 | `subsession://status`   | `SubSessionStatusEvent`   | Custom-process sub-session status and optional pid/message.                                                                                                                                                                                                                                                                                         |
 | `subsession://exited`   | `SubSessionExitedEvent`   | Application sub-session process exit notification.                                                                                                                                                                                                                                                                                                  |
 | `subsession://restored` | `SubSessionRestoredEvent` | Restore pass materialized a sub-session row.                                                                                                                                                                                                                                                                                                        |
@@ -183,9 +195,10 @@ Every command must be present in all of these places:
 
 Tauri v2 rejects frontend invokes without capability permissions. `src-tauri/capabilities/main.json` currently grants:
 
-`core:event:allow-listen`, `core:event:allow-unlisten`, `allow-ping`, `allow-config`, `allow-session`, `allow-frontend-ready`,
-`allow-worktrees-list`, `allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`, `allow-worktree-create`,
-`allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, and `allow-dialog-pick-directory`.
+`core:event:allow-listen`, `core:event:allow-unlisten`, `allow-ping`, `allow-config`, `allow-mcp`, `allow-session`,
+`allow-frontend-ready`, `allow-worktrees-list`, `allow-worktree-git-status`, `allow-workspace-validate`, `allow-workspace-switch`,
+`allow-worktree-create`, `allow-worktree-prep-open-log`, `allow-subsession`, `allow-subsession-icon`, `allow-worktree-tab`, and
+`allow-dialog-pick-directory`.
 
 Broad built-in/plugin grants such as `core:default`, dialog, shell, store, and filesystem permissions are intentionally not granted. Plugin crates may
 still be registered for planned surfaces, but registration alone does not expose commands to the WebView; any future plugin command must get a narrow,
@@ -207,6 +220,25 @@ Arborist has an internal plugin registry, not a public plugin marketplace. Built
 `pluginSettings` is grouped by plugin family (`ai`, `customProcess`, `dashboardWidget`) so stable ids can overlap across families without sharing
 state. `enabled` is optional; omission means "use the plugin descriptor default".
 
+## MCP server
+
+Arborist hosts an embedded [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes a small, audited tool surface to AI
+sessions running inside Arborist. The server lives in `src-tauri/src/mcp/` plus the standalone `crates/arborist-mcp/` sidecar; it is **off by default**
+in every workspace and is opted in per workspace via `AppConfig.mcp.enabled`.
+
+| Subsystem           | Module                                                                                                                            | Responsibility                                                                                                                                     |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host IPC            | `src-tauri/src/mcp/ipc.rs`, `crates/arborist-mcp/src/host.rs`                                                                     | OS-authenticated local socket, per-session registry, JSON-RPC dispatcher, `mcp://activity` event emission.                                         |
+| Tool catalogue      | `src-tauri/src/mcp/tools/{list_worktrees,workspace_status,create_worktree,merge_main_into_worktrees,cleanup_merged_worktrees}.rs` | One module per allowed tool. Each composes git invocations through `git_command_mcp_ro` / `git_runner`, enforces refuse rules, and emits activity. |
+| Confirmation gate   | `src-tauri/src/mcp/confirm.rs`                                                                                                    | Mints / consumes short-lived single-use confirmation tokens bound to the exact argument fingerprint. Drift returns `ConfirmationStale`.            |
+| Trust store         | `src-tauri/src/mcp/trust.rs`                                                                                                      | Per-session "first use" trust records (`mcp_trust_list`/`mcp_trust_revoke`).                                                                       |
+| Audit log           | `src-tauri/src/mcp/audit.rs`                                                                                                      | Hash-chained, append-only logs for read and destructive operations; `mcp_audit_recent` pages across both.                                          |
+| Rate limiter        | `src-tauri/src/mcp/rate.rs`                                                                                                       | Per-session / per-workspace / per-host token buckets covering structural reads, expensive reads, destructive ops, and remote fetches.              |
+| Config / Tauri glue | `src-tauri/src/commands/mcp.rs`, `crates/arborist-types/src/mcp.rs`                                                               | Tauri command handlers + canonical wire types (`AppConfigMcp`, `McpStatus`, `McpPendingAction`, `McpAuditPage`, etc.).                             |
+| Frontend            | `src/components/McpSettingsTab.tsx`, MCP bridge wrappers in `src/lib/tauri-bridge.ts`                                             | Workspace-level settings panel (master toggle, per-tool enable + confirmation, allow-remote-fetch) and typed `mcp_*` bridge calls.                 |
+
+See [`mcp.md`](./mcp.md) for the user-facing overview, tool catalogue, security defences, and the list of UX surfaces deferred to follow-up PRs.
+
 ## Invariants
 
 - Compose once, reuse forever. `Session.composedCommand` is built at creation and reused for restart/restore.
@@ -223,6 +255,8 @@ state. `enabled` is optional; omission means "use the plugin descriptor default"
 - Restore is backend-driven and per-session best-effort.
 - PTY output does not flow through Zustand; it routes directly to xterm.js.
 - No credentials are stored by Arborist.
+- The MCP server is off by default per workspace; the host IPC socket is OS-authenticated, every connection is bound to one session id and workspace
+  root, and destructive tools require confirmation tokens that drift to `ConfirmationStale` if the worktree state changes between approval and use.
 
 ## Security boundaries
 

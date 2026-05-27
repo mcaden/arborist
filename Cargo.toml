@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/arborist-types", "crates/arborist-claude-hook", "src-tauri"]
+members = ["crates/arborist-types", "crates/arborist-claude-hook", "crates/arborist-mcp", "src-tauri"]
 
 # Smaller debug info for the local crate, no debug info for deps. Speeds up
 # the link step and shrinks PDB / DWARF output without losing line numbers in

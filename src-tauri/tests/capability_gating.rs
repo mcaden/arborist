@@ -70,6 +70,10 @@ fn main_capability_allows_required_commands_only() {
         "main capability must include allow-shell-command-trust so repo command trust prompts are callable; got {identifiers:?}",
     );
     assert!(
+        identifiers.contains(&"allow-mcp"),
+        "main capability must include allow-mcp so MCP management commands are callable; got {identifiers:?}",
+    );
+    assert!(
         identifiers.contains(&"allow-session"),
         "main capability must include allow-session so session_* commands are callable; got {identifiers:?}",
     );
@@ -251,6 +255,31 @@ fn allow_config_permission_file_declares_config_commands() {
     );
     assert!(raw.contains("\"config_get\""), "permission must allow the `config_get` command",);
     assert!(raw.contains("\"config_set\""), "permission must allow the `config_set` command",);
+}
+
+#[test]
+fn allow_mcp_permission_file_declares_commands() {
+    let path = manifest_dir().join("permissions").join("allow-mcp.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-mcp\""),
+        "permission identifier must remain `allow-mcp`"
+    );
+    for cmd in [
+        "mcp_status",
+        "mcp_set_enabled",
+        "mcp_set_session_mode",
+        "mcp_get_effective_config",
+        "mcp_pending_actions",
+        "mcp_approve",
+        "mcp_deny",
+        "mcp_trust_list",
+        "mcp_trust_revoke",
+        "mcp_audit_recent",
+    ] {
+        let needle = format!("\"{cmd}\"");
+        assert!(raw.contains(&needle), "allow-mcp must declare {cmd}; raw permission file:\n{raw}");
+    }
 }
 
 #[test]

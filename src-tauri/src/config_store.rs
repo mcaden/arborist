@@ -32,9 +32,10 @@ use tracing::{debug, warn};
 
 use crate::store_layout::StoreLayout;
 use crate::types::{
-    AppConfig, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, PartialAppConfig, PartialPluginSettingState,
-    PartialPluginSettings, PluginSettingState, Session, SessionId, SessionMetricsEvent, SessionStatus, SubSessionRecord, Tool, WorktreeTab,
-    WorktreeTabId, AI_LAUNCH_COMMAND_SETTING, CONFIG_VERSION_CURRENT,
+    AppConfig, AppConfigMcp, ChildId, CustomProcessDef, CustomProcessDefId, CustomProcessKind, Error, McpRateLimits, McpRateLimitsConfig,
+    PartialAppConfig, PartialAppConfigMcp, PartialMcpRateLimits, PartialMcpRateLimitsConfig, PartialPluginSettingState, PartialPluginSettings,
+    PluginSettingState, Session, SessionId, SessionMetricsEvent, SessionStatus, SubSessionRecord, Tool, WorktreeTab, WorktreeTabId,
+    AI_LAUNCH_COMMAND_SETTING, CONFIG_VERSION_CURRENT,
 };
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -580,6 +581,9 @@ fn merge_partial(cfg: &mut AppConfig, patch: PartialAppConfig) -> Result<(), Err
     if let Some(plugin_settings) = patch.plugin_settings {
         merge_plugin_settings(cfg, plugin_settings)?;
     }
+    if let Some(mcp) = patch.mcp {
+        merge_mcp_config(&mut cfg.mcp, mcp);
+    }
     if let Some(s) = patch.last_open_sessions {
         cfg.last_open_sessions = s;
     }
@@ -636,6 +640,69 @@ fn merge_plugin_settings(cfg: &mut AppConfig, patch: PartialPluginSettings) -> R
     merge_plugin_kind_settings(&mut cfg.plugin_settings.custom_process, patch.custom_process);
     merge_plugin_kind_settings(&mut cfg.plugin_settings.dashboard_widget, patch.dashboard_widget);
     Ok(())
+}
+
+fn merge_mcp_config(target: &mut AppConfigMcp, patch: PartialAppConfigMcp) {
+    if let Some(enabled) = patch.enabled {
+        target.enabled = enabled;
+    }
+    for (tool_id, tool_patch) in patch.tools {
+        let entry = target.tools.entry(tool_id).or_default();
+        if let Some(enabled) = tool_patch.enabled {
+            entry.enabled = enabled;
+        }
+        if let Some(mode) = tool_patch.requires_confirmation {
+            entry.requires_confirmation = mode;
+        }
+    }
+    if let Some(rate_limits) = patch.rate_limits {
+        merge_mcp_rate_limits_config(&mut target.rate_limits, rate_limits);
+    }
+    if let Some(allow_remote_fetch) = patch.allow_remote_fetch {
+        target.allow_remote_fetch = allow_remote_fetch;
+    }
+    if let Some(disclosure_acknowledged_at) = patch.disclosure_acknowledged_at {
+        target.disclosure_acknowledged_at = Some(disclosure_acknowledged_at);
+    }
+    for (session_id, session_patch) in patch.per_session {
+        let entry = target.per_session.entry(session_id).or_default();
+        if let Some(mode) = session_patch.mode {
+            entry.mode = mode;
+        }
+    }
+}
+
+fn merge_mcp_rate_limits_config(target: &mut McpRateLimitsConfig, patch: PartialMcpRateLimitsConfig) {
+    if let Some(per_session) = patch.per_session {
+        merge_mcp_rate_limits(&mut target.per_session, per_session);
+    }
+    if let Some(per_workspace) = patch.per_workspace {
+        merge_mcp_rate_limits(&mut target.per_workspace, per_workspace);
+    }
+    if let Some(per_host) = patch.per_host {
+        merge_mcp_rate_limits(&mut target.per_host, per_host);
+    }
+}
+
+fn merge_mcp_rate_limits(target: &mut McpRateLimits, patch: PartialMcpRateLimits) {
+    if let Some(value) = patch.structural_read_per_min {
+        target.structural_read_per_min = value;
+    }
+    if let Some(value) = patch.expensive_read_per_min {
+        target.expensive_read_per_min = value;
+    }
+    if let Some(value) = patch.destructive_per_min {
+        target.destructive_per_min = value;
+    }
+    if let Some(value) = patch.total_per_min {
+        target.total_per_min = value;
+    }
+    if let Some(value) = patch.create_worktree_per_hour {
+        target.create_worktree_per_hour = value;
+    }
+    if let Some(value) = patch.fetch_per_60s {
+        target.fetch_per_60s = value;
+    }
 }
 
 fn merge_ai_plugin_settings(cfg: &mut AppConfig, patch: BTreeMap<String, PartialPluginSettingState>) -> Result<(), Error> {

@@ -21,6 +21,15 @@ export type { AppErrorLike } from '@/lib/tauri-error';
 
 import type {
   AppConfig,
+  ConfirmationToken,
+  McpActivityEvent,
+  McpAuditFilter,
+  McpAuditPage,
+  McpEffectiveConfig,
+  McpPendingAction,
+  McpSessionMode,
+  McpStatus,
+  McpTrustRecord,
   PartialAppConfig,
   RepoCommandTrustArgs,
   SessionId,
@@ -248,6 +257,46 @@ export function configSet(partial: PartialAppConfig): Promise<AppConfig> {
   return invoke<AppConfig>('config_set', { partial });
 }
 
+export function mcpStatus(): Promise<McpStatus> {
+  return invoke<McpStatus>('mcp_status');
+}
+
+export function mcpSetEnabled(enabled: boolean): Promise<McpStatus> {
+  return invoke<McpStatus>('mcp_set_enabled', { enabled });
+}
+
+export function mcpSetSessionMode(sessionId: SessionId, mode: McpSessionMode): Promise<McpStatus> {
+  return invoke<McpStatus>('mcp_set_session_mode', { sessionId, mode });
+}
+
+export function mcpGetEffectiveConfig(sessionId: SessionId): Promise<McpEffectiveConfig> {
+  return invoke<McpEffectiveConfig>('mcp_get_effective_config', { sessionId });
+}
+
+export function mcpPendingActions(sessionId?: SessionId): Promise<McpPendingAction[]> {
+  return invoke<McpPendingAction[]>('mcp_pending_actions', sessionId === undefined ? {} : { sessionId });
+}
+
+export function mcpApprove(actionId: string): Promise<ConfirmationToken> {
+  return invoke<ConfirmationToken>('mcp_approve', { actionId });
+}
+
+export function mcpDeny(actionId: string): Promise<boolean> {
+  return invoke<boolean>('mcp_deny', { actionId });
+}
+
+export function mcpTrustList(sessionId: SessionId): Promise<McpTrustRecord[]> {
+  return invoke<McpTrustRecord[]>('mcp_trust_list', { sessionId });
+}
+
+export function mcpTrustRevoke(sessionId: SessionId, id: string): Promise<boolean> {
+  return invoke<boolean>('mcp_trust_revoke', { sessionId, id });
+}
+
+export function mcpAuditRecent(filter: McpAuditFilter = {}): Promise<McpAuditPage> {
+  return invoke<McpAuditPage>('mcp_audit_recent', { filter });
+}
+
 export function shellCommandPreview(args: ShellCommandPreviewArgs): Promise<ShellCommandPreview> {
   return invoke<ShellCommandPreview>('shell_command_preview', { args });
 }
@@ -382,6 +431,10 @@ export function onSessionActivity(cb: (payload: SessionActivityEvent) => void): 
 
 export function onSessionMetrics(cb: (payload: SessionMetricsEvent) => void): Promise<UnlistenFn> {
   return listen<SessionMetricsEvent>('session://metrics', (event) => cb(event.payload));
+}
+
+export function onMcpActivity(cb: (payload: McpActivityEvent) => void): Promise<UnlistenFn> {
+  return listen<McpActivityEvent>('mcp://activity', (event) => cb(event.payload));
 }
 
 // ---------------------------------------------------------------------------

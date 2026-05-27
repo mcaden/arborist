@@ -1,22 +1,22 @@
 #!/usr/bin/env node
-// Build the `arborist-claude-hook` helper binary and stage it in the layout Tauri's `externalBin` expects.
+// Build Arborist sidecar binaries and stage them in the layout Tauri's `externalBin` expects.
 //
 // Tauri's bundler ships the main `arborist` binary by default but ignores sibling `[[bin]]` entries unless they're declared in
 // `tauri.conf.json::bundle.externalBin`. `externalBin` expects each binary to live at `<base>-<target-triple>{.exe}` relative to the
-// `tauri.conf.json` directory. This script:
+// `tauri.conf.json` directory. This script stages both `arborist-claude-hook` and `arborist-mcp` by:
 //
-//   1. Runs `cargo build --release -p arborist-claude-hook` so the artifact exists on disk regardless of whether the surrounding `tauri build`
+//   1. Running `cargo build --release -p <sidecar>` so the artifact exists on disk regardless of whether the surrounding `tauri build`
 //      invocation passed `--bin arborist` (which it does — Tauri's CLI restricts the cargo target).
-//   2. Asks Cargo for the workspace `target_directory` (it differs between a standalone crate and a workspace member — this repo is a workspace
-//      and builds into the *repo-root* `target/`, not `src-tauri/target/`), resolves the active Tauri build target triple, and builds the helper
-//      for that target.
-//   3. Copies (or for macOS universal, lipo-merges) the built helper to `src-tauri/binaries/arborist-claude-hook-<triple>{.exe}` so `externalBin`
+//   2. Asking Cargo for the workspace `target_directory` (it differs between a standalone crate and a workspace member — this repo is a workspace
+//      and builds into the *repo-root* `target/`, not `src-tauri/target/`), resolving the active Tauri build target triple, and building the
+//      sidecar for that target.
+//   3. Copying (or for macOS universal, lipo-merging) the built helper to `src-tauri/binaries/<sidecar>-<triple>{.exe}` so `externalBin`
 //      picks it up.
 //
 // Wired via `src-tauri/tauri.bundle.conf.json::build.beforeBuildCommand`, which is merged into the base config only for `pnpm tauri:build`
 // (and the release workflow). The base `tauri.conf.json` is left clean so plain `cargo build`, `cargo test`, and `tauri dev` never trigger
 // `externalBin` validation — those flows don't need the sidecar staged in `src-tauri/binaries/` (the cargo `[[bin]]` artifact at
-// `target/{debug,release}/arborist-claude-hook[.exe]` is the sibling-of-`arborist` that the runtime looks for at dev time).
+// `target/{debug,release}/<sidecar>[.exe]` is the sibling-of-`arborist` that the runtime looks for at dev time).
 //
 // ## Security notes
 //
@@ -35,6 +35,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const tauriDir = join(repoRoot, 'src-tauri');
 const outDir = join(tauriDir, 'binaries');
+const SIDECARS = ['arborist-claude-hook', 'arborist-mcp'];
 
 function exe(name, targetTriple) {
   const windowsTarget = targetTriple?.includes('windows') ?? false;
@@ -88,7 +89,7 @@ function helperBuildEnv() {
   const env = { ...process.env };
   // Helper builds run inside Tauri's beforeBuildCommand. Strip Tauri_* vars so the
   // helper's Cargo build doesn't read the release overlay config (externalBin) and
-  // fail before this script has staged the sidecar into src-tauri/binaries/.
+  // fail before this script has staged the sidecars into src-tauri/binaries/.
   for (const key of Object.keys(env)) {
     if (key.startsWith('TAURI_')) {
       delete env[key];
@@ -97,19 +98,26 @@ function helperBuildEnv() {
   return env;
 }
 
-function buildHelperForTarget(targetDir, targetTriple) {
-  console.log(`[prepare-claude-hook-sidecar] building arborist-claude-hook (release, target=${targetTriple})…`);
-  execFileSync(cargoBin('cargo'), ['build', '--release', '-p', 'arborist-claude-hook', '--target', targetTriple], {
+function buildSidecarForTarget(targetDir, targetTriple, binaryName) {
+  console.log(`[prepare-claude-hook-sidecar] building ${binaryName} (release, target=${targetTriple})…`);
+  execFileSync(cargoBin('cargo'), ['build', '--release', '-p', binaryName, '--target', targetTriple], {
     cwd: tauriDir,
     env: helperBuildEnv(),
     stdio: 'inherit',
   });
 
-  const src = join(targetDir, targetTriple, 'release', exe('arborist-claude-hook', targetTriple));
+  const src = join(targetDir, targetTriple, 'release', exe(binaryName, targetTriple));
   if (!existsSync(src) || !statSync(src).isFile()) {
-    throw new Error(`expected built helper at ${src} but did not find one`);
+    throw new Error(`expected built sidecar at ${src} but did not find one`);
   }
   return src;
+}
+
+function stageSidecar(src, binaryName, targetTriple) {
+  const dst = join(outDir, exe(`${binaryName}-${targetTriple}`, targetTriple));
+  copyFileSync(src, dst);
+  console.log(`[prepare-claude-hook-sidecar] copied ${src} -> ${dst}`);
+  return dst;
 }
 
 const UNIVERSAL_MACOS_TARGET = 'universal-apple-darwin';
@@ -118,37 +126,40 @@ const targetDir = cargoTargetDir();
 const triple = tauriBuildTargetTriple();
 
 ensureDir(outDir);
-const dstBase = `arborist-claude-hook-${triple}`;
-const dst = join(outDir, exe(dstBase, triple));
 
 if (triple === UNIVERSAL_MACOS_TARGET) {
   if (process.platform !== 'darwin') {
     throw new Error(`target ${UNIVERSAL_MACOS_TARGET} requires a darwin host for lipo`);
   }
-  const thinBinaries = MACOS_UNIVERSAL_TARGETS.map((target) => ({
-    target,
-    src: buildHelperForTarget(targetDir, target),
-  }));
-  for (const { target, src } of thinBinaries) {
-    const thinDst = join(outDir, exe(`arborist-claude-hook-${target}`, target));
-    copyFileSync(src, thinDst);
-    console.log(`[prepare-claude-hook-sidecar] copied ${src} -> ${thinDst}`);
+
+  for (const binaryName of SIDECARS) {
+    const thinBinaries = MACOS_UNIVERSAL_TARGETS.map((target) => ({
+      target,
+      src: buildSidecarForTarget(targetDir, target, binaryName),
+    }));
+    for (const { target, src } of thinBinaries) {
+      stageSidecar(src, binaryName, target);
+    }
+
+    const universalDst = join(outDir, exe(`${binaryName}-${triple}`, triple));
+    console.log(`[prepare-claude-hook-sidecar] creating universal sidecar ${universalDst}`);
+    execFileSync('/usr/bin/lipo', ['-create', ...thinBinaries.map(({ src }) => src), '-output', universalDst], {
+      cwd: tauriDir,
+      stdio: 'inherit',
+    });
+    if (!existsSync(universalDst) || !statSync(universalDst).isFile()) {
+      throw new Error(`expected universal sidecar at ${universalDst} but did not find one`);
+    }
+
+    const cargoUniversalDst = join(targetDir, UNIVERSAL_MACOS_TARGET, 'release', exe(binaryName, UNIVERSAL_MACOS_TARGET));
+    ensureDir(dirname(cargoUniversalDst));
+    copyFileSync(universalDst, cargoUniversalDst);
+    console.log(`[prepare-claude-hook-sidecar] copied ${universalDst} -> ${cargoUniversalDst}`);
+    console.log(`[prepare-claude-hook-sidecar] created universal sidecar ${universalDst}`);
   }
-  console.log(`[prepare-claude-hook-sidecar] creating universal helper ${dst}`);
-  execFileSync('/usr/bin/lipo', ['-create', ...thinBinaries.map(({ src }) => src), '-output', dst], {
-    cwd: tauriDir,
-    stdio: 'inherit',
-  });
-  if (!existsSync(dst) || !statSync(dst).isFile()) {
-    throw new Error(`expected universal helper at ${dst} but did not find one`);
-  }
-  const cargoUniversalDst = join(targetDir, UNIVERSAL_MACOS_TARGET, 'release', exe('arborist-claude-hook', UNIVERSAL_MACOS_TARGET));
-  ensureDir(dirname(cargoUniversalDst));
-  copyFileSync(dst, cargoUniversalDst);
-  console.log(`[prepare-claude-hook-sidecar] copied ${dst} -> ${cargoUniversalDst}`);
-  console.log(`[prepare-claude-hook-sidecar] created universal helper ${dst}`);
 } else {
-  const src = buildHelperForTarget(targetDir, triple);
-  copyFileSync(src, dst);
-  console.log(`[prepare-claude-hook-sidecar] copied ${src} -> ${dst}`);
+  for (const binaryName of SIDECARS) {
+    const src = buildSidecarForTarget(targetDir, triple, binaryName);
+    stageSidecar(src, binaryName, triple);
+  }
 }

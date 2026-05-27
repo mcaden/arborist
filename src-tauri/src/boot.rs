@@ -772,6 +772,45 @@ mod tests {
         fn git_status(&self, _: &Path) -> Result<crate::types::WorktreeGitStatus, Error> {
             Ok(crate::types::WorktreeGitStatus::default())
         }
+        fn fetch_origin(&self, _: &Path, _: std::time::Duration) -> Result<(), crate::git::GitError> {
+            Ok(())
+        }
+        fn branches_merged_into(&self, _: &Path, _: &str) -> Result<std::collections::HashSet<String>, crate::git::GitError> {
+            Ok(std::collections::HashSet::new())
+        }
+        fn cherry_empty(&self, _: &Path, _: &str, _: &str) -> Result<bool, crate::git::GitError> {
+            Ok(true)
+        }
+        fn merge_from_branch(
+            &self,
+            _: &Path,
+            _: &str,
+            _: bool,
+            _: std::time::Duration,
+        ) -> Result<crate::git::MergeFromBranchOutcome, crate::git::GitError> {
+            Ok(crate::git::MergeFromBranchOutcome::AlreadyUpToDate)
+        }
+        fn default_branch(&self, _: &Path) -> Result<crate::git::DefaultBranchInfo, crate::git::GitError> {
+            Ok(crate::git::DefaultBranchInfo {
+                branch: "main".to_owned(),
+                source: crate::git::DefaultBranchSource::Main,
+            })
+        }
+        fn rev_parse_verify(&self, _: &Path, _: &str) -> Result<String, crate::git::GitError> {
+            Ok("deadbeef".to_owned())
+        }
+        fn git_status_mcp(&self, _: &Path) -> Result<crate::git::WorktreeGitStatusSummary, crate::git::GitError> {
+            Ok(crate::git::WorktreeGitStatusSummary::default())
+        }
+        fn merge_tree_dry_run(&self, _: &Path, _: &str, _: &str) -> Result<crate::git::MergeTreeOutcome, crate::git::GitError> {
+            Ok(crate::git::MergeTreeOutcome::Unsupported)
+        }
+        fn merge_abort(&self, _: &Path) -> Result<(), crate::git::GitError> {
+            Ok(())
+        }
+        fn has_merge_head(&self, _: &Path) -> Result<bool, crate::git::GitError> {
+            Ok(false)
+        }
     }
 
     /// Test fixture: pretends nothing is a git repository. Used for the new "non-repo path" boot rejection tests.
@@ -793,6 +832,45 @@ mod tests {
         }
         fn git_status(&self, _: &Path) -> Result<crate::types::WorktreeGitStatus, Error> {
             Ok(crate::types::WorktreeGitStatus::default())
+        }
+        fn fetch_origin(&self, _: &Path, _: std::time::Duration) -> Result<(), crate::git::GitError> {
+            Ok(())
+        }
+        fn branches_merged_into(&self, _: &Path, _: &str) -> Result<std::collections::HashSet<String>, crate::git::GitError> {
+            Ok(std::collections::HashSet::new())
+        }
+        fn cherry_empty(&self, _: &Path, _: &str, _: &str) -> Result<bool, crate::git::GitError> {
+            Ok(true)
+        }
+        fn merge_from_branch(
+            &self,
+            _: &Path,
+            _: &str,
+            _: bool,
+            _: std::time::Duration,
+        ) -> Result<crate::git::MergeFromBranchOutcome, crate::git::GitError> {
+            Ok(crate::git::MergeFromBranchOutcome::AlreadyUpToDate)
+        }
+        fn default_branch(&self, _: &Path) -> Result<crate::git::DefaultBranchInfo, crate::git::GitError> {
+            Ok(crate::git::DefaultBranchInfo {
+                branch: "main".to_owned(),
+                source: crate::git::DefaultBranchSource::Main,
+            })
+        }
+        fn rev_parse_verify(&self, _: &Path, _: &str) -> Result<String, crate::git::GitError> {
+            Ok("deadbeef".to_owned())
+        }
+        fn git_status_mcp(&self, _: &Path) -> Result<crate::git::WorktreeGitStatusSummary, crate::git::GitError> {
+            Ok(crate::git::WorktreeGitStatusSummary::default())
+        }
+        fn merge_tree_dry_run(&self, _: &Path, _: &str, _: &str) -> Result<crate::git::MergeTreeOutcome, crate::git::GitError> {
+            Ok(crate::git::MergeTreeOutcome::Unsupported)
+        }
+        fn merge_abort(&self, _: &Path) -> Result<(), crate::git::GitError> {
+            Ok(())
+        }
+        fn has_merge_head(&self, _: &Path) -> Result<bool, crate::git::GitError> {
+            Ok(false)
         }
     }
 

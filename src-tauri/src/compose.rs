@@ -172,6 +172,72 @@ pub fn validate_worktree_name(name: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
+/// Validate a user-supplied unqualified git ref / branch name for MCP operations.
+///
+/// The accepted subset is intentionally strict because these names are passed to `git` subcommands that also accept flags and revision expressions.
+/// Rejecting git's ambiguous syntax up front keeps later command invocations shell-safe and predictable.
+pub fn validate_ref_name(name: &str) -> Result<String, String> {
+    if name.is_empty() {
+        return Err("ref name cannot be empty".to_owned());
+    }
+    if name.chars().count() > 255 {
+        return Err("ref name cannot exceed 255 characters".to_owned());
+    }
+    if name == "@" {
+        return Err("ref name cannot be '@'".to_owned());
+    }
+    if name.starts_with('-') {
+        return Err("ref name cannot start with '-'".to_owned());
+    }
+    if name.starts_with("refs/") {
+        return Err("ref name cannot start with 'refs/'".to_owned());
+    }
+    if name.starts_with("origin/") {
+        return Err("ref name cannot start with 'origin/'".to_owned());
+    }
+    if name.contains("..") {
+        return Err("ref name cannot contain '..'".to_owned());
+    }
+    if name.contains("@{") {
+        return Err("ref name cannot contain '@{'".to_owned());
+    }
+    if name.contains("//") {
+        return Err("ref name cannot contain '//'".to_owned());
+    }
+    if name.chars().any(|ch| ch.is_whitespace()) {
+        return Err("ref name cannot contain whitespace".to_owned());
+    }
+    for ch in ['~', '^', ':', '?', '*', '[', '\\'] {
+        if name.contains(ch) {
+            return Err(format!("ref name cannot contain '{ch}'"));
+        }
+    }
+    if name.chars().any(|ch| ch == '\0' || ch.is_control() || ch == '\u{007f}') {
+        return Err("ref name cannot contain control characters".to_owned());
+    }
+    if name.starts_with('/') {
+        return Err("ref name cannot start with '/'".to_owned());
+    }
+    if name.ends_with('.') {
+        return Err("ref name cannot end with '.'".to_owned());
+    }
+    if name.ends_with('/') {
+        return Err("ref name cannot end with '/'".to_owned());
+    }
+    for component in name.split('/') {
+        if component.is_empty() {
+            return Err("ref name cannot contain empty path components".to_owned());
+        }
+        if component.starts_with('.') {
+            return Err("ref name path components cannot start with '.'".to_owned());
+        }
+        if component.ends_with(".lock") {
+            return Err("ref name path components cannot end with '.lock'".to_owned());
+        }
+    }
+    Ok(name.to_owned())
+}
+
 /// Validate a user-supplied worktree path.
 ///
 /// - Missing path → [`Error::WorktreeMissing`].
@@ -939,6 +1005,136 @@ mod tests {
         assert!(validate_worktree_name(&long).is_err());
         let max = "a".repeat(255);
         assert!(validate_worktree_name(&max).is_ok());
+    }
+
+    fn expect_ref_name_err(name: &str, reason_substring: &str) {
+        let err = validate_ref_name(name).expect_err("should reject ref name");
+        assert!(err.contains(reason_substring), "error {err:?} did not mention {reason_substring:?}");
+    }
+
+    #[test]
+    fn validate_ref_name_accepts_unqualified_branch_names() {
+        for name in ["main", "feature/sub", "release-2025.04", "team/alpha-1"] {
+            assert_eq!(validate_ref_name(name).as_deref(), Ok(name));
+        }
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_empty_names() {
+        expect_ref_name_err("", "empty");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_names_longer_than_255_chars() {
+        let long = "a".repeat(256);
+        expect_ref_name_err(&long, "255");
+        let max = "a".repeat(255);
+        assert!(validate_ref_name(&max).is_ok());
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_bare_at() {
+        expect_ref_name_err("@", "'@'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_control_characters() {
+        expect_ref_name_err("feature\0branch", "control characters");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_leading_dash() {
+        expect_ref_name_err("-feature", "'-'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_double_dot() {
+        expect_ref_name_err("feature..branch", "'..'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_at_brace() {
+        expect_ref_name_err("feature@{1", "'@{'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_tilde() {
+        expect_ref_name_err("feature~branch", "'~'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_caret() {
+        expect_ref_name_err("feature^branch", "'^'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_colon() {
+        expect_ref_name_err("feature:branch", "':'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_question_mark() {
+        expect_ref_name_err("feature?branch", "'?'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_asterisk() {
+        expect_ref_name_err("feature*branch", "'*'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_open_bracket() {
+        expect_ref_name_err("feature[branch", "'['");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_backslash() {
+        expect_ref_name_err("feature\\branch", "'\\'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_whitespace() {
+        expect_ref_name_err("feature branch", "whitespace");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_double_slash() {
+        expect_ref_name_err("feature//branch", "'//'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_dot_prefixed_path_components() {
+        expect_ref_name_err("feature/.hidden", "start with '.'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_lock_suffixed_path_components() {
+        expect_ref_name_err("feature/topic.lock", ".lock");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_leading_slash() {
+        expect_ref_name_err("/feature", "start with '/'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_trailing_dot() {
+        expect_ref_name_err("feature.", "end with '.'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_trailing_slash() {
+        expect_ref_name_err("feature/", "end with '/'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_refs_prefix() {
+        expect_ref_name_err("refs/heads/main", "'refs/'");
+    }
+
+    #[test]
+    fn validate_ref_name_rejects_origin_prefix() {
+        expect_ref_name_err("origin/main", "'origin/'");
     }
 
     // -- env_for_tool --------------------------------------------------------

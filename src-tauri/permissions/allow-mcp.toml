@@ -1,0 +1,27 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Workspace-level MCP control plane. Grants the WebView access to read the
+# MCP server state (`mcp_status`, `mcp_get_effective_config`, `mcp_audit_recent`),
+# manage pending confirmations and remembered trust grants
+# (`mcp_pending_actions`, `mcp_approve`, `mcp_deny`, `mcp_trust_list`,
+# `mcp_trust_revoke`), and toggle the master/per-session enable switches
+# (`mcp_set_enabled`, `mcp_set_session_mode`). The actual MCP server runs in
+# Rust; this capability only exposes the *control* commands to the frontend.
+# All actions are routed through the typed wrappers in `src/lib/tauri-bridge.ts`
+# (`mcpStatus`, `mcpSetEnabled`, etc.) — components never call `invoke` directly.
+
+[[permission]]
+identifier = "allow-mcp"
+description = "Allows the frontend to read MCP status, manage pending confirmations and trust grants, and toggle the workspace/per-session MCP enable switches. Tool execution itself runs in Rust behind the host IPC socket; this capability does not grant tool invocation."
+commands.allow = [
+  "mcp_status",
+  "mcp_set_enabled",
+  "mcp_set_session_mode",
+  "mcp_get_effective_config",
+  "mcp_pending_actions",
+  "mcp_approve",
+  "mcp_deny",
+  "mcp_trust_list",
+  "mcp_trust_revoke",
+  "mcp_audit_recent",
+]

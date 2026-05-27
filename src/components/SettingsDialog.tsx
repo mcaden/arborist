@@ -21,13 +21,14 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { ThemeMode } from '@/types/arborist';
 
 import { CustomProcessesTab } from './CustomProcessesTab';
+import { McpSettingsTab } from './McpSettingsTab';
 import { PluginsTab } from './PluginsTab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError } from '@/lib/tauri-bridge';
 import { changeWorkspace } from '@/lib/workspace-switch';
 import { selectTheme, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
 
-export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'about';
+export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'mcp' | 'about';
 
 export interface SettingsDialogProps {
   onClose: () => void;
@@ -76,15 +77,18 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const generalTabId = useId();
   const pluginsTabId = useId();
   const customProcessesTabId = useId();
+  const mcpTabId = useId();
   const aboutTabId = useId();
   const generalPanelId = useId();
   const pluginsPanelId = useId();
   const customProcessesPanelId = useId();
+  const mcpPanelId = useId();
   const aboutPanelId = useId();
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const generalTabRef = useRef<HTMLButtonElement | null>(null);
   const pluginsTabRef = useRef<HTMLButtonElement | null>(null);
   const customProcessesTabRef = useRef<HTMLButtonElement | null>(null);
+  const mcpTabRef = useRef<HTMLButtonElement | null>(null);
   const aboutTabRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -96,11 +100,12 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   // would mean two keypresses to reach a tab the user clearly wants).
   const handleTablistKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>): void => {
-      const order: SettingsTab[] = ['general', 'plugins', 'customProcesses', 'about'];
+      const order: SettingsTab[] = ['general', 'plugins', 'customProcesses', 'mcp', 'about'];
       const refs: Record<SettingsTab, RefObject<HTMLButtonElement | null>> = {
         general: generalTabRef,
         plugins: pluginsTabRef,
         customProcesses: customProcessesTabRef,
+        mcp: mcpTabRef,
         about: aboutTabRef,
       };
       const idx = order.indexOf(activeTab);
@@ -266,6 +271,24 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               Custom Processes
             </button>
             <button
+              ref={mcpTabRef}
+              type="button"
+              role="tab"
+              id={mcpTabId}
+              aria-selected={activeTab === 'mcp'}
+              aria-controls={mcpPanelId}
+              tabIndex={activeTab === 'mcp' ? 0 : -1}
+              onClick={() => setActiveTab('mcp')}
+              data-testid="settings-tab-mcp"
+              className={`-mb-px rounded-t border-b-2 px-3 py-1 text-xs ${
+                activeTab === 'mcp'
+                  ? 'border-blue-600 font-medium text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
+            >
+              MCP Server
+            </button>
+            <button
               ref={aboutTabRef}
               type="button"
               role="tab"
@@ -413,6 +436,16 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
               className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
             >
               <CustomProcessesTab onClose={onClose} />
+            </div>
+          ) : activeTab === 'mcp' ? (
+            <div
+              role="tabpanel"
+              id={mcpPanelId}
+              aria-labelledby={mcpTabId}
+              data-testid="settings-panel-mcp"
+              className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
+            >
+              <McpSettingsTab onClose={onClose} />
             </div>
           ) : (
             <div
