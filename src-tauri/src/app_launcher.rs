@@ -364,7 +364,12 @@ pub fn pid_alive(pid: u32) -> bool {
         unsafe {
             let ok = GetExitCodeProcess(h, &mut code);
             CloseHandle(h);
-            ok != 0 && code == STILL_ACTIVE
+            // Default-alive policy (same reasoning as the OpenProcess-failed branch above): when `GetExitCodeProcess` itself fails (ok == 0), we have
+            // no positive evidence of death and reporting `false` would synthesise a fake `Reaped` outcome for `kill_async` callers — silently
+            // dropping a still-running orphan from the user's awareness. Only treat the process as dead when the syscall succeeded AND the exit code
+            // is no longer `STILL_ACTIVE`. (Note: a process can legitimately exit with `259`, which would make us briefly report it alive; that is
+            // an acceptable false positive — we'd rather report `Unconfirmed` than fake-`Reaped`.)
+            ok == 0 || code == STILL_ACTIVE
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -853,9 +858,12 @@ impl AppPool {
     /// **Never holds the pool lock across `.await`.** The snapshot is taken inside a tight critical section; verification polls via [`pid_alive`]
     /// off-lock.
     ///
-    /// Returns [`AppKillOutcome::Unconfirmed`] when either the killer returned an error OR the PID was still alive at the end of the grace window.
-    /// In both cases the underlying process **may** still be alive; the caller is expected to surface this to the user (the runtime is gone from
-    /// Arborist's perspective but the user's editor/file-explorer might still be running).
+    /// Returns [`AppKillOutcome::Reaped`] only when both (a) the killer syscall reported success AND (b) [`pid_alive`] subsequently observed the
+    /// process as gone within the grace window — i.e. when Arborist can credibly attribute the death to its own kill action. Returns
+    /// [`AppKillOutcome::Unconfirmed`] whenever either condition fails: the killer returned an error (regardless of whether the PID happens to die
+    /// during the grace window from an unrelated cause), or the PID was still alive at the end of the grace window. In both `Unconfirmed` paths the
+    /// underlying process **may** still be alive; the caller is expected to surface this to the user (the runtime is gone from Arborist's
+    /// perspective but the user's editor/file-explorer might still be running).
     pub async fn kill_async(&self, id: &SubSessionId) -> Result<AppKillOutcome, Error> {
         self.kill_async_with_grace(id, APP_KILL_GRACE).await
     }
@@ -901,6 +909,13 @@ impl AppPool {
         loop {
             if !pid_alive(pid) {
                 drop(rt);
+                // Honour the documented contract: only credit `Reaped` when we can attribute the death to our own kill action. If `killer.kill()`
+                // returned an error and the PID later happens to be gone (e.g. the process exited on its own, or pid_alive's best-effort probe
+                // disagreed with the syscall), we cannot claim our kill caused it — report `Unconfirmed` so the operator sees the syscall failure
+                // surface in the UI rather than being silently swallowed by an opportunistic `Reaped`.
+                if killer_result.is_err() {
+                    return Ok(AppKillOutcome::Unconfirmed { pid });
+                }
                 return Ok(AppKillOutcome::Reaped { pid });
             }
             if Instant::now() >= deadline {
@@ -911,13 +926,13 @@ impl AppPool {
         // Drop the runtime explicitly so the wait/resolver/liveness join handles get a chance to be cleaned up (best-effort — they may still be in
         // their own loops, that's fine).
         drop(rt);
-        if killer_result.is_err() {
-            return Ok(AppKillOutcome::Unconfirmed { pid });
-        }
+        // Loop broke at deadline => `pid_alive(pid)` was true at the final poll; the post-loop return is always `Unconfirmed` regardless of killer
+        // outcome. (If the killer also errored, the warning at the top of this function already surfaced that diagnostic.)
         tracing::warn!(
             sub_session_id = %id,
             pid,
             grace_ms = grace.as_millis() as u64,
+            killer_failed = killer_result.is_err(),
             "kill_async: process still alive at end of grace window; reporting Unconfirmed",
         );
         Ok(AppKillOutcome::Unconfirmed { pid })
@@ -2193,6 +2208,20 @@ mod tests {
         rt.pid = pid;
     }
 
+    /// Test-only helper: swap the runtime's killer for one that always errors. Mirrors [`override_pid`] for cases where we want to drive the
+    /// `killer.kill() -> Err` branch of [`AppPool::kill_async_with_grace`] without touching the production [`FakeAppSpawner`].
+    fn override_killer_to_failing(pool: &AppPool, id: &SubSessionId) {
+        struct FailingKiller;
+        impl AppKiller for FailingKiller {
+            fn kill(&self) -> Result<(), Error> {
+                Err(Error::Internal("synthetic kill failure for test".into()))
+            }
+        }
+        let mut g = pool.inner.lock().unwrap();
+        let rt = g.get_mut(id).expect("runtime in pool");
+        rt.killer = Arc::new(FailingKiller);
+    }
+
     #[test]
     fn pid_alive_reports_dead_for_clearly_invalid_pid() {
         assert!(!pid_alive(DEAD_PID), "DEAD_PID must report dead on every platform");
@@ -2294,6 +2323,38 @@ mod tests {
 
         // Clean up the FakeWaiter thread that is otherwise blocked forever on its exit condvar (the safety net deliberately doesn't issue the kill
         // syscall that would normally wake it). Without this, the wait thread leaks for the lifetime of the test process.
+        spawner.child(0).signal_exit(false);
+    }
+
+    /// Regression test for the kill_async killer-error-vs-Reaped alignment fix (PR #221 review). The documented contract is that `Reaped` is only
+    /// returned when Arborist can credibly attribute the death to its own kill action: killer syscall reported success AND the PID was subsequently
+    /// observed as gone. When the killer returns `Err` and `pid_alive` happens to report dead anyway (e.g. the process exited on its own, or
+    /// pid_alive's best-effort probe disagreed with the syscall), the contract says `Unconfirmed`, not `Reaped`. Before this fix the loop returned
+    /// `Reaped` on the first dead-PID poll regardless of `killer_result`, which silently hid kill-syscall failures from the operator.
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_async_unconfirmed_when_killer_errors_even_if_pid_already_dead() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _s, _e) = collect_sink();
+        let id = SubSessionId::default();
+        pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
+        // DEAD_PID makes `pid_alive` report dead on the first poll iteration; the failing killer makes `killer_result.is_err()` true.
+        override_pid(&pool, &id, DEAD_PID);
+        override_killer_to_failing(&pool, &id);
+
+        let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(500)).await.expect("kill_async");
+
+        assert_eq!(
+            outcome,
+            AppKillOutcome::Unconfirmed { pid: DEAD_PID },
+            "killer error must surface as Unconfirmed even when pid_alive reports the process gone"
+        );
+        assert!(
+            !pool.contains(&id),
+            "runtime entry must still be removed even when the kill is Unconfirmed"
+        );
+
+        // Drain the FakeWaiter thread (the overridden FailingKiller never signals exit on the real FakeApp).
         spawner.child(0).signal_exit(false);
     }
 
