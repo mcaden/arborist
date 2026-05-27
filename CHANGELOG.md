@@ -10,7 +10,7 @@ and this project follows semantic versioning once it reaches a stable v1.
 ### Changed — Dependency upgrades
 
 - **`portable-pty` `0.8` → `0.9`** ([#218](https://github.com/mcaden/arborist/pull/218), closes [#215](https://github.com/mcaden/arborist/issues/215)). The new
-  release enables `PSUEDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit `ESC[6n` (DSR cursor-position request) at startup
+  release enables `PSEUDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit `ESC[6n` (DSR cursor-position request) at startup
   and refuse to forward any child stdout until the host answers with `ESC[<row>;<col>R`. The production frontend handles this transparently via
   `xterm.js`; the `pty_pool` integration tests gained a streaming `DsrScanner` + `dsr_responding_sink` helper that does the same so real-ConPTY tests
   don't deadlock waiting on a banner.

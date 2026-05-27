@@ -167,7 +167,7 @@ fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
 
 /// Wraps `recording_sink` with a DSR cursor-position responder.
 ///
-/// **Why this exists**: `portable-pty 0.9+` enables `PSUEDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit
+/// **Why this exists**: `portable-pty 0.9+` enables `PSEUDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit
 /// `ESC[6n` at startup and refuse to forward any child stdout until the host answers with `ESC[<row>;<col>R`. xterm.js answers transparently in
 /// production, but a passive `recording_sink` would deadlock — the seven real-PTY tests in this file would hang waiting for a banner ConPTY
 /// is holding back. See <https://github.com/mcaden/arborist/issues/215>.
