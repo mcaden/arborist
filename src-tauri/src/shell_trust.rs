@@ -57,7 +57,15 @@ pub fn fingerprint(candidate: &RepoCommandCandidate) -> String {
     hash_field(&mut hasher, "kind", kind_key(candidate.kind));
     hash_field(&mut hasher, "scope", candidate.scope.as_deref().unwrap_or(""));
     hash_field(&mut hasher, "command", &candidate.command);
-    format!("{:x}", hasher.finalize())
+    // `sha2 0.11` returns `hybrid_array::Array<u8, U32>` from `finalize()`, which doesn't impl `LowerHex` (the pre-0.11 `GenericArray` did).
+    // Encode byte-by-byte instead — keeps the on-disk fingerprint shape ("64 lowercase hex chars") identical across the upgrade.
+    let bytes = hasher.finalize();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes.iter() {
+        use std::fmt::Write;
+        write!(&mut hex, "{:02x}", b).expect("write to String is infallible");
+    }
+    hex
 }
 
 fn hash_field(hasher: &mut Sha256, name: &str, value: &str) {

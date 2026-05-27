@@ -42,7 +42,7 @@ gh attestation verify <downloaded-file> --repo mcaden/arborist
 Runtime requirements:
 
 - `git` on `PATH`.
-- At least one authenticated AI CLI for AI sessions: Claude CLI or GitHub Copilot CLI. Arborist does not handle CLI sign-in.
+- At least one authenticated AI CLI for AI sessions: Claude CLI or GitHub Copilot CLI (`copilot >= 1.0.51`). Arborist does not handle CLI sign-in.
 - Windows WebView2 runtime, if not already present.
 
 Optional runtime dependency:

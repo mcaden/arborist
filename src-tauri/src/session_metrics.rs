@@ -79,8 +79,8 @@ const CODEX_DISCOVERY_SCAN_MAX_INTERVAL: Duration = Duration::from_secs(30);
 pub type MetricsCb = Arc<dyn Fn(SessionMetricsEvent) + Send + Sync>;
 
 /// Callback the watcher invokes when it discovers (or learns of a change to) the AI-side session id for an Arborist session. Production wires this
-/// into `ConfigStore::update_session_ai_session_id` so the next app-restart restore can inject `--resume <id>` and continue the AI conversation.
-/// Tests substitute a capturing closure.
+/// into `ConfigStore::update_session_ai_session_id` so the next app-restart restore can inject the tool's resume token (`--resume <id>` for Claude,
+/// `--session-id <id>` for Copilot, `resume <id>` subcommand for Codex) and continue the AI conversation. Tests substitute a capturing closure.
 ///
 /// Idempotent: the watcher fires this on every detected change, but `update_session_ai_session_id` is a no-op when the value already matches.
 pub type AiSessionDiscoveryCb = Arc<dyn Fn(SessionId, String) + Send + Sync>;
@@ -782,8 +782,8 @@ pub(crate) struct CopilotState {
     /// Most recent value of `github.copilot.current_tokens` — the size of the conversational context the agent had in front of it at the moment of
     /// the span. Drives the sidebar's "context % used".
     current_tokens: Option<u64>,
-    /// Copilot's conversation/session id (`gen_ai.conversation.id`), matching the directory name under `~/.copilot/session-state/<id>/` and accepted
-    /// by `copilot --resume <id>`. Captured for AI-session discovery; not part of the metrics snapshot.
+    /// Copilot's conversation/session id (`gen_ai.conversation.id`), matching the directory name under `~/.copilot/session-state/<id>/` and
+    /// accepted by `copilot --session-id <id>` (copilot-cli >= 1.0.51). Captured for AI-session discovery; not part of the metrics snapshot.
     pub(crate) conversation_id: Option<String>,
     /// True once at least one chat span has been ingested.
     seen: bool,
@@ -1586,7 +1586,7 @@ mod tests {
 
     #[test]
     fn ingest_otel_chat_span_extracts_conversation_id() {
-        // The chat span carries `gen_ai.conversation.id` — that's the Copilot session id we feed back into `--resume`.
+        // The chat span carries `gen_ai.conversation.id` — that's the Copilot session id we feed back into `--session-id` (copilot-cli >= 1.0.51).
         let chat_line = fixture_lines()
             .into_iter()
             .find(|l| std::str::from_utf8(l).unwrap_or("").contains(r#""name":"chat "#))
