@@ -311,7 +311,11 @@ describe('App workspace-switch overlay', () => {
       useWorkspaceSwitchUiStore.setState({ isSwitching: true });
     });
 
-    const overlay = screen.getByTestId('workspace-switch-overlay');
+    // Use `findByTestId` (waits) rather than `getByTestId` (sync): Zustand notifies subscribers synchronously, but React 18's re-render from a
+    // `useSyncExternalStore` callback can be dispatched on the default scheduler instead of synchronously inside `act`. Polling absorbs that
+    // microtask gap — the alternative (sync `getByTestId`) was a ~7% flake in this file. The same applies to the other overlay-presence
+    // assertions below.
+    const overlay = await screen.findByTestId('workspace-switch-overlay');
     expect(overlay).toBeInTheDocument();
     // Modal semantics — `alertdialog` + `aria-modal` so AT users
     // perceive the boundary; `aria-labelledby` points at the
@@ -319,12 +323,14 @@ describe('App workspace-switch overlay', () => {
     expect(overlay).toHaveAttribute('role', 'alertdialog');
     expect(overlay).toHaveAttribute('aria-modal', 'true');
     expect(overlay).toHaveAttribute('aria-labelledby', 'workspace-switch-overlay-label');
-    // The MainArea + Sidebar wrapper must be inert + aria-busy so
-    // input can't reach stale tabs during the switch.
-    const root = screen.getByTestId('main-area').parentElement;
-    expect(root).not.toBeNull();
-    expect(root!.getAttribute('aria-busy')).toBe('true');
-    expect(root!.hasAttribute('inert')).toBe(true);
+    // The MainArea + Sidebar wrapper must be inert + aria-busy so input can't reach stale tabs during the switch. Wrap in `waitFor` so the
+    // attribute check observes the same post-render snapshot that surfaced the overlay above.
+    await waitFor(() => {
+      const root = screen.getByTestId('main-area').parentElement;
+      expect(root).not.toBeNull();
+      expect(root!.getAttribute('aria-busy')).toBe('true');
+      expect(root!.hasAttribute('inert')).toBe(true);
+    });
   });
 
   it('moves focus into the overlay when isSwitching becomes true', async () => {
@@ -343,11 +349,14 @@ describe('App workspace-switch overlay', () => {
       useWorkspaceSwitchUiStore.setState({ isSwitching: true });
     });
 
-    const overlay = screen.getByTestId('workspace-switch-overlay');
-    // The overlay itself becomes the focused element so the
-    // previously-focused element no longer receives keyboard input
-    // (defence-in-depth on top of `inert` on the underlying root).
-    expect(document.activeElement).toBe(overlay);
+    // See sibling test above: prefer `findByTestId` over `getByTestId` after a Zustand-driven flip so React's `useSyncExternalStore` re-render
+    // is guaranteed to have committed before the assertion runs.
+    const overlay = await screen.findByTestId('workspace-switch-overlay');
+    // The overlay itself becomes the focused element so the previously-focused element no longer receives keyboard input (defence-in-depth on
+    // top of `inert` on the underlying root). The focus move happens in an effect that runs after commit, so wait for it explicitly.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(overlay);
+    });
     document.body.removeChild(probe);
   });
 
@@ -388,17 +397,21 @@ describe('App workspace-switch overlay', () => {
     act(() => {
       useWorkspaceSwitchUiStore.setState({ isSwitching: true });
     });
-    expect(screen.queryByTestId('workspace-switch-overlay')).toBeInTheDocument();
+    // Same Zustand → useSyncExternalStore deferred-render gotcha as the sibling test above — wait for the overlay to appear before flipping
+    // back so the false-state assertions below observe a real true→false transition.
+    await screen.findByTestId('workspace-switch-overlay');
 
     act(() => {
       useWorkspaceSwitchUiStore.setState({ isSwitching: false });
     });
 
-    expect(screen.queryByTestId('workspace-switch-overlay')).not.toBeInTheDocument();
-    const root = screen.getByTestId('main-area').parentElement;
-    expect(root).not.toBeNull();
-    expect(root!.getAttribute('aria-busy')).toBeNull();
-    expect(root!.hasAttribute('inert')).toBe(false);
+    await waitFor(() => {
+      expect(screen.queryByTestId('workspace-switch-overlay')).not.toBeInTheDocument();
+      const root = screen.getByTestId('main-area').parentElement;
+      expect(root).not.toBeNull();
+      expect(root!.getAttribute('aria-busy')).toBeNull();
+      expect(root!.hasAttribute('inert')).toBe(false);
+    });
   });
 });
 
