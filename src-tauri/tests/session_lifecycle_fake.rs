@@ -1496,11 +1496,12 @@ async fn restore_does_not_rewrite_config_when_no_orphans_present() {
 // ---------------------------------------------------------------------------
 //
 // Background. Pre-pre-allocation, `Session.ai_session_id` was discovered post-spawn from a CLI-side write (Claude transcript / Copilot OTel chat
-// span). A session that was created and never prompted before app shutdown therefore had `ai_session_id == None`, and restore-on-launch dropped the
-// `--resume` augmentation entirely — the session came back as a fresh CLI conversation. The user reported this as "only my open tab fully resumes".
-// Pre-allocation closes the gap for Copilot by deciding the conversation id at create-time and binding the spawn to it via `--resume <uuid>`. Copilot
-// starts a fresh session at that uuid (verified against `copilot --help`), so no on-disk transcript is required at spawn time. Claude has no
-// equivalent flag and continues the discovery path.
+// span). A session that was created and never prompted before app shutdown therefore had `ai_session_id == None`, and restore-on-launch dropped
+// the resume augmentation entirely — the session came back as a fresh CLI conversation. The user reported this as "only my open tab fully
+// resumes". Pre-allocation closes the gap by deciding the conversation id at create-time and binding every spawn to it via the tool's create-or-
+// resume flag: Claude → `--session-id <uuid>` (first launch) / `--resume <uuid>` (subsequent spawns); Copilot → `--session-id <uuid>` everywhere
+// (copilot-cli >= 1.0.51 — issue #222 switched from `--resume`, which became strict-resume-only on that release). Both tools start a fresh
+// conversation at the pre-allocated uuid when none exists yet, so no on-disk transcript is required at spawn time.
 
 fn create_args_for(h: &Harness, tool: Tool) -> SessionCreateArgs {
     SessionCreateArgs {
@@ -1533,16 +1534,21 @@ async fn session_create_preallocates_ai_session_id_for_copilot() {
 
     // composed_command itself stays bare; the persisted record is immutable. The splice happens on a clone at spawn time only.
     assert!(
-        !persisted.composed_command.contains("--resume"),
+        !persisted.composed_command.contains("--session-id") && !persisted.composed_command.contains("--resume"),
         "persisted composed_command must stay bare; got {:?}",
         persisted.composed_command
     );
 
-    // The actual spawn DID receive the augmented command.
+    // The actual spawn DID receive the augmented command — `--session-id <uuid>`, not `--resume <uuid>`, after copilot-cli >= 1.0.51 split the two
+    // flags (issue #222). `--resume <unknown-uuid>` now errors out on the upstream CLI; `--session-id` is the create-or-resume token.
     let spawned = last_spawn_args_joined(&h.spawner);
     assert!(
-        spawned.contains(&format!("--resume {aid}")),
-        "spawn args must include `--resume <preallocated-uuid>`; got {spawned:?}",
+        spawned.contains(&format!("--session-id {aid}")),
+        "spawn args must include `--session-id <preallocated-uuid>`; got {spawned:?}",
+    );
+    assert!(
+        !spawned.contains("--resume"),
+        "Copilot create spawn must use --session-id, not --resume (copilot-cli >= 1.0.51); got {spawned:?}",
     );
 }
 
@@ -1570,7 +1576,10 @@ async fn session_create_preallocates_session_id_for_claude() {
 }
 
 #[tokio::test]
-async fn session_restart_reallocates_ai_session_id_for_copilot() {
+async fn session_restart_preserves_ai_session_id_for_copilot() {
+    // Post-issue-#222: Copilot's restart policy flipped from `RotateUuid` to `Preserve` once copilot-cli >= 1.0.51 gave us `--session-id` as a
+    // dedicated create-or-resume token. With Preserve, restart re-spawns Copilot with `--session-id <persisted-uuid>` so the SAME conversation
+    // continues across an in-app restart — matching Claude's behaviour and what users actually want from a "the CLI got stuck, bounce it" button.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
     let id_before = h
@@ -1598,16 +1607,19 @@ async fn session_restart_reallocates_ai_session_id_for_copilot() {
         .get(&view.id)
         .and_then(|s| s.ai_session_id.clone())
         .expect("Copilot restart must keep an ai_session_id set");
-    assert_ne!(
+    assert_eq!(
         id_before, id_after,
-        "restart must allocate a fresh uuid (otherwise Copilot would resume the pre-restart conversation)",
+        "restart must preserve the pre-allocated uuid (Copilot's `--session-id` rebinds rather than rotating)",
     );
-    assert!(uuid::Uuid::parse_str(&id_after).is_ok());
 
     let spawned = last_spawn_args_joined(&h.spawner);
     assert!(
-        spawned.contains(&format!("--resume {id_after}")),
-        "restart spawn must splice the freshly-allocated uuid; got {spawned:?}",
+        spawned.contains(&format!("--session-id {id_after}")),
+        "restart spawn must splice --session-id <preserved-uuid>; got {spawned:?}",
+    );
+    assert!(
+        !spawned.contains("--resume"),
+        "Copilot restart spawn must use --session-id, not --resume (copilot-cli >= 1.0.51); got {spawned:?}",
     );
 }
 
@@ -1650,11 +1662,11 @@ async fn session_restart_preserves_ai_session_id_for_claude() {
 }
 
 #[tokio::test]
-async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent() {
+async fn restore_splices_session_id_for_copilot_even_when_session_state_dir_absent() {
     // Pre-allocated Copilot uuids may legitimately have no ~/.copilot/session-state/<uuid>/ dir yet (e.g. app crashed before Copilot's first
-    // session.start flush, or the dir was swept). The pre-Phase-2 code would have dropped the splice in that case via `ai_session_transcript_exists`.
-    // With pre-allocation we rely on the fact that `copilot --resume <unknown-uuid>` safely creates a fresh session at that uuid — so we always
-    // splice and let the persisted id win.
+    // session.start flush, or the dir was swept). Per copilot-cli >= 1.0.51 (issue #222), `--session-id <uuid>` is the create-or-resume token, so
+    // splicing it on restore is safe even when the on-disk session-state dir is missing — Copilot will materialize the conversation at the
+    // persisted uuid rather than allocating a different one and losing the link.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
     let preallocated = h
@@ -1688,8 +1700,12 @@ async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent()
 
     let spawned = last_spawn_args_joined(&spawner2);
     assert!(
-        spawned.contains(&format!("--resume {preallocated}")),
-        "Copilot restore must always splice when ai_session_id is set, even if the on-disk dir is missing; got {spawned:?}",
+        spawned.contains(&format!("--session-id {preallocated}")),
+        "Copilot restore must always splice --session-id when ai_session_id is set, even if the on-disk dir is missing; got {spawned:?}",
+    );
+    assert!(
+        !spawned.contains("--resume"),
+        "Copilot restore spawn must use --session-id, not --resume (copilot-cli >= 1.0.51); got {spawned:?}",
     );
 
     // The persisted id must NOT have been cleared.
@@ -1699,13 +1715,14 @@ async fn restore_splices_resume_for_copilot_even_when_session_state_dir_absent()
 
 #[tokio::test]
 async fn failed_copilot_restart_preserves_prior_ai_session_id() {
-    // Regression for the restart write-order bug. Pre-fix, `session_restart_impl` rotated the persisted Copilot `ai_session_id` to a
-    // freshly-allocated uuid *before* attempting `respawn_existing`. If respawn failed (e.g. transient PTY error, `cmd.exe` not found, etc.), the
-    // store was left pointing at a brand-new uuid that has no Copilot session-state directory and the prior — still-resumable — conversation was
-    // orphaned.
+    // Post-issue-#222: Copilot now uses `Preserve` policy (see `CopilotPlugin::restart_ai_session_policy`) so this property holds trivially —
+    // restart never mutates `ai_session_id` regardless of whether the spawn succeeds. Kept as a regression test for the broader invariant: a failed
+    // restart must leave the persisted record at a state the user can recover from with another restart.
     //
-    // The fix defers the persist to *after* respawn succeeds. This test drives the failure path via `FakeSpawner::fail_next_with` and asserts the
-    // persisted record still carries the original pre-allocated uuid so the user can recover by restarting again.
+    // Historical note: pre-#222 the Copilot policy was `RotateUuid` (allocate a fresh uuid every restart) and this test caught a real bug where the
+    // rotation happened *before* respawn — a failed respawn left the store pointing at a brand-new uuid with no Copilot session-state directory,
+    // orphaning the prior conversation. The write-order fix (persist *after* respawn succeeds) is no longer needed under `Preserve` but the test
+    // remains valuable as a guard against any future policy change that might reintroduce write-then-spawn ordering.
     let h = build_harness();
     let view = session_create_impl(&h.ctx, create_args_for(&h, Tool::Copilot)).unwrap();
     let original_id = h

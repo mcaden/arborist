@@ -59,7 +59,7 @@ A cross-platform desktop app (Tauri v2 + React/TS) that manages multiple Claude 
 | Repo instructions | Auto-loaded from `cwd` (`CLAUDE.md`). Don't pass it. | Auto-loaded from `cwd` (`.github/copilot-instructions.md`). Don't pass `--instructions` — it would disable auto-discovery. | Auto-loaded from `cwd` (`AGENTS.md`). Bare `codex` is correct — no instruction flag. |
 | Worktree context | Derived by the CLI from `pwd`/`git` because the PTY pool sets `cwd` to the worktree. | Same. | Same. |
 | Temp file | None for new sessions. Legacy restored sessions may still rematerialize persisted `tempFiles`. | None | None |
-| Resume syntax | `claude --resume <id>` (flag) | `copilot --resume <id>` (flag) | `codex resume <id>` (**subcommand**, not a flag). The metrics watcher discovers the thread id from the rollout file's `SessionMeta` line. |
+| Resume syntax | `claude --resume <id>` (flag) | `copilot --session-id <id>` (flag; create-or-resume — copilot-cli >= 1.0.51 split this from `--resume`, which is now strict-resume-only and errors on unknown UUIDs). Arborist uses `--session-id` for first launch, restart, and restore-on-launch. | `codex resume <id>` (**subcommand**, not a flag). The metrics watcher discovers the thread id from the rollout file's `SessionMeta` line. |
 
 ## Data model
 

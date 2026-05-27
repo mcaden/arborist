@@ -16,7 +16,8 @@
 //!
 //! ## Why path-by-session-id (not directory watch)?
 //!
-//! Pre-allocation decides the conversation uuid at `session_create`, splices it via `--resume <uuid>` at every spawn, and persists it
+//! Pre-allocation decides the conversation uuid at `session_create`, splices it via `--session-id <uuid>` at every spawn (copilot-cli >= 1.0.51
+//! switched Arborist from `--resume <uuid>` — see issue #222), and persists it
 //! as `Session.ai_session_id`. So `~/.copilot/session-state/<ai_session_id>/events.jsonl` is the deterministic path from spawn second 0 — no
 //! directory-scan heuristic needed.
 //!
