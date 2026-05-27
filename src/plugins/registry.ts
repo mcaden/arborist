@@ -44,6 +44,13 @@ export interface Plugin {
   defaultEnabled?: boolean;
   /** User-editable settings exposed by the Plugins settings tab. */
   settings?: readonly PluginSettingDescriptor[];
+  /**
+   * When true, the Plugins settings tab surfaces an "(experimental)" marker
+   * and warning icon next to this plugin's display name. Frontend-only — the
+   * Rust `Plugin` trait has no equivalent because experimental status is a
+   * UI affordance (no backend behavior change).
+   */
+  experimental?: boolean;
 }
 
 // MIRROR: src-tauri/src/plugins/ai/mod.rs::AiPlugin
