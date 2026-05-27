@@ -23,8 +23,41 @@ use crate::commands::AppContext;
 use crate::sub_sessions::{build_sub_session, sub_session_cwd, SubAppContext};
 use crate::types::{
     AppError, ChildId, CustomProcessKind, Error, PartialAppConfig, SubSession, SubSessionCloseIntent, SubSessionCloseOutcome, SubSessionCloseResult,
-    SubSessionCloseStatus, SubSessionCreateArgs, SubSessionId, SubSessionRecord, SubSessionStatus, WorktreeTabAppClosePolicy, WorktreeTabId,
+    SubSessionCreateArgs, SubSessionId, SubSessionRecord, SubSessionStatus, WorktreeTabAppClosePolicy, WorktreeTabId,
 };
+
+/// Map the low-level [`crate::app_launcher::PoliteCloseOutcome`] to the user-visible [`SubSessionCloseResult`]. The mapping is identical for the
+/// single-sub close path ([`subsession_close_impl`]) and the cascade path ([`application_cascade_close`]) so it lives here as a single source of
+/// truth — future changes to polite-close semantics (e.g. distinguishing "user cancelled save prompt" from "app declined to close") touch one
+/// function instead of two.
+///
+/// `snapshot_pid` is used when the outcome doesn't carry its own pid (the `Unsupported`, `NoTarget`, and `Gone` branches) so callers can still
+/// surface the launcher PID they remembered from creation time.
+fn polite_close_to_result(outcome: crate::app_launcher::PoliteCloseOutcome, snapshot_pid: Option<u32>) -> SubSessionCloseResult {
+    use crate::app_launcher::PoliteCloseOutcome;
+    match outcome {
+        PoliteCloseOutcome::Confirmed { pid } => SubSessionCloseResult::confirmed(SubSessionCloseOutcome::PoliteClose, Some(pid)),
+        PoliteCloseOutcome::Posted { pid } => SubSessionCloseResult::unconfirmed(
+            SubSessionCloseOutcome::PoliteClose,
+            Some(pid),
+            format!(
+                "asked the app to close (pid {pid}) but it did not exit within the grace window; \
+                 it may be showing a save-changes prompt or declined to close"
+            ),
+        ),
+        PoliteCloseOutcome::Unsupported => SubSessionCloseResult::unsupported(
+            SubSessionCloseOutcome::PoliteClose,
+            snapshot_pid,
+            "this platform does not support requesting an app close; the tab was detached only",
+        ),
+        PoliteCloseOutcome::NoTarget => SubSessionCloseResult::unavailable(
+            SubSessionCloseOutcome::PoliteClose,
+            snapshot_pid,
+            "no matched window is known for this app; the tab was detached only",
+        ),
+        PoliteCloseOutcome::Gone => SubSessionCloseResult::confirmed(SubSessionCloseOutcome::PoliteClose, snapshot_pid),
+    }
+}
 
 /// Create a new sub-session under `parent_worktree_tab_id` using the `CustomProcessDef` identified by `def_id`. Validates:
 ///
@@ -160,12 +193,7 @@ pub async fn subsession_close_impl(
         CustomProcessKind::Terminal => {
             if sub_ctx.pool.contains(&id) {
                 match sub_ctx.pool.kill(&id).await {
-                    Ok(crate::pty_pool::KillOutcome::Reaped) => SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::TerminalKill,
-                        status: SubSessionCloseStatus::Confirmed,
-                        pid: snapshot.pid,
-                        message: None,
-                    },
+                    Ok(crate::pty_pool::KillOutcome::Reaped) => SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TerminalKill, snapshot.pid),
                     Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
                         // User clicked close — proceed with prune. Log loudly so a human can find and clean up the orphan PID. Mirrors the
                         // session-park policy: an Unconfirmed kill still issued the signal, so the failure mode is "child may linger", not "child is
@@ -175,35 +203,24 @@ pub async fn subsession_close_impl(
                             pid,
                             "subsession_close: PTY kill issued but reap unconfirmed; pruning record anyway (orphan PID may need manual cleanup)"
                         );
-                        SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::TerminalKill,
-                            status: SubSessionCloseStatus::Unconfirmed,
-                            pid: Some(pid),
-                            message: Some(format!("PTY kill issued but the OS did not confirm exit; pid {pid} may still be alive")),
-                        }
+                        SubSessionCloseResult::unconfirmed(
+                            SubSessionCloseOutcome::TerminalKill,
+                            Some(pid),
+                            format!("PTY kill issued but the OS did not confirm exit; pid {pid} may still be alive"),
+                        )
                     }
                     Err(Error::NotFound(_)) => {
                         // Race between `contains(&id)` above and the actual `kill(&id)` — the PTY child exited on its own in the gap (e.g. user typed
                         // `exit` simultaneously, OOM killer fired). User-visible truth is identical to the `contains==false` branch below: the
                         // process is gone, the terminal close succeeded. Mirrors the cascade-terminal path's treatment of this race.
-                        SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::TerminalKill,
-                            status: SubSessionCloseStatus::Confirmed,
-                            pid: snapshot.pid,
-                            message: None,
-                        }
+                        SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TerminalKill, snapshot.pid)
                     }
                     Err(e) => return Err(AppError::from(e)),
                 }
             } else {
                 // Terminal child already exited on its own — nothing to kill, just prune the record. Confirmed is the user-facing truth: the process
                 // is gone.
-                SubSessionCloseResult {
-                    outcome: SubSessionCloseOutcome::TerminalKill,
-                    status: SubSessionCloseStatus::Confirmed,
-                    pid: snapshot.pid,
-                    message: None,
-                }
+                SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TerminalKill, snapshot.pid)
             }
         }
         CustomProcessKind::Application => match intent {
@@ -211,23 +228,13 @@ pub async fn subsession_close_impl(
                 // Drop our tracking; do NOT kill the external app. Rationale: a launcher like `code .` or `explorer .` delegates to a long-lived GUI
                 // process the user is actively interacting with. The "X" on the sub-tab is tab-removal, not "close my editor".
                 sub_ctx.app_pool.detach(&id);
-                SubSessionCloseResult {
-                    outcome: SubSessionCloseOutcome::TabRemoved,
-                    status: SubSessionCloseStatus::Confirmed,
-                    pid: snapshot.pid,
-                    message: None,
-                }
+                SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TabRemoved, snapshot.pid)
             }
             SubSessionCloseIntent::RequestAppClose => {
                 if !sub_ctx.app_pool.contains(&id) {
                     // The app already exited on its own — nothing to politely close. Detach is a no-op in that case but keeps the pool tidy.
                     sub_ctx.app_pool.detach(&id);
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::PoliteClose,
-                        status: SubSessionCloseStatus::Confirmed,
-                        pid: snapshot.pid,
-                        message: None,
-                    }
+                    SubSessionCloseResult::confirmed(SubSessionCloseOutcome::PoliteClose, snapshot.pid)
                 } else {
                     let outcome = sub_ctx
                         .app_pool
@@ -236,56 +243,18 @@ pub async fn subsession_close_impl(
                         .map_err(AppError::from)?;
                     // Always detach the sub-tab regardless of the outcome — the user clicked close and the contract is "the tab goes away".
                     sub_ctx.app_pool.detach(&id);
-                    match outcome {
-                        crate::app_launcher::PoliteCloseOutcome::Confirmed { pid } => SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::PoliteClose,
-                            status: SubSessionCloseStatus::Confirmed,
-                            pid: Some(pid),
-                            message: None,
-                        },
-                        crate::app_launcher::PoliteCloseOutcome::Posted { pid } => SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::PoliteClose,
-                            status: SubSessionCloseStatus::Unconfirmed,
-                            pid: Some(pid),
-                            message: Some(format!(
-                                "asked the app to close (pid {pid}) but it did not exit within the grace window; \
-                                 it may be showing a save-changes prompt or declined to close"
-                            )),
-                        },
-                        crate::app_launcher::PoliteCloseOutcome::Unsupported => SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::PoliteClose,
-                            status: SubSessionCloseStatus::Unsupported,
-                            pid: snapshot.pid,
-                            message: Some("this platform does not support requesting an app close; the tab was detached only".into()),
-                        },
-                        crate::app_launcher::PoliteCloseOutcome::NoTarget => SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::PoliteClose,
-                            status: SubSessionCloseStatus::Unavailable,
-                            pid: snapshot.pid,
-                            message: Some("no matched window is known for this app; the tab was detached only".into()),
-                        },
-                        crate::app_launcher::PoliteCloseOutcome::Gone => SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::PoliteClose,
-                            status: SubSessionCloseStatus::Confirmed,
-                            pid: snapshot.pid,
-                            message: None,
-                        },
-                    }
+                    polite_close_to_result(outcome, snapshot.pid)
                 }
             }
             SubSessionCloseIntent::ForceKill => {
                 if !sub_ctx.app_pool.contains(&id) {
                     sub_ctx.app_pool.detach(&id);
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::ForceKill,
-                        status: SubSessionCloseStatus::Confirmed,
-                        pid: snapshot.pid,
-                        message: None,
-                    }
+                    SubSessionCloseResult::confirmed(SubSessionCloseOutcome::ForceKill, snapshot.pid)
                 } else if matches!(sub_ctx.app_pool.is_retargeted(&id), Some(true)) {
-                    // Refuse to force-kill a re-targeted owner: that PID is typically a shared editor process serving multiple windows / workspaces
-                    // (e.g. VS Code's `Code.exe`). Killing it would close every workspace open in that editor, not just this sub-tab. Detach and
-                    // surface to the user instead — they can still use the OS's task manager / `kill -9` if they really mean it.
+                    // Fast-path optimisation: refuse the force-kill without paying the kill_async grace-poll cost. `kill_async` carries the same
+                    // refusal invariant internally (returns `AppKillOutcome::RefusedShared`) so this check is purely about user-facing latency for
+                    // the common "user clicked Force kill on a known-retargeted shared editor" case. The retargeted owner is typically a shared
+                    // editor process (e.g. VS Code's `Code.exe`); killing it would close every workspace open in that editor, not just this sub-tab.
                     let pid = sub_ctx.app_pool.pid(&id);
                     sub_ctx.app_pool.detach(&id);
                     tracing::warn!(
@@ -293,42 +262,42 @@ pub async fn subsession_close_impl(
                         pid = ?pid,
                         "subsession_close: refused to force-kill a retargeted shared owner process; detaching tab instead",
                     );
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::ForceKill,
-                        status: SubSessionCloseStatus::RefusedShared,
+                    SubSessionCloseResult::refused_shared(
+                        SubSessionCloseOutcome::ForceKill,
                         pid,
-                        message: Some(
-                            "refused to terminate a shared editor process (this would close every window of that editor); the tab was detached only"
-                                .into(),
-                        ),
-                    }
+                        "refused to terminate a shared editor process (this would close every window of that editor); the tab was detached only",
+                    )
                 } else {
                     match sub_ctx.app_pool.kill_async(&id).await {
-                        Ok(crate::app_launcher::AppKillOutcome::Reaped { pid }) => SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::ForceKill,
-                            status: SubSessionCloseStatus::Confirmed,
-                            pid: Some(pid),
-                            message: None,
-                        },
-                        Ok(crate::app_launcher::AppKillOutcome::Unconfirmed { pid }) => SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::ForceKill,
-                            status: SubSessionCloseStatus::Unconfirmed,
-                            pid: Some(pid),
-                            message: Some(format!(
-                                "force-kill signal was sent but the OS did not confirm exit; pid {pid} may still be alive"
-                            )),
-                        },
+                        Ok(crate::app_launcher::AppKillOutcome::Reaped { pid }) => {
+                            SubSessionCloseResult::confirmed(SubSessionCloseOutcome::ForceKill, Some(pid))
+                        }
+                        Ok(crate::app_launcher::AppKillOutcome::Unconfirmed { pid }) => SubSessionCloseResult::unconfirmed(
+                            SubSessionCloseOutcome::ForceKill,
+                            Some(pid),
+                            format!("force-kill signal was sent but the OS did not confirm exit; pid {pid} may still be alive"),
+                        ),
+                        Ok(crate::app_launcher::AppKillOutcome::RefusedShared { pid }) => {
+                            // Safety net trigger: the resolver flipped `re_targeted` between the pre-check above and `kill_async`'s atomic
+                            // remove-and-check. Surface as a regular RefusedShared outcome — no kill was issued, no further action needed.
+                            tracing::warn!(
+                                sub_session_id = %id,
+                                pid,
+                                "subsession_close: kill_async refused to terminate retargeted shared owner (TOCTTOU safety net)",
+                            );
+                            SubSessionCloseResult::refused_shared(
+                                SubSessionCloseOutcome::ForceKill,
+                                Some(pid),
+                                "refused to terminate a shared editor process (this would close every window of that editor); \
+                                 the tab was detached only",
+                            )
+                        }
                         Err(Error::NotFound(_)) => {
                             // Race between `contains(&id)` above and `kill_async(&id)` — the app's launcher exited on its own in the gap (e.g.
                             // launcher `code.cmd` returned right after `contains` evaluated, before `kill_async` could remove the runtime). The
                             // runtime is already gone from arborist's tracking; user-visible truth is "force-kill request reached a process that's
                             // already gone" → Confirmed.
-                            SubSessionCloseResult {
-                                outcome: SubSessionCloseOutcome::ForceKill,
-                                status: SubSessionCloseStatus::Confirmed,
-                                pid: snapshot.pid,
-                                message: None,
-                            }
+                            SubSessionCloseResult::confirmed(SubSessionCloseOutcome::ForceKill, snapshot.pid)
                         }
                         Err(e) => return Err(AppError::from(e)),
                     }
@@ -537,35 +506,11 @@ pub async fn close_for_worktree_tab_impl(
 async fn terminal_cascade_close(sub_ctx: &SubAppContext, sub: &SubSession, errors: &mut Vec<String>) -> (SubSessionCloseResult, bool) {
     if !sub_ctx.pool.contains(&sub.id) {
         // Already exited on its own; nothing to kill, no error.
-        return (
-            SubSessionCloseResult {
-                outcome: SubSessionCloseOutcome::TerminalKill,
-                status: SubSessionCloseStatus::Confirmed,
-                pid: sub.pid,
-                message: None,
-            },
-            false,
-        );
+        return (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TerminalKill, sub.pid), false);
     }
     match sub_ctx.pool.kill(&sub.id).await {
-        Ok(crate::pty_pool::KillOutcome::Reaped) => (
-            SubSessionCloseResult {
-                outcome: SubSessionCloseOutcome::TerminalKill,
-                status: SubSessionCloseStatus::Confirmed,
-                pid: sub.pid,
-                message: None,
-            },
-            false,
-        ),
-        Err(Error::NotFound(_)) => (
-            SubSessionCloseResult {
-                outcome: SubSessionCloseOutcome::TerminalKill,
-                status: SubSessionCloseStatus::Confirmed,
-                pid: sub.pid,
-                message: None,
-            },
-            false,
-        ),
+        Ok(crate::pty_pool::KillOutcome::Reaped) => (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TerminalKill, sub.pid), false),
+        Err(Error::NotFound(_)) => (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TerminalKill, sub.pid), false),
         Ok(crate::pty_pool::KillOutcome::Unconfirmed { pid }) => {
             warn!(
                 sub_session_id = %sub.id,
@@ -582,12 +527,11 @@ async fn terminal_cascade_close(sub_ctx: &SubAppContext, sub: &SubSession, error
             // and the user has already accepted the kill semantics by closing the tab. The outcome map carries the per-sub detail, and we keep the
             // row visible so the user can find the orphan PID in the sidebar.
             (
-                SubSessionCloseResult {
-                    outcome: SubSessionCloseOutcome::TerminalKill,
-                    status: SubSessionCloseStatus::Unconfirmed,
-                    pid: Some(pid),
-                    message: Some(format!("PTY kill issued but the OS did not confirm exit; pid {pid} may still be alive")),
-                },
+                SubSessionCloseResult::unconfirmed(
+                    SubSessionCloseOutcome::TerminalKill,
+                    Some(pid),
+                    format!("PTY kill issued but the OS did not confirm exit; pid {pid} may still be alive"),
+                ),
                 true,
             )
         }
@@ -607,12 +551,7 @@ async fn terminal_cascade_close(sub_ctx: &SubAppContext, sub: &SubSession, error
             // the user sees the surviving PID rather than a silently-leaked PTY child.
             errors.push(format!("sub-session {}: PTY kill failed: {e}", sub.id));
             (
-                SubSessionCloseResult {
-                    outcome: SubSessionCloseOutcome::TerminalKill,
-                    status: SubSessionCloseStatus::Unconfirmed,
-                    pid: sub.pid,
-                    message: Some(format!("PTY kill failed: {e}")),
-                },
+                SubSessionCloseResult::unconfirmed(SubSessionCloseOutcome::TerminalKill, sub.pid, format!("PTY kill failed: {e}")),
                 true,
             )
         }
@@ -628,28 +567,12 @@ async fn application_cascade_close(
     match app_close_policy {
         WorktreeTabAppClosePolicy::Detach => {
             sub_ctx.app_pool.detach(&sub.id);
-            (
-                SubSessionCloseResult {
-                    outcome: SubSessionCloseOutcome::TabRemoved,
-                    status: SubSessionCloseStatus::Confirmed,
-                    pid: sub.pid,
-                    message: None,
-                },
-                false,
-            )
+            (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TabRemoved, sub.pid), false)
         }
         WorktreeTabAppClosePolicy::Terminate => {
             if !sub_ctx.app_pool.contains(&sub.id) {
                 sub_ctx.app_pool.detach(&sub.id);
-                return (
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::TabRemoved,
-                        status: SubSessionCloseStatus::Confirmed,
-                        pid: sub.pid,
-                        message: None,
-                    },
-                    false,
-                );
+                return (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TabRemoved, sub.pid), false);
             }
 
             // Step 1: polite close + verified wait (off-lock async). Refuse to honour the request if we can't post the message at all.
@@ -670,75 +593,66 @@ async fn application_cascade_close(
             // If polite close confirmed exit, we're done — detach and report.
             if let crate::app_launcher::PoliteCloseOutcome::Confirmed { pid } = polite {
                 sub_ctx.app_pool.detach(&sub.id);
-                return (
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::PoliteClose,
-                        status: SubSessionCloseStatus::Confirmed,
-                        pid: Some(pid),
-                        message: None,
-                    },
-                    false,
-                );
+                return (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::PoliteClose, Some(pid)), false);
             }
 
-            // Step 2: still alive (or unsupported / no-target). Decide between force-kill and detach.
+            // Step 2: still alive (or unsupported / no-target). Fast-path: skip the kill grace if we already know the runtime is retargeted to a
+            // shared owner (the typical VS Code case after `code.cmd` exits). `kill_async` carries the same refusal invariant as a safety net, so
+            // this is purely a latency optimisation — it saves the kill syscall + verify wait for the common case where the resolver completed
+            // before the polite-close grace expired.
             if matches!(sub_ctx.app_pool.is_retargeted(&sub.id), Some(true)) {
-                // Shared editor process — never force-kill. Surface in the outcome map so the UI can warn, but DON'T push to `errors` (that would
-                // refuse worktree deletion for what is, by design, a safe non-action).
                 let pid = sub_ctx.app_pool.pid(&sub.id);
                 sub_ctx.app_pool.detach(&sub.id);
                 return (
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::ForceKill,
-                        status: SubSessionCloseStatus::RefusedShared,
+                    SubSessionCloseResult::refused_shared(
+                        SubSessionCloseOutcome::ForceKill,
                         pid,
-                        message: Some(
-                            "refused to terminate a shared editor process; the tab was detached only (the editor process remains running with its \
-                             other open windows)"
-                                .into(),
-                        ),
-                    },
+                        "refused to terminate a shared editor process; the tab was detached only (the editor process remains running with its \
+                         other open windows)",
+                    ),
                     false,
                 );
             }
 
-            // Non-retargeted: escalate to force-kill (async, verified).
+            // Non-retargeted (at pre-check time): escalate to force-kill (async, verified). `kill_async` plugs the TOCTTOU window where the resolver
+            // could have flipped `re_targeted` from `false` to `true` between the pre-check above and the kill — surfaced here as `RefusedShared`.
             match sub_ctx.app_pool.kill_async(&sub.id).await {
-                Ok(crate::app_launcher::AppKillOutcome::Reaped { pid }) => (
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::ForceKill,
-                        status: SubSessionCloseStatus::Confirmed,
-                        pid: Some(pid),
-                        message: None,
-                    },
-                    false,
-                ),
+                Ok(crate::app_launcher::AppKillOutcome::Reaped { pid }) => {
+                    (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::ForceKill, Some(pid)), false)
+                }
                 Ok(crate::app_launcher::AppKillOutcome::Unconfirmed { pid }) => (
-                    SubSessionCloseResult {
-                        outcome: SubSessionCloseOutcome::ForceKill,
-                        status: SubSessionCloseStatus::Unconfirmed,
-                        pid: Some(pid),
-                        message: Some(format!(
-                            "force-kill signal sent but the OS did not confirm exit; pid {pid} may still be alive"
-                        )),
-                    },
+                    SubSessionCloseResult::unconfirmed(
+                        SubSessionCloseOutcome::ForceKill,
+                        Some(pid),
+                        format!("force-kill signal sent but the OS did not confirm exit; pid {pid} may still be alive"),
+                    ),
                     // Force-kill on an app: pool already detached inside kill_async. The runtime is gone from arborist's tracking either way; the
                     // user's surviving PID, if any, is purely an OS-level orphan. Drop the row so we don't leave a stale tab pointer behind.
                     false,
                 ),
+                Ok(crate::app_launcher::AppKillOutcome::RefusedShared { pid }) => {
+                    // TOCTTOU safety net fired: the resolver retargeted between our pre-check and `kill_async`'s atomic remove-and-check. Surface
+                    // identically to the pre-check refusal path so the UI shows a consistent "shared editor was preserved" message.
+                    warn!(
+                        sub_session_id = %sub.id,
+                        pid,
+                        "cascade: kill_async refused to terminate retargeted shared owner (TOCTTOU safety net)",
+                    );
+                    (
+                        SubSessionCloseResult::refused_shared(
+                            SubSessionCloseOutcome::ForceKill,
+                            Some(pid),
+                            "refused to terminate a shared editor process; the tab was detached only (the editor process remains running with its \
+                             other open windows)",
+                        ),
+                        false,
+                    )
+                }
                 Err(Error::NotFound(_)) => {
                     // Race: the app's launcher exited on its own between the retargeted-check above and `kill_async`. The runtime is already gone,
                     // so user-visible truth is "we asked for force-kill on a process that's already gone" → Confirmed. Do NOT push to `errors` —
                     // `errors` gates worktree deletion, and the cascade's `contains`+kill race is an expected outcome, not an operational failure.
-                    (
-                        SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::ForceKill,
-                            status: SubSessionCloseStatus::Confirmed,
-                            pid: sub.pid,
-                            message: None,
-                        },
-                        false,
-                    )
+                    (SubSessionCloseResult::confirmed(SubSessionCloseOutcome::ForceKill, sub.pid), false)
                 }
                 Err(e) => {
                     warn!(
@@ -748,12 +662,7 @@ async fn application_cascade_close(
                     );
                     errors.push(format!("sub-session {}: app terminate failed: {e}", sub.id));
                     (
-                        SubSessionCloseResult {
-                            outcome: SubSessionCloseOutcome::ForceKill,
-                            status: SubSessionCloseStatus::Unconfirmed,
-                            pid: sub.pid,
-                            message: Some(format!("app terminate failed: {e}")),
-                        },
+                        SubSessionCloseResult::unconfirmed(SubSessionCloseOutcome::ForceKill, sub.pid, format!("app terminate failed: {e}")),
                         false,
                     )
                 }

@@ -10,49 +10,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { summariseSubCloseOutcomes } from '@/lib/close-outcomes';
 import { formatError } from '@/lib/tauri-bridge';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { usePendingWorktreeTabClose, useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
-import type { SubSessionCloseResult, WorktreeTabAppClosePolicy, WorktreeTabCloseResult } from '@/types/arborist';
-
-/**
- * Build a short bullet summary of the cascade outcomes that need user
- * follow-up (anything not status=confirmed). Returns the empty string
- * when every sub closed cleanly so the dialog can skip the alert noise.
- */
-function summariseSubOutcomes(subOutcomes: Record<string, SubSessionCloseResult> | undefined): string {
-  if (!subOutcomes) return '';
-  const lines: string[] = [];
-  for (const [id, r] of Object.entries(subOutcomes)) {
-    if (r.status === 'confirmed') continue;
-    const pidSuffix = r.pid !== undefined ? ` (pid ${r.pid})` : '';
-    const short = id.length > 8 ? `${id.slice(0, 8)}…` : id;
-    switch (r.status) {
-      case 'refusedShared':
-        lines.push(`• ${short}: refused to terminate a shared editor process${pidSuffix} — tab detached.`);
-        break;
-      case 'unconfirmed':
-        if (r.outcome === 'forceKill') {
-          lines.push(`• ${short}: force-kill signal sent${pidSuffix} but exit not confirmed within grace.`);
-        } else if (r.outcome === 'politeClose') {
-          lines.push(`• ${short}: app declined the close request${pidSuffix} — it may still be running.`);
-        } else {
-          lines.push(`• ${short}: close signal sent${pidSuffix} but exit not confirmed within grace.`);
-        }
-        break;
-      case 'unsupported':
-        lines.push(`• ${short}: OS doesn't support requesting an app close${pidSuffix} — tab detached.`);
-        break;
-      case 'unavailable':
-        lines.push(`• ${short}: couldn't identify the app window${pidSuffix} — tab detached.`);
-        break;
-      default:
-        break;
-    }
-  }
-  return lines.join('\n');
-}
+import type { WorktreeTabAppClosePolicy, WorktreeTabCloseResult } from '@/types/arborist';
 
 /**
  * Compose the alert text for a cascade close. Returns `null` when there
@@ -64,7 +27,7 @@ function describeWorktreeCloseResult(result: WorktreeTabCloseResult): string | n
   if (result.worktreeDeleteError) {
     parts.push(`Worktree tab closed, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`);
   }
-  const subSummary = summariseSubOutcomes(result.subOutcomes);
+  const subSummary = summariseSubCloseOutcomes(result.subOutcomes);
   if (subSummary.length > 0) {
     parts.push(`Some sub-processes need attention:\n\n${subSummary}`);
   }

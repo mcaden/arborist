@@ -258,6 +258,17 @@ pub enum AppKillOutcome {
     /// way (the SubSessionId is free for a fresh launch), but the underlying process **may** still be alive. Caller is expected to log loudly and
     /// surface the outcome to the user.
     Unconfirmed { pid: u32 },
+    /// `kill_async` refused to issue the kill because the runtime had been retargeted to a shared owner process (e.g. VS Code's `Code.exe`) by the
+    /// resolver thread. Killing that PID would close every other workspace open in the same editor, not just this sub-tab — exactly the host-kill
+    /// risk the cascade is designed to avoid. The runtime entry is still removed from the pool (the SubSessionId is free for a fresh launch) but no
+    /// kill syscall was issued; the underlying editor keeps running with its other windows. Callers should treat this identically to
+    /// [`crate::types::SubSessionCloseStatus::RefusedShared`].
+    ///
+    /// This variant exists so the safety net lives inside `kill_async` itself, plugging the TOCTTOU race where a caller checks `is_retargeted`,
+    /// awaits an unrelated operation (e.g. polite-close), and then escalates to `kill_async` — a window during which the resolver thread could have
+    /// flipped `re_targeted` from `false` to `true`. Callers may still pre-check `is_retargeted` as a fast-path optimisation to skip the kill grace
+    /// wait, but they no longer carry the safety obligation.
+    RefusedShared { pid: u32 },
 }
 
 /// Outcome of [`AppPool::request_window_close_then_wait_async`]. Mirrors [`AppKillOutcome`] but distinguishes the "we don't have a window target" /
@@ -282,8 +293,10 @@ pub enum PoliteCloseOutcome {
 
 /// Cross-platform "is this PID still alive?" probe. Best-effort: a PID we never owned that happens to match a system process will still report
 /// `true`; that's an acceptable false positive for the close-verification use case (we'd rather report `Unconfirmed` than synthesise a fake
-/// "Reaped" event). On Windows uses `OpenProcess` + `GetExitCodeProcess` (returns `STILL_ACTIVE` while alive). On Unix uses `kill(pid, 0)` which is
-/// documented to return success iff the PID exists and we have permission to signal it.
+/// "Reaped" event). On Windows uses `OpenProcess` + `GetExitCodeProcess` (returns `STILL_ACTIVE` while alive); falls back to a `SYNCHRONIZE` +
+/// `WaitForSingleObject(handle, 0)` probe when query access is denied (e.g. UAC-elevated or sandboxed processes the current token can't introspect
+/// but can still synchronise against). On Unix uses `kill(pid, 0)` which is documented to return success iff the PID exists and we have permission
+/// to signal it.
 #[must_use]
 pub fn pid_alive(pid: u32) -> bool {
     #[cfg(target_os = "windows")]
@@ -296,7 +309,10 @@ pub fn pid_alive(pid: u32) -> bool {
         #[allow(clippy::upper_case_acronyms)]
         type BOOL = i32;
         const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
+        const SYNCHRONIZE: DWORD = 0x0010_0000;
         const STILL_ACTIVE: DWORD = 259;
+        const WAIT_OBJECT_0: DWORD = 0x0000_0000;
+        const WAIT_TIMEOUT: DWORD = 0x0000_0102;
         // Win32 error code (winerror.h): "no such process for this PID". The only code we treat as proof-of-death after a NULL `OpenProcess`.
         const ERROR_INVALID_PARAMETER: DWORD = 87;
 
@@ -304,6 +320,7 @@ pub fn pid_alive(pid: u32) -> bool {
         extern "system" {
             fn OpenProcess(access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
             fn GetExitCodeProcess(handle: HANDLE, code: *mut DWORD) -> BOOL;
+            fn WaitForSingleObject(handle: HANDLE, ms: DWORD) -> DWORD;
             fn CloseHandle(handle: HANDLE) -> BOOL;
             fn GetLastError() -> DWORD;
         }
@@ -312,13 +329,35 @@ pub fn pid_alive(pid: u32) -> bool {
         if h.is_null() {
             // SAFETY: GetLastError reads thread-local state populated by the preceding OpenProcess call; documented Win32 idiom.
             let err = unsafe { GetLastError() };
-            // Discriminate the failure modes. Reporting "dead" (`false`) when the process is in fact alive would synthesise a fake "Reaped/Confirmed"
-            // outcome for the close-verification callers (`kill_async`, polite-close fallback) and silently drop a still-running orphan from the
-            // user's awareness — so the bar for `false` is high. Only `ERROR_INVALID_PARAMETER` (87) means "no process with this PID"; every other
-            // code (`ERROR_ACCESS_DENIED` = 5 for elevated/sandboxed apps, `ERROR_PARTIAL_COPY` mid-exit, etc.) means the PID exists but we can't
-            // open it → treat as alive. The function-level comment promises "we'd rather report Unconfirmed than synthesise Reaped"; this
-            // default-alive policy is what makes that promise hold.
-            return err != ERROR_INVALID_PARAMETER;
+            // `ERROR_INVALID_PARAMETER` (87) is the only Win32 code that means "no process with this PID". Everything else (`ERROR_ACCESS_DENIED` =
+            // 5 for elevated/sandboxed apps, `ERROR_PARTIAL_COPY` mid-exit, etc.) means the PID exists but we couldn't open it with QUERY_LIMITED
+            // access. Before reporting "alive" we make one more attempt with `SYNCHRONIZE`, which is granted by a wider DACL than QUERY access on
+            // many guarded processes. If we can synchronise on the handle, `WaitForSingleObject(handle, 0)` returns `WAIT_OBJECT_0` once the
+            // process exits and `WAIT_TIMEOUT` while it's still running — both are unambiguous. This converts the most painful Windows case
+            // (UAC-elevated long-running app that the user terminated externally) from "kill_async/polite-close burns the full grace polling a
+            // permanently-stuck `alive=true`" into "kill_async reports `Reaped` as soon as the OS observes the exit".
+            //
+            // We still default to alive on anything we can't disprove — the function-level contract promises "Unconfirmed beats fake Reaped".
+            if err == ERROR_INVALID_PARAMETER {
+                return false;
+            }
+            // SAFETY: same as the QUERY_LIMITED OpenProcess above — invalid PIDs are documented to return NULL.
+            let sync_h = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+            if !sync_h.is_null() {
+                // SAFETY: `sync_h` is a valid handle from OpenProcess; `WaitForSingleObject` with timeout 0 is a non-blocking poll.
+                let wait_rc = unsafe { WaitForSingleObject(sync_h, 0) };
+                unsafe {
+                    CloseHandle(sync_h);
+                }
+                return match wait_rc {
+                    WAIT_OBJECT_0 => false, // signalled — process has exited
+                    WAIT_TIMEOUT => true,   // not signalled within 0 ms — process is still running
+                    _ => true,              // some other error — default to alive per the function contract
+                };
+            }
+            // SYNCHRONIZE also denied (e.g. the Windows System process at PID 4). Fall back to the default-alive policy: every other error code
+            // means the PID exists but we can't introspect it, so reporting `false` would risk synthesising a fake "Reaped" outcome.
+            return true;
         }
         let mut code: DWORD = 0;
         // SAFETY: `h` is a valid handle from OpenProcess; `code` is a stack-allocated u32 we can write into.
@@ -834,6 +873,20 @@ impl AppPool {
         };
         let pid = rt.pid;
         rt.killed.store(true, Ordering::SeqCst);
+
+        // SAFETY NET: refuse to kill if the runtime has been retargeted to a shared owner process. The check happens AFTER `g.remove(id)` and
+        // therefore observes the resolver thread's final write — `re_targeted` is set under the same pool lock (see `resolver_loop`). Plugging this
+        // here makes "never kill a shared editor" an invariant of `kill_async`, not a caller-side obligation that has to thread the needle around
+        // every `.await`. The cascade still pre-checks `is_retargeted` as a fast-path so the common (non-racy) case doesn't pay the kill-grace cost.
+        if rt.re_targeted.load(Ordering::SeqCst) {
+            tracing::warn!(
+                sub_session_id = %id,
+                pid,
+                "kill_async: refused to terminate retargeted shared owner; runtime removed, process left running"
+            );
+            drop(rt);
+            return Ok(AppKillOutcome::RefusedShared { pid });
+        }
 
         // Issue the kill. Any error is captured (not bubbled) so we can return Unconfirmed with diagnostics intact — the caller cares whether the
         // process is gone, not whether the syscall succeeded.
@@ -2150,20 +2203,22 @@ mod tests {
         assert!(pid_alive(std::process::id()), "the test's own PID must always report alive");
     }
 
-    /// Regression for the Windows `OpenProcess` failure-mode discrimination fix. The System process (PID 4) is guaranteed to exist on every Windows
-    /// machine but is unopenable by an ordinary user — `OpenProcess` returns `NULL` with `GetLastError() == ERROR_ACCESS_DENIED`. The pre-fix
-    /// behavior collapsed every NULL return to `false`, which would have synthesised a fake "Reaped" outcome for any close-verification path
-    /// (kill_async or polite-close fallback) that happened to be tracking a privileged PID. The fix treats only `ERROR_INVALID_PARAMETER` as proof
-    /// of death; everything else (including `ERROR_ACCESS_DENIED`) errs toward "alive" so we report `Unconfirmed` instead.
+    /// Regression for the Windows `OpenProcess` failure-mode discrimination + `SYNCHRONIZE`-fallback fix. The System process (PID 4) is guaranteed
+    /// to exist on every Windows machine but is unopenable by an ordinary user — both `PROCESS_QUERY_LIMITED_INFORMATION` and `SYNCHRONIZE` are
+    /// denied by the System DACL. The pre-fix behavior collapsed every NULL `OpenProcess(QUERY_LIMITED)` return to `false`, which would have
+    /// synthesised a fake "Reaped" outcome for any close-verification path (kill_async or polite-close fallback) that happened to be tracking a
+    /// privileged PID. The fix treats only `ERROR_INVALID_PARAMETER` as proof of death; on `ACCESS_DENIED` / `PARTIAL_COPY` / etc. it makes a
+    /// follow-up attempt with `SYNCHRONIZE` (which a wider DACL grants for most user-launched-but-elevated apps) and falls back to the default-alive
+    /// policy when even that is denied. PID 4 hits the fallback path and must still report alive.
     #[cfg(target_os = "windows")]
     #[test]
     fn pid_alive_reports_alive_for_inaccessible_system_pid_on_windows() {
-        // PID 4 is the Windows kernel "System" process. It is always alive while Windows is running, and an ordinary user token cannot open it via
-        // `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)` — the call fails with ERROR_ACCESS_DENIED. That is exactly the discrimination case
-        // the fix protects against.
+        // PID 4 is the Windows kernel "System" process. It is always alive while Windows is running, and an ordinary user token cannot open it with
+        // either QUERY_LIMITED or SYNCHRONIZE access — both `OpenProcess` calls in `pid_alive` fail with `ERROR_ACCESS_DENIED`, exercising the
+        // permanent default-alive fallback.
         assert!(
             pid_alive(4),
-            "Windows System process (PID 4) must report alive even though OpenProcess returns ACCESS_DENIED"
+            "Windows System process (PID 4) must report alive even though both OpenProcess attempts return ACCESS_DENIED"
         );
     }
 
@@ -2206,6 +2261,40 @@ mod tests {
         let pool = AppPool::new(spawner);
         let result = pool.kill_async(&SubSessionId::default()).await;
         assert!(matches!(result, Err(Error::NotFound(_))));
+    }
+
+    /// Regression test for the kill_async "never kill shared editor" safety net. Even if the caller fails to pre-check `is_retargeted`,
+    /// `kill_async_with_grace` MUST refuse to issue a kill when the runtime has been retargeted to a shared owner. This plugs the TOCTTOU race
+    /// where the cascade observes `is_retargeted=false`, awaits a polite-close, then escalates to `kill_async` AFTER the resolver thread has set
+    /// `re_targeted=true` under the pool lock.
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_async_refuses_to_kill_retargeted_runtime() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _s, _e) = collect_sink();
+        let id = SubSessionId::default();
+        pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
+        // Simulate a resolver thread that already retargeted the runtime to a shared owner. The pid is left at the launcher's value (FakeApp's
+        // synthetic PID), which is enough to verify the refusal semantics — the safety net only cares about the `re_targeted` flag.
+        let launcher_pid = pool.pid(&id).expect("pid after spawn");
+        assert!(pool.force_retargeted_for_test(&id, true));
+
+        let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(500)).await.expect("kill_async");
+
+        assert_eq!(
+            outcome,
+            AppKillOutcome::RefusedShared { pid: launcher_pid },
+            "kill_async must refuse to terminate a retargeted runtime"
+        );
+        assert!(!pool.contains(&id), "runtime entry must still be removed even when the kill is refused");
+        assert!(
+            !spawner.child(0).was_killed(),
+            "no kill syscall may reach the shared owner's killer when the safety net refuses"
+        );
+
+        // Clean up the FakeWaiter thread that is otherwise blocked forever on its exit condvar (the safety net deliberately doesn't issue the kill
+        // syscall that would normally wake it). Without this, the wait thread leaks for the lifetime of the test process.
+        spawner.child(0).signal_exit(false);
     }
 
     #[tokio::test(flavor = "current_thread")]

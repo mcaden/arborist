@@ -1475,6 +1475,70 @@ pub struct SubSessionCloseResult {
     pub message: Option<String>,
 }
 
+impl SubSessionCloseResult {
+    /// Confirmed outcome: the action did exactly what its label promises and we observed the effect (process gone, tab removed, window closed).
+    /// Use this for every success path — terminal kill reaped, polite close confirmed, force-kill reaped, tab-only detach, "already exited" races.
+    /// Factory exists because the four-field grid is constructed in roughly a dozen places across `commands/subsession.rs`; centralising prevents
+    /// field-order errors and keeps adding a new field (e.g. `elapsed_ms` for diagnostics) a single-line change.
+    #[must_use]
+    pub fn confirmed(outcome: SubSessionCloseOutcome, pid: Option<u32>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Confirmed,
+            pid,
+            message: None,
+        }
+    }
+
+    /// Unconfirmed outcome: the action was issued (signal sent, WM_CLOSE posted) but the OS did not confirm exit within the grace window.
+    /// `message` should explain the specific failure mode so a follow-up alert can surface it to the user.
+    #[must_use]
+    pub fn unconfirmed(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Unconfirmed,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+
+    /// Unsupported: this platform can't perform the requested action at all (e.g. polite close on non-Windows). The tab was removed; no process
+    /// action was attempted.
+    #[must_use]
+    pub fn unsupported(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Unsupported,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+
+    /// Unavailable: the action couldn't be attempted because we have no stable target (no resolver-matched HWND, etc.). The tab was removed;
+    /// no process action was attempted.
+    #[must_use]
+    pub fn unavailable(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Unavailable,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+
+    /// RefusedShared: force-kill was refused because the matched owner is a retargeted runtime serving multiple windows/projects
+    /// (e.g. VS Code's `Code.exe`). The tab was removed; the underlying process was deliberately NOT touched.
+    #[must_use]
+    pub fn refused_shared(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::RefusedShared,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+}
+
 /// Arguments for `subsession_list`. When `parent_worktree_tab_id` is `None` the result is the full set across every worktree tab; when `Some(id)`
 /// the result is filtered to that tab and ordered as the sub-sessions were created.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]

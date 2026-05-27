@@ -29,38 +29,9 @@
 
 import { useEffect, useRef } from 'react';
 
+import { formatSubCloseOutcome } from '@/lib/close-outcomes';
 import { usePendingSubClose, useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
-import type { SubSessionCloseIntent, SubSessionCloseResult } from '@/types/arborist';
-
-/**
- * Translate the backend's `(outcome, status)` grid into a user-facing
- * sentence. `null` means "no follow-up alert needed" — the close did
- * exactly what the button promised.
- */
-function describeOutcome(result: SubSessionCloseResult): string | null {
-  const pidSuffix = result.pid !== undefined ? ` (pid ${result.pid})` : '';
-  switch (result.status) {
-    case 'confirmed':
-      // The action succeeded exactly as labelled — no alert noise.
-      return null;
-    case 'unsupported':
-      return `This operating system doesn't support requesting an app close. The tab was removed; the app is still running${pidSuffix}.`;
-    case 'unavailable':
-      return `Arborist couldn't identify the exact app window to close. The tab was removed; the app is still running${pidSuffix}.`;
-    case 'refusedShared':
-      return `Refused to terminate a shared editor process${pidSuffix}: killing it would also close your other workspace windows. The tab was detached.`;
-    case 'unconfirmed':
-      if (result.outcome === 'forceKill') {
-        return `Force-kill signal sent${pidSuffix}, but the operating system didn't confirm the process exited within the grace window. The process may still be alive — check Task Manager / Activity Monitor.`;
-      }
-      if (result.outcome === 'politeClose') {
-        return `Asked the app to close${pidSuffix}, but it's still running after the grace window — it may be showing a "Save changes?" prompt. The tab was removed.`;
-      }
-      return `Close signal sent${pidSuffix}, but the operating system didn't confirm the process exited within the grace window.`;
-    default:
-      return null;
-  }
-}
+import type { SubSessionCloseIntent } from '@/types/arborist';
 
 export function SubCloseConfirmDialog(): JSX.Element | null {
   const pendingId = usePendingSubClose();
@@ -104,7 +75,7 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
     let alertMessage: string | null;
     try {
       const result = await actions.close(pendingId, intent);
-      alertMessage = describeOutcome(result);
+      alertMessage = formatSubCloseOutcome(result);
     } catch (error: unknown) {
       const detail = error instanceof Error && error.message.length > 0 ? error.message : String(error);
       alertMessage = `Close request failed:\n\n${detail}`;
