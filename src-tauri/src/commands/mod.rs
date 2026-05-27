@@ -524,7 +524,7 @@ pub fn build_production_metrics_emit(app: tauri::AppHandle, workspace: Arc<RwLoc
 }
 
 /// Production AI-session discovery callback. Persists the discovered AI session id on the matching `Session` record so the next app-restart restore
-/// can `--resume <id>` and continue the conversation.
+/// can resume the conversation using the tool's resume token (`--resume` for Claude, `--session-id` for Copilot, `resume` subcommand for Codex).
 ///
 /// Phase 7 (in-app workspace switch): the closure resolves the *current* store via `workspace.read()` on every invocation rather than capturing a
 /// snapshot. After a switch, callbacks from not-yet-joined watchers will write into the new store; the matching session id will not be present there

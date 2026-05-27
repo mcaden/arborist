@@ -67,12 +67,13 @@ Success looks like:
 
 ### AI launch commands
 
-| ID   | Requirement                                                                                                                                               |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| I-01 | Claude, Copilot, and Codex run in the selected worktree `cwd` so each tool can load its own repository-level instruction files.                           |
-| I-02 | Arborist must not pass `--system-prompt` to Claude, `--instructions` to Copilot, or any instruction flag to Codex for newly created sessions.             |
-| I-03 | Custom AI launch commands are plugin-keyed overrides. Missing or empty override means use the plugin default program.                                     |
-| I-04 | Dynamic paths must be canonicalized before use and shell-quoted when inserted into command strings. Worktree paths are passed as `cwd`, not interpolated. |
+| ID   | Requirement                                                                                                                                                                                                                                                                                                                                                |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| I-01 | Claude, Copilot, and Codex run in the selected worktree `cwd` so each tool can load its own repository-level instruction files.                                                                                                                                                                                                                            |
+| I-02 | Arborist must not pass `--system-prompt` to Claude, `--instructions` to Copilot, or any instruction flag to Codex for newly created sessions.                                                                                                                                                                                                              |
+| I-03 | Custom AI launch commands are plugin-keyed overrides. Missing or empty override means use the plugin default program.                                                                                                                                                                                                                                      |
+| I-04 | Dynamic paths must be canonicalized before use and shell-quoted when inserted into command strings. Worktree paths are passed as `cwd`, not interpolated.                                                                                                                                                                                                  |
+| I-05 | Minimum supported AI CLI versions: GitHub Copilot CLI `>= 1.0.51` (Arborist depends on the `--session-id <uuid>` create-or-resume flag introduced in that release; older versions only had `--resume`, which became strict-resume-only in 1.0.51 and would fail every Copilot session). Claude and Codex have no minimum-version requirement at this time. |
 
 ### Custom processes and sub-sessions
 

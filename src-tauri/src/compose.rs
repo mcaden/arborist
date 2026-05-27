@@ -245,15 +245,18 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 }
 
 /// Augment a stored `composed_command` with resume logic so the AI conversation continues across an app restart, a user-initiated
-/// restart, or — for Copilot — pre-binds the brand-new session to a pre-allocated uuid at create time.
+/// restart, or — for tools with pre-allocation — pre-binds the brand-new session to a pre-allocated uuid at create time.
 ///
 /// Resume syntax is plugin-dispatched (`plugins::ai::resume_args`):
-/// * Claude / Copilot currently append `--resume <ai_session_id>`
-/// * Codex currently appends `resume <ai_session_id>` (subcommand)
+/// * Claude appends `--resume <ai_session_id>` (resume-only; first launch goes through [`with_first_launch_session_id`]'s `--session-id` branch).
+/// * Copilot appends `--session-id <ai_session_id>` (create-or-resume per copilot-cli >= 1.0.51 — replaces the legacy `--resume <uuid>` create-if-
+///   absent quirk that copilot-cli 1.0.51 deliberately removed).
+/// * Codex appends `resume <ai_session_id>` (subcommand).
 ///
-/// Used by every spawn site that has an `ai_session_id` to honor: `session_create` (Copilot only — pre-allocated uuid), `session_restart` (Copilot
-/// only — freshly re-allocated uuid), and `restore_all_sessions` (both tools when an id is persisted). The persisted `composed_command` itself stays
-/// bare (the immutable record never contains `--resume`); the splice happens on a clone at every spawn.
+/// Used by every spawn site that has an `ai_session_id` to honor: `session_create` (Copilot and Claude — pre-allocated uuid via
+/// [`with_first_launch_session_id`]), `session_restart` (Preserve policy; both Claude and Copilot reuse the persisted uuid), and
+/// `restore_all_sessions` (both tools when an id is persisted). The persisted `composed_command` itself stays bare (the immutable record never
+/// contains a resume splice); the splice happens on a clone at every spawn.
 ///
 /// We append at the end of the command rather than parse and re-emit the CLI invocation. Both `claude` and `copilot` accept positional flags in any
 /// order, and the trailing token of `composed_command` is the CLI invocation, so appending binds correctly. Issue #63 retired
@@ -262,8 +265,8 @@ pub fn env_for_tool(tool: Tool, session_id: &SessionId) -> Vec<(String, std::ffi
 /// `ai_session_id` is shell-quoted using the host quoter only when it contains characters that could be interpreted by the shell. In practice CLI
 /// session ids are UUIDs (ASCII alphanumerics + `-`), and quoting them is actively harmful on Windows: the `cmd.exe` quoter wraps the value in
 /// literal `"…"`, and CLIs distributed as `.cmd` shims (like `copilot.cmd`) forward `%*` verbatim to the underlying `node` process, which then sees
-/// the surrounding quotes as part of the argument value — `--resume "<uuid>"` reaches the CLI with the quotes attached and resume fails. Defensive
-/// quoting is still applied for any future non-safe id (e.g. Copilot's session-by-name resume).
+/// the surrounding quotes as part of the argument value — `--session-id "<uuid>"` reaches the CLI with the quotes attached and resume fails.
+/// Defensive quoting is still applied for any future non-safe id (e.g. Copilot's session-by-name resume).
 #[must_use]
 pub fn with_resume(composed_command: &str, tool: Tool, ai_session_id: &str) -> String {
     let quoter = platform_shell().quoter;
@@ -287,7 +290,10 @@ pub fn with_resume(composed_command: &str, tool: Tool, ai_session_id: &str) -> S
 /// * **Claude** uses `--session-id <uuid>`, which is documented as "use this id for the (new) conversation". The Claude CLI rejects `--resume
 ///   <uuid>` when the transcript file doesn't exist yet (verified). Every spawn *after* the first should use [`with_resume`] so the same
 ///   conversation continues.
-/// * **Copilot/Codex** use their resume forms even on first launch — both CLIs treat this as create-if-missing.
+/// * **Copilot** also uses `--session-id <uuid>` (per copilot-cli >= 1.0.51): it's the create-or-resume token and is the same flag emitted by
+///   [`with_resume`] for Copilot, so this branch funnels through `with_resume` for the actual splicing.
+/// * **Codex** uses its `resume <id>` subcommand, also funneled through `with_resume` — Codex treats `resume` against an unknown thread as a
+///   self-handled error rather than a hard failure to spawn.
 ///
 /// The persisted `composed_command` stays bare; this helper produces a temporary version used only for the spawn call.
 #[must_use]
@@ -659,22 +665,31 @@ mod tests {
 
     #[test]
     fn with_resume_appends_to_chain_with_and_and() {
-        // Even if the composed command contains `&&` chains (e.g. via cli_launch_command override), appending `--resume` at the end still binds to
-        // the trailing CLI token — the regression target is that we don't try to parse the chain.
+        // Even if the composed command contains `&&` chains (e.g. via cli_launch_command override), appending `--session-id` at the end still binds
+        // to the trailing CLI token — the regression target is that we don't try to parse the chain.
         let base = "echo hi && nvm use 20 && copilot";
         let out = with_resume(base, Tool::Copilot, "sess-9");
-        assert_eq!(out, format!("{base} --resume sess-9"));
+        assert_eq!(out, format!("{base} --session-id sess-9"));
     }
 
     #[test]
     fn with_resume_does_not_quote_uuid_ids() {
         // Regression: cmd.exe quoting of a plain UUID wraps it in literal `"…"`, which `.cmd` shims (e.g. copilot.cmd) forward verbatim to node,
-        // making the CLI see `--resume "<uuid>"` and fail to resume. Safe tokens must be appended unquoted on every platform.
+        // making the CLI see `--session-id "<uuid>"` and fail to resume. Safe tokens must be appended unquoted on every platform.
         let uuid = "1eed651b-6a1b-4c7e-9646-7132eae8c6e9";
         let out = with_resume("copilot", Tool::Copilot, uuid);
-        assert_eq!(out, format!("copilot --resume {uuid}"));
+        assert_eq!(out, format!("copilot --session-id {uuid}"));
         assert!(!out.contains('"'), "no double quotes around safe id: {out}");
         assert!(!out.contains('\''), "no single quotes around safe id: {out}");
+    }
+
+    #[test]
+    fn with_resume_copilot_uses_session_id_flag() {
+        // copilot-cli >= 1.0.51 changed `--resume` to strictly resume known sessions (errors on unknown UUIDs) and added `--session-id` for the
+        // create-or-resume semantic Arborist needs. Regression: every Copilot splice site must emit `--session-id <uuid>`, never `--resume <uuid>`.
+        let out = with_resume("copilot", Tool::Copilot, "abc-123");
+        assert_eq!(out, "copilot --session-id abc-123");
+        assert!(!out.contains("--resume"), "Copilot resume splice must not use --resume: {out}");
     }
 
     #[test]

@@ -58,17 +58,14 @@ pub fn fingerprint(candidate: &RepoCommandCandidate) -> String {
     hash_field(&mut hasher, "kind", kind_key(candidate.kind));
     hash_field(&mut hasher, "scope", candidate.scope.as_deref().unwrap_or(""));
     hash_field(&mut hasher, "command", &candidate.command);
-    // `sha2 = "0.11"` returns a `hybrid_array::Array<u8, _>` from `finalize()`, which (unlike
-    // generic-array in 0.10) does NOT implement `LowerHex` — so `format!("{:x}", …)` no longer
-    // compiles. Hand-roll the lowercase hex encoding the same way `store_layout::path_hash`
-    // does to avoid pulling in the `hex` crate as a direct dependency.
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in &digest {
-        // Infallible: writing to a String never errors.
-        let _ = write!(out, "{byte:02x}");
+    // `sha2 0.11` returns `hybrid_array::Array<u8, U32>` from `finalize()`, which doesn't impl `LowerHex` (the pre-0.11 `GenericArray` did).
+    // Encode byte-by-byte instead — keeps the on-disk fingerprint shape ("64 lowercase hex chars") identical across the upgrade.
+    let bytes = hasher.finalize();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes.iter() {
+        write!(&mut hex, "{:02x}", b).expect("write to String is infallible");
     }
-    out
+    hex
 }
 
 fn hash_field(hasher: &mut Sha256, name: &str, value: &str) {

@@ -68,7 +68,16 @@ pub trait AiPlugin: Plugin {
     /// Whether restore-time resume invocation should verify transcript/session-state first.
     fn resume_requires_preflight(&self) -> bool;
 
-    /// Structured-command args to resume the AI session id for this tool.
+    /// Structured-command args to (re)attach to `ai_session_id` for this tool. The exact tokens differ by CLI:
+    ///
+    /// * **Claude** emits `--resume <uuid>` — Claude's `--resume` continues an existing transcript and is used only after the first launch.
+    /// * **Copilot** emits `--session-id <uuid>` — Copilot's `--session-id` resumes a known session *or* creates a new one at that UUID, so Arborist
+    ///   reuses it for first launch, restart, and restore-on-launch. (Copilot's `--resume` flag is strictly resume-known-only as of
+    ///   copilot-cli >= 1.0.51; it errors on unknown UUIDs and is not safe to splice when the conversation may not exist yet.)
+    /// * **Codex** emits the `resume <id>` subcommand (no flag prefix).
+    ///
+    /// The trait name says "resume" but the dispatched flag may be a create-or-resume token (Copilot). Callers should treat the returned Vec as
+    /// opaque argv tokens to splice after the launch program.
     fn resume_args(&self, ai_session_id: &str) -> Vec<String>;
 
     /// Resolve the expected transcript/session-state path for `ai_session_id`.
@@ -82,8 +91,6 @@ pub enum RestartAiSessionPolicy {
     Preserve,
     /// Clear persisted id before restart and rediscover later.
     Clear,
-    /// Allocate a fresh UUID and persist it after successful restart.
-    RotateUuid,
 }
 
 /// Which metrics watcher implementation to run for a tool.
@@ -238,7 +245,8 @@ pub fn restart_ai_session_policy(tool: Tool) -> RestartAiSessionPolicy {
 
 /// Resume preflight policy:
 /// - Claude: require transcript/session-state path to exist before invoking resume args.
-/// - Copilot/Codex: allow resume invocation unconditionally (CLIs create missing sessions).
+/// - Copilot/Codex: allow resume invocation unconditionally. For Copilot the `--session-id <uuid>` flag is documented to create the session at that
+///   UUID when it doesn't exist; for Codex the `resume <id>` subcommand prints its own error if the thread is missing.
 #[must_use]
 pub fn resume_requires_preflight(tool: Tool) -> bool {
     plugin_for_tool(tool).resume_requires_preflight()
@@ -263,7 +271,8 @@ mod tests {
     #[test]
     fn resume_args_dispatch_per_tool() {
         assert_eq!(resume_args(Tool::Claude, "aid-1"), vec!["--resume".to_owned(), "aid-1".to_owned()]);
-        assert_eq!(resume_args(Tool::Copilot, "aid-2"), vec!["--resume".to_owned(), "aid-2".to_owned()]);
+        // Copilot uses `--session-id` (create-or-resume) — `--resume` was strict-resume-only after copilot-cli 1.0.51 and errors on unknown UUIDs.
+        assert_eq!(resume_args(Tool::Copilot, "aid-2"), vec!["--session-id".to_owned(), "aid-2".to_owned()]);
         assert_eq!(resume_args(Tool::Codex, "aid-3"), vec!["resume".to_owned(), "aid-3".to_owned()]);
     }
 }

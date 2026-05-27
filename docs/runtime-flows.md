@@ -31,7 +31,7 @@ Important details:
 - The branch axis comes from build-time `BUILD_BRANCH`; canonical builds collapse the branch path.
 - `frontend_ready` waits for restore registration to finish. This gives the first `session_resize` a pending spawn to consume.
 - Restored sessions are spawned on first resize so the CLI's first paint sees the real terminal dimensions, not a fallback `80x24`.
-- Restore augments the spawn-time command copy with `--resume <id>` where supported and safe. It never mutates the persisted `composedCommand`.
+- Restore augments the spawn-time command copy with the tool's create-or-resume token (`--resume <id>` for Claude, `--session-id <id>` for Copilot, `resume <id>` subcommand for Codex) where supported and safe. It never mutates the persisted `composedCommand`.
 - One failed session restore does not abort the rest of the restore loop.
 - **macOS PATH recovery.** On macOS only, the very first boot step (between `init_tracing` and CLI-arg parsing) queries the user's login shell (`<$SHELL> -ilc 'printf marker; echo $PATH'`) and applies the result via `std::env::set_var("PATH", …)`. `launchd` would otherwise start the `.app` with a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that's missing `~/.local/bin`, `~/.npm-global/bin`, Homebrew, etc., so `claude` / `copilot` would fail to launch from a Finder-started build. Any failure (timeout, missing `$SHELL`, parse error) is logged at `warn!` and leaves PATH unchanged — boot does not abort.
 
@@ -121,7 +121,7 @@ Launch composition:
 
 - Claude launches as `claude` (repository-level `CLAUDE.md` discovery is handled by the CLI from the worktree `cwd`). When the `arborist-claude-hook` sidecar is found next to the running `arborist` binary, `--settings <hooks-config>` is added; otherwise it's omitted and the session runs without hook-based status reporting (the degraded path — sidebar falls back to PTY-byte heuristics). The Arborist session id is pre-allocated and spliced in via `--session-id <uuid>` on first spawn (`--resume <uuid>` on every subsequent spawn — restart, restore-on-launch).
 - The `--settings` file (when written) registers the `arborist-claude-hook` sidecar binary against every hook event Arborist cares about. The user's own `~/.claude/settings.json` and project `.claude/settings*.json` are merged in at session-create time so user formatters / validators keep running — this is a shallow merge matching Claude's documented `--settings` precedence (last file wins on every top-level key except `hooks.<EventName>` arrays, which are concatenated; nested objects like `permissions` / `mcpServers` are not deep-merged). The helper appends one structured line to `<session_temp_dir>/hook-events.jsonl` per hook fire; the backend tails the file and emits `session://activity` events (`AwaitingPermission`, `ToolStart`/`ToolEnd`, `TurnStart`/`TurnEnd`).
-- Copilot launches bare as `copilot`; Arborist does not pass `--instructions`.
+- Copilot launches bare as `copilot`; Arborist does not pass `--instructions`. The conversation id is pre-allocated at session-create and spliced in via `--session-id <uuid>` on every spawn (create, restart, restore-on-launch). Requires `copilot >= 1.0.51`, which split `--session-id` (create-or-resume) from `--resume` (strict-resume-only).
 - Custom AI launch commands replace the program token and are stored by plugin id.
 - Default Claude/Copilot launches use structured argv. User launch overrides and applied repo launch defaults remain shell snippets because they
   intentionally allow extra args.
@@ -147,10 +147,11 @@ flowchart LR
     Spawn --> Starting["session://status starting"]
 ```
 
-Restart intentionally starts a fresh AI conversation. App-restart restore can resume an AI conversation when the backend has a known AI session id;
-manual restart clears or replaces that id according to the tool. If the stored session was created from an applied repo-provided launch default, restart and
-restore revalidate the persisted command provenance. Restore cannot prompt, so an untrusted restored session is left in `error` state for the user to
-review and restart.
+Restart intentionally starts a fresh AI conversation for tools that opt into the `Clear` policy (Codex). Tools with `Preserve` policy (Claude, Copilot)
+continue the same conversation across an in-app restart by re-binding the persisted AI session id at spawn (`--resume <id>` for Claude,
+`--session-id <id>` for Copilot). App-restart restore can resume an AI conversation when the backend has a known AI session id. If the stored
+session was created from an applied repo-provided launch default, restart and restore revalidate the persisted command provenance. Restore cannot
+prompt, so an untrusted restored session is left in `error` state for the user to review and restart.
 
 ## Closing worktree tabs and sessions
 

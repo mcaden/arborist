@@ -56,7 +56,8 @@ pub struct AppContext {
     /// capturing closure.
     pub metrics_emit: MetricsCb,
     /// Callback the metrics watchers invoke when they discover (or learn of a change to) the AI-side session id. Production wires this to persist via
-    /// `ConfigStore::update_session_ai_session_id` so the next app-restart restore can `--resume <id>`. Tests substitute a capturing closure.
+    /// `ConfigStore::update_session_ai_session_id` so the next app-restart restore can splice the tool's resume token (`--resume <id>` for Claude,
+    /// `--session-id <id>` for Copilot, `resume <id>` for Codex). Tests substitute a capturing closure.
     pub ai_session_discover: AiSessionDiscoveryCb,
     /// Callback the metrics watchers invoke when an agent turn completes (Copilot OTel `invoke_agent` close; Claude transcript assistant line).
     /// Production wires this into the existing `session://activity` channel as a `TurnEnd` variant; tests substitute a capturing closure.
@@ -73,7 +74,8 @@ pub struct AppContext {
     /// Sessions that have been persisted but not yet PTY-spawned. Used by `restore_all_sessions` to defer the actual `pool.spawn` until the frontend
     /// reports the real terminal dimensions via `session_resize`. The first `session_resize` for a pending id atomically claims it (removing it from
     /// the map) and triggers the spawn at the right size — so the CLI's first paint never happens at the wrong width. The map value is the
-    /// spawn-ready `Session` (already augmented with `--resume <ai-session-id>` if applicable) so the claim path doesn't have to re-derive it.
+    /// spawn-ready `Session` (already augmented with the tool's resume splice — `--resume <ai-session-id>` for Claude, `--session-id <ai-session-id>`
+    /// for Copilot — if applicable) so the claim path doesn't have to re-derive it.
     /// `Mutex<HashMap>` (not `RwLock`) because the only access pattern is a single-step claim (`remove`) under the same lock as the membership check,
     /// which a `RwLock` cannot give us atomically.
     pub pending_spawn: Arc<Mutex<HashMap<SessionId, Session>>>,
@@ -489,7 +491,8 @@ fn with_resume_for_spawn(session: &Session, ai_session_id: &str) -> Session {
 
 /// First-launch counterpart to [`with_resume_for_spawn`]: splices the *create-time* flag for the tool into both `composed_command` and the
 /// optional `structured_command`. The first-launch form differs per tool — Claude uses `--session-id <uuid>` to create the conversation at our uuid
-/// (Claude rejects `--resume <uuid>` when the transcript doesn't exist yet), while Copilot/Codex use their resume arguments (create-if-absent).
+/// (Claude rejects `--resume <uuid>` when the transcript doesn't exist yet), Copilot uses `--session-id <uuid>` (create-or-resume per copilot-cli
+/// >= 1.0.51), and Codex uses its `resume <id>` subcommand.
 ///
 /// Only used for the very first spawn of a session. Every subsequent spawn (restart, restore-on-launch) goes through [`with_resume_for_spawn`] so
 /// the conversation continues.
@@ -695,21 +698,24 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
     //    the current order.
     //
     //    For Copilot we *pre-allocate* the conversation id (a fresh
-    //    `--resume <uuid>` causes Copilot to create the session at that
-    //    exact uuid — verified). This guarantees `Session.ai_session_id`
-    //    is populated from create-time onward, so restore-on-launch can
-    //    always splice `--resume` and Copilot never starts a fresh
+    //    `--session-id <uuid>` causes Copilot to create the session at
+    //    that exact uuid — copilot-cli >= 1.0.51 documents `--session-id`
+    //    as "resumes known sessions … and starts new sessions with a
+    //    specific UUID"). This guarantees `Session.ai_session_id` is
+    //    populated from create-time onward, so restore-on-launch can
+    //    always splice `--session-id` and Copilot never starts a fresh
     //    conversation just because the user hadn't typed anything before
     //    the previous shutdown. (Original symptom: "only the active tab
     //    fully resumes".)
     //
     //    The persisted `composed_command` stays bare — no
-    //    `--resume` baked into the immutable record); the splice happens
-    //    at every spawn site below, mirroring `restore_all_sessions`.
+    //    `--session-id` baked into the immutable record; the splice
+    //    happens at every spawn site below, mirroring
+    //    `restore_all_sessions`.
     //
-    //    Claude has no equivalent flag to pre-allocate against; its
-    //    `ai_session_id` continues to be discovered from the transcript
-    //    after the first user prompt.
+    //    Claude also pre-allocates (post-hook-integration); it uses
+    //    `--session-id <uuid>` on first spawn and `--resume <uuid>` on
+    //    every subsequent spawn (different flag, same model).
     let tab_index = ctx.store().load_config().tab_order.len().min(usize::MAX - 1);
     let preallocated_ai_id = crate::plugins::ai::create_ai_session_id(args.tool);
     let session = Session {
@@ -757,8 +763,9 @@ pub fn session_create_impl(ctx: &AppContext, args: SessionCreateArgs) -> Result<
 
     // 11. Spawn. The pool emits Running with PID through the same sink. For tools with a pre-allocated `ai_session_id` we splice the right
     //     create-time flag into the composed_command (Claude → `--session-id <uuid>` so Claude creates the conversation at our uuid; Copilot →
-    //     `--resume <uuid>` which Copilot treats as create-if-absent). Restart / restore paths use [`compose::with_resume`] instead. The persisted
-    //     `composed_command` stays bare (see step 7).
+    //     `--session-id <uuid>` which Copilot treats as resume-known-or-create-at-UUID — see CopilotPlugin::resume_args for the upstream split
+    //     between `--resume` and `--session-id`). Restart / restore paths use [`compose::with_resume`] instead. The persisted `composed_command`
+    //     stays bare (see step 7).
     let session_to_spawn = if let Some(aid) = preallocated_ai_id.as_deref() {
         with_first_launch_for_spawn(&session, aid)
     } else {
@@ -958,8 +965,8 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
 /// temp-dir on disk) but **preserves every persisted record**: the entry in `sessions.json` stays put, `last_open_sessions` / `tab_order` /
 /// `active_session_id` are not touched. When the user switches back to this workspace,
 /// [`restore_all_sessions`] re-spawns the PTY from the unchanged
-/// `Session` record using `composed_command` verbatim — Claude / Copilot `--resume` splicing (see [`compose::with_resume`]) keeps the AI conversation
-/// context alive across the round-trip.
+/// `Session` record using `composed_command` verbatim — the tool's resume splice (see [`compose::with_resume`]: `--resume` for Claude,
+/// `--session-id` for Copilot, `resume` subcommand for Codex) keeps the AI conversation context alive across the round-trip.
 ///
 /// Best-effort by design: `pool.kill` may fail (rare; e.g. the child has already exited and the wait thread is mid-cleanup). We log and continue
 /// rather than abort the workspace switch — park performs zero irreversible store mutations, so a partial-park state is benign and self-heals on the
@@ -1272,40 +1279,25 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
         .map_err(AppError::from)?;
     (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
-    // Restart starts a fresh AI conversation. The previous ai_session_id refers to a transcript the new CLI invocation will not be
-    // writing to.
+    // Restart re-spawns the AI CLI. Per-tool policy decides what happens to the persisted `Session.ai_session_id`:
     //
-    // For Copilot we *re-allocate* a fresh uuid and pre-bind the new conversation to it via `--resume <new-uuid>` (Copilot will create a brand-new
-    // session at that uuid). This keeps the events.jsonl path deterministic across restart (same property as the create path) so restore-on-launch
-    // can resume the post-restart conversation.
-    //
-    // For Claude (post-hook-integration) we **preserve** the pre-allocated uuid and splice `--resume <uuid>` so the same transcript continues
-    // across restart. The legacy Claude path (pre-hook-integration) used `Clear` and a transcript-discovery fallback; that behaviour is preserved
-    // for any tool still configured with `Clear`.
+    // - **Preserve** (Claude, Copilot): reuse the existing uuid and splice the tool's resume token (`--resume <uuid>` for Claude, `--session-id
+    //   <uuid>` for Copilot) so the conversation continues across an in-app restart. Copilot's `--session-id` is a create-or-resume token, so it's
+    //   safe to splice even if the previous conversation's on-disk state is gone.
+    // - **Clear** (Codex): drop the persisted id eagerly and let the post-spawn watcher rediscover one. Codex has no create-at-UUID flag so
+    //   Preserve isn't mechanically available; restart starts a fresh thread that the rollout-file watcher will pick up.
     //
     // Order matters: stop the OLD watcher first, *then* mutate ai_session_id. We need `stop_and_join` (not just `stop`) because the worker only
     // re-checks its `running` flag at the top of each poll iteration — a fire-and-forget stop would let the in-flight iteration call `discover()` one
     // more time and persist the stale id back, undoing the mutation. After join returns, the worker thread has fully exited; the new watcher started
     // below by `metrics.start` will repopulate the field if/when the CLI rotates the conversation (e.g. user-typed `/clear` or `/resume <other-id>`).
     //
-    // Persist order:
-    //   - `Clear`: clear *eagerly* (before respawn). This preserves the
-    //     pre-Phase-2 semantics — a crash between here and the new watcher's
-    //     first discovery could otherwise let the next restore `--resume` the
-    //     pre-restart conversation. Cost: a failed restart loses the prior
-    //     id from the persisted record.
-    //   - `RotateUuid` (Copilot): defer until *after* `respawn_existing`
-    //     succeeds. The pre-allocated uuid is ours and unique; if respawn
-    //     fails, we keep the old conversation id resumable rather than
-    //     rotating to a uuid with no session-state directory (which would
-    //     irrevocably orphan the prior conversation on a transient failure).
-    //   - `Preserve` (Claude): no persisted change. The existing
-    //     `Session.ai_session_id` is reused verbatim for the `--resume`
-    //     splice, mirroring restore-on-launch's behaviour.
+    // For `Clear` we wipe the persisted id *eagerly* (before respawn). This preserves the pre-Phase-2 semantics — a crash between here and the new
+    // watcher's first discovery could otherwise let the next restore splice the pre-restart conversation. Cost: a failed restart loses the prior
+    // id from the persisted record.
     ctx.metrics.stop_and_join(&id);
     let restart_policy = crate::plugins::ai::restart_ai_session_policy(session.tool);
     let restart_ai_id: Option<String> = match restart_policy {
-        crate::plugins::ai::RestartAiSessionPolicy::RotateUuid => Some(uuid::Uuid::new_v4().to_string()),
         crate::plugins::ai::RestartAiSessionPolicy::Preserve => session.ai_session_id.clone(),
         crate::plugins::ai::RestartAiSessionPolicy::Clear => None,
     };
@@ -1337,15 +1329,8 @@ pub fn session_restart_impl(ctx: &AppContext, args: SessionRestartArgs) -> Resul
         return Err(AppError::from(e));
     }
 
-    // Spawn succeeded — *now* persist the rotated Copilot uuid. Doing this after respawn means a failed restart (above) leaves the prior
-    // ai_session_id intact and resumable.
-    if matches!(restart_policy, crate::plugins::ai::RestartAiSessionPolicy::RotateUuid) {
-        if let Err(e) = ctx.store().update_session_ai_session_id(&id, restart_ai_id.clone()) {
-            warn!(session_id = %id, error = ?e, "restart: failed to persist rotated ai_session_id");
-        }
-    }
-    // Issue #3: restart the metrics watcher with a fresh spawn instant so the freshness filter on Claude project JSONL files re-anchors. For Copilot,
-    // the freshly-allocated ai_session_id (above) drives the events.jsonl tailer to the new conversation's path.
+    // Issue #3: restart the metrics watcher with a fresh spawn instant so the freshness filter on Claude project JSONL files re-anchors. For
+    // Copilot, the preserved ai_session_id drives the events.jsonl tailer at the same deterministic path the spliced `--session-id` re-binds to.
     ctx.metrics.start(
         session.id,
         session.tool,
@@ -1414,8 +1399,9 @@ fn stale_worktree_message(path: &std::path::Path) -> String {
 }
 
 /// Best-effort preflight check that the AI tool's transcript for `ai_session_id` still exists on disk. If it doesn't (user deleted it between
-/// launches, OS tmp clean, etc.), `restore_all_sessions` skips the `--resume` augmentation rather than handing the CLI a stale id that would error
-/// out before the user sees anything useful.
+/// launches, OS tmp clean, etc.), `restore_all_sessions` skips the resume splice rather than handing the CLI a stale id that would error
+/// out before the user sees anything useful. Currently only Claude opts into this preflight (`resume_requires_preflight`); Copilot's `--session-id`
+/// flag is create-or-resume so the splice is always safe (issue #222), and Codex's `resume` subcommand prints its own error.
 ///
 /// On any I/O failure we conservatively return `true` so the worst case is the CLI reports its own "no such session" error, which is no worse than
 /// today's behaviour.
@@ -1428,7 +1414,7 @@ fn ai_session_transcript_exists(tool: Tool, worktree_path: &std::path::Path, ai_
     };
     let path = crate::plugins::ai::ai_session_transcript_path(tool, &home, worktree_path, ai_session_id);
     // `try_exists` distinguishes "definitely missing" from "couldn't tell" (e.g. permission denied on a parent dir). `Path::is_file`/`is_dir` would
-    // conflate both as `false`, which would silently strip a valid `--resume` whenever the home dir is briefly unreadable.
+    // conflate both as `false`, which would silently strip a valid splice whenever the home dir is briefly unreadable.
     match path.try_exists() {
         Ok(true) => true,
         Ok(false) => false,
@@ -1589,18 +1575,17 @@ pub fn restore_all_sessions(ctx: &AppContext) {
         }
         (ctx.sink.status)(&id, SessionStatus::Starting, None, None);
 
-        // AI-session resume. Augment composed_command with `--resume <ai_session_id>` so the underlying CLI continues the prior
-        // conversation. We *augment*, never *recompose from inputs*. We only resume on app-restart
-        // restore — user-initiated `session_restart` intentionally allocates a fresh AI-side conversation (Copilot gets a freshly-allocated uuid;
-        // Claude clears the field).
+        // AI-session resume. Augment composed_command with the tool's resume token (`--resume <id>` for Claude, `--session-id <id>` for Copilot)
+        // so the underlying CLI continues the prior conversation. We *augment*, never *recompose from inputs*. Restore runs on app-restart;
+        // user-initiated `session_restart` follows the same Preserve-or-Clear policy in `session_restart_impl`.
         //
         // For **Copilot** we splice unconditionally when `ai_session_id` is set — we don't preflight against the on-disk session-state directory
-        // because a `--resume <unknown-uuid>` is safe (Copilot creates a fresh session at that uuid). The pre-allocated create-time id may
-        // legitimately have no directory yet if the app crashed before Copilot's first `session.start` flush; splicing anyway gives Copilot a chance
-        // to materialize the session at the persisted id rather than allocating a different one and losing the link.
+        // because `--session-id <uuid>` is a create-or-resume token (copilot-cli >= 1.0.51 makes that explicit). The pre-allocated create-time id
+        // may legitimately have no directory yet if the app crashed before Copilot's first `session.start` flush; splicing anyway gives Copilot a
+        // chance to materialize the session at the persisted id rather than allocating a different one and losing the link.
         //
-        // For **Claude** we keep the preflight: a stale id with no transcript would have Claude error out before the user sees anything useful, so we
-        // drop the splice and start fresh.
+        // For **Claude** we keep the preflight: a stale id with no transcript would have Claude error out before the user sees anything useful, so
+        // we drop the splice and start fresh.
         //
         // Known limitation (ROADMAP §4.5): for Claude, the `ai_session_id` is discovered heuristically from the newest JSONL in the project dir
         // post-spawn. If two Arborist sessions share the same worktree (same `<encoded-cwd>`), the watchers can converge on the same file and persist
@@ -1812,7 +1797,8 @@ pub fn workspace_validate_impl(
 //    **preserve** every session record (sessions.json, lastOpenSessions,
 //    tabOrder, activeSessionId untouched). When the user switches back to this
 //    workspace, [`restore_all_sessions`] re-spawns the PTYs from the persisted
-//    records — Claude/Copilot `--resume` splicing ([`compose::with_resume`])
+//    records — the tool's resume splice ([`compose::with_resume`]: `--resume`
+//    for Claude, `--session-id` for Copilot, `resume` subcommand for Codex)
 //    keeps the AI conversation context alive across the round-trip. Park is
 //    *best-effort*: a failed `pool.kill` (rare; e.g. PTY already dead) is
 //    logged and ignored. There is no abort path because park performs zero
@@ -2015,7 +2001,8 @@ pub async fn workspace_switch_impl_inner(
 
     // Step 7 — **park** old workspace sessions. We kill the PTYs but **preserve** every session record (sessions.json, lastOpenSessions, tabOrder,
     // activeSessionId untouched). When the user switches back to this workspace, restore_all_sessions will re-spawn the PTYs from the persisted
-    // records — Claude/Copilot `--resume` splicing (compose::with_resume) keeps the AI conversation context alive across the round-trip.
+    // records — the tool's resume splice (compose::with_resume: `--resume` for Claude, `--session-id` for Copilot, `resume` subcommand for Codex)
+    // keeps the AI conversation context alive across the round-trip.
     //
     // Park is *best-effort*: a failed `pool.kill` (rare; e.g. PTY already dead) is logged and ignored. There is no abort path because park performs
     // zero irreversible store mutations — at worst we leak a still-running child PTY whose record will be re-found on the next switch-back. The
