@@ -407,10 +407,13 @@ fn remove_residual_worktree_dir_with_retry(
     }
 
     Err(Error::Internal(format!(
-        "git unregistered the worktree but residual directory cleanup failed for {path}: {last_error}. The directory is likely still pinned by a \
-         background process (file watcher, antivirus, editor, file explorer). Close any tools still holding it open and delete `{path}` manually, \
-         or retry the close from the worktree tab menu.",
+        concat!(
+            "git unregistered the worktree but residual directory cleanup failed for {path}: {last_error}. ",
+            "The directory is likely still pinned by a background process (file watcher, antivirus, editor, file explorer). ",
+            "Close any tools still holding it open and delete `{path}` manually, or retry the close from the worktree tab menu.",
+        ),
         path = worktree_path.display(),
+        last_error = last_error,
     )))
 }
 

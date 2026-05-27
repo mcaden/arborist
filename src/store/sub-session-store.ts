@@ -74,7 +74,9 @@ export interface SubSessionStoreActions {
    * cache regardless of intent — failure to terminate the external
    * window is logged but doesn't keep the tab visible. Returns the
    * backend's [`SubSessionCloseResult`] so callers (typically the
-   * close-confirm dialog) can show an outcome-aware toast.
+   * close-confirm dialog) can show an outcome-aware alert (the
+   * current UX uses `window.alert`; switch to a toast component if
+   * one lands).
    */
   close: (id: SubSessionId, intent?: SubSessionCloseIntent) => Promise<SubSessionCloseResult>;
   /**

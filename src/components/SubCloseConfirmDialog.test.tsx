@@ -1,8 +1,9 @@
 // Behavioural tests for SubCloseConfirmDialog — the 4-button (Cancel + 3 close intents) dialog
 // introduced for issue #132. The intents map 1:1 onto `subSessionClose`'s `SubSessionCloseIntent`
-// enum, and the outcome-aware alert copy comes from `describeOutcome` (which maps the
-// `(outcome, status)` grid into a user-facing sentence). The tests below cover both the dispatch
-// side (each button → right intent) and the readback side (each outcome → expected alert).
+// enum, and the outcome-aware alert copy comes from `formatSubCloseOutcome` in
+// `@/lib/close-outcomes` (shared with `WorktreeCloseConfirmDialog`'s cascade summary so single-sub
+// and cascade alerts stay phrased identically). The tests below cover both the dispatch side
+// (each button → right intent) and the readback side (each outcome → expected alert).
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

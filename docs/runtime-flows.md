@@ -192,8 +192,9 @@ Close policy (returns a `SubSessionCloseResult { outcome, status, pid?, message?
 intent):
 
 - Terminal sub-session: kill the PTY tree (SIGKILL on Unix, `TerminateProcess` on the whole Windows process tree). Outcome `terminalKill`, status
-  `confirmed` when the wait thread joined within the grace window, or `unconfirmed` otherwise. Unconfirmed terminal closes keep the row visible in
-  the sidebar so the user can see the surviving PID.
+  `confirmed` when the wait thread joined within the grace window, or `unconfirmed` when it did not. The store record is pruned either way (an
+  unconfirmed terminal close still issued the kill signal — the failure mode is "child may linger", not "child is definitely alive"); the result
+  carries the lingering PID so the UI can warn the user that they may need to clean up the orphan manually.
 - Application `tabOnly`: drop Arborist tracking only. Outcome `tabRemoved`, status `confirmed`.
 - Application `requestAppClose`: ask the OS/window to close politely (Windows: `WM_CLOSE`). Verified by **window-handle existence** first
   (`IsWindow`) so shared editors like VS Code that survive a single window close are correctly reported as still running, falling back to PID
