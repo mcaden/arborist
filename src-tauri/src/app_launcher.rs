@@ -727,9 +727,11 @@ impl AppPool {
     }
 
     /// Test-only helper to mark a runtime as re-targeted without driving the resolver flow. Production code paths must NOT call this; the
-    /// re-target flag is normally toggled by the resolver thread under the pool lock. Kept always-available (rather than `#[cfg(test)]`) because the
-    /// integration test crate (`tests/sub_sessions_e2e.rs`) compiles against the lib as an external crate where `cfg(test)` doesn't apply, and
-    /// clippy with `--all-targets` builds those without the `test-helpers` feature.
+    /// re-target flag is normally toggled by the resolver thread under the pool lock. Gated behind `#[cfg(any(test, feature = "test-helpers"))]`
+    /// so it's invisible in production builds — the `cfg(test)` arm makes it available to lib unit tests, and the `feature = "test-helpers"` arm
+    /// makes it available to the integration-test crate (`tests/sub_sessions_e2e.rs`), which gates its caller with the same feature flag so the
+    /// dependency is symmetric and pre-commit `cargo clippy --all-targets` (without `--features test-helpers`) skips both.
+    #[cfg(any(test, feature = "test-helpers"))]
     pub fn force_retargeted_for_test(&self, id: &SubSessionId, value: bool) -> bool {
         let Ok(g) = self.inner.lock() else { return false };
         match g.get(id) {

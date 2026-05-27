@@ -656,6 +656,10 @@ async fn cascade_terminate_policy_kills_non_retargeted_application_runtime() {
 /// Issue #132: cascade-close with Terminate policy MUST refuse to force-kill a retargeted app sub-session (the runtime has been handed off to a
 /// shared editor process like `Code.exe` that owns multiple windows). The kill must not be issued, the tab must be detached, and the cascade outcome
 /// map must surface `ForceKill / RefusedShared` so the UI can warn the user.
+///
+/// Gated behind `feature = "test-helpers"` because the symmetric `AppPool::force_retargeted_for_test` helper is too (production builds must not
+/// expose a way to flip the retarget flag outside the resolver's atomic write); the rest of the file's tests don't need the feature.
+#[cfg(feature = "test-helpers")]
 #[tokio::test]
 async fn cascade_terminate_policy_refuses_to_kill_retargeted_application_runtime() {
     let h = build_harness();
