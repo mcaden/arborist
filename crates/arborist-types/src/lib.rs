@@ -1423,8 +1423,11 @@ pub struct SubSessionCloseArgs {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SubSessionCloseOutcome {
-    /// The sub-tab was removed from Arborist; no process action was attempted. Always returned for [`SubSessionCloseIntent::TabOnly`] on app
-    /// sub-tabs, and as a fallback when the requested action wasn't possible (e.g. force-kill refused on a retargeted shared editor).
+    /// The sub-tab was removed from Arborist and no process action was attempted on the underlying app. Returned for
+    /// [`SubSessionCloseIntent::TabOnly`] on app sub-tabs (the "X" button is tab-removal, not "close my editor"), for the
+    /// [`WorktreeTabAppClosePolicy::Detach`] cascade variant, and for the cascade-`Terminate` case where the launcher had already exited on its own
+    /// before the cascade reached it. A force-kill that was refused for a shared editor is reported separately as `outcome = ForceKill` +
+    /// `status = RefusedShared` (see [`SubSessionCloseStatus::RefusedShared`]) so the user-visible message still references the verb the user clicked.
     TabRemoved,
     /// A terminal sub-tab's underlying PTY child was killed. Terminal sub-tabs always take this branch because the tab IS the process.
     TerminalKill,

@@ -154,11 +154,23 @@ fn platform_kill_pid(pid: u32) -> Result<(), Error> {
     // `before-quit` listeners do, until the user dismisses the prompt). SIGKILL matches the documented "ForceKill" intent: the user has explicitly
     // chosen the destructive path. Polite-close is a separate primitive (`request_window_close_then_wait_async`) and never reaches here.
     //
-    // SAFETY: kill(2) is async-signal-safe; passing a possibly-stale PID is documented to return ESRCH which we treat as benign.
-    unsafe {
-        let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    // SAFETY: kill(2) is async-signal-safe; we read errno via `std::io::Error::last_os_error()` immediately after the call so no intervening libc
+    // call can clobber it.
+    //
+    // Errno mapping: ESRCH (no such process) is benign — the caller verifies death via `pid_alive` and will credit `Reaped` regardless of which side
+    // of the race won. EPERM (permission denied — e.g. the target is owned by another user and Arborist is not root) and any other unexpected errno
+    // surface as errors so `kill_async`'s `killer_result.is_err()` branch logs the diagnostic and returns `Unconfirmed`, instead of silently crediting
+    // the failed syscall and waiting out the full grace window before reporting `Unconfirmed` anyway with no clue about why.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    if rc == 0 {
+        return Ok(());
     }
-    Ok(())
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ESRCH) => Ok(()),
+        Some(libc::EPERM) => Err(Error::PermissionDenied(format!("kill({pid}, SIGKILL): {err}"))),
+        _ => Err(Error::Internal(format!("kill({pid}, SIGKILL) failed: {err}"))),
+    }
 }
 
 // --------------------------------------------------------------------------- Owner resolution / liveness (re-target after launcher exit)
@@ -2546,5 +2558,23 @@ mod tests {
         );
         assert!(matches!(outcome, PoliteCloseOutcome::Posted { pid } if pid == runtime_pid));
         assert_eq!(focuser.alive_calls(), vec![0xBABE]);
+    }
+
+    /// Regression test for the `platform_kill_pid` errno-mapping fix (PR #221 review). Before the fix the non-Windows branch dropped the `libc::kill`
+    /// return value entirely and always returned `Ok(())`, silently swallowing EPERM and friends. A `kill(SIGKILL)` against a PID that's guaranteed
+    /// not to exist must return ESRCH from the kernel — the function must translate that to `Ok(())` (the caller verifies death via `pid_alive` and
+    /// credits Reaped). Non-ESRCH errnos (EPERM, ...) would map to `Error::PermissionDenied` / `Error::Internal`; we can't deterministically exercise
+    /// those without picking a target whose ownership we don't control, so the smoke-test asserts the benign path only.
+    #[cfg(unix)]
+    #[test]
+    fn platform_kill_pid_treats_nonexistent_pid_as_benign() {
+        // A PID well above every common kernel PID_MAX (Linux default 4_194_304; macOS 99_999): the kernel always returns ESRCH for a PID with no
+        // matching process. Casting to `pid_t` (i32) keeps the value positive (well under `i32::MAX`).
+        let absent_pid: u32 = 999_999_999;
+        let result = platform_kill_pid(absent_pid);
+        assert!(
+            matches!(result, Ok(())),
+            "ESRCH from kill(absent_pid, SIGKILL) must be classified benign so kill_async can credit `Reaped` via pid_alive; got {result:?}"
+        );
     }
 }
