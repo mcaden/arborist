@@ -5,6 +5,7 @@
 //! created from them are revalidated before restart/restore.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -62,7 +63,6 @@ pub fn fingerprint(candidate: &RepoCommandCandidate) -> String {
     let bytes = hasher.finalize();
     let mut hex = String::with_capacity(bytes.len() * 2);
     for b in bytes.iter() {
-        use std::fmt::Write;
         write!(&mut hex, "{:02x}", b).expect("write to String is infallible");
     }
     hex

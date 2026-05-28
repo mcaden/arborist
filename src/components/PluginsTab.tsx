@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { ExperimentalIcon } from './ExperimentalIcon';
 import { formatError } from '@/lib/tauri-bridge';
 import { AI_LAUNCH_COMMAND_SETTING, aiLaunchCommand, pluginEnabled, useRegistry } from '@/plugins';
 import { selectConfig, useConfigStore } from '@/store/config-store';
@@ -151,7 +152,21 @@ export function PluginsTab({ onClose }: PluginsTabProps): JSX.Element {
                   data-testid={`plugin-row-ai-${plugin.id}`}
                   className="rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800"
                 >
-                  <legend className="px-1 text-xs font-medium text-slate-700 dark:text-slate-200">{plugin.displayName}</legend>
+                  <legend className="px-1 text-xs font-medium text-slate-700 dark:text-slate-200">
+                    <span className="inline-flex items-center gap-1">
+                      <span>{plugin.displayName}</span>
+                      {plugin.experimental ? (
+                        <span
+                          data-testid={`plugin-ai-${plugin.id}-experimental`}
+                          className="inline-flex items-center gap-0.5 rounded bg-amber-100 px-1 py-px text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                          title="This plugin is experimental and may change or break without notice."
+                        >
+                          <ExperimentalIcon className="h-3 w-3" />
+                          <span>(experimental)</span>
+                        </span>
+                      ) : null}
+                    </span>
+                  </legend>
                   <label className="mb-2 inline-flex items-center gap-2 text-xs">
                     <input
                       type="checkbox"
