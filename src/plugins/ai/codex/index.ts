@@ -6,6 +6,7 @@ export const CodexAiPlugin: AiPlugin = {
   id: 'codex',
   displayName: 'Codex',
   defaultProgram: 'codex',
+  experimental: true,
   // Codex reports context metrics via rollout-file tailing; no tooling-specific tooltip caveat needed.
   contextMetricsLimitTooltipSuffix: '',
   settings: [

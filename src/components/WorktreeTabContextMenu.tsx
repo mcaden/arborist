@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { ExperimentalIcon } from './ExperimentalIcon';
 import { measureInitialPtyDimensions } from '@/hooks/use-terminal';
 import { formatError } from '@/lib/tauri-bridge';
 import { pluginEnabled, useRegistry } from '@/plugins';
@@ -250,6 +251,17 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
             >
               <MenuIcon src={aiIconDataUris[plugin.id] ?? undefined} fallback="🤖" />
               <span>{`Launch ${plugin.displayName}`}</span>
+              {plugin.experimental ? (
+                <span
+                  data-testid={`worktree-tab-context-menu-launch-${plugin.id}-experimental`}
+                  title="Experimental"
+                  aria-label="Experimental"
+                  role="img"
+                  className="ml-1 inline-flex items-center text-amber-600 dark:text-amber-400"
+                >
+                  <ExperimentalIcon className="h-3.5 w-3.5" />
+                </span>
+              ) : null}
             </button>
           );
         })}

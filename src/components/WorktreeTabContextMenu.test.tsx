@@ -52,6 +52,20 @@ describe('WorktreeTabContextMenu', () => {
     expect(screen.getByTestId('worktree-tab-context-menu-close')).toBeInTheDocument();
   });
 
+  it('flags experimental AI plugins (Codex) with a warning icon and an "Experimental" tooltip, leaving stable ones unmarked', () => {
+    renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
+
+    const marker = screen.getByTestId('worktree-tab-context-menu-launch-codex-experimental');
+    expect(marker).toBeInTheDocument();
+    expect(marker.getAttribute('title')).toBe('Experimental');
+    expect(marker.getAttribute('aria-label')).toBe('Experimental');
+    // Marker is the warning-triangle SVG; ensure it actually rendered something visual.
+    expect(marker.querySelector('svg')).not.toBeNull();
+
+    expect(screen.queryByTestId('worktree-tab-context-menu-launch-claude-experimental')).toBeNull();
+    expect(screen.queryByTestId('worktree-tab-context-menu-launch-copilot-experimental')).toBeNull();
+  });
+
   it('omits disabled AI launch items', () => {
     useConfigStore.setState((s) => ({
       config: {

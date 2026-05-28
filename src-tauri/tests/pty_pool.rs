@@ -167,7 +167,7 @@ fn recording_sink() -> (PtySink, OutputLog, StatusLog) {
 
 /// Wraps `recording_sink` with a DSR cursor-position responder.
 ///
-/// **Why this exists**: `portable-pty 0.9+` enables `PSUEDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit
+/// **Why this exists**: `portable-pty 0.9+` enables `PSEUDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit
 /// `ESC[6n` at startup and refuse to forward any child stdout until the host answers with `ESC[<row>;<col>R`. xterm.js answers transparently in
 /// production, but a passive `recording_sink` would deadlock — the seven real-PTY tests in this file would hang waiting for a banner ConPTY
 /// is holding back. See <https://github.com/mcaden/arborist/issues/215>.
@@ -198,10 +198,14 @@ fn dsr_responding_sink(pool: Arc<PtyPool>) -> (PtySink, OutputLog, StatusLog) {
             let id_owned = *id;
             tokio::spawn(async move {
                 for _ in 0..count {
-                    // Bounded retry guards the spawn-vs-insert race in `PtyPool::spawn`. Silent fall-through after the budget is intentional:
-                    // letting the test's own `wait_for` deadline produce a clean timeout with `outs` containing the unanswered DSR query is
-                    // more diagnostic than panicking inside a spawned task.
-                    for _ in 0..50 {
+                    // Bounded retry guards the spawn-vs-insert race in `PtyPool::spawn` (insert happens *after* the read thread starts, so the
+                    // first PTY chunk can theoretically arrive here before `pool.write` would find the session). The race normally closes in
+                    // microseconds; the 200 × 1ms (~200ms) budget is intentionally generous so a slow CI runner — Windows ConPTY contended by
+                    // husky pre-push doing `pnpm test` + `cargo test` in parallel — still wins the race rather than producing a flaky
+                    // "banner not seen" timeout. Silent fall-through after the budget is intentional: letting the test's own `wait_for`
+                    // deadline produce a clean timeout with `outs` containing the unanswered DSR query is more diagnostic than panicking
+                    // inside a spawned task.
+                    for _ in 0..200 {
                         if pool_for_write.write(&id_owned, b"\x1b[1;1R").is_ok() {
                             break;
                         }
@@ -478,6 +482,70 @@ fn kill_terminates_child_and_removes_entry_and_temp_dir() {
 
     assert!(!pool.contains(&session.id));
     assert!(!temp.exists(), "temp dir not deleted: {}", temp.display());
+}
+
+#[test]
+#[serial_test::serial(real_pty)]
+fn dsr_responses_route_to_correct_session_when_multiple_are_live() {
+    // Regression assertion for the per-session DSR routing in `dsr_responding_sink`: each sink captures its own `SessionId` and writes the
+    // `ESC[<row>;<col>R` reply back through `pool.write(&id, ...)`. If that capture ever drifted (e.g. a refactor accidentally shared one id
+    // across sinks) some sessions would never see their DSR answered and ConPTY would hold their banner indefinitely.
+    //
+    // The test proves correct routing by: (1) spawning three real-ConPTY children against the same `PtyPool`, (2) verifying *every* one of them
+    // emits its banner — which only happens once that session's DSR query is answered — and (3) sending a distinct echo command to each child
+    // and verifying each session's `OutputLog` carries its own echo (not its neighbour's).
+    let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let sessions: Vec<Session> = dirs.iter().map(|d| make_session(d.path())).collect();
+    let pool = Arc::new(PtyPool::new(Arc::new(PortablePtySpawner::new())));
+
+    let rt = rt();
+    let _g = rt.enter();
+
+    // Hold each session's log so we can assert per-session below. The DSR sink shares the pool Arc so its retry loop can dispatch the reply to
+    // whichever session id it captured.
+    let mut logs: Vec<OutputLog> = Vec::with_capacity(sessions.len());
+    for session in &sessions {
+        let (sink, outs, _stats) = dsr_responding_sink(Arc::clone(&pool));
+        pool.spawn(session, sink, DEFAULT_PTY_SIZE).expect("spawn");
+        logs.push(outs);
+    }
+
+    // All three must see their banner — proves each one's DSR was answered against the correct PTY.
+    for (i, outs) in logs.iter().enumerate() {
+        assert!(
+            wait_for(outs, |s| s.contains("ARBORIST-TEST-CHILD READY"), Duration::from_secs(10)).is_some(),
+            "session {i} banner not seen: {:?}",
+            outs.lock().unwrap()
+        );
+    }
+
+    // Send a distinct input to each session and verify its own log (and only its own log) carries that echo.
+    let inputs = ["alpha", "bravo", "charlie"];
+    for (session, input) in sessions.iter().zip(inputs.iter()) {
+        pool.write(&session.id, format!("{input}\r\n").as_bytes()).expect("write");
+    }
+    for (i, (outs, expected)) in logs.iter().zip(inputs.iter()).enumerate() {
+        let needle = format!("echo: {expected}");
+        assert!(
+            wait_for(outs, |s| s.contains(&needle), Duration::from_secs(10)).is_some(),
+            "session {i} did not echo {expected:?}: {:?}",
+            outs.lock().unwrap()
+        );
+        // Cross-contamination check: this session's log must not contain *any* other session's echo. Catches a hypothetical bug where DSR or
+        // input routing accidentally shared state across sessions.
+        for other in inputs.iter().filter(|o| *o != expected) {
+            let other_needle = format!("echo: {other}");
+            let joined = outs.lock().unwrap().concat();
+            assert!(
+                !joined.contains(&other_needle),
+                "session {i} log contains foreign echo {other:?}: {joined:?}"
+            );
+        }
+    }
+
+    for session in &sessions {
+        pool.write(&session.id, b"quit\r\n").ok();
+    }
 }
 
 #[test]

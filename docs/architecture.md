@@ -212,6 +212,7 @@ state. `enabled` is optional; omission means "use the plugin descriptor default"
 - Compose once, reuse forever. `Session.composedCommand` is built at creation and reused for restart/restore.
 - Default Claude/Copilot launches also store structured argv; explicit launch overrides remain shell snippets.
 - Worktree path is passed as `cwd` to the child process, never inserted into the shell command.
+- AI session id splicing: every spawn (create, restart, restore-on-launch) augments a clone of `Session.composedCommand` with the tool's create-or-resume token — `--resume <id>` for Claude (post-first-launch, with `--session-id <id>` on the very first spawn), `--session-id <id>` for Copilot (every spawn; requires copilot-cli >= 1.0.51), `resume <id>` subcommand for Codex. The persisted `composedCommand` itself stays bare.
 - Repo-provided executable settings are defaults only and never replace user-entered launch/prep commands. Applied repo executable defaults require
   local approval. "Don't ask again" trust is scoped to exact command fingerprints, and persisted repo command provenance is revalidated on
   restart/restore.

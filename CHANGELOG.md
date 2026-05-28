@@ -7,6 +7,21 @@ and this project follows semantic versioning once it reaches a stable v1.
 
 ## [Unreleased]
 
+### Changed — Dependency upgrades
+
+- **`portable-pty` `0.8` → `0.9`** ([#218](https://github.com/mcaden/arborist/pull/218), closes [#215](https://github.com/mcaden/arborist/issues/215)). The new
+  release enables `PSEUDOCONSOLE_INHERIT_CURSOR` on Windows ConPTY, which makes the pseudo-console emit `ESC[6n` (DSR cursor-position request) at startup
+  and refuse to forward any child stdout until the host answers with `ESC[<row>;<col>R`. The production frontend handles this transparently via
+  `xterm.js`; the `pty_pool` integration tests gained a streaming `DsrScanner` + `dsr_responding_sink` helper that does the same so real-ConPTY tests
+  don't deadlock waiting on a banner.
+- **`sha2` `0.10` → `0.11`**. The `Digest` trait no longer ships an inherent `hex` helper; `shell_trust` formats the fingerprint manually with
+  `std::fmt::Write` to keep the on-disk format byte-identical.
+- **`fs2` removed** ([#211](https://github.com/mcaden/arborist/pull/211)). Workspace locking moved off the `fs2` crate (unmaintained) and onto the
+  platform-native primitives wrapped by `std::fs::File::try_lock` (stabilized in Rust 1.89). No behavioural change — `WorkspaceLockGuard` still emits
+  `LockError::Contention` on a busy lock and `cross-process` lock tests still pass.
+- **Trimmed unused tokio / tokio-util features** ([#211](https://github.com/mcaden/arborist/pull/211)). Dropped `tokio`'s `io-util` feature (no code
+  imports `AsyncReadExt`/`AsyncWriteExt`) and `tokio-util`'s `rt` feature, shaving compile time and dependency surface.
+
 ### Changed — Documentation refresh for public open-source readiness (issue #106)
 
 - Consolidated active project documentation under lowercase `docs/` files, added root GitHub community-health files, and removed the previous split

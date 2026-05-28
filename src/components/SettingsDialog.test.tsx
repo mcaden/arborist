@@ -334,6 +334,21 @@ describe('SettingsDialog', () => {
     });
   });
 
+  it('marks Codex as experimental with a warning marker and leaves stable plugins unmarked', () => {
+    seedConfig();
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
+
+    const codexMarker = screen.getByTestId('plugin-ai-codex-experimental');
+    expect(codexMarker).toBeInTheDocument();
+    expect(codexMarker).toHaveTextContent(/\(experimental\)/i);
+    expect(codexMarker.querySelector('svg')).not.toBeNull();
+    expect(codexMarker.getAttribute('title')).toMatch(/experimental/i);
+
+    expect(screen.queryByTestId('plugin-ai-claude-experimental')).toBeNull();
+    expect(screen.queryByTestId('plugin-ai-copilot-experimental')).toBeNull();
+  });
+
   it('theme picker reflects stored preference and changing it marks the form dirty', () => {
     seedConfig();
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);

@@ -34,7 +34,16 @@ export type PluginSettingDescriptor = {
   spellCheck?: boolean;
 };
 
-// MIRROR: src-tauri/src/plugins/mod.rs::Plugin
+// MIRROR: src-tauri/src/plugins/mod.rs::Plugin (frontend superset)
+//
+// The Rust `Plugin` trait owns the wire-relevant fields (`id`, `displayName`,
+// `defaultEnabled`); the TS interface adds frontend-only affordances
+// (`settings`, `experimental`) that have no Rust equivalent because they only
+// drive Settings-tab UI. Treat the Rust trait as the source of truth for any
+// field also persisted via `AppConfig.pluginSettings`; treat frontend-only
+// fields like `settings` / `experimental` as additive and skip them when doing
+// parity checks. This pattern matches `DashboardWidgetPlugin`, whose
+// `Component` is similarly frontend-only.
 export interface Plugin {
   /** Stable identifier used as a serde key on the Rust side. */
   id: string;
@@ -44,6 +53,13 @@ export interface Plugin {
   defaultEnabled?: boolean;
   /** User-editable settings exposed by the Plugins settings tab. */
   settings?: readonly PluginSettingDescriptor[];
+  /**
+   * When true, the Plugins settings tab surfaces an "(experimental)" marker
+   * and warning icon next to this plugin's display name. Frontend-only — the
+   * Rust `Plugin` trait has no equivalent because experimental status is a
+   * UI affordance (no backend behavior change).
+   */
+  experimental?: boolean;
 }
 
 // MIRROR: src-tauri/src/plugins/ai/mod.rs::AiPlugin
