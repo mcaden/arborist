@@ -240,8 +240,13 @@ pub trait WindowFinder: Send + Sync + 'static {
 
 /// Blocking wait for a re-targeted PID to die. Implementors are free to poll or use OS-level wait (e.g. `WaitForSingleObject` on a `SYNCHRONIZE`
 /// handle). Called from a dedicated `arborist-app-liveness-<pid>` thread; `wait_for_death` is consumed (`Box<Self>`) so it cannot be invoked twice.
+///
+/// The `cancel` flag is set by [`AppPool::kill_async_with_grace`] / [`AppPool::detach`] when the runtime is being torn down — implementors MUST poll
+/// it at every otherwise-blocking step (loop iteration, sleep tick, condvar wait timeout) and return promptly when it flips to `true`. Without
+/// cooperative cancellation the liveness thread leaks until the rediscovered owner (e.g. shared `Code.exe`) exits on its own, which for a long-lived
+/// editor could be hours or days.
 pub trait LivenessProbe: Send + 'static {
-    fn wait_for_death(self: Box<Self>);
+    fn wait_for_death(self: Box<Self>, cancel: &AtomicBool);
 }
 
 // --------------------------------------------------------------------------- Async kill / polite-close outcome types
@@ -535,8 +540,7 @@ struct RealWaiter {
 
 impl AppWaiter for RealWaiter {
     fn wait(self: Box<Self>) -> Result<bool, Error> {
-        let mut child_opt = self.child.lock().map_err(|_| Error::Internal("app child mutex poisoned".into()))?.take();
-        let Some(mut child) = child_opt.take() else {
+        let Some(mut child) = self.child.lock().map_err(|_| Error::Internal("app child mutex poisoned".into()))?.take() else {
             // Already taken — only path here is a future refactor moving the Child out before we run; treat as natural exit.
             return Ok(true);
         };
@@ -1241,7 +1245,16 @@ fn liveness_loop(
     pool_weak: std::sync::Weak<Mutex<BTreeMap<SubSessionId, AppRuntime>>>,
     killed: Arc<AtomicBool>,
 ) {
-    liveness.wait_for_death();
+    // Pass the shared `killed` flag so the probe can return early when the runtime is torn down (detach / kill_async / kill_async refused-shared). The
+    // probe MUST cooperate — see the [`LivenessProbe`] trait docs. Without this, `wait_for_death` blocks until the rediscovered owner (e.g.
+    // `Code.exe`) actually exits, which for a shared editor could be hours, leaking one OS thread per torn-down sub-tab.
+    liveness.wait_for_death(&killed);
+
+    // Cancellation fast-path: if the runtime was killed/detached, never claim emission rights. The pool-lookup below would also handle this (the
+    // entry is already removed), but checking the flag first avoids the lock + makes the intent explicit.
+    if killed.load(Ordering::SeqCst) {
+        return;
+    }
 
     // Claim emission rights ONLY if the runtime is still ours (matching pid). Other outcomes — entry gone (kill/detach), or entry replaced via
     // relaunch — mean someone else already owns the user-facing event.
@@ -1531,28 +1544,52 @@ mod tests {
     }
 
     /// Test liveness probe: blocks on a Condvar until `signal_dead` is called. Mirrors `FakeWaiter`.
+    /// Shared liveness condvar/bool pair handed back to tests so they can signal the probe to exit (`signal_liveness_dead`).
+    type LivenessSignal = Arc<(StdMutex<bool>, std::sync::Condvar)>;
+
     struct FakeLivenessProbe {
-        signal: Arc<(StdMutex<bool>, std::sync::Condvar)>,
+        signal: LivenessSignal,
+        exited: Arc<AtomicBool>,
     }
 
     impl FakeLivenessProbe {
-        fn new_pair() -> (Box<Self>, Arc<(StdMutex<bool>, std::sync::Condvar)>) {
+        fn new_pair() -> (Box<Self>, LivenessSignal) {
+            let (probe, signal, _exited) = Self::new_tracked();
+            (probe, signal)
+        }
+
+        /// Like [`new_pair`] but also returns an `exited` flag the test can wait on to confirm `wait_for_death` returned (whether via the signal or
+        /// via the new cancellation path). Used by the liveness-cancel regression test.
+        fn new_tracked() -> (Box<Self>, LivenessSignal, Arc<AtomicBool>) {
             let signal = Arc::new((StdMutex::new(false), std::sync::Condvar::new()));
-            (Box::new(FakeLivenessProbe { signal: Arc::clone(&signal) }), signal)
+            let exited = Arc::new(AtomicBool::new(false));
+            (
+                Box::new(FakeLivenessProbe {
+                    signal: Arc::clone(&signal),
+                    exited: Arc::clone(&exited),
+                }),
+                signal,
+                exited,
+            )
         }
     }
 
     impl LivenessProbe for FakeLivenessProbe {
-        fn wait_for_death(self: Box<Self>) {
+        fn wait_for_death(self: Box<Self>, cancel: &AtomicBool) {
             let (lock, cvar) = &*self.signal;
             let mut g = lock.lock().unwrap();
-            while !*g {
-                g = cvar.wait(g).unwrap();
+            // Poll the cancel flag on every wakeup so kill_async / detach can tear the thread down without waiting for the test to signal exit. The
+            // 10 ms timeout keeps cancellation latency low without hammering the CPU; tests that explicitly call `signal_liveness_dead` still wake
+            // immediately via the condvar notify.
+            while !*g && !cancel.load(Ordering::SeqCst) {
+                let (next_g, _) = cvar.wait_timeout(g, Duration::from_millis(10)).unwrap();
+                g = next_g;
             }
+            self.exited.store(true, Ordering::SeqCst);
         }
     }
 
-    fn signal_liveness_dead(signal: &Arc<(StdMutex<bool>, std::sync::Condvar)>) {
+    fn signal_liveness_dead(signal: &LivenessSignal) {
         let (lock, cvar) = &**signal;
         *lock.lock().unwrap() = true;
         cvar.notify_all();
@@ -1713,6 +1750,56 @@ mod tests {
         assert!(!exit_obs.lock().unwrap().is_empty(), "exited event after rediscovered owner dies");
         // We did NOT call pool.kill — killer must not have been invoked.
         assert!(!killed_flag.load(Ordering::SeqCst), "natural death must not invoke killer");
+    }
+
+    /// Regression for the liveness-thread leak (PR #221 review): when the runtime is torn down via `detach` or `kill_async` the liveness thread must
+    /// exit promptly via the cooperative `cancel` flag, instead of blocking in `wait_for_death` until the rediscovered owner (e.g. shared `Code.exe`)
+    /// happens to die — which for a long-lived editor could be hours. Before the fix, dropping the runtime's `_liveness_thread` JoinHandle abandoned
+    /// the OS thread (`JoinHandle::drop` does not cancel); after the fix, `kill_async_with_grace`'s `rt.killed.store(true)` is observed via the
+    /// shared flag passed into `LivenessProbe::wait_for_death`, and the probe returns within a bounded poll cycle.
+    #[test]
+    fn pool_detach_after_retarget_cancels_liveness_thread() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _status_obs, _exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        let resolver = FakeOwnerResolver::new();
+        pool.spawn(
+            id,
+            "code .".to_owned(),
+            PathBuf::from("."),
+            sink,
+            Some(resolver.clone() as Arc<dyn OwnerResolver>),
+        )
+        .expect("spawn");
+
+        let new_pid = 99_777;
+        let killed_flag = Arc::new(AtomicBool::new(false));
+        let new_killer: Arc<dyn AppKiller> = Arc::new(FlagKiller {
+            killed: Arc::clone(&killed_flag),
+        });
+        // Use the tracked constructor so the test can observe when `wait_for_death` returns. We DO NOT signal the liveness condvar — the only way
+        // `exited` can flip is via the cooperative cancellation path.
+        let (probe, _liveness_signal, exited) = FakeLivenessProbe::new_tracked();
+        resolver.signal_retarget(RetargetedOwner {
+            pid: new_pid,
+            killer: new_killer,
+            liveness: probe,
+            window_target: None,
+        });
+        wait_until(|| pool.pid(&id) == Some(new_pid), Duration::from_secs(2), "retarget happened");
+        assert!(!exited.load(Ordering::SeqCst), "liveness thread must still be blocking before detach");
+
+        // Detach sets `killed=true`. Without the cancel-aware probe this would leak the liveness thread until the editor exits.
+        pool.detach(&id);
+
+        wait_until(
+            || exited.load(Ordering::SeqCst),
+            Duration::from_secs(2),
+            "liveness thread exits within bounded time after detach",
+        );
+        assert!(!killed_flag.load(Ordering::SeqCst), "detach must NOT invoke the rediscovered killer");
     }
 
     #[test]
@@ -2210,9 +2297,31 @@ mod tests {
 
     // --- Async kill/polite-close primitives (issue #132) ---------------------------------------------------------------------------------------
 
-    /// `pid_alive` for a PID we never owned and that is extremely unlikely to be a system process should return false on every platform. Used as a
-    /// stable Reaped-path PID for the async kill tests so they don't depend on the test runner's PID landscape.
-    const DEAD_PID: u32 = 4_294_966;
+    /// Returns a PID that has been freshly spawned-and-waited so the OS reports it as dead. Replaces the previous hardcoded `DEAD_PID` constant —
+    /// any fixed high PID can in principle collide with a real process (Windows DWORD PIDs reach the same range), which made the Reaped-path tests
+    /// theoretically flake-prone. After the parent `wait()` returns, the std library closes the OS handle and the kernel marks the PID as gone; we
+    /// poll [`pid_alive`] briefly to absorb the tiny Windows kernel teardown latency. Panics if the PID doesn't go dead within 1 s (likely PID-reuse
+    /// race on a busy host — rerun rather than silently flake).
+    fn dead_pid() -> u32 {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "rem"])
+            .spawn()
+            .expect("spawn dead-pid child (cmd /c rem)");
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("true").spawn().expect("spawn dead-pid child (true)");
+        let pid = child.id();
+        let _ = child.wait().expect("wait dead-pid child");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while pid_alive(pid) {
+            assert!(
+                Instant::now() < deadline,
+                "dead_pid: pid {pid} still reports alive after 1s — likely PID-reuse race on the test host, rerun",
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        pid
+    }
 
     /// Inject a known-dead PID into a runtime entry so `kill_async` will see `pid_alive == false` immediately. Used to deterministically exercise the
     /// Reaped branch without depending on the FakeAppSpawner's PID sequence happening to be unused.
@@ -2237,8 +2346,11 @@ mod tests {
     }
 
     #[test]
-    fn pid_alive_reports_dead_for_clearly_invalid_pid() {
-        assert!(!pid_alive(DEAD_PID), "DEAD_PID must report dead on every platform");
+    fn pid_alive_reports_dead_for_waited_child() {
+        // Documents the invariant that after a parent `wait()` reaps a child, `pid_alive` reports the PID as gone. The `dead_pid` helper itself
+        // depends on this property (it polls until pid_alive returns false), but keeping the standalone assertion documents the cross-platform
+        // contract and gives a clean error message if a future platform regresses (instead of mysterious time-outs in unrelated tests).
+        assert!(!pid_alive(dead_pid()), "pid_alive must report a properly waited-on child as dead");
     }
 
     #[test]
@@ -2272,9 +2384,10 @@ mod tests {
         let (sink, _s, _e) = collect_sink();
         let id = SubSessionId::default();
         pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
-        override_pid(&pool, &id, DEAD_PID);
+        let dead = dead_pid();
+        override_pid(&pool, &id, dead);
         let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(500)).await.expect("kill_async");
-        assert_eq!(outcome, AppKillOutcome::Reaped { pid: DEAD_PID });
+        assert_eq!(outcome, AppKillOutcome::Reaped { pid: dead });
         assert!(
             spawner.child(0).was_killed(),
             "killer.kill() must be invoked even on the Reaped fast-path"
@@ -2352,15 +2465,16 @@ mod tests {
         let (sink, _s, _e) = collect_sink();
         let id = SubSessionId::default();
         pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
-        // DEAD_PID makes `pid_alive` report dead on the first poll iteration; the failing killer makes `killer_result.is_err()` true.
-        override_pid(&pool, &id, DEAD_PID);
+        // `dead_pid()` makes `pid_alive` report dead on the first poll iteration; the failing killer makes `killer_result.is_err()` true.
+        let dead = dead_pid();
+        override_pid(&pool, &id, dead);
         override_killer_to_failing(&pool, &id);
 
         let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(500)).await.expect("kill_async");
 
         assert_eq!(
             outcome,
-            AppKillOutcome::Unconfirmed { pid: DEAD_PID },
+            AppKillOutcome::Unconfirmed { pid: dead },
             "killer error must surface as Unconfirmed even when pid_alive reports the process gone"
         );
         assert!(
@@ -2377,7 +2491,7 @@ mod tests {
         let spawner = Arc::new(FakeAppSpawner::new());
         let pool = AppPool::new(spawner);
         let target = WindowTarget {
-            pid: DEAD_PID,
+            pid: dead_pid(),
             hwnd: 0xABCD,
             refinder: None,
         };
@@ -2480,7 +2594,7 @@ mod tests {
         let pool = AppPool::new(spawner);
         let finder = QueuedFinder::new(vec![Some(0x9999)]);
         let target = WindowTarget {
-            pid: DEAD_PID,
+            pid: dead_pid(),
             hwnd: 0x1111,
             refinder: Some(finder.clone() as Arc<dyn WindowFinder>),
         };

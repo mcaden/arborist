@@ -215,6 +215,7 @@ fn title_matches_workspace(title: &str, needle_lower: &str) -> bool {
 mod platform {
     use crate::app_launcher::LivenessProbe;
     use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
@@ -328,7 +329,7 @@ mod platform {
         basename: String,
     }
     impl LivenessProbe for WindowsLivenessProbe {
-        fn wait_for_death(self: Box<Self>) {
+        fn wait_for_death(self: Box<Self>, cancel: &AtomicBool) {
             // Number of consecutive polls in which the workspace window wasn't found. Two-poll debounce guards against a transient "no window matched
             // right now" miss (window briefly without the suffix during a title animation, EnumWindows racing a window list update, etc.). 2 polls ×
             // 1 s = up to ~2 s detection latency for a closed workspace, which the user perceives as "near-instant".
@@ -336,6 +337,12 @@ mod platform {
             const WINDOW_GONE_THRESHOLD: u32 = 2;
 
             loop {
+                // Cooperative cancellation: the pool sets `killed` (which is wired through `cancel`) on `detach` / `kill_async`. Polled at the top of
+                // every iteration so torn-down runtimes free this OS thread within ~1 s instead of leaking until `Code.exe` itself exits.
+                if cancel.load(Ordering::SeqCst) {
+                    return;
+                }
+
                 // (1) Process-death fast path. If `Code.exe` itself exited (last window closed → app quits) the wait returns immediately. SAFETY:
                 // literal access mask + PID.
                 let h = unsafe { OpenProcess(SYNCHRONIZE, 0, self.pid) };
@@ -548,6 +555,7 @@ mod platform {
 #[cfg(unix)]
 mod unix_liveness {
     use crate::app_launcher::LivenessProbe;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     /// Window-based liveness probe with PID-death fallback. Mirrors the Windows probe (see `WindowsLivenessProbe`): VS Code is multi-window, so
@@ -577,13 +585,18 @@ mod unix_liveness {
     }
 
     impl LivenessProbe for UnixLivenessProbe {
-        fn wait_for_death(self: Box<Self>) {
+        fn wait_for_death(self: Box<Self>, cancel: &AtomicBool) {
             let mut window_gone_polls: u32 = 0;
             let mut tick: u32 = 0;
             const WINDOW_GONE_THRESHOLD: u32 = 2;
             const WINDOW_POLL_EVERY: u32 = 5;
 
             loop {
+                // Cooperative cancellation — see the matching note on the Windows probe. Cancellation latency is bounded by the 1 s sleep below.
+                if cancel.load(Ordering::SeqCst) {
+                    return;
+                }
+
                 // (1) Process-death fast path — cheap syscall, runs every tick. Distinguishes ESRCH (gone) from EPERM (alive but inaccessible).
                 if !pid_alive(self.pid) {
                     return;
@@ -616,6 +629,8 @@ mod unix_liveness {
 #[cfg(not(any(target_os = "windows", unix)))]
 mod platform {
     use crate::app_launcher::LivenessProbe;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     pub(super) fn find_vscode_window(_basename: &str) -> Option<(u32, usize)> {
         None
@@ -624,11 +639,12 @@ mod platform {
     pub(super) fn liveness_probe(_pid: u32, _basename: String) -> Box<dyn LivenessProbe> {
         struct Never;
         impl LivenessProbe for Never {
-            fn wait_for_death(self: Box<Self>) {
-                // Park indefinitely. In practice the resolver thread won't construct us — find_vscode_window returns None on these platforms — but if
-                // someone does call this, we park rather than busy-loop or panic.
-                loop {
-                    std::thread::park();
+            fn wait_for_death(self: Box<Self>, cancel: &AtomicBool) {
+                // Park with a 1 s timeout so cooperative cancellation (via `cancel`) lands in bounded time. In practice the resolver thread won't
+                // construct us — `find_vscode_window` returns None on these platforms — but if someone does call this, we still need to honor the
+                // [`LivenessProbe`] cancellation contract.
+                while !cancel.load(Ordering::SeqCst) {
+                    std::thread::park_timeout(Duration::from_secs(1));
                 }
             }
         }
