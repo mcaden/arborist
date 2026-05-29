@@ -153,6 +153,22 @@ describe('SubCloseConfirmDialog', () => {
       result: { outcome: 'politeClose', status: 'unconfirmed', pid: 9003 },
       expectAlert: /asked the app to close \(pid 9003\), but it.?s still running/i,
     },
+    {
+      name: 'unconfirmed terminal kill warns the PTY child may still be alive and surfaces the rust detail message',
+      result: {
+        outcome: 'terminalKill',
+        status: 'unconfirmed',
+        pid: 9004,
+        message: 'PTY kill issued but the OS did not confirm exit; pid 9004 may still be alive',
+      },
+      expectAlert:
+        /terminal close issued \(pid 9004\), but the operating system didn.?t confirm the PTY child exited.*PTY kill issued but the OS did not confirm exit/i,
+    },
+    {
+      name: 'unconfirmed terminal kill surfaces a PTY kill failure detail message',
+      result: { outcome: 'terminalKill', status: 'unconfirmed', pid: 9005, message: 'PTY kill failed: process not found' },
+      expectAlert: /terminal close issued \(pid 9005\),.*PTY kill failed: process not found/i,
+    },
   ];
 
   for (const { name, result, expectAlert } of alertCases) {
