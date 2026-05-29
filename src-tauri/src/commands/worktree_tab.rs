@@ -248,7 +248,7 @@ pub async fn worktree_tab_close_impl(
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
 
-            if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root) {
+            if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root).await {
                 warn!(
                     worktree_tab_id = %id,
                     worktree_path = %tab_path.display(),

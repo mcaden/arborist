@@ -330,6 +330,14 @@ fn remove_worktree_with_retry(
     for attempt in 0.. {
         let output = run()?;
         if output.success {
+            // Trust-but-verify so the function's contract is "if we return Ok, the directory is gone". `git worktree remove --force` reliably
+            // unregisters the worktree's admin metadata but its recursive rmdir pass can exit 0 while leaving residual files on Windows when a
+            // file watcher / AV / editor / Explorer preview holds a handle inside the directory — the user then clicks delete, sees no error,
+            // and finds the folder still on disk. Falling through to the same residual cleanup used on the "is not a working tree" branch makes
+            // that failure visible. `remove_residual_worktree_dir` short-circuits NotFound to Ok, so the common case costs only this `exists`.
+            if worktree_path.exists() {
+                return remove_residual_worktree_dir_with_retry(repo_root, worktree_path, &mut remove_residual, &mut sleep);
+            }
             return Ok(());
         }
 
