@@ -34,6 +34,7 @@ import type {
   SubSession,
   SubSessionCloseArgs,
   SubSessionCloseIntent,
+  SubSessionCloseResult,
   SubSessionCreateArgs,
   SubSessionExitedEvent,
   SubSessionId,
@@ -399,9 +400,9 @@ export function subSessionCreate(args: SubSessionCreateArgs): Promise<SubSession
   return invoke<SubSession>('subsession_create', { args });
 }
 
-export function subSessionClose(id: SubSessionId, intent?: SubSessionCloseIntent): Promise<void> {
+export function subSessionClose(id: SubSessionId, intent?: SubSessionCloseIntent): Promise<SubSessionCloseResult> {
   const args: SubSessionCloseArgs = intent === undefined ? { id } : { id, intent };
-  return invoke<void>('subsession_close', { args });
+  return invoke<SubSessionCloseResult>('subsession_close', { args });
 }
 
 export function subSessionFocus(id: SubSessionId): Promise<void> {

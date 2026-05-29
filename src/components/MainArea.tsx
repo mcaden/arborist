@@ -29,6 +29,7 @@
 
 import { SubTerminalView } from './SubTerminalView';
 import { TerminalView } from './TerminalView';
+import { WorktreeCloseBanner } from './WorktreeCloseBanner';
 import { WorktreePrepBanner } from './WorktreePrepBanner';
 import { WorktreeDashboard } from './WorktreeDashboard';
 import { useActiveSessionId, useSessions } from '@/store/session-store';
@@ -80,6 +81,7 @@ export function MainArea(): JSX.Element {
       >
         <p className="text-sm text-slate-400">No session selected — create one to begin.</p>
         <WorktreePrepBanner />
+        <WorktreeCloseBanner />
       </main>
     );
   }
@@ -89,6 +91,7 @@ export function MainArea(): JSX.Element {
   return (
     <main data-testid="main-area" className="relative flex h-full min-w-0 flex-1 bg-black">
       <WorktreePrepBanner />
+      <WorktreeCloseBanner />
       {sessions.map((session) => {
         const active = !showDashboard && visibleSubId === undefined && session.id === activeSessionId;
         return (

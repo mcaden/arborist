@@ -938,7 +938,7 @@ pub async fn session_close_locked(ctx: &AppContext, id: SessionId, delete_worktr
                     "worktree deletion refused after unconfirmed session close",
                 );
                 result.worktree_delete_error = Some(msg);
-            } else if let Err(error) = delete_worktree_after_close(ctx, &format!("session {id}"), &wt, &cfg_after.workspace_root) {
+            } else if let Err(error) = delete_worktree_after_close(ctx, &format!("session {id}"), &wt, &cfg_after.workspace_root).await {
                 warn!(
                     session_id = %id,
                     worktree_path = %wt.display(),
@@ -1046,7 +1046,12 @@ enum WorktreeDeleteIntent {
 ///
 /// Pub(crate) so `commands::worktree_tab` can re-use the same safety checks for the worktree-tab close + delete flow.
 /// `caller_label` is logged alongside the success/failure message so worktree-tab callers and session callers can be distinguished in traces.
-pub(crate) fn delete_worktree_after_close(
+///
+/// `async` so the slow part — `git_runner.remove_worktree`, which spawns a `git` subprocess and runs a synchronous retry loop with
+/// `std::thread::sleep` — can be dispatched onto a `spawn_blocking` thread instead of stalling a tokio worker for the multi-second worst case
+/// (Windows file-handle contention while AV/file-watchers settle). The safety checks above remain on the caller's task: they're stat-cheap and we
+/// want any refusal surfaced *before* paying the blocking-thread hop.
+pub(crate) async fn delete_worktree_after_close(
     ctx: &AppContext,
     caller_label: &str,
     worktree_path: &Path,
@@ -1109,15 +1114,29 @@ pub(crate) fn delete_worktree_after_close(
         ))));
     }
 
+    // Hand the synchronous git invocation + retry loop to a blocking thread so the tokio worker driving `worktree_tab_close_impl` /
+    // `session_close_locked` stays free for other commands and events — otherwise the UI looks wedged for the full Windows retry budget
+    // (multi-second worst case while AV/file-watchers settle).
     let repo_root: PathBuf = root.clone();
+    let worktree_path_owned: PathBuf = worktree_path.to_path_buf();
+    let git_runner = Arc::clone(&ctx.git_runner);
+    let caller_label_owned: String = caller_label.to_owned();
+    let join = tokio::task::spawn_blocking(move || git_runner.remove_worktree(&repo_root, &worktree_path_owned)).await;
 
-    ctx.git_runner.remove_worktree(&repo_root, worktree_path).map_err(AppError::from)?;
-    info!(
-        caller = %caller_label,
-        worktree = %worktree_path.display(),
-        "worktree removed after close",
-    );
-    Ok(())
+    match join {
+        Ok(Ok(())) => {
+            info!(
+                caller = %caller_label_owned,
+                worktree = %worktree_path.display(),
+                "worktree removed after close",
+            );
+            Ok(())
+        }
+        Ok(Err(e)) => Err(AppError::from(e)),
+        Err(join_err) => Err(AppError::from(Error::Internal(format!(
+            "worktree-remove blocking task failed to join: {join_err}"
+        )))),
+    }
 }
 
 // --------------------------------------------------------------------------- session_focus

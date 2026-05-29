@@ -1414,6 +1414,134 @@ pub struct SubSessionCloseArgs {
     pub intent: SubSessionCloseIntent,
 }
 
+/// Coarse-grained "what did the close path actually do" classification. Pair with [`SubSessionCloseStatus`] for the fine-grained outcome.
+///
+/// The split exists so the UI can render a primary verb ("Detached the tab", "Closed the app", "Force-killed the process") that's stable across OSes
+/// even when the verification status (`Confirmed`, `Unconfirmed`, ...) differs by platform/situation.
+///
+/// MIRROR: `src/types/arborist.ts::SubSessionCloseOutcome`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SubSessionCloseOutcome {
+    /// The sub-tab was removed from Arborist and no process action was attempted on the underlying app. Returned for
+    /// [`SubSessionCloseIntent::TabOnly`] on app sub-tabs (the "X" button is tab-removal, not "close my editor"), for the
+    /// [`WorktreeTabAppClosePolicy::Detach`] cascade variant, and for the cascade-`Terminate` case where the launcher had already exited on its own
+    /// before the cascade reached it. A force-kill that was refused for a shared editor is reported separately as `outcome = ForceKill` +
+    /// `status = RefusedShared` (see [`SubSessionCloseStatus::RefusedShared`]) so the user-visible message still references the verb the user clicked.
+    TabRemoved,
+    /// A terminal sub-tab's underlying PTY child was killed. Terminal sub-tabs always take this branch because the tab IS the process.
+    TerminalKill,
+    /// An app sub-tab's window was politely asked to close (Windows: `WM_CLOSE`). The status carries whether the close was confirmed by window
+    /// disappearance, merely posted, or not supported on this platform.
+    PoliteClose,
+    /// An app sub-tab's underlying process was force-killed (Windows: `TerminateProcess`; Unix: `SIGKILL`).
+    ForceKill,
+}
+
+/// Verification status that pairs with a [`SubSessionCloseOutcome`]. Together they form the user-visible result of [`subsession_close`].
+///
+/// MIRROR: `src/types/arborist.ts::SubSessionCloseStatus`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SubSessionCloseStatus {
+    /// The intended effect was observed: the window/process really did disappear (or the tab was removed and that was the entire ask).
+    Confirmed,
+    /// The action was issued (WM_CLOSE posted, signal sent) but verification timed out — the OS didn't confirm exit within the grace window. The
+    /// process may still be alive (e.g. showing a save-changes prompt) or it may have exited just after we gave up watching.
+    Unconfirmed,
+    /// The requested action isn't supported on this platform (e.g. polite close on macOS/Linux today). The tab was removed; nothing was done to the
+    /// process.
+    Unsupported,
+    /// The requested action couldn't be attempted because Arborist no longer has a stable target (the resolver-matched HWND is gone, the launcher PID
+    /// was never observed, ...). The tab was removed; nothing was done to the process.
+    Unavailable,
+    /// Force-kill was refused because the matched owner is a retargeted runtime (the user's persistent editor process serving multiple windows /
+    /// projects). Killing it would close every window of that editor, not just this one. The tab was removed; nothing was done to the process.
+    RefusedShared,
+}
+
+/// Result of [`subsession_close`]. Compact intentionally — the (outcome, status) grid is small enough that a handful of fields beats a dozen
+/// fine-grained enum variants and a dozen TS mirror points.
+///
+/// `pid` is included whenever a specific OS process was acted upon (or would have been acted upon, in the `RefusedShared` case). `message` carries
+/// platform-specific detail that's useful for logs / "Show details" disclosure but should NOT be relied on for branching by the UI.
+///
+/// MIRROR: `src/types/arborist.ts::SubSessionCloseResult`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubSessionCloseResult {
+    pub outcome: SubSessionCloseOutcome,
+    pub status: SubSessionCloseStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl SubSessionCloseResult {
+    /// Confirmed outcome: the action did exactly what its label promises and we observed the effect (process gone, tab removed, window closed).
+    /// Use this for every success path — terminal kill reaped, polite close confirmed, force-kill reaped, tab-only detach, "already exited" races.
+    /// Factory exists because the four-field grid is constructed in roughly a dozen places across `commands/subsession.rs`; centralising prevents
+    /// field-order errors and keeps adding a new field (e.g. `elapsed_ms` for diagnostics) a single-line change.
+    #[must_use]
+    pub fn confirmed(outcome: SubSessionCloseOutcome, pid: Option<u32>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Confirmed,
+            pid,
+            message: None,
+        }
+    }
+
+    /// Unconfirmed outcome: the action was issued (signal sent, WM_CLOSE posted) but the OS did not confirm exit within the grace window.
+    /// `message` should explain the specific failure mode so a follow-up alert can surface it to the user.
+    #[must_use]
+    pub fn unconfirmed(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Unconfirmed,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+
+    /// Unsupported: this platform can't perform the requested action at all (e.g. polite close on non-Windows). The tab was removed; no process
+    /// action was attempted.
+    #[must_use]
+    pub fn unsupported(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Unsupported,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+
+    /// Unavailable: the action couldn't be attempted because we have no stable target (no resolver-matched HWND, etc.). The tab was removed;
+    /// no process action was attempted.
+    #[must_use]
+    pub fn unavailable(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::Unavailable,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+
+    /// RefusedShared: force-kill was refused because the matched owner is a retargeted runtime serving multiple windows/projects
+    /// (e.g. VS Code's `Code.exe`). The tab was removed; the underlying process was deliberately NOT touched.
+    #[must_use]
+    pub fn refused_shared(outcome: SubSessionCloseOutcome, pid: Option<u32>, message: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            status: SubSessionCloseStatus::RefusedShared,
+            pid,
+            message: Some(message.into()),
+        }
+    }
+}
+
 /// Arguments for `subsession_list`. When `parent_worktree_tab_id` is `None` the result is the full set across every worktree tab; when `Some(id)`
 /// the result is filtered to that tab and ordered as the sub-sessions were created.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
@@ -1582,6 +1710,17 @@ pub struct WorktreeTabCloseResult {
     /// and the deletion failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_delete_error: Option<String>,
+    /// Per-sub-session close outcomes. Populated for every sub-session the cascade touched (one entry per sub-tab under the closed worktree tab), so
+    /// the UI can render the same per-sub copy as the single-sub close dialog ("Force-kill refused: shared editor process N still running", etc.).
+    ///
+    /// Distinct from `child_errors`: `child_errors` is reserved for unexpected operational failures during cascade (polite-close API throws,
+    /// app-pool internal errors). `sub_outcomes` carries every documented per-sub close shape, success and refusal alike.
+    ///
+    /// Both can influence `worktree_delete_error` when the caller asked for deletion: the directory is refused either when `child_errors` is
+    /// non-empty OR when any application sub-session was kept alive — Detach policy left it running (`outcome = TabRemoved`), or its polite/force
+    /// kill returned `Unconfirmed`/`RefusedShared`. See `worktree_tab_close_impl` for the authoritative gate.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sub_outcomes: BTreeMap<SubSessionId, SubSessionCloseResult>,
 }
 
 /// Arguments for `workspace_validate` (Roadmap §1.1).

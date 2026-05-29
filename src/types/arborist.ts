@@ -443,6 +443,31 @@ export interface SubSessionCloseArgs {
   intent?: SubSessionCloseIntent;
 }
 
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseOutcome
+//
+// Coarse-grained verb describing the close path the runtime took. For the success / unconfirmed cases this is the action actually performed, but
+// for `refusedShared` the outcome preserves the *requested* verb (`forceKill`) even though no kill was issued — we keep the user's intent in the
+// report rather than rewriting it to `tabRemoved`. Always pair with `SubSessionCloseStatus` for the verification detail; the (outcome, status)
+// tuple is what disambiguates "we did kill, status pending" from "we intentionally didn't kill".
+export type SubSessionCloseOutcome = 'tabRemoved' | 'terminalKill' | 'politeClose' | 'forceKill';
+
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseStatus
+//
+// Verification status that pairs with `SubSessionCloseOutcome`. Together they
+// form the user-visible result of `subsession_close`.
+export type SubSessionCloseStatus = 'confirmed' | 'unconfirmed' | 'unsupported' | 'unavailable' | 'refusedShared';
+
+// MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseResult
+//
+// Compact `(outcome, status, pid?, message?)` shape so the UI branches on a
+// small grid instead of a dozen fine-grained enum variants.
+export interface SubSessionCloseResult {
+  outcome: SubSessionCloseOutcome;
+  status: SubSessionCloseStatus;
+  pid?: number;
+  message?: string;
+}
+
 // MIRROR: crates/arborist-types/src/lib.rs::SubSessionListArgs
 export interface SubSessionListArgs {
   parentWorktreeTabId?: WorktreeTabId;
@@ -547,6 +572,26 @@ export interface WorktreeTabCloseResult {
    * the deletion failed. The tab itself is always removed regardless.
    */
   worktreeDeleteError?: string;
+  /**
+   * Per-sub-session close outcomes. Populated for every sub-session the
+   * cascade touched (one entry per sub-tab under the closed worktree tab),
+   * so the UI can render the same per-sub copy as the single-sub close
+   * dialog ("Force-kill refused: shared editor process N still running",
+   * etc.).
+   *
+   * Distinct from `childErrors`: `childErrors` is reserved for *unexpected*
+   * operational failures during cascade (polite-close API throws, app-pool
+   * internal errors). `subOutcomes` carries every documented per-sub close
+   * shape, success and refusal alike.
+   *
+   * Both can influence `worktreeDeleteError` when the caller asked for
+   * deletion: the directory is refused either when `childErrors` is
+   * non-empty OR when any application sub-session was kept alive — Detach
+   * policy left it running (`outcome: 'tabRemoved'`), or its polite/force
+   * kill returned `unconfirmed`/`refusedShared`. See
+   * `worktree_tab_close_impl` for the authoritative gate.
+   */
+  subOutcomes?: Record<SubSessionId, SubSessionCloseResult>;
 }
 
 // MIRROR: src-tauri/src/activity.rs::ActivityEvent

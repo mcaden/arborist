@@ -189,12 +189,30 @@ flowchart TD
 Terminal sub-sessions behave like AI PTYs but use a separate sub-session runtime. Application sub-sessions are external processes. Arborist tracks
 their pid and attempts focus when the user clicks the sub-tab, but focus is best-effort and depends on OS support.
 
-Close policy:
+Close policy (returns a `SubSessionCloseResult { outcome, status, pid?, message? }` so the UI can branch on actual behaviour rather than the requested
+intent):
 
-- Terminal sub-session: kill the PTY.
-- Application `tabOnly`: remove Arborist tracking and leave the app running.
-- Application `requestAppClose`: ask the OS/window to close politely where supported.
-- Application `forceKill`: terminate the captured process. Use only as an escape hatch.
+- Terminal sub-session: kill the PTY tree (SIGKILL on Unix, `TerminateProcess` on the whole Windows process tree). Outcome `terminalKill`, status
+  `confirmed` when the wait thread joined within the grace window, or `unconfirmed` when it did not. The store record is pruned either way (an
+  unconfirmed terminal close still issued the kill signal — the failure mode is "child may linger", not "child is definitely alive"); the result
+  carries the lingering PID so the UI can warn the user that they may need to clean up the orphan manually.
+- Application `tabOnly`: drop Arborist tracking only. Outcome `tabRemoved`, status `confirmed`.
+- Application `requestAppClose`: ask the OS/window to close politely (Windows: `WM_CLOSE`). Verified by **window-handle existence** first
+  (`IsWindow`) so shared editors like VS Code that survive a single window close are correctly reported as still running, falling back to PID
+  liveness when there's no window target. Outcomes: `politeClose/confirmed` (window gone within ~3s), `politeClose/unconfirmed` (the app is likely
+  showing a save-changes prompt), `politeClose/unsupported` (the focuser doesn't support the request on this OS — currently macOS / Linux), or
+  `politeClose/unavailable` (we never matched a window). Tab is removed regardless.
+- Application `forceKill`: skip the polite step and signal the launcher PID directly (Unix: SIGKILL; Windows: `TerminateProcess`). Outcomes:
+  `forceKill/confirmed` (PID-liveness probe says the process is gone within ~2s), `forceKill/unconfirmed` (the OS hasn't confirmed exit — the
+  message includes the lingering PID), or `forceKill/refusedShared` (the runtime is retargeted onto a shared editor process — killing it would
+  also close every other workspace window the user has open in that editor, so Arborist refuses and detaches the tab instead).
+
+The same primitives back the worktree-tab cascade (`worktree_tab_close`). Cascade per-sub outcomes are surfaced via
+`WorktreeTabCloseResult.subOutcomes` — every per-sub close result (success or refusal) goes there, while unexpected operational failures (e.g.
+polite-close API throwing, app-pool internal errors) go into `childErrors`. Worktree directory deletion (when requested) is refused either when
+`childErrors` is non-empty OR when any application sub-session was kept alive — Detach policy left it running (`outcome = tabRemoved`), or its
+polite/force kill returned `unconfirmed`/`refusedShared`. Terminal subs are reaped via their PTY tree and cannot pin the worktree once observed
+exiting, so they never gate deletion on their own.
 
 ## Activity and metrics
 

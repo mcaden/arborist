@@ -85,12 +85,18 @@ pub trait AppKiller: Send + Sync + 'static {
 // --------------------------------------------------------------------------- PID-by-PID killer (for re-targeted owners)
 // ---------------------------------------------------------------------------
 
-/// [`AppKiller`] keyed on a raw OS PID rather than a [`Child`] handle.
+/// [`AppKiller`] keyed on a raw OS PID rather than a [`Child`] handle. Used in two situations:
 ///
-/// Used after [`OwnerResolver`] re-targets an [`AppRuntime`] to a long-lived editor process the launcher handed off to (e.g. VS Code's `Code.exe`).
-/// The launcher's [`RealKiller`] is moot at that point — the launcher has exited and its `Child` slot is empty — so we swap it for a [`PidKiller`]
-/// that issues `TerminateProcess` (Windows) or `kill(SIGTERM)` (Unix) directly against the rediscovered PID. This preserves the property that
-/// `pool.kill(id)` actually terminates the process the user can see.
+/// 1. At spawn time, for the launcher process itself (see `RealAppSpawner::spawn`). Earlier revisions used a `RealKiller` that shared the `Child`
+///    handle with the wait thread via `Arc<Mutex<Option<Child>>>`; once the waiter took the slot, kill became a documented no-op. Switching to
+///    `PidKiller` lets `AppPool::kill` (and the new `AppPool::kill_async`) always work — verification happens via the OS, not via the in-process
+///    handle.
+///
+/// 2. After [`OwnerResolver`] re-targets an [`AppRuntime`] to a long-lived editor process the launcher handed off to (e.g. VS Code's `Code.exe`).
+///    The launcher's killer is moot at that point; the resolver hands the pool a fresh `PidKiller` for the rediscovered owner.
+///
+/// On Windows this issues `TerminateProcess` (PROCESS_TERMINATE access mask). On Unix it sends `SIGKILL` — uninterruptible to match the
+/// user-facing "Force kill" semantics. Polite close (WM_CLOSE / SIGTERM-equivalent) is a separate primitive on [`AppPool`] and never reaches here.
 ///
 /// `kill` is best-effort and returns `Ok` even if the process has already exited; the OS-level "no such process" error is benign.
 pub struct PidKiller {
@@ -143,11 +149,28 @@ fn platform_kill_pid(pid: u32) -> Result<(), Error> {
 
 #[cfg(not(target_os = "windows"))]
 fn platform_kill_pid(pid: u32) -> Result<(), Error> {
-    // SAFETY: kill(2) is async-signal-safe; passing a possibly-stale PID is documented to return ESRCH which we treat as benign.
-    unsafe {
-        let _ = libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    // SIGKILL — termination is uninterruptible. Used by both [`PidKiller`] (post-resolver-retarget) and the launcher-side killer attached at
+    // `RealAppSpawner::spawn`. Earlier revisions sent SIGTERM here, which made `kill_async` racy on apps that ignored SIGTERM (Electron apps with
+    // `before-quit` listeners do, until the user dismisses the prompt). SIGKILL matches the documented "ForceKill" intent: the user has explicitly
+    // chosen the destructive path. Polite-close is a separate primitive (`request_window_close_then_wait_async`) and never reaches here.
+    //
+    // SAFETY: kill(2) is async-signal-safe; we read errno via `std::io::Error::last_os_error()` immediately after the call so no intervening libc
+    // call can clobber it.
+    //
+    // Errno mapping: ESRCH (no such process) is benign — the caller verifies death via `pid_alive` and will credit `Reaped` regardless of which side
+    // of the race won. EPERM (permission denied — e.g. the target is owned by another user and Arborist is not root) and any other unexpected errno
+    // surface as errors so `kill_async`'s `killer_result.is_err()` branch logs the diagnostic and returns `Unconfirmed`, instead of silently crediting
+    // the failed syscall and waiting out the full grace window before reporting `Unconfirmed` anyway with no clue about why.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    if rc == 0 {
+        return Ok(());
     }
-    Ok(())
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ESRCH) => Ok(()),
+        Some(libc::EPERM) => Err(Error::PermissionDenied(format!("kill({pid}, SIGKILL): {err}"))),
+        _ => Err(Error::Internal(format!("kill({pid}, SIGKILL) failed: {err}"))),
+    }
 }
 
 // --------------------------------------------------------------------------- Owner resolution / liveness (re-target after launcher exit)
@@ -217,8 +240,168 @@ pub trait WindowFinder: Send + Sync + 'static {
 
 /// Blocking wait for a re-targeted PID to die. Implementors are free to poll or use OS-level wait (e.g. `WaitForSingleObject` on a `SYNCHRONIZE`
 /// handle). Called from a dedicated `arborist-app-liveness-<pid>` thread; `wait_for_death` is consumed (`Box<Self>`) so it cannot be invoked twice.
+///
+/// The `cancel` flag is set by [`AppPool::kill_async_with_grace`] / [`AppPool::detach`] when the runtime is being torn down — implementors MUST poll
+/// it at every otherwise-blocking step (loop iteration, sleep tick, condvar wait timeout) and return promptly when it flips to `true`. Without
+/// cooperative cancellation the liveness thread leaks until the rediscovered owner (e.g. shared `Code.exe`) exits on its own, which for a long-lived
+/// editor could be hours or days.
 pub trait LivenessProbe: Send + 'static {
-    fn wait_for_death(self: Box<Self>);
+    fn wait_for_death(self: Box<Self>, cancel: &AtomicBool);
+}
+
+// --------------------------------------------------------------------------- Async kill / polite-close outcome types
+// ---------------------------------------------------------------------------
+
+/// Grace window for verifying that an [`AppPool::kill_async`] actually terminated the target process. Sized at 2 seconds to match
+/// [`crate::pty_pool::KILL_GRACE`] — short enough that the UI doesn't appear hung, long enough that a normally-shutting-down GUI app on a busy
+/// machine has time to actually exit.
+pub const APP_KILL_GRACE: Duration = Duration::from_secs(2);
+
+/// Grace window for verifying that a polite [`AppPool::request_window_close_then_wait_async`] actually closed the matched window. Larger than
+/// [`APP_KILL_GRACE`] because a polite close may flash a save-changes prompt the user has to dismiss; we want to give well-behaved apps time to
+/// either complete their shutdown OR cancel out and re-show their window before we report `Unconfirmed`.
+pub const APP_POLITE_CLOSE_GRACE: Duration = Duration::from_secs(3);
+
+/// How often the async verification loops poll the OS for liveness. Tight enough that a successful close lands quickly; loose enough that the loop
+/// isn't a hot wakeup on every machine.
+pub const APP_LIVENESS_POLL: Duration = Duration::from_millis(50);
+
+/// Outcome of [`AppPool::kill_async`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppKillOutcome {
+    /// `killer.kill()` returned `Ok` AND the OS reported the PID as gone within [`APP_KILL_GRACE`].
+    Reaped { pid: u32 },
+    /// `killer.kill()` returned `Err`, OR the PID was still alive at the end of the grace window. The runtime entry was removed from the pool either
+    /// way (the SubSessionId is free for a fresh launch), but the underlying process **may** still be alive. Caller is expected to log loudly and
+    /// surface the outcome to the user.
+    Unconfirmed { pid: u32 },
+    /// `kill_async` refused to issue the kill because the runtime had been retargeted to a shared owner process (e.g. VS Code's `Code.exe`) by the
+    /// resolver thread. Killing that PID would close every other workspace open in the same editor, not just this sub-tab — exactly the host-kill
+    /// risk the cascade is designed to avoid. The runtime entry is still removed from the pool (the SubSessionId is free for a fresh launch) but no
+    /// kill syscall was issued; the underlying editor keeps running with its other windows. Callers should treat this identically to
+    /// [`crate::types::SubSessionCloseStatus::RefusedShared`].
+    ///
+    /// This variant exists so the safety net lives inside `kill_async` itself, plugging the TOCTTOU race where a caller checks `is_retargeted`,
+    /// awaits an unrelated operation (e.g. polite-close), and then escalates to `kill_async` — a window during which the resolver thread could have
+    /// flipped `re_targeted` from `false` to `true`. Callers may still pre-check `is_retargeted` as a fast-path optimisation to skip the kill grace
+    /// wait, but they no longer carry the safety obligation.
+    RefusedShared { pid: u32 },
+}
+
+/// Outcome of [`AppPool::request_window_close_then_wait_async`]. Mirrors [`AppKillOutcome`] but distinguishes the "we don't have a window target" /
+/// "platform doesn't support polite close" branches from "we posted WM_CLOSE and verified".
+#[derive(Debug, Clone)]
+pub enum PoliteCloseOutcome {
+    /// `post_close_message` succeeded AND verification (window-handle check on platforms that expose one, PID-liveness otherwise) reported the
+    /// target as gone within [`APP_POLITE_CLOSE_GRACE`].
+    Confirmed { pid: u32 },
+    /// `post_close_message` succeeded but verification timed out — the window may be showing a save-changes prompt, or the app simply refused to
+    /// close. The runtime entry is **not** removed by this primitive (callers detach explicitly).
+    Posted { pid: u32 },
+    /// The platform's [`crate::window_focus::WindowFocuser`] returned [`Error::Unsupported`] for `post_close_message` (non-Windows today). Callers
+    /// fall back to "just detach the tab" and surface this outcome to the user so they know nothing was sent to the app.
+    Unsupported,
+    /// No window target was ever recorded for this runtime (e.g. resolver hasn't run yet, or the runtime has no resolver attached). Callers fall
+    /// back to "just detach the tab".
+    NoTarget,
+    /// The runtime is no longer in the pool (idempotent caller, or a race with another close). The caller should treat as a no-op.
+    Gone,
+}
+
+/// Cross-platform "is this PID still alive?" probe. Best-effort: a PID we never owned that happens to match a system process will still report
+/// `true`; that's an acceptable false positive for the close-verification use case (we'd rather report `Unconfirmed` than synthesise a fake
+/// "Reaped" event). On Windows uses `OpenProcess` + `GetExitCodeProcess` (returns `STILL_ACTIVE` while alive); falls back to a `SYNCHRONIZE` +
+/// `WaitForSingleObject(handle, 0)` probe when query access is denied (e.g. UAC-elevated or sandboxed processes the current token can't introspect
+/// but can still synchronise against). On Unix uses `kill(pid, 0)` which is documented to return success iff the PID exists and we have permission
+/// to signal it.
+#[must_use]
+pub fn pid_alive(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+        type HANDLE = *mut c_void;
+        #[allow(clippy::upper_case_acronyms)]
+        type DWORD = u32;
+        #[allow(clippy::upper_case_acronyms)]
+        type BOOL = i32;
+        const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
+        const SYNCHRONIZE: DWORD = 0x0010_0000;
+        const STILL_ACTIVE: DWORD = 259;
+        const WAIT_OBJECT_0: DWORD = 0x0000_0000;
+        const WAIT_TIMEOUT: DWORD = 0x0000_0102;
+        // Win32 error code (winerror.h): "no such process for this PID". The only code we treat as proof-of-death after a NULL `OpenProcess`.
+        const ERROR_INVALID_PARAMETER: DWORD = 87;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn OpenProcess(access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
+            fn GetExitCodeProcess(handle: HANDLE, code: *mut DWORD) -> BOOL;
+            fn WaitForSingleObject(handle: HANDLE, ms: DWORD) -> DWORD;
+            fn CloseHandle(handle: HANDLE) -> BOOL;
+            fn GetLastError() -> DWORD;
+        }
+        // SAFETY: OpenProcess accepts any PID; a NULL return means it failed and we discriminate the cause via GetLastError below.
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            // SAFETY: GetLastError reads thread-local state populated by the preceding OpenProcess call; documented Win32 idiom.
+            let err = unsafe { GetLastError() };
+            // `ERROR_INVALID_PARAMETER` (87) is the only Win32 code that means "no process with this PID". Everything else (`ERROR_ACCESS_DENIED` =
+            // 5 for elevated/sandboxed apps, `ERROR_PARTIAL_COPY` mid-exit, etc.) means the PID exists but we couldn't open it with QUERY_LIMITED
+            // access. Before reporting "alive" we make one more attempt with `SYNCHRONIZE`, which is granted by a wider DACL than QUERY access on
+            // many guarded processes. If we can synchronise on the handle, `WaitForSingleObject(handle, 0)` returns `WAIT_OBJECT_0` once the
+            // process exits and `WAIT_TIMEOUT` while it's still running — both are unambiguous. This converts the most painful Windows case
+            // (UAC-elevated long-running app that the user terminated externally) from "kill_async/polite-close burns the full grace polling a
+            // permanently-stuck `alive=true`" into "kill_async reports `Reaped` as soon as the OS observes the exit".
+            //
+            // We still default to alive on anything we can't disprove — the function-level contract promises "Unconfirmed beats fake Reaped".
+            if err == ERROR_INVALID_PARAMETER {
+                return false;
+            }
+            // SAFETY: same as the QUERY_LIMITED OpenProcess above — invalid PIDs are documented to return NULL.
+            let sync_h = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+            if !sync_h.is_null() {
+                // SAFETY: `sync_h` is a valid handle from OpenProcess; `WaitForSingleObject` with timeout 0 is a non-blocking poll.
+                let wait_rc = unsafe { WaitForSingleObject(sync_h, 0) };
+                unsafe {
+                    CloseHandle(sync_h);
+                }
+                return match wait_rc {
+                    WAIT_OBJECT_0 => false, // signalled — process has exited
+                    WAIT_TIMEOUT => true,   // not signalled within 0 ms — process is still running
+                    _ => true,              // some other error — default to alive per the function contract
+                };
+            }
+            // SYNCHRONIZE also denied (e.g. the Windows System process at PID 4). Fall back to the default-alive policy: every other error code
+            // means the PID exists but we can't introspect it, so reporting `false` would risk synthesising a fake "Reaped" outcome.
+            return true;
+        }
+        let mut code: DWORD = 0;
+        // SAFETY: `h` is a valid handle from OpenProcess; `code` is a stack-allocated u32 we can write into.
+        unsafe {
+            let ok = GetExitCodeProcess(h, &mut code);
+            CloseHandle(h);
+            // Default-alive policy (same reasoning as the OpenProcess-failed branch above): when `GetExitCodeProcess` itself fails (ok == 0), we have
+            // no positive evidence of death and reporting `false` would synthesise a fake `Reaped` outcome for `kill_async` callers — silently
+            // dropping a still-running orphan from the user's awareness. Only treat the process as dead when the syscall succeeded AND the exit code
+            // is no longer `STILL_ACTIVE`. (Note: a process can legitimately exit with `259`, which would make us briefly report it alive; that is
+            // an acceptable false positive — we'd rather report `Unconfirmed` than fake-`Reaped`.)
+            ok == 0 || code == STILL_ACTIVE
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // SAFETY: kill(2) with signal 0 is documented as a permission-and-existence check. ESRCH means "no such process" — that's our `false`. Any
+        // other error (EPERM in particular) means the PID exists but we can't signal it; we still want to report `true` because the process is
+        // demonstrably alive.
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        if rc == 0 {
+            return true;
+        }
+        // SAFETY: errno is a thread-local; reading it after a libc call is the documented idiom.
+        let err = std::io::Error::last_os_error();
+        err.raw_os_error() != Some(libc::ESRCH)
+    }
 }
 
 // --------------------------------------------------------------------------- Real spawner
@@ -252,13 +435,17 @@ impl AppSpawner for RealAppSpawner {
 
         let child = command.spawn().map_err(|e| Error::AppSpawnFailed(format!("spawn `{trimmed}`: {e}")))?;
         let pid = child.id();
-        let shared: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(Some(child)));
+        // The wait thread owns the `Child` handle exclusively (via `RealWaiter`). The killer is keyed on the launcher PID instead — `PidKiller`
+        // issues the OS-native terminate by PID and works whether or not the wait thread has already consumed the `Child`. Earlier revisions used a
+        // `RealKiller` that shared the `Child` with the waiter through `Arc<Mutex<Option<Child>>>`; once the waiter took the slot, `RealKiller::kill`
+        // became a documented no-op which made `kill_async` silently incorrect on the launcher-still-alive path. See the BLOCKER discussion on the
+        // session-kill hardening plan.
+        let waiter = Box::new(RealWaiter {
+            child: Mutex::new(Some(child)),
+        });
+        let killer: Arc<dyn AppKiller> = Arc::new(PidKiller::new(pid));
 
-        Ok(SpawnedApp {
-            pid,
-            waiter: Box::new(RealWaiter { child: Arc::clone(&shared) }),
-            killer: Arc::new(RealKiller { child: shared }),
-        })
+        Ok(SpawnedApp { pid, waiter, killer })
     }
 }
 
@@ -346,43 +533,19 @@ fn configure_detach(cmd: &mut std::process::Command) {
 }
 
 struct RealWaiter {
-    child: Arc<Mutex<Option<Child>>>,
+    /// Owned slot for the spawned `Child`. Mutex is only here because the `wait` trait method takes `Box<Self>` not `Box<Self> mut`; in practice the
+    /// waiter is consumed (Box) by the wait thread, so contention is impossible.
+    child: Mutex<Option<Child>>,
 }
 
 impl AppWaiter for RealWaiter {
     fn wait(self: Box<Self>) -> Result<bool, Error> {
-        // Take the Child out of the shared slot so `kill` can't race `wait` (Linux/macOS kill-after-wait is harmless but Windows requires a
-        // still-valid handle for TerminateProcess).
-        let mut child_opt = self.child.lock().map_err(|_| Error::Internal("app child mutex poisoned".into()))?.take();
-        let Some(mut child) = child_opt.take() else {
-            // Already killed elsewhere; treat as natural exit.
+        let Some(mut child) = self.child.lock().map_err(|_| Error::Internal("app child mutex poisoned".into()))?.take() else {
+            // Already taken — only path here is a future refactor moving the Child out before we run; treat as natural exit.
             return Ok(true);
         };
         let status = child.wait().map_err(|e| Error::AppSpawnFailed(format!("wait: {e}")))?;
         Ok(status.success())
-    }
-}
-
-/// Production [`AppKiller`].
-///
-/// **Caveat (deliberate, see Phase 3 design notes):** once the wait thread starts, [`RealWaiter::wait`] takes the `Child` out of the shared slot so
-/// the underlying OS handle is held only by the wait thread. After that point, [`RealKiller::kill`] becomes a no-op and returns `Ok` without actually
-/// terminating the process. This is acceptable because the Phase 3 close path uses
-/// [`AppPool::detach`] (which never tries to kill); `kill` is retained
-/// for tests and for the brief window between spawn and wait-thread startup (see the wait-thread-spawn-failure cleanup in
-/// [`AppPool::spawn`]).
-struct RealKiller {
-    child: Arc<Mutex<Option<Child>>>,
-}
-
-impl AppKiller for RealKiller {
-    fn kill(&self) -> Result<(), Error> {
-        let mut guard = self.child.lock().map_err(|_| Error::Internal("app child mutex poisoned".into()))?;
-        if let Some(child) = guard.as_mut() {
-            // start_kill / kill returns Err if already exited — benign.
-            let _ = child.kill();
-        }
-        Ok(())
     }
 }
 
@@ -497,13 +660,9 @@ impl AppPool {
         let weak_inner = Arc::downgrade(&self.inner);
 
         // Spawn the wait thread. If creation fails we must roll back the inserted runtime AND kill the spawned child so we don't leak an untracked
-        // GUI process.
-        //
-        // Cleanup-ordering invariant: the `kill` below is a real kill *only* because the wait thread never started — therefore `RealWaiter::wait()`
-        // was never invoked, and the `Child` remains in the shared `Arc<Mutex<Option<Child>>>` slot for `RealKiller` to take and terminate. The doc
-        // comment on `RealKiller` (above) describes how `kill` becomes a no-op after `wait` takes the slot — but at this point in `spawn` that race
-        // window has not yet opened. If a future refactor starts the waiter eagerly (e.g. via a runtime executor) or moves the `Child` out of the
-        // shared slot before this branch, this rollback silently leaks a GUI process.
+        // GUI process. With the new `PidKiller`-based killer (see `RealAppSpawner::spawn`), kill works on the launcher PID regardless of whether the
+        // wait thread ever started — so this rollback path is now strictly correct (the older `RealKiller`-via-shared-`Child` design required this
+        // branch to run before the wait thread ever took the slot).
         let wait_id = id;
         let wait_killed = Arc::clone(&killed);
         let wait_resolver_done = Arc::clone(&resolver_done);
@@ -581,6 +740,38 @@ impl AppPool {
         let g = self.inner.lock().ok()?;
         let rt = g.get(id)?;
         Some(rt.re_targeted.load(Ordering::SeqCst))
+    }
+
+    /// Test-only helper to mark a runtime as re-targeted without driving the resolver flow. Production code paths must NOT call this; the
+    /// re-target flag is normally toggled by the resolver thread under the pool lock. Gated behind `#[cfg(any(test, feature = "test-helpers"))]`
+    /// so it's invisible in production builds — the `cfg(test)` arm makes it available to lib unit tests, and the `feature = "test-helpers"` arm
+    /// makes it available to the integration-test crate (`tests/sub_sessions_e2e.rs`), which gates its caller with the same feature flag so the
+    /// dependency is symmetric and pre-commit `cargo clippy --all-targets` (without `--features test-helpers`) skips both.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn force_retargeted_for_test(&self, id: &SubSessionId, value: bool) -> bool {
+        let Ok(g) = self.inner.lock() else { return false };
+        match g.get(id) {
+            Some(rt) => {
+                rt.re_targeted.store(value, Ordering::SeqCst);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Test-only helper to seed a `window_target` on an existing runtime so close/focus paths take the "have a target" branches without driving a
+    /// real resolver. Same gating/rationale as [`Self::force_retargeted_for_test`] — production code paths set `window_target` from the resolver
+    /// thread under the pool lock, never directly.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn set_window_target_for_test(&self, id: &SubSessionId, target: WindowTarget) -> bool {
+        let Ok(mut g) = self.inner.lock() else { return false };
+        match g.get_mut(id) {
+            Some(rt) => {
+                rt.window_target = Some(target);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Explicit close. Sets the `killed` guard so the wait thread will suppress its status emission, calls `killer.kill()`, and removes the runtime
@@ -692,6 +883,204 @@ impl AppPool {
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// Force-kill the runtime and asynchronously verify the OS actually terminated the target PID within [`APP_KILL_GRACE`]. The runtime entry is
+    /// always removed from the pool by this method (the SubSessionId is free for a fresh launch) regardless of the verification outcome.
+    ///
+    /// **Never holds the pool lock across `.await`.** The snapshot is taken inside a tight critical section; verification polls via [`pid_alive`]
+    /// off-lock.
+    ///
+    /// Returns [`AppKillOutcome::Reaped`] only when both (a) the killer syscall reported success AND (b) [`pid_alive`] subsequently observed the
+    /// process as gone within the grace window — i.e. when Arborist can credibly attribute the death to its own kill action. Returns
+    /// [`AppKillOutcome::Unconfirmed`] whenever either condition fails: the killer returned an error (regardless of whether the PID happens to die
+    /// during the grace window from an unrelated cause), or the PID was still alive at the end of the grace window. In both `Unconfirmed` paths the
+    /// underlying process **may** still be alive; the caller is expected to surface this to the user (the runtime is gone from Arborist's
+    /// perspective but the user's editor/file-explorer might still be running).
+    pub async fn kill_async(&self, id: &SubSessionId) -> Result<AppKillOutcome, Error> {
+        self.kill_async_with_grace(id, APP_KILL_GRACE).await
+    }
+
+    /// Test seam for [`Self::kill_async`] that accepts a custom grace window. Production code paths must use [`Self::kill_async`] so the user-visible
+    /// timing stays consistent.
+    pub(crate) async fn kill_async_with_grace(&self, id: &SubSessionId, grace: Duration) -> Result<AppKillOutcome, Error> {
+        // Snapshot the pid + killer + killed flag under a tight lock, then drop the guard before any kill/sleep work.
+        let snapshot = {
+            let mut g = self.inner.lock().map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            g.remove(id)
+        };
+        let Some(rt) = snapshot else {
+            return Err(Error::NotFound(format!("no runtime for sub-session {id}")));
+        };
+        let pid = rt.pid;
+        rt.killed.store(true, Ordering::SeqCst);
+
+        // SAFETY NET: refuse to kill if the runtime has been retargeted to a shared owner process. The check happens AFTER `g.remove(id)` and
+        // therefore observes the resolver thread's final write — `re_targeted` is set under the same pool lock (see `resolver_loop`). Plugging this
+        // here makes "never kill a shared editor" an invariant of `kill_async`, not a caller-side obligation that has to thread the needle around
+        // every `.await`. The cascade still pre-checks `is_retargeted` as a fast-path so the common (non-racy) case doesn't pay the kill-grace cost.
+        if rt.re_targeted.load(Ordering::SeqCst) {
+            tracing::warn!(
+                sub_session_id = %id,
+                pid,
+                "kill_async: refused to terminate retargeted shared owner; runtime removed, process left running"
+            );
+            drop(rt);
+            return Ok(AppKillOutcome::RefusedShared { pid });
+        }
+
+        // Issue the kill. Any error is captured (not bubbled) so we can return Unconfirmed with diagnostics intact — the caller cares whether the
+        // process is gone, not whether the syscall succeeded.
+        let killer_result = rt.killer.kill();
+        if let Err(ref e) = killer_result {
+            tracing::warn!(sub_session_id = %id, pid, error = ?e, "kill_async: killer.kill() returned error; process may still be alive at this PID");
+        }
+
+        // Verify via PID liveness with a polled grace window. We never hold the pool mutex across .await — the runtime is already removed and the
+        // killer Arc is owned by this stack frame.
+        let deadline = Instant::now() + grace;
+        loop {
+            if !pid_alive(pid) {
+                drop(rt);
+                // Honour the documented contract: only credit `Reaped` when we can attribute the death to our own kill action. If `killer.kill()`
+                // returned an error and the PID later happens to be gone (e.g. the process exited on its own, or pid_alive's best-effort probe
+                // disagreed with the syscall), we cannot claim our kill caused it — report `Unconfirmed` so the operator sees the syscall failure
+                // surface in the UI rather than being silently swallowed by an opportunistic `Reaped`.
+                if killer_result.is_err() {
+                    return Ok(AppKillOutcome::Unconfirmed { pid });
+                }
+                return Ok(AppKillOutcome::Reaped { pid });
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(APP_LIVENESS_POLL).await;
+        }
+        // Drop the runtime explicitly so the wait/resolver/liveness join handles get a chance to be cleaned up (best-effort — they may still be in
+        // their own loops, that's fine).
+        drop(rt);
+        // Loop broke at deadline => `pid_alive(pid)` was true at the final poll; the post-loop return is always `Unconfirmed` regardless of killer
+        // outcome. (If the killer also errored, the warning at the top of this function already surfaced that diagnostic.)
+        tracing::warn!(
+            sub_session_id = %id,
+            pid,
+            grace_ms = grace.as_millis() as u64,
+            killer_failed = killer_result.is_err(),
+            "kill_async: process still alive at end of grace window; reporting Unconfirmed",
+        );
+        Ok(AppKillOutcome::Unconfirmed { pid })
+    }
+
+    /// Politely ask the OS to close the runtime's matched window and verify (off-lock, async) whether it actually went away within
+    /// [`APP_POLITE_CLOSE_GRACE`].
+    ///
+    /// The runtime entry is **not** removed by this primitive — callers that want to detach the sub-tab must also call [`detach`]. This separation
+    /// matches the semantics of the user-facing "ask the app to close" intent: success means "we asked, and it complied within the grace window";
+    /// the tab disposition is the caller's decision.
+    ///
+    /// Verification strategy: if the runtime has a `window_target`, verify by window-handle existence ([`crate::window_focus::WindowFocuser::is_window_alive`]) — this is the only correct check for
+    /// multi-window apps (closing one VS Code workspace doesn't kill `Code.exe`, so PID liveness would falsely report "still alive"). When
+    /// `is_window_alive` returns [`Error::Unsupported`] (non-Windows today) we fall back to PID liveness; that's the best we can do without a stable
+    /// handle concept.
+    pub async fn request_window_close_then_wait_async(
+        &self,
+        id: &SubSessionId,
+        focuser: &dyn crate::window_focus::WindowFocuser,
+    ) -> Result<PoliteCloseOutcome, Error> {
+        self.request_window_close_then_wait_async_with_grace(id, focuser, APP_POLITE_CLOSE_GRACE)
+            .await
+    }
+
+    /// Test seam for [`Self::request_window_close_then_wait_async`] that accepts a custom verification grace. Production code paths must use
+    /// [`Self::request_window_close_then_wait_async`] so the user-visible timing stays consistent with [`APP_POLITE_CLOSE_GRACE`].
+    pub(crate) async fn request_window_close_then_wait_async_with_grace(
+        &self,
+        id: &SubSessionId,
+        focuser: &dyn crate::window_focus::WindowFocuser,
+        grace: Duration,
+    ) -> Result<PoliteCloseOutcome, Error> {
+        // Snapshot pid + window_target under the lock, then drop it before any focuser call or .await.
+        let snapshot = {
+            let g = self.inner.lock().map_err(|_| Error::Internal("app pool mutex poisoned".into()))?;
+            let Some(rt) = g.get(id) else {
+                return Ok(PoliteCloseOutcome::Gone);
+            };
+            (rt.pid, rt.window_target.as_ref().map(|wt| (wt.hwnd, wt.refinder.clone())))
+        };
+        let pid = snapshot.0;
+        let Some((mut hwnd, refinder)) = snapshot.1 else {
+            return Ok(PoliteCloseOutcome::NoTarget);
+        };
+
+        // Post the close message. On stale-handle errors, try to re-find via the resolver's WindowFinder once.
+        match focuser.post_close_message(hwnd) {
+            Ok(()) => {}
+            Err(Error::NotFound(_)) => {
+                if let Some(finder) = &refinder {
+                    if let Some(fresh) = finder.find_window().filter(|h| *h != 0) {
+                        let _ = self.update_window_handle(id, fresh);
+                        hwnd = fresh;
+                        match focuser.post_close_message(fresh) {
+                            Ok(()) => {}
+                            Err(Error::NotFound(_)) => {
+                                // Even the refreshed handle is gone — the window already disappeared. Treat as Confirmed: that's the user-visible
+                                // outcome (the window they wanted closed is closed).
+                                return Ok(PoliteCloseOutcome::Confirmed { pid });
+                            }
+                            Err(Error::Unsupported(_)) => return Ok(PoliteCloseOutcome::Unsupported),
+                            Err(other) => return Err(other),
+                        }
+                    } else {
+                        // Window already gone, no refind available — treat as Confirmed (close-of-a-gone-thing succeeded).
+                        return Ok(PoliteCloseOutcome::Confirmed { pid });
+                    }
+                } else {
+                    return Ok(PoliteCloseOutcome::Confirmed { pid });
+                }
+            }
+            Err(Error::Unsupported(_)) => return Ok(PoliteCloseOutcome::Unsupported),
+            Err(other) => return Err(other),
+        }
+
+        // Verify the window actually went away. Verification by window handle is the only correct check for multi-window apps — closing one VS Code
+        // workspace doesn't kill `Code.exe`, so PID liveness would falsely report "still alive" and we'd wait the full grace for nothing. The
+        // platform error contract is:
+        //   - `Ok(true)`  — window still up, keep polling
+        //   - `Ok(false)` — window is gone → `Confirmed`
+        //   - `Err(Unsupported)` — platform doesn't expose `is_window_alive` (non-Windows today). Permanently fall back to PID liveness; that's the
+        //     best we can do without a stable handle concept.
+        //   - `Err(NotFound)` — the OS rejected the handle as no longer a window. That is the user-visible-correct "window gone" signal, so treat
+        //     it identically to `Ok(false)` → `Confirmed`. Falling back to PID liveness here would be wrong for shared/multi-window apps (we'd wait
+        //     the full grace and then report `Posted`, which suppresses the cascade's skip-kill optimisation and shows the user a "may still be
+        //     prompting to save" toast for a window that demonstrably closed).
+        //   - `Err(other)` — the liveness probe is broken. Don't degrade silently to PID liveness (same multi-window mis-report risk). Log loudly
+        //     and return `Posted` immediately so the user gets a fast, honest "we asked, can't verify" answer instead of waiting the grace.
+        let mut window_check_supported = true;
+        let deadline = Instant::now() + grace;
+        loop {
+            if window_check_supported {
+                match focuser.is_window_alive(hwnd) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(PoliteCloseOutcome::Confirmed { pid }),
+                    Err(Error::Unsupported(_)) => {
+                        window_check_supported = false;
+                    }
+                    Err(Error::NotFound(_)) => return Ok(PoliteCloseOutcome::Confirmed { pid }),
+                    Err(other) => {
+                        tracing::warn!(pid, hwnd, error = %other, "is_window_alive failed; reporting Posted without further verification");
+                        return Ok(PoliteCloseOutcome::Posted { pid });
+                    }
+                }
+            }
+            if !window_check_supported && !pid_alive(pid) {
+                return Ok(PoliteCloseOutcome::Confirmed { pid });
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(APP_LIVENESS_POLL).await;
+        }
+        Ok(PoliteCloseOutcome::Posted { pid })
     }
 
     /// Updates the stored HWND on the runtime under the pool lock. Returns `false` if the runtime is no longer registered.
@@ -871,7 +1260,16 @@ fn liveness_loop(
     pool_weak: std::sync::Weak<Mutex<BTreeMap<SubSessionId, AppRuntime>>>,
     killed: Arc<AtomicBool>,
 ) {
-    liveness.wait_for_death();
+    // Pass the shared `killed` flag so the probe can return early when the runtime is torn down (detach / kill_async / kill_async refused-shared). The
+    // probe MUST cooperate — see the [`LivenessProbe`] trait docs. Without this, `wait_for_death` blocks until the rediscovered owner (e.g.
+    // `Code.exe`) actually exits, which for a shared editor could be hours, leaking one OS thread per torn-down sub-tab.
+    liveness.wait_for_death(&killed);
+
+    // Cancellation fast-path: if the runtime was killed/detached, never claim emission rights. The pool-lookup below would also handle this (the
+    // entry is already removed), but checking the flag first avoids the lock + makes the intent explicit.
+    if killed.load(Ordering::SeqCst) {
+        return;
+    }
 
     // Claim emission rights ONLY if the runtime is still ours (matching pid). Other outcomes — entry gone (kill/detach), or entry replaced via
     // relaunch — mean someone else already owns the user-facing event.
@@ -1161,28 +1559,52 @@ mod tests {
     }
 
     /// Test liveness probe: blocks on a Condvar until `signal_dead` is called. Mirrors `FakeWaiter`.
+    /// Shared liveness condvar/bool pair handed back to tests so they can signal the probe to exit (`signal_liveness_dead`).
+    type LivenessSignal = Arc<(StdMutex<bool>, std::sync::Condvar)>;
+
     struct FakeLivenessProbe {
-        signal: Arc<(StdMutex<bool>, std::sync::Condvar)>,
+        signal: LivenessSignal,
+        exited: Arc<AtomicBool>,
     }
 
     impl FakeLivenessProbe {
-        fn new_pair() -> (Box<Self>, Arc<(StdMutex<bool>, std::sync::Condvar)>) {
+        fn new_pair() -> (Box<Self>, LivenessSignal) {
+            let (probe, signal, _exited) = Self::new_tracked();
+            (probe, signal)
+        }
+
+        /// Like [`new_pair`] but also returns an `exited` flag the test can wait on to confirm `wait_for_death` returned (whether via the signal or
+        /// via the new cancellation path). Used by the liveness-cancel regression test.
+        fn new_tracked() -> (Box<Self>, LivenessSignal, Arc<AtomicBool>) {
             let signal = Arc::new((StdMutex::new(false), std::sync::Condvar::new()));
-            (Box::new(FakeLivenessProbe { signal: Arc::clone(&signal) }), signal)
+            let exited = Arc::new(AtomicBool::new(false));
+            (
+                Box::new(FakeLivenessProbe {
+                    signal: Arc::clone(&signal),
+                    exited: Arc::clone(&exited),
+                }),
+                signal,
+                exited,
+            )
         }
     }
 
     impl LivenessProbe for FakeLivenessProbe {
-        fn wait_for_death(self: Box<Self>) {
+        fn wait_for_death(self: Box<Self>, cancel: &AtomicBool) {
             let (lock, cvar) = &*self.signal;
             let mut g = lock.lock().unwrap();
-            while !*g {
-                g = cvar.wait(g).unwrap();
+            // Poll the cancel flag on every wakeup so kill_async / detach can tear the thread down without waiting for the test to signal exit. The
+            // 10 ms timeout keeps cancellation latency low without hammering the CPU; tests that explicitly call `signal_liveness_dead` still wake
+            // immediately via the condvar notify.
+            while !*g && !cancel.load(Ordering::SeqCst) {
+                let (next_g, _) = cvar.wait_timeout(g, Duration::from_millis(10)).unwrap();
+                g = next_g;
             }
+            self.exited.store(true, Ordering::SeqCst);
         }
     }
 
-    fn signal_liveness_dead(signal: &Arc<(StdMutex<bool>, std::sync::Condvar)>) {
+    fn signal_liveness_dead(signal: &LivenessSignal) {
         let (lock, cvar) = &**signal;
         *lock.lock().unwrap() = true;
         cvar.notify_all();
@@ -1343,6 +1765,56 @@ mod tests {
         assert!(!exit_obs.lock().unwrap().is_empty(), "exited event after rediscovered owner dies");
         // We did NOT call pool.kill — killer must not have been invoked.
         assert!(!killed_flag.load(Ordering::SeqCst), "natural death must not invoke killer");
+    }
+
+    /// Regression for the liveness-thread leak (PR #221 review): when the runtime is torn down via `detach` or `kill_async` the liveness thread must
+    /// exit promptly via the cooperative `cancel` flag, instead of blocking in `wait_for_death` until the rediscovered owner (e.g. shared `Code.exe`)
+    /// happens to die — which for a long-lived editor could be hours. Before the fix, dropping the runtime's `_liveness_thread` JoinHandle abandoned
+    /// the OS thread (`JoinHandle::drop` does not cancel); after the fix, `kill_async_with_grace`'s `rt.killed.store(true)` is observed via the
+    /// shared flag passed into `LivenessProbe::wait_for_death`, and the probe returns within a bounded poll cycle.
+    #[test]
+    fn pool_detach_after_retarget_cancels_liveness_thread() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _status_obs, _exit_obs) = collect_sink();
+        let id = SubSessionId::default();
+
+        let resolver = FakeOwnerResolver::new();
+        pool.spawn(
+            id,
+            "code .".to_owned(),
+            PathBuf::from("."),
+            sink,
+            Some(resolver.clone() as Arc<dyn OwnerResolver>),
+        )
+        .expect("spawn");
+
+        let new_pid = 99_777;
+        let killed_flag = Arc::new(AtomicBool::new(false));
+        let new_killer: Arc<dyn AppKiller> = Arc::new(FlagKiller {
+            killed: Arc::clone(&killed_flag),
+        });
+        // Use the tracked constructor so the test can observe when `wait_for_death` returns. We DO NOT signal the liveness condvar — the only way
+        // `exited` can flip is via the cooperative cancellation path.
+        let (probe, _liveness_signal, exited) = FakeLivenessProbe::new_tracked();
+        resolver.signal_retarget(RetargetedOwner {
+            pid: new_pid,
+            killer: new_killer,
+            liveness: probe,
+            window_target: None,
+        });
+        wait_until(|| pool.pid(&id) == Some(new_pid), Duration::from_secs(2), "retarget happened");
+        assert!(!exited.load(Ordering::SeqCst), "liveness thread must still be blocking before detach");
+
+        // Detach sets `killed=true`. Without the cancel-aware probe this would leak the liveness thread until the editor exits.
+        pool.detach(&id);
+
+        wait_until(
+            || exited.load(Ordering::SeqCst),
+            Duration::from_secs(2),
+            "liveness thread exits within bounded time after detach",
+        );
+        assert!(!killed_flag.load(Ordering::SeqCst), "detach must NOT invoke the rediscovered killer");
     }
 
     #[test]
@@ -1836,5 +2308,402 @@ mod tests {
         let res = pool.request_window_close(&id, &focuser);
         assert!(matches!(res, Err(Error::NotFound(_))));
         assert!(focuser.close_calls().is_empty());
+    }
+
+    // --- Async kill/polite-close primitives (issue #132) ---------------------------------------------------------------------------------------
+
+    /// Returns a PID that has been freshly spawned-and-waited so the OS reports it as dead. Replaces the previous hardcoded `DEAD_PID` constant —
+    /// any fixed high PID can in principle collide with a real process (Windows DWORD PIDs reach the same range), which made the Reaped-path tests
+    /// theoretically flake-prone. After the parent `wait()` returns, the std library closes the OS handle and the kernel marks the PID as gone; we
+    /// poll [`pid_alive`] briefly to absorb the tiny Windows kernel teardown latency. Panics if the PID doesn't go dead within 1 s (likely PID-reuse
+    /// race on a busy host — rerun rather than silently flake).
+    fn dead_pid() -> u32 {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "rem"])
+            .spawn()
+            .expect("spawn dead-pid child (cmd /c rem)");
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("true").spawn().expect("spawn dead-pid child (true)");
+        let pid = child.id();
+        let _ = child.wait().expect("wait dead-pid child");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while pid_alive(pid) {
+            assert!(
+                Instant::now() < deadline,
+                "dead_pid: pid {pid} still reports alive after 1s — likely PID-reuse race on the test host, rerun",
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        pid
+    }
+
+    /// Inject a known-dead PID into a runtime entry so `kill_async` will see `pid_alive == false` immediately. Used to deterministically exercise the
+    /// Reaped branch without depending on the FakeAppSpawner's PID sequence happening to be unused.
+    fn override_pid(pool: &AppPool, id: &SubSessionId, pid: u32) {
+        let mut g = pool.inner.lock().unwrap();
+        let rt = g.get_mut(id).expect("runtime in pool");
+        rt.pid = pid;
+    }
+
+    /// Test-only helper: swap the runtime's killer for one that always errors. Mirrors [`override_pid`] for cases where we want to drive the
+    /// `killer.kill() -> Err` branch of [`AppPool::kill_async_with_grace`] without touching the production [`FakeAppSpawner`].
+    fn override_killer_to_failing(pool: &AppPool, id: &SubSessionId) {
+        struct FailingKiller;
+        impl AppKiller for FailingKiller {
+            fn kill(&self) -> Result<(), Error> {
+                Err(Error::Internal("synthetic kill failure for test".into()))
+            }
+        }
+        let mut g = pool.inner.lock().unwrap();
+        let rt = g.get_mut(id).expect("runtime in pool");
+        rt.killer = Arc::new(FailingKiller);
+    }
+
+    #[test]
+    fn pid_alive_reports_dead_for_waited_child() {
+        // Documents the invariant that after a parent `wait()` reaps a child, `pid_alive` reports the PID as gone. The `dead_pid` helper itself
+        // depends on this property (it polls until pid_alive returns false), but keeping the standalone assertion documents the cross-platform
+        // contract and gives a clean error message if a future platform regresses (instead of mysterious time-outs in unrelated tests).
+        assert!(!pid_alive(dead_pid()), "pid_alive must report a properly waited-on child as dead");
+    }
+
+    #[test]
+    fn pid_alive_reports_alive_for_own_process() {
+        assert!(pid_alive(std::process::id()), "the test's own PID must always report alive");
+    }
+
+    /// Regression for the Windows `OpenProcess` failure-mode discrimination + `SYNCHRONIZE`-fallback fix. The System process (PID 4) is guaranteed
+    /// to exist on every Windows machine but is unopenable by an ordinary user — both `PROCESS_QUERY_LIMITED_INFORMATION` and `SYNCHRONIZE` are
+    /// denied by the System DACL. The pre-fix behavior collapsed every NULL `OpenProcess(QUERY_LIMITED)` return to `false`, which would have
+    /// synthesised a fake "Reaped" outcome for any close-verification path (kill_async or polite-close fallback) that happened to be tracking a
+    /// privileged PID. The fix treats only `ERROR_INVALID_PARAMETER` as proof of death; on `ACCESS_DENIED` / `PARTIAL_COPY` / etc. it makes a
+    /// follow-up attempt with `SYNCHRONIZE` (which a wider DACL grants for most user-launched-but-elevated apps) and falls back to the default-alive
+    /// policy when even that is denied. PID 4 hits the fallback path and must still report alive.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pid_alive_reports_alive_for_inaccessible_system_pid_on_windows() {
+        // PID 4 is the Windows kernel "System" process. It is always alive while Windows is running, and an ordinary user token cannot open it with
+        // either QUERY_LIMITED or SYNCHRONIZE access — both `OpenProcess` calls in `pid_alive` fail with `ERROR_ACCESS_DENIED`, exercising the
+        // permanent default-alive fallback.
+        assert!(
+            pid_alive(4),
+            "Windows System process (PID 4) must report alive even though both OpenProcess attempts return ACCESS_DENIED"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_async_reaped_when_pid_is_dead() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _s, _e) = collect_sink();
+        let id = SubSessionId::default();
+        pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
+        let dead = dead_pid();
+        override_pid(&pool, &id, dead);
+        let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(500)).await.expect("kill_async");
+        assert_eq!(outcome, AppKillOutcome::Reaped { pid: dead });
+        assert!(
+            spawner.child(0).was_killed(),
+            "killer.kill() must be invoked even on the Reaped fast-path"
+        );
+        assert!(!pool.contains(&id), "runtime entry must be removed regardless of outcome");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_async_unconfirmed_when_pid_stays_alive() {
+        // Use the test process's own PID — guaranteed alive for the duration of the test. FakeKiller flips a flag but never actually kills (and even
+        // if it tried, the OS would not let it kill the test runner). The grace window is tiny so the test finishes quickly.
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _s, _e) = collect_sink();
+        let id = SubSessionId::default();
+        pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
+        let own_pid = std::process::id();
+        override_pid(&pool, &id, own_pid);
+        let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(150)).await.expect("kill_async");
+        assert_eq!(outcome, AppKillOutcome::Unconfirmed { pid: own_pid });
+        assert!(!pool.contains(&id), "runtime entry must be removed regardless of outcome");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_async_returns_not_found_for_unknown_id() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let result = pool.kill_async(&SubSessionId::default()).await;
+        assert!(matches!(result, Err(Error::NotFound(_))));
+    }
+
+    /// Regression test for the kill_async "never kill shared editor" safety net. Even if the caller fails to pre-check `is_retargeted`,
+    /// `kill_async_with_grace` MUST refuse to issue a kill when the runtime has been retargeted to a shared owner. This plugs the TOCTTOU race
+    /// where the cascade observes `is_retargeted=false`, awaits a polite-close, then escalates to `kill_async` AFTER the resolver thread has set
+    /// `re_targeted=true` under the pool lock.
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_async_refuses_to_kill_retargeted_runtime() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _s, _e) = collect_sink();
+        let id = SubSessionId::default();
+        pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
+        // Simulate a resolver thread that already retargeted the runtime to a shared owner. The pid is left at the launcher's value (FakeApp's
+        // synthetic PID), which is enough to verify the refusal semantics — the safety net only cares about the `re_targeted` flag.
+        let launcher_pid = pool.pid(&id).expect("pid after spawn");
+        assert!(pool.force_retargeted_for_test(&id, true));
+
+        let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(500)).await.expect("kill_async");
+
+        assert_eq!(
+            outcome,
+            AppKillOutcome::RefusedShared { pid: launcher_pid },
+            "kill_async must refuse to terminate a retargeted runtime"
+        );
+        assert!(!pool.contains(&id), "runtime entry must still be removed even when the kill is refused");
+        assert!(
+            !spawner.child(0).was_killed(),
+            "no kill syscall may reach the shared owner's killer when the safety net refuses"
+        );
+
+        // Clean up the FakeWaiter thread that is otherwise blocked forever on its exit condvar (the safety net deliberately doesn't issue the kill
+        // syscall that would normally wake it). Without this, the wait thread leaks for the lifetime of the test process.
+        spawner.child(0).signal_exit(false);
+    }
+
+    /// Regression test for the kill_async killer-error-vs-Reaped alignment fix (PR #221 review). The documented contract is that `Reaped` is only
+    /// returned when Arborist can credibly attribute the death to its own kill action: killer syscall reported success AND the PID was subsequently
+    /// observed as gone. When the killer returns `Err` and `pid_alive` happens to report dead anyway (e.g. the process exited on its own, or
+    /// pid_alive's best-effort probe disagreed with the syscall), the contract says `Unconfirmed`, not `Reaped`. Before this fix the loop returned
+    /// `Reaped` on the first dead-PID poll regardless of `killer_result`, which silently hid kill-syscall failures from the operator.
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_async_unconfirmed_when_killer_errors_even_if_pid_already_dead() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner.clone());
+        let (sink, _s, _e) = collect_sink();
+        let id = SubSessionId::default();
+        pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
+        // `dead_pid()` makes `pid_alive` report dead on the first poll iteration; the failing killer makes `killer_result.is_err()` true.
+        let dead = dead_pid();
+        override_pid(&pool, &id, dead);
+        override_killer_to_failing(&pool, &id);
+
+        let outcome = pool.kill_async_with_grace(&id, Duration::from_millis(500)).await.expect("kill_async");
+
+        assert_eq!(
+            outcome,
+            AppKillOutcome::Unconfirmed { pid: dead },
+            "killer error must surface as Unconfirmed even when pid_alive reports the process gone"
+        );
+        assert!(
+            !pool.contains(&id),
+            "runtime entry must still be removed even when the kill is Unconfirmed"
+        );
+
+        // Drain the FakeWaiter thread (the overridden FailingKiller never signals exit on the real FakeApp).
+        spawner.child(0).signal_exit(false);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_confirmed_when_window_dies_during_grace() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: dead_pid(),
+            hwnd: 0xABCD,
+            refinder: None,
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Ok(()));
+        focuser.queue_alive(Ok(true));
+        focuser.queue_alive(Ok(false));
+
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_millis(500))
+            .await
+            .expect("polite close");
+        match outcome {
+            PoliteCloseOutcome::Confirmed { pid } => assert_eq!(pid, runtime_pid),
+            other => panic!("expected Confirmed, got {other:?}"),
+        }
+        assert_eq!(focuser.close_calls(), vec![0xABCD]);
+        // Runtime is NOT removed by polite close — the caller decides the tab disposition.
+        assert!(pool.contains(&id));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_posted_when_window_stays_alive() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: std::process::id(),
+            hwnd: 0xBEEF,
+            refinder: None,
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Ok(()));
+        // Default is_window_alive on RecordingFocuser without queued results returns Ok(true) — the window stays alive for the entire grace window.
+
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_millis(150))
+            .await
+            .expect("polite close");
+        match outcome {
+            PoliteCloseOutcome::Posted { pid } => assert_eq!(pid, runtime_pid),
+            other => panic!("expected Posted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_unsupported_when_post_unsupported() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: 1234,
+            hwnd: 0x1234,
+            refinder: None,
+        };
+        let (id, _pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Err(Error::Unsupported("no polite close on this platform".into())));
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_millis(50))
+            .await
+            .expect("polite close");
+        assert!(matches!(outcome, PoliteCloseOutcome::Unsupported));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_no_target_when_no_window() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let id = SubSessionId::default();
+        let (sink, _s, _e) = collect_sink();
+        pool.spawn(id, "noop".into(), PathBuf::from("."), sink, None).expect("spawn");
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_millis(50))
+            .await
+            .expect("polite close");
+        assert!(matches!(outcome, PoliteCloseOutcome::NoTarget));
+        assert!(focuser.close_calls().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_gone_when_runtime_unknown() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&SubSessionId::default(), &focuser, Duration::from_millis(50))
+            .await
+            .expect("polite close");
+        assert!(matches!(outcome, PoliteCloseOutcome::Gone));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_refinds_stale_window_handle() {
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let finder = QueuedFinder::new(vec![Some(0x9999)]);
+        let target = WindowTarget {
+            pid: dead_pid(),
+            hwnd: 0x1111,
+            refinder: Some(finder.clone() as Arc<dyn WindowFinder>),
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Err(Error::NotFound("stale".into())));
+        focuser.queue_close(Ok(()));
+        focuser.queue_alive(Ok(false));
+
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_millis(500))
+            .await
+            .expect("polite close");
+        assert!(matches!(outcome, PoliteCloseOutcome::Confirmed { pid } if pid == runtime_pid));
+        assert_eq!(focuser.close_calls(), vec![0x1111, 0x9999]);
+        assert_eq!(finder.call_count(), 1, "refinder should be called exactly once on stale handle");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_confirmed_when_verification_reports_window_gone_via_not_found() {
+        // Regression for the verification-loop fallback: if `is_window_alive` ever returns `Err(NotFound)` (e.g. a future platform that surfaces
+        // stale-handle errors instead of `Ok(false)`), the user-correct interpretation is "the window is gone" → `Confirmed`. Previously we silently
+        // demoted to PID liveness, which for shared/multi-window apps would have waited the full grace and returned `Posted` instead.
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: std::process::id(), // host PID stays alive → ensures we are not accidentally relying on PID-liveness
+            hwnd: 0xDEAD,
+            refinder: None,
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Ok(()));
+        focuser.queue_alive(Ok(true)); // first poll: still up
+        focuser.queue_alive(Err(Error::NotFound("window vanished between polls".into())));
+
+        let outcome = pool
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_secs(5))
+            .await
+            .expect("polite close");
+        assert!(matches!(outcome, PoliteCloseOutcome::Confirmed { pid } if pid == runtime_pid));
+        assert_eq!(focuser.alive_calls(), vec![0xDEAD, 0xDEAD]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn polite_close_async_posted_immediately_when_liveness_check_is_broken() {
+        // Regression for the verification-loop fallback: a non-Unsupported/NotFound error from `is_window_alive` means the probe is broken. We must
+        // NOT silently degrade to PID liveness (wrong for multi-window apps) nor force the user to wait the full grace on a broken check. Returning
+        // `Posted` immediately yields the fast, honest "we asked, can't verify" answer.
+        let spawner = Arc::new(FakeAppSpawner::new());
+        let pool = AppPool::new(spawner);
+        let target = WindowTarget {
+            pid: std::process::id(),
+            hwnd: 0xBABE,
+            refinder: None,
+        };
+        let (id, runtime_pid) = spawn_with_window_target(&pool, target);
+
+        let focuser = crate::window_focus::RecordingFocuser::new();
+        focuser.queue_close(Ok(()));
+        focuser.queue_alive(Err(Error::Internal("probe failed".into())));
+
+        let started = Instant::now();
+        let outcome = pool
+            // 5s grace would make the test slow if we wrongly waited it out.
+            .request_window_close_then_wait_async_with_grace(&id, &focuser, Duration::from_secs(5))
+            .await
+            .expect("polite close");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "should return immediately on broken liveness probe; took {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(outcome, PoliteCloseOutcome::Posted { pid } if pid == runtime_pid));
+        assert_eq!(focuser.alive_calls(), vec![0xBABE]);
+    }
+
+    /// Regression test for the `platform_kill_pid` errno-mapping fix (PR #221 review). Before the fix the non-Windows branch dropped the `libc::kill`
+    /// return value entirely and always returned `Ok(())`, silently swallowing EPERM and friends. A `kill(SIGKILL)` against a PID that's guaranteed
+    /// not to exist must return ESRCH from the kernel — the function must translate that to `Ok(())` (the caller verifies death via `pid_alive` and
+    /// credits Reaped). Non-ESRCH errnos (EPERM, ...) would map to `Error::PermissionDenied` / `Error::Internal`; we can't deterministically exercise
+    /// those without picking a target whose ownership we don't control, so the smoke-test asserts the benign path only.
+    #[cfg(unix)]
+    #[test]
+    fn platform_kill_pid_treats_nonexistent_pid_as_benign() {
+        // A PID well above every common kernel PID_MAX (Linux default 4_194_304; macOS 99_999): the kernel always returns ESRCH for a PID with no
+        // matching process. Casting to `pid_t` (i32) keeps the value positive (well under `i32::MAX`).
+        let absent_pid: u32 = 999_999_999;
+        let result = platform_kill_pid(absent_pid);
+        assert!(
+            matches!(result, Ok(())),
+            "ESRCH from kill(absent_pid, SIGKILL) must be classified benign so kill_async can credit `Reaped` via pid_alive; got {result:?}"
+        );
     }
 }

@@ -24,8 +24,19 @@ use tracing::{debug, warn};
 
 use crate::types::{Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
 
+// On Windows, file handles can linger after a child process exits. The hot case in practice is **orphaned grandchildren** of the killed PTY tree:
+// `windows_process_tree::kill_process_tree` takes a single process snapshot then terminates descendants deepest-first, but if a leaf process spawns
+// a new child between snapshot and kill, that grandchild gets reparented to PID 4 / services.exe and survives with its inherited CWD still pointing
+// at the worktree (PTY children spawn with `cwd=worktree_path`). AI helpers (LSPs, file watchers, indexer subprocesses started by claude / copilot)
+// are the prime suspects — most of them notice their stdin pipe broke and exit on their own within a few seconds, hence the retry. The budget below
+// sums to ~64s on Windows: short ramp at the front to ride out the common AV / handle-release race, then a long tail of 5s waits to give well-
+// behaved orphan helpers time to detect EOF and exit. **A genuinely long-lived orphan that never exits will exhaust the budget either way** — the
+// only durable fix for that is JobObject-based process isolation at PTY spawn time (tracked as a follow-up). On non-Windows there is no equivalent
+// race (unlink succeeds immediately even with open handles) so we skip the retry loop entirely.
 #[cfg(windows)]
-const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[25, 50, 100, 200, 400, 800, 1_000];
+const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[
+    50, 100, 200, 400, 800, 1_500, 2_500, 4_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000,
+];
 #[cfg(not(windows))]
 const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[];
 
@@ -326,6 +337,14 @@ fn remove_worktree_with_retry(
     for attempt in 0.. {
         let output = run()?;
         if output.success {
+            // Trust-but-verify so the function's contract is "if we return Ok, the directory is gone". `git worktree remove --force` reliably
+            // unregisters the worktree's admin metadata but its recursive rmdir pass can exit 0 while leaving residual files on Windows when a
+            // file watcher / AV / editor / Explorer preview holds a handle inside the directory — the user then clicks delete, sees no error,
+            // and finds the folder still on disk. Falling through to the same residual cleanup used on the "is not a working tree" branch makes
+            // that failure visible. `remove_residual_worktree_dir` short-circuits NotFound to Ok, so the common case costs only this `exists`.
+            if worktree_path.exists() {
+                return remove_residual_worktree_dir_with_retry(repo_root, worktree_path, &mut remove_residual, &mut sleep);
+            }
             return Ok(());
         }
 
@@ -366,7 +385,20 @@ fn remove_worktree_with_retry(
 
 fn remove_residual_worktree_dir(worktree_path: &Path) -> io::Result<()> {
     match std::fs::remove_dir_all(worktree_path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // Trust-but-verify, because Windows' POSIX-delete semantics let `remove_dir_all` return Ok with the directory still present on disk
+            // until the last open handle releases it (file watcher / antivirus / editor / Explorer preview). Without this check the caller sees
+            // "no error" while Explorer still lists the worktree — exactly the silent-success failure mode this helper exists to prevent. Surface
+            // a surviving directory as a retryable `io::Error` so the caller's retry budget gets the chance to re-attempt as handles drop.
+            match worktree_path.try_exists() {
+                Ok(false) => Ok(()),
+                Ok(true) => Err(io::Error::other(format!(
+                    "remove_dir_all returned Ok but directory still present: {}",
+                    worktree_path.display()
+                ))),
+                Err(e) => Err(e),
+            }
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
@@ -403,8 +435,14 @@ fn remove_residual_worktree_dir_with_retry(
     }
 
     Err(Error::Internal(format!(
-        "git worktree remove unregistered the worktree but residual directory cleanup failed for {}: {last_error}",
-        worktree_path.display()
+        concat!(
+            "git unregistered the worktree but residual directory cleanup at `{path}` still failed after the retry budget exhausted: {last_error}. ",
+            "On Windows this almost always means an orphaned grandchild process (an AI helper, language server, or file watcher spawned by the ",
+            "killed session) survived the process-tree kill and is still holding a handle inside the directory. Wait a few seconds and use ",
+            "`Close worktree tab` again from the sidebar's context menu to retry, or delete `{path}` manually after the helper process exits."
+        ),
+        path = worktree_path.display(),
+        last_error = last_error,
     )))
 }
 
@@ -932,7 +970,7 @@ locked migrating to slow disk
         .expect("second attempt should succeed");
 
         assert_eq!(calls.get(), 2);
-        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(25)]);
+        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(WORKTREE_REMOVE_RETRY_DELAYS_MS[0])]);
     }
 
     #[test]
@@ -1001,7 +1039,7 @@ locked migrating to slow disk
 
         assert_eq!(calls.get(), 2);
         assert_eq!(residual_calls.get(), 1);
-        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(25)]);
+        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(WORKTREE_REMOVE_RETRY_DELAYS_MS[0])]);
     }
 
     #[cfg(windows)]
@@ -1042,7 +1080,9 @@ locked migrating to slow disk
         assert_eq!(calls.get(), 2);
         assert_eq!(residual_calls.get(), WORKTREE_REMOVE_RETRY_DELAYS_MS.len() + 1);
         assert_eq!(sleeps.borrow().len(), WORKTREE_REMOVE_RETRY_DELAYS_MS.len() + 1);
-        assert!(matches!(err, Error::Internal(msg) if msg.contains("residual directory cleanup failed") && msg.contains("still locked")));
+        assert!(
+            matches!(err, Error::Internal(msg) if msg.contains("residual directory cleanup") && msg.contains("still failed") && msg.contains("still locked"))
+        );
     }
 
     /// Build a `Command` with both repo-selection *and* identity/config `GIT_*` variables stripped. Tests get a stricter scrub than production

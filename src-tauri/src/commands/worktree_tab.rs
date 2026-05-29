@@ -11,8 +11,8 @@ use tracing::{info, warn};
 use crate::compose;
 use crate::config_store::ConfigStore;
 use crate::types::{
-    AppConfig, AppError, ChildId, PartialAppConfig, SessionId, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabCloseResult, WorktreeTabId,
-    WorktreeTabOpenArgs, WorktreeTabSetActiveChildArgs,
+    AppConfig, AppError, ChildId, PartialAppConfig, SessionId, SubSessionCloseOutcome, SubSessionCloseStatus, WorktreeTab, WorktreeTabAppClosePolicy,
+    WorktreeTabCloseResult, WorktreeTabId, WorktreeTabOpenArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::worktree_icon::pick_least_used_icon;
 
@@ -173,7 +173,9 @@ pub async fn worktree_tab_close_impl(
     let _tab_guard = ctx.mark_worktree_tab_closing(id);
 
     // Cascade-close sub-sessions directly (they belong to the worktree tab, not to any agent session).
-    let mut child_errors = super::subsession::close_for_worktree_tab_impl(ctx, &sub_ctx, id, app_close_policy).await;
+    let cascade_result = super::subsession::close_for_worktree_tab_impl(ctx, &sub_ctx, id, app_close_policy).await;
+    let mut child_errors = cascade_result.errors;
+    let sub_outcomes = cascade_result.outcomes;
 
     // Close each child agent session. Sub-sessions are already torn down above; session_close no longer cascades subs.
     for sid in &child_session_ids {
@@ -223,6 +225,22 @@ pub async fn worktree_tab_close_impl(
     let mut worktree_delete_error: Option<String> = None;
     if delete_worktree {
         let label = format!("worktree-tab {id}");
+
+        // Refuse when any application sub-session was kept alive — those launchers (vscode, GUI editors, file watchers, etc.) routinely hold open
+        // handles inside the worktree, and `git worktree remove --force` plus the residual cleanup will leave the directory pinned on disk while
+        // appearing to succeed. The two ways a launcher stays alive:
+        //   * The user picked `Detach`, in which case every application sub returns `outcome = TabRemoved` and we made no kill attempt.
+        //   * The user picked `Terminate` but the kill couldn't be confirmed (`status = Unconfirmed`), or was deliberately refused for a shared
+        //     editor we don't own (`status = RefusedShared`).
+        // Terminal subs are reaped via their PTY child kill — they cannot pin the worktree once we've confirmed reap.
+        let app_processes_still_alive = sub_outcomes.values().any(|r| match r.outcome {
+            SubSessionCloseOutcome::TabRemoved => matches!(app_close_policy, WorktreeTabAppClosePolicy::Detach),
+            SubSessionCloseOutcome::PoliteClose | SubSessionCloseOutcome::ForceKill => {
+                matches!(r.status, SubSessionCloseStatus::Unconfirmed | SubSessionCloseStatus::RefusedShared)
+            }
+            SubSessionCloseOutcome::TerminalKill => false,
+        });
+
         if !child_errors.is_empty() {
             let msg = format!(
                 "refusing to delete worktree because child teardown reported errors: {}",
@@ -235,14 +253,38 @@ pub async fn worktree_tab_close_impl(
                 "worktree deletion refused after worktree tab close",
             );
             worktree_delete_error = Some(msg);
-        } else if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root) {
+        } else if app_processes_still_alive {
+            let msg = "refusing to delete worktree because one or more application sub-processes were kept alive (Detach policy, unconfirmed kill, \
+                       or shared-editor refusal) and may still hold file handles or have the worktree as their working directory. Close the app(s) \
+                       first, or re-close the worktree tab with the Terminate policy."
+                .to_owned();
             warn!(
                 worktree_tab_id = %id,
                 worktree_path = %tab_path.display(),
-                error = %error.message,
-                "worktree deletion failed after worktree tab close",
+                error = %msg,
+                "worktree deletion refused: application sub-processes still alive",
             );
-            worktree_delete_error = Some(error.message);
+            worktree_delete_error = Some(msg);
+        } else {
+            // Windows-only settle delay: even after `pool.kill` returns `Reaped` (i.e. every descendant has been observed exiting via
+            // `WaitForSingleObject`), the OS releases file handles asynchronously. AI CLIs like claude/copilot routinely keep file watchers,
+            // language-server children, and indexer processes inside the worktree directory, so the first `git worktree remove --force` almost always
+            // races against a still-locked file. A short pre-delete sleep cheaply skips that doomed first attempt and the cascading "is not a working
+            // tree" recovery branch in the retry path. The follow-up retry budget in `git::remove_worktree_with_retry` handles the rest.
+            #[cfg(windows)]
+            if !child_session_ids.is_empty() || !sub_outcomes.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+
+            if let Err(error) = session::delete_worktree_after_close(ctx, &label, &tab_path, &cfg_after.workspace_root).await {
+                warn!(
+                    worktree_tab_id = %id,
+                    worktree_path = %tab_path.display(),
+                    error = %error.message,
+                    "worktree deletion failed after worktree tab close",
+                );
+                worktree_delete_error = Some(error.message);
+            }
         }
     }
 
@@ -250,6 +292,7 @@ pub async fn worktree_tab_close_impl(
     Ok(WorktreeTabCloseResult {
         child_errors,
         worktree_delete_error,
+        sub_outcomes,
     })
 }
 

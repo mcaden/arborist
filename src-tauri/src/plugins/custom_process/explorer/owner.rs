@@ -168,6 +168,7 @@ mod platform {
     use crate::app_launcher::LivenessProbe;
     use crate::types::Error;
     use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
@@ -292,10 +293,15 @@ mod platform {
         basename: String,
     }
     impl LivenessProbe for WindowsLivenessProbe {
-        fn wait_for_death(self: Box<Self>) {
+        fn wait_for_death(self: Box<Self>, cancel: &AtomicBool) {
             let mut window_gone_polls: u32 = 0;
             const WINDOW_GONE_THRESHOLD: u32 = 2;
             loop {
+                // Cooperative cancellation: the pool sets `killed` (wired through `cancel`) on `detach` / `kill_async`. Polled at the top of every
+                // iteration so torn-down runtimes free this OS thread within ~1 s instead of leaking until Explorer itself exits.
+                if cancel.load(Ordering::SeqCst) {
+                    return;
+                }
                 if find_explorer_window(&self.basename).is_none() {
                     window_gone_polls = window_gone_polls.saturating_add(1);
                     if window_gone_polls >= WINDOW_GONE_THRESHOLD {
@@ -333,6 +339,8 @@ mod platform {
 mod platform {
     use crate::app_launcher::LivenessProbe;
     use crate::types::Error;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     pub(super) fn find_explorer_window(_basename: &str) -> Option<(u32, usize)> {
         None
@@ -341,9 +349,11 @@ mod platform {
     pub(super) fn liveness_probe(_basename: String) -> Box<dyn LivenessProbe> {
         struct Never;
         impl LivenessProbe for Never {
-            fn wait_for_death(self: Box<Self>) {
-                loop {
-                    std::thread::park();
+            fn wait_for_death(self: Box<Self>, cancel: &AtomicBool) {
+                // Park with a 1 s timeout so cooperative cancellation (via `cancel`) lands in bounded time. In practice this constructor is unused on
+                // non-Windows (Explorer is Windows-only), but the [`LivenessProbe`] cancellation contract still applies.
+                while !cancel.load(Ordering::SeqCst) {
+                    std::thread::park_timeout(Duration::from_secs(1));
                 }
             }
         }

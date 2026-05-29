@@ -25,9 +25,9 @@ use crate::sub_sessions::SubAppContext;
 use crate::types::{
     AppConfig, AppError, PartialAppConfig, RepoCommandTrustArgs, SessionCloseArgs, SessionCloseResult, SessionCreateArgs, SessionId, SessionIdArg,
     SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, ShellCommandPreview,
-    ShellCommandPreviewArgs, SubSession, SubSessionCloseArgs, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs, SubSessionListArgs,
-    SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult, WorktreeCreateArgs,
-    WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs,
+    ShellCommandPreviewArgs, SubSession, SubSessionCloseArgs, SubSessionCloseResult, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs,
+    SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult,
+    WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs,
     WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
@@ -593,7 +593,7 @@ pub async fn subsession_create(app: tauri::AppHandle, args: SubSessionCreateArgs
 }
 
 #[tauri::command]
-pub async fn subsession_close(app: tauri::AppHandle, args: SubSessionCloseArgs) -> Result<(), AppError> {
+pub async fn subsession_close(app: tauri::AppHandle, args: SubSessionCloseArgs) -> Result<SubSessionCloseResult, AppError> {
     let ctx = ctx_of(&app)?;
     let sub_ctx = sub_ctx_of(&app)?;
     subsession::subsession_close_impl(&ctx, sub_ctx, args.id, args.intent).await

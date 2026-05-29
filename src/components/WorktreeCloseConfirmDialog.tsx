@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { formatError } from '@/lib/tauri-bridge';
+import { formatError } from '@/lib/tauri-error';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { usePendingWorktreeTabClose, useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -73,23 +73,23 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
     actions.cancelClose();
   };
 
-  const onConfirm = async (): Promise<void> => {
+  const onConfirm = (): void => {
     if (busy) return;
     setBusy(true);
-    let alertMessage: string | null = null;
-    try {
-      const result = await actions.close(pendingId, deleteWorktree, appClosePolicy);
-      if (result.worktreeDeleteError) {
-        alertMessage = `Worktree tab closed, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`;
-      }
-    } catch (error: unknown) {
-      alertMessage = `Close request failed (the tab may already be gone):\n\n${formatError(error)}`;
-    } finally {
-      actions.cancelClose();
-    }
-    if (alertMessage !== null && typeof window !== 'undefined' && typeof window.alert === 'function') {
-      window.alert(alertMessage);
-    }
+    const tabId = pendingId;
+    const wantsDelete = deleteWorktree;
+    const policy = appClosePolicy;
+    // Dismiss the modal immediately and let `worktree-tab-store.close` drive the optimistic sidebar removal + `WorktreeCloseBanner` feedback.
+    // The cascade can take 10-60s on Windows once the residual-cleanup retry budget engages; a modal `<dialog>` overlay leaving the rest of
+    // the app uninteractable for that long reads as a hard freeze. The store catches and surfaces the IPC error via the banner; the .catch
+    // below exists purely to avoid an unhandled-rejection warning when the close() promise rejects.
+    actions.cancelClose();
+    // `worktree-tab-store.close` normally routes errors through `useWorktreeCloseStore` → `WorktreeCloseBanner`, but an exception thrown before
+    // it can call `markStarted` (e.g. the local tab disappeared so `closingTab` is undefined and then the bridge itself rejects) would be
+    // invisible. Log here so production support logs still capture the case; we deliberately don't rethrow because the user already moved on.
+    void actions.close(tabId, wantsDelete, policy).catch((err) => {
+      console.warn(`[worktree-close-dialog] close(${tabId}) rejected after dialog dismiss: ${formatError(err)}`);
+    });
   };
 
   return (
