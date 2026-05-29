@@ -67,9 +67,9 @@ function sentenceFor(result: SubSessionCloseResult, pidSuffix: string): string |
       return `Refused to terminate a shared editor process${pidSuffix}: killing it would also close your other workspace windows. The tab was detached.`;
     case 'unconfirmed':
       if (result.outcome === 'terminalKill') {
-        // Rust packs the actionable detail (specific PID, exact failure reason — e.g. "PTY kill issued but the OS did not confirm exit; pid N may
-        // still be alive" or "PTY kill failed: <error>") into `result.message`. Surface it so the user knows whether to hunt a leaked process or
-        // investigate a kill-syscall failure. Scope the message fallback to this branch only — other producers don't populate `message` today.
+        // Surface `result.message` so the user can tell "process may still be alive" apart from "kill syscall itself failed" — the two failure
+        // modes need different remediation. Scoped to this arm because no other producer populates `message` today; broadening would risk
+        // double-encoding the same info if other arms grow detail strings later.
         const detail = result.message ? ` — ${result.message}` : '';
         return `Terminal close issued${pidSuffix}, but the operating system didn't confirm the PTY child exited within the grace window${detail}.`;
       }

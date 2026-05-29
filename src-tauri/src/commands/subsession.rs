@@ -173,7 +173,10 @@ pub fn subsession_create_impl(ctx: &AppContext, sub_ctx: &SubAppContext, args: S
 /// * **Application + `ForceKill`** — `pool.kill` the underlying process and
 ///   remove the record. Use sparingly.
 ///
-/// The store entry and persisted `lastOpenSubSessions` slot are removed in all cases.
+/// The store entry and persisted `lastOpenSubSessions` slot are removed in all cases — including when the underlying kill or close-request
+/// returns Err. Backend errors get folded into an Unconfirmed/Unavailable [`SubSessionCloseResult`] (with the error string in `message`) rather
+/// than aborting the function, so the user-facing close always converges to "the tab is gone" and the frontend's `finally`-based prune stays in
+/// sync with backend state.
 pub async fn subsession_close_impl(
     ctx: &AppContext,
     sub_ctx: Arc<SubAppContext>,
@@ -215,7 +218,18 @@ pub async fn subsession_close_impl(
                         // process is gone, the terminal close succeeded. Mirrors the cascade-terminal path's treatment of this race.
                         SubSessionCloseResult::confirmed(SubSessionCloseOutcome::TerminalKill, snapshot.pid)
                     }
-                    Err(e) => return Err(AppError::from(e)),
+                    Err(e) => {
+                        // Match the documented "removed in all cases" contract: convert to an Unconfirmed result so the cleanup at the end of
+                        // the function runs (in-memory store removal + persisted-slot prune). Returning Err here previously left the sub-session
+                        // visible in the store and able to resurrect on restart even though the user clicked close — worse UX than reporting
+                        // "couldn't confirm" because retrying close-via-UI would then NotFound (the kill side-effect may or may not have landed).
+                        tracing::error!(sub_session_id = %id, error = %e, "subsession_close: PTY kill returned Err; converting to Unconfirmed and pruning record per close contract");
+                        SubSessionCloseResult::unconfirmed(
+                            SubSessionCloseOutcome::TerminalKill,
+                            snapshot.pid,
+                            format!("PTY kill failed before exit could be confirmed: {e}"),
+                        )
+                    }
                 }
             } else {
                 // Terminal child already exited on its own — nothing to kill, just prune the record. Confirmed is the user-facing truth: the process
@@ -236,14 +250,23 @@ pub async fn subsession_close_impl(
                     sub_ctx.app_pool.detach(&id);
                     SubSessionCloseResult::confirmed(SubSessionCloseOutcome::PoliteClose, snapshot.pid)
                 } else {
-                    let outcome = sub_ctx
-                        .app_pool
-                        .request_window_close_then_wait_async(&id, &*sub_ctx.focuser)
-                        .await
-                        .map_err(AppError::from)?;
-                    // Always detach the sub-tab regardless of the outcome — the user clicked close and the contract is "the tab goes away".
+                    // Always detach + fall through to the end-of-function cleanup, even on Err. The function contract ("tab is removed regardless")
+                    // is the user-visible promise; returning Err here was the bug — the frontend prunes its row in a `finally`, so an Err response
+                    // left the in-memory store + persisted slot to resurrect a tab the user clicked close on. `unavailable` is the closest enum:
+                    // the polite-close request never reached a verified OS-level "close issued" state (otherwise we'd have an outcome, not an Err).
+                    let result = match sub_ctx.app_pool.request_window_close_then_wait_async(&id, &*sub_ctx.focuser).await {
+                        Ok(outcome) => polite_close_to_result(outcome, snapshot.pid),
+                        Err(e) => {
+                            tracing::error!(sub_session_id = %id, error = %e, "subsession_close: polite-close request returned Err; converting to Unavailable and detaching per close contract");
+                            SubSessionCloseResult::unavailable(
+                                SubSessionCloseOutcome::PoliteClose,
+                                snapshot.pid,
+                                format!("app close request failed before it could be confirmed: {e}; the tab was detached only"),
+                            )
+                        }
+                    };
                     sub_ctx.app_pool.detach(&id);
-                    polite_close_to_result(outcome, snapshot.pid)
+                    result
                 }
             }
             SubSessionCloseIntent::ForceKill => {
@@ -299,7 +322,17 @@ pub async fn subsession_close_impl(
                             // already gone" → Confirmed.
                             SubSessionCloseResult::confirmed(SubSessionCloseOutcome::ForceKill, snapshot.pid)
                         }
-                        Err(e) => return Err(AppError::from(e)),
+                        Err(e) => {
+                            // Same contract reason as the terminal-kill Err arm above: prune the record rather than leave it to resurrect on
+                            // restart. `kill_async` returning Err means the underlying syscall path itself failed; the process state is unknown
+                            // so Unconfirmed is honest about the lack of verification.
+                            tracing::error!(sub_session_id = %id, error = %e, "subsession_close: kill_async returned Err; converting to Unconfirmed and pruning record per close contract");
+                            SubSessionCloseResult::unconfirmed(
+                                SubSessionCloseOutcome::ForceKill,
+                                snapshot.pid,
+                                format!("force-kill failed before exit could be confirmed: {e}"),
+                            )
+                        }
                     }
                 }
             }

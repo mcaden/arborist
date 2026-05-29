@@ -1,7 +1,6 @@
-// Direct unit tests for `summariseSubCloseOutcomes` — the cascade-path formatter consumed by `WorktreeCloseConfirmDialog`. The single-sub
-// dialog path is covered end-to-end through `SubCloseConfirmDialog.test.tsx`; this file covers the multi-sub bullet aggregation directly
-// because that's what surfaces `terminalKill/unconfirmed` rows on cascade close (per the PR #221 review feedback that prompted the
-// dedicated `terminalKill` branch in `sentenceFor`).
+// Direct unit tests for `summariseSubCloseOutcomes` exist because the cascade-summary path it powers in `WorktreeCloseConfirmDialog` has no
+// dialog-level coverage today, and PR #221 review feedback specifically called out the `terminalKill/unconfirmed` row that surfaces there. The
+// single-sub formatter path is exercised end-to-end via `SubCloseConfirmDialog.test.tsx`.
 
 import { describe, expect, it } from 'vitest';
 
@@ -31,7 +30,6 @@ describe('summariseSubCloseOutcomes', () => {
       },
     };
     const summary = summariseSubCloseOutcomes(subOutcomes);
-    // Bullet prefix, truncated id label, terminal-specific sentence, and the surfaced rust detail.
     expect(summary).toMatch(
       /^• sub-abcd…: Terminal close issued \(pid 7777\), but the operating system didn.?t confirm the PTY child exited.*PTY kill issued but the OS did not confirm exit; pid 7777 may still be alive\.$/,
     );

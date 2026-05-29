@@ -759,6 +759,21 @@ impl AppPool {
         }
     }
 
+    /// Test-only helper to seed a `window_target` on an existing runtime so close/focus paths take the "have a target" branches without driving a
+    /// real resolver. Same gating/rationale as [`Self::force_retargeted_for_test`] — production code paths set `window_target` from the resolver
+    /// thread under the pool lock, never directly.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn set_window_target_for_test(&self, id: &SubSessionId, target: WindowTarget) -> bool {
+        let Ok(mut g) = self.inner.lock() else { return false };
+        match g.get_mut(id) {
+            Some(rt) => {
+                rt.window_target = Some(target);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Explicit close. Sets the `killed` guard so the wait thread will suppress its status emission, calls `killer.kill()`, and removes the runtime
     /// from the pool. Idempotent (`Ok` if the id is unknown).
     pub fn kill(&self, id: &SubSessionId) -> Result<(), Error> {

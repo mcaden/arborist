@@ -319,6 +319,12 @@ struct Harness {
     shell_def_id: CustomProcessDefId,
     app_def_id: CustomProcessDefId,
     worktree_tab_id: WorktreeTabId,
+    // Concrete handle on the focuser so tests can queue results for its trait methods; the SubAppContext holds the same instance via
+    // `Arc<dyn WindowFocuser>`. Keeping both refs alive ensures `queue_close`/`queue_alive` calls from the test reach the same focuser the
+    // command code under test consults. Only consumed by tests gated on `feature = "test-helpers"`; the `cfg_attr` keeps the pre-commit
+    // `cargo clippy --all-targets` build (no features) from flagging this as dead code.
+    #[cfg_attr(not(feature = "test-helpers"), allow(dead_code))]
+    focuser: Arc<RecordingFocuser>,
 }
 
 fn build_harness() -> Harness {
@@ -406,6 +412,8 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
     let app_spawner = FakeAppSpawner::new();
     let app_pool = Arc::new(AppPool::new(Arc::new(app_spawner.clone()) as Arc<dyn AppSpawner>));
     let focuser = Arc::new(RecordingFocuser::new());
+    let focuser_for_sub_ctx: Arc<dyn arborist_lib::window_focus::WindowFocuser> =
+        Arc::clone(&focuser) as Arc<dyn arborist_lib::window_focus::WindowFocuser>;
     let icon_cache = Arc::new(arborist_lib::process_icon::IconCache::new(Arc::new(
         arborist_lib::process_icon::RealIconExtractor,
     )));
@@ -416,7 +424,7 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         sub_sink,
         plugin_registry,
         app_pool,
-        focuser,
+        focuser_for_sub_ctx,
         icon_cache,
     ));
 
@@ -433,6 +441,7 @@ fn build_harness_with_git(git: Arc<dyn GitRunner>) -> Harness {
         shell_def_id,
         app_def_id,
         worktree_tab_id,
+        focuser,
     }
 }
 
@@ -696,6 +705,64 @@ async fn cascade_terminate_policy_refuses_to_kill_retargeted_application_runtime
         outcome.message.as_deref().unwrap_or("").contains("shared editor"),
         "RefusedShared message should explain why the kill was skipped, got: {:?}",
         outcome.message
+    );
+}
+
+/// Round-8 review feedback: `subsession_close_impl` must always converge to "tab is gone" — its 3 close-path Err branches were converted to
+/// non-Err SubSessionCloseResults so the end-of-function cleanup (in-memory store remove + persisted `lastOpenSubSessions` slot remove) runs in
+/// all cases. Without this guarantee, an Err response left Rust state that would resurrect the sub-tab on the next restart while the frontend's
+/// `finally`-based prune had already deleted its row — a silent drift between backend and frontend that the user couldn't recover from without
+/// editing the JSON store by hand.
+///
+/// Only the polite-close arm is reachable through the existing fake harness: the kill_async + kill paths' Err branches require a mutex poison
+/// (`PtyPool::kill` and `AppPool::kill_async` absorb fake-injected failures into Unconfirmed at a lower layer). The pre-fix code had the bug
+/// in all three arms; the type-level fall-through to the cleanup block now pins them together.
+///
+/// Gated behind `feature = "test-helpers"` for the same reason as the symmetric retarget test above — the seam that injects a `WindowTarget`
+/// into an `AppPool` runtime without driving a real resolver is feature-gated, and its sole caller in production must NOT exist.
+#[cfg(feature = "test-helpers")]
+#[tokio::test]
+async fn subsession_close_returns_unavailable_when_polite_close_fails_and_still_prunes() {
+    let h = build_harness();
+    let _parent = create_parent(&h).id;
+    let app_sub = create_app_sub(&h, h.worktree_tab_id).expect("app sub created");
+    let app_pid = app_sub.pid.expect("app pid");
+    assert!(wait_until(|| h.sub_ctx.app_pool.contains(&app_sub.id), Duration::from_secs(1)));
+
+    // Seed a window_target so the polite-close path picks the "have a target" branch (otherwise it short-circuits to Ok(NoTarget)) and actually
+    // calls focuser.post_close_message — the only call site whose Err return propagates out of request_window_close_then_wait_async.
+    assert!(h.sub_ctx.app_pool.set_window_target_for_test(
+        &app_sub.id,
+        arborist_lib::app_launcher::WindowTarget {
+            pid: app_pid,
+            hwnd: 0x1234,
+            refinder: None,
+        },
+    ));
+    h.focuser
+        .queue_close(Err(arborist_lib::types::Error::Internal("injected close failure".into())));
+
+    let result = subsession_close_impl(&h.ctx, Arc::clone(&h.sub_ctx), app_sub.id, SubSessionCloseIntent::RequestAppClose)
+        .await
+        .expect("close must return Ok per contract even when polite-close request errors");
+
+    assert_eq!(result.outcome, SubSessionCloseOutcome::PoliteClose);
+    assert_eq!(result.status, SubSessionCloseStatus::Unavailable);
+    // result.pid mirrors the store snapshot at function entry. In the production wiring the spawn watcher fires set_status with the live pid in
+    // milliseconds, so by the time a real user clicks close they see Some(pid); the integration test deliberately doesn't wire that callback (it
+    // constructs SubAppContext directly), so we don't pin a specific value — the cleanup invariants below are what this test is actually about.
+    let msg = result.message.as_deref().unwrap_or("");
+    assert!(
+        msg.contains("failed before it could be confirmed") && msg.contains("injected close failure"),
+        "message should surface the underlying focuser error so the user/log gets the cause, got: {msg:?}"
+    );
+
+    // Cleanup invariant under test: even though the polite-close request errored, the tab is gone everywhere.
+    assert!(!h.sub_ctx.app_pool.contains(&app_sub.id), "app runtime must be detached from the pool");
+    assert!(h.sub_ctx.store.get(&app_sub.id).is_none(), "in-memory store entry must be removed");
+    assert!(
+        !h.ctx.store().load_config().last_open_sub_sessions.iter().any(|s| s.id == app_sub.id),
+        "persisted lastOpenSubSessions slot must be cleared so the sub-tab does not resurrect on next restart"
     );
 }
 
