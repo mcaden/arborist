@@ -94,6 +94,6 @@
     emits at most an info-level "release-time-missing" hint).
   -->
   <releases>
-    <release version="0.1.12" />
+    <release version="0.1.13" />
   </releases>
 </component>
