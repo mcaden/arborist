@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { formatError } from '@/lib/tauri-error';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { usePendingWorktreeTabClose, useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -83,7 +84,12 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
     // the app uninteractable for that long reads as a hard freeze. The store catches and surfaces the IPC error via the banner; the .catch
     // below exists purely to avoid an unhandled-rejection warning when the close() promise rejects.
     actions.cancelClose();
-    void actions.close(tabId, wantsDelete, policy).catch(() => {});
+    // `worktree-tab-store.close` normally routes errors through `useWorktreeCloseStore` → `WorktreeCloseBanner`, but an exception thrown before
+    // it can call `markStarted` (e.g. the local tab disappeared so `closingTab` is undefined and then the bridge itself rejects) would be
+    // invisible. Log here so production support logs still capture the case; we deliberately don't rethrow because the user already moved on.
+    void actions.close(tabId, wantsDelete, policy).catch((err) => {
+      console.warn(`[worktree-close-dialog] close(${tabId}) rejected after dialog dismiss: ${formatError(err)}`);
+    });
   };
 
   return (

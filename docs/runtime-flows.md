@@ -208,8 +208,11 @@ intent):
   also close every other workspace window the user has open in that editor, so Arborist refuses and detaches the tab instead).
 
 The same primitives back the worktree-tab cascade (`worktree_tab_close`). Cascade per-sub outcomes are surfaced via
-`WorktreeTabCloseResult.subOutcomes` — expected outcomes like `refusedShared` and `unconfirmed` go there, while unexpected operational failures
-(e.g. polite-close API throwing, app-pool internal errors) go into `childErrors` and block worktree directory deletion.
+`WorktreeTabCloseResult.subOutcomes` — every per-sub close result (success or refusal) goes there, while unexpected operational failures (e.g.
+polite-close API throwing, app-pool internal errors) go into `childErrors`. Worktree directory deletion (when requested) is refused either when
+`childErrors` is non-empty OR when any application sub-session was kept alive — Detach policy left it running (`outcome = tabRemoved`), or its
+polite/force kill returned `unconfirmed`/`refusedShared`. Terminal subs are reaped via their PTY tree and cannot pin the worktree once observed
+exiting, so they never gate deletion on their own.
 
 ## Activity and metrics
 

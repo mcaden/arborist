@@ -1713,9 +1713,12 @@ pub struct WorktreeTabCloseResult {
     /// Per-sub-session close outcomes. Populated for every sub-session the cascade touched (one entry per sub-tab under the closed worktree tab), so
     /// the UI can render the same per-sub copy as the single-sub close dialog ("Force-kill refused: shared editor process N still running", etc.).
     ///
-    /// Distinct from `child_errors`: `child_errors` is reserved for unexpected operational failures (and is the gate that blocks
-    /// `git worktree remove`); expected outcomes like "polite close was unsupported on this OS" or "force-kill refused on a shared editor" belong
-    /// here and should NOT block worktree deletion.
+    /// Distinct from `child_errors`: `child_errors` is reserved for unexpected operational failures during cascade (polite-close API throws,
+    /// app-pool internal errors). `sub_outcomes` carries every documented per-sub close shape, success and refusal alike.
+    ///
+    /// Both can influence `worktree_delete_error` when the caller asked for deletion: the directory is refused either when `child_errors` is
+    /// non-empty OR when any application sub-session was kept alive — Detach policy left it running (`outcome = TabRemoved`), or its polite/force
+    /// kill returned `Unconfirmed`/`RefusedShared`. See `worktree_tab_close_impl` for the authoritative gate.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sub_outcomes: BTreeMap<SubSessionId, SubSessionCloseResult>,
 }

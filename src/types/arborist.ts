@@ -445,8 +445,10 @@ export interface SubSessionCloseArgs {
 
 // MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseOutcome
 //
-// Coarse-grained verb describing what the close path actually did. Pair with
-// `SubSessionCloseStatus` for the verification detail.
+// Coarse-grained verb describing the close path the runtime took. For the success / unconfirmed cases this is the action actually performed, but
+// for `refusedShared` the outcome preserves the *requested* verb (`forceKill`) even though no kill was issued — we keep the user's intent in the
+// report rather than rewriting it to `tabRemoved`. Always pair with `SubSessionCloseStatus` for the verification detail; the (outcome, status)
+// tuple is what disambiguates "we did kill, status pending" from "we intentionally didn't kill".
 export type SubSessionCloseOutcome = 'tabRemoved' | 'terminalKill' | 'politeClose' | 'forceKill';
 
 // MIRROR: crates/arborist-types/src/lib.rs::SubSessionCloseStatus
@@ -575,8 +577,19 @@ export interface WorktreeTabCloseResult {
    * cascade touched (one entry per sub-tab under the closed worktree tab),
    * so the UI can render the same per-sub copy as the single-sub close
    * dialog ("Force-kill refused: shared editor process N still running",
-   * etc.). Distinct from `childErrors` — expected outcomes belong here
-   * and should NOT block worktree deletion.
+   * etc.).
+   *
+   * Distinct from `childErrors`: `childErrors` is reserved for *unexpected*
+   * operational failures during cascade (polite-close API throws, app-pool
+   * internal errors). `subOutcomes` carries every documented per-sub close
+   * shape, success and refusal alike.
+   *
+   * Both can influence `worktreeDeleteError` when the caller asked for
+   * deletion: the directory is refused either when `childErrors` is
+   * non-empty OR when any application sub-session was kept alive — Detach
+   * policy left it running (`outcome: 'tabRemoved'`), or its polite/force
+   * kill returned `unconfirmed`/`refusedShared`. See
+   * `worktree_tab_close_impl` for the authoritative gate.
    */
   subOutcomes?: Record<SubSessionId, SubSessionCloseResult>;
 }
