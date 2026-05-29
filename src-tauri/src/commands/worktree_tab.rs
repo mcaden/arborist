@@ -11,8 +11,8 @@ use tracing::{info, warn};
 use crate::compose;
 use crate::config_store::ConfigStore;
 use crate::types::{
-    AppConfig, AppError, ChildId, PartialAppConfig, SessionId, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabCloseResult, WorktreeTabId,
-    WorktreeTabOpenArgs, WorktreeTabSetActiveChildArgs,
+    AppConfig, AppError, ChildId, PartialAppConfig, SessionId, SubSessionCloseOutcome, SubSessionCloseStatus, WorktreeTab, WorktreeTabAppClosePolicy,
+    WorktreeTabCloseResult, WorktreeTabId, WorktreeTabOpenArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::worktree_icon::pick_least_used_icon;
 
@@ -225,6 +225,22 @@ pub async fn worktree_tab_close_impl(
     let mut worktree_delete_error: Option<String> = None;
     if delete_worktree {
         let label = format!("worktree-tab {id}");
+
+        // Refuse when any application sub-session was kept alive — those launchers (vscode, GUI editors, file watchers, etc.) routinely hold open
+        // handles inside the worktree, and `git worktree remove --force` plus the residual cleanup will leave the directory pinned on disk while
+        // appearing to succeed. The two ways a launcher stays alive:
+        //   * The user picked `Detach`, in which case every application sub returns `outcome = TabRemoved` and we made no kill attempt.
+        //   * The user picked `Terminate` but the kill couldn't be confirmed (`status = Unconfirmed`), or was deliberately refused for a shared
+        //     editor we don't own (`status = RefusedShared`).
+        // Terminal subs are reaped via their PTY child kill — they cannot pin the worktree once we've confirmed reap.
+        let app_processes_still_alive = sub_outcomes.values().any(|r| match r.outcome {
+            SubSessionCloseOutcome::TabRemoved => matches!(app_close_policy, WorktreeTabAppClosePolicy::Detach),
+            SubSessionCloseOutcome::PoliteClose | SubSessionCloseOutcome::ForceKill => {
+                matches!(r.status, SubSessionCloseStatus::Unconfirmed | SubSessionCloseStatus::RefusedShared)
+            }
+            SubSessionCloseOutcome::TerminalKill => false,
+        });
+
         if !child_errors.is_empty() {
             let msg = format!(
                 "refusing to delete worktree because child teardown reported errors: {}",
@@ -235,6 +251,18 @@ pub async fn worktree_tab_close_impl(
                 worktree_path = %tab_path.display(),
                 error = %msg,
                 "worktree deletion refused after worktree tab close",
+            );
+            worktree_delete_error = Some(msg);
+        } else if app_processes_still_alive {
+            let msg = "refusing to delete worktree because one or more application sub-processes were kept alive (Detach policy, unconfirmed kill, \
+                       or shared-editor refusal) and may still hold file handles or have the worktree as their working directory. Close the app(s) \
+                       first, or re-close the worktree tab with the Terminate policy."
+                .to_owned();
+            warn!(
+                worktree_tab_id = %id,
+                worktree_path = %tab_path.display(),
+                error = %msg,
+                "worktree deletion refused: application sub-processes still alive",
             );
             worktree_delete_error = Some(msg);
         } else {

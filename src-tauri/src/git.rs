@@ -378,7 +378,20 @@ fn remove_worktree_with_retry(
 
 fn remove_residual_worktree_dir(worktree_path: &Path) -> io::Result<()> {
     match std::fs::remove_dir_all(worktree_path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // Trust-but-verify, because Windows' POSIX-delete semantics let `remove_dir_all` return Ok with the directory still present on disk
+            // until the last open handle releases it (file watcher / antivirus / editor / Explorer preview). Without this check the caller sees
+            // "no error" while Explorer still lists the worktree — exactly the silent-success failure mode this helper exists to prevent. Surface
+            // a surviving directory as a retryable `io::Error` so the caller's retry budget gets the chance to re-attempt as handles drop.
+            match worktree_path.try_exists() {
+                Ok(false) => Ok(()),
+                Ok(true) => Err(io::Error::other(format!(
+                    "remove_dir_all returned Ok but directory still present: {}",
+                    worktree_path.display()
+                ))),
+                Err(e) => Err(e),
+            }
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }

@@ -94,21 +94,29 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
     actions.cancelClose();
   };
 
-  const onConfirm = async (): Promise<void> => {
+  const onConfirm = (): void => {
     if (busy) return;
     setBusy(true);
-    let alertMessage: string | null;
-    try {
-      const result = await actions.close(pendingId, deleteWorktree, appClosePolicy);
-      alertMessage = describeWorktreeCloseResult(result);
-    } catch (error: unknown) {
-      alertMessage = `Close request failed (the tab may already be gone):\n\n${formatError(error)}`;
-    } finally {
-      actions.cancelClose();
-    }
-    if (alertMessage !== null && typeof window !== 'undefined' && typeof window.alert === 'function') {
-      window.alert(alertMessage);
-    }
+    // Capture stable references so the background callback survives the modal being torn down on the next line.
+    const tabId = pendingId;
+    const wantsDelete = deleteWorktree;
+    const policy = appClosePolicy;
+    // Dismiss the modal immediately. The backend close+delete on Windows can run for many seconds while we walk the AV/file-watcher retry budget,
+    // and a modal `<dialog>` overlay blocks every click behind it. Leaving the dialog up was indistinguishable to the user from the whole app
+    // freezing. The cascade now runs in the background and reports completion (or failure) via `window.alert` from the .then handler below.
+    actions.cancelClose();
+    void (async () => {
+      let alertMessage: string | null;
+      try {
+        const result = await actions.close(tabId, wantsDelete, policy);
+        alertMessage = describeWorktreeCloseResult(result);
+      } catch (error: unknown) {
+        alertMessage = `Close request failed (the tab may already be gone):\n\n${formatError(error)}`;
+      }
+      if (alertMessage !== null && typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(alertMessage);
+      }
+    })();
   };
 
   return (
