@@ -10,32 +10,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { summariseSubCloseOutcomes } from '@/lib/close-outcomes';
-import { formatError } from '@/lib/tauri-bridge';
 import { useSessionStore } from '@/store/session-store';
 import { useSubSessionStore } from '@/store/sub-session-store';
 import { usePendingWorktreeTabClose, useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
-import type { WorktreeTabAppClosePolicy, WorktreeTabCloseResult } from '@/types/arborist';
-
-/**
- * Compose the alert text for a cascade close. Returns `null` when there
- * is nothing the user needs to know (the close did exactly what was
- * promised on the tin).
- */
-function describeWorktreeCloseResult(result: WorktreeTabCloseResult): string | null {
-  const parts: string[] = [];
-  if (result.worktreeDeleteError) {
-    parts.push(`Worktree tab closed, but deleting the worktree failed:\n\n${result.worktreeDeleteError}`);
-  }
-  const subSummary = summariseSubCloseOutcomes(result.subOutcomes);
-  if (subSummary.length > 0) {
-    parts.push(`Some sub-processes need attention:\n\n${subSummary}`);
-  }
-  if (result.childErrors && result.childErrors.length > 0) {
-    parts.push(`Child session teardown reported errors:\n\n${result.childErrors.map((e) => `• ${e}`).join('\n')}`);
-  }
-  return parts.length > 0 ? parts.join('\n\n') : null;
-}
+import type { WorktreeTabAppClosePolicy } from '@/types/arborist';
 
 export function WorktreeCloseConfirmDialog(): JSX.Element | null {
   const pendingId = usePendingWorktreeTabClose();
@@ -97,26 +75,15 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
   const onConfirm = (): void => {
     if (busy) return;
     setBusy(true);
-    // Capture stable references so the background callback survives the modal being torn down on the next line.
     const tabId = pendingId;
     const wantsDelete = deleteWorktree;
     const policy = appClosePolicy;
-    // Dismiss the modal immediately. The backend close+delete on Windows can run for many seconds while we walk the AV/file-watcher retry budget,
-    // and a modal `<dialog>` overlay blocks every click behind it. Leaving the dialog up was indistinguishable to the user from the whole app
-    // freezing. The cascade now runs in the background and reports completion (or failure) via `window.alert` from the .then handler below.
+    // Dismiss the modal immediately and let `worktree-tab-store.close` drive the optimistic sidebar removal + `WorktreeCloseBanner` feedback.
+    // The cascade can take 10-60s on Windows once the residual-cleanup retry budget engages; a modal `<dialog>` overlay leaving the rest of
+    // the app uninteractable for that long reads as a hard freeze. The store catches and surfaces the IPC error via the banner; the .catch
+    // below exists purely to avoid an unhandled-rejection warning when the close() promise rejects.
     actions.cancelClose();
-    void (async () => {
-      let alertMessage: string | null;
-      try {
-        const result = await actions.close(tabId, wantsDelete, policy);
-        alertMessage = describeWorktreeCloseResult(result);
-      } catch (error: unknown) {
-        alertMessage = `Close request failed (the tab may already be gone):\n\n${formatError(error)}`;
-      }
-      if (alertMessage !== null && typeof window !== 'undefined' && typeof window.alert === 'function') {
-        window.alert(alertMessage);
-      }
-    })();
+    void actions.close(tabId, wantsDelete, policy).catch(() => {});
   };
 
   return (

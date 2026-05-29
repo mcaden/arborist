@@ -24,12 +24,19 @@ use tracing::{debug, warn};
 
 use crate::types::{Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
 
-// On Windows, file handles can linger briefly after a child process exits — file watchers, antivirus scanners, and language-server indexers in the
-// AI CLI subtree all hold handles inside the worktree. The retry budget below sums to ~15s so we ride out those handle-release races and only
-// surface a hard failure when something genuinely sticks (e.g. another Explorer window pinning the directory). On non-Windows there is no equivalent
-// race — file deletion unlinks immediately even if handles are still open — so we skip the retry loop entirely.
+// On Windows, file handles can linger after a child process exits. The hot case in practice is **orphaned grandchildren** of the killed PTY tree:
+// `windows_process_tree::kill_process_tree` takes a single process snapshot then terminates descendants deepest-first, but if a leaf process spawns
+// a new child between snapshot and kill, that grandchild gets reparented to PID 4 / services.exe and survives with its inherited CWD still pointing
+// at the worktree (PTY children spawn with `cwd=worktree_path`). AI helpers (LSPs, file watchers, indexer subprocesses started by claude / copilot)
+// are the prime suspects — most of them notice their stdin pipe broke and exit on their own within a few seconds, hence the retry. The budget below
+// sums to ~64s on Windows: short ramp at the front to ride out the common AV / handle-release race, then a long tail of 5s waits to give well-
+// behaved orphan helpers time to detect EOF and exit. **A genuinely long-lived orphan that never exits will exhaust the budget either way** — the
+// only durable fix for that is JobObject-based process isolation at PTY spawn time (tracked as a follow-up). On non-Windows there is no equivalent
+// race (unlink succeeds immediately even with open handles) so we skip the retry loop entirely.
 #[cfg(windows)]
-const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[25, 50, 100, 200, 400, 800, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500];
+const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[
+    50, 100, 200, 400, 800, 1_500, 2_500, 4_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000,
+];
 #[cfg(not(windows))]
 const WORKTREE_REMOVE_RETRY_DELAYS_MS: &[u64] = &[];
 
@@ -429,9 +436,10 @@ fn remove_residual_worktree_dir_with_retry(
 
     Err(Error::Internal(format!(
         concat!(
-            "git unregistered the worktree but residual directory cleanup failed for {path}: {last_error}. ",
-            "The directory is likely still pinned by a background process (file watcher, antivirus, editor, file explorer). ",
-            "Close any tools still holding it open and delete `{path}` manually, or retry the close from the worktree tab menu.",
+            "git unregistered the worktree but residual directory cleanup at `{path}` still failed after the retry budget exhausted: {last_error}. ",
+            "On Windows this almost always means an orphaned grandchild process (an AI helper, language server, or file watcher spawned by the ",
+            "killed session) survived the process-tree kill and is still holding a handle inside the directory. Wait a few seconds and use ",
+            "`Close worktree tab` again from the sidebar's context menu to retry, or delete `{path}` manually after the helper process exits."
         ),
         path = worktree_path.display(),
         last_error = last_error,
@@ -962,7 +970,7 @@ locked migrating to slow disk
         .expect("second attempt should succeed");
 
         assert_eq!(calls.get(), 2);
-        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(25)]);
+        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(WORKTREE_REMOVE_RETRY_DELAYS_MS[0])]);
     }
 
     #[test]
@@ -1031,7 +1039,7 @@ locked migrating to slow disk
 
         assert_eq!(calls.get(), 2);
         assert_eq!(residual_calls.get(), 1);
-        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(25)]);
+        assert_eq!(&*sleeps.borrow(), &[Duration::from_millis(WORKTREE_REMOVE_RETRY_DELAYS_MS[0])]);
     }
 
     #[cfg(windows)]
@@ -1072,7 +1080,9 @@ locked migrating to slow disk
         assert_eq!(calls.get(), 2);
         assert_eq!(residual_calls.get(), WORKTREE_REMOVE_RETRY_DELAYS_MS.len() + 1);
         assert_eq!(sleeps.borrow().len(), WORKTREE_REMOVE_RETRY_DELAYS_MS.len() + 1);
-        assert!(matches!(err, Error::Internal(msg) if msg.contains("residual directory cleanup failed") && msg.contains("still locked")));
+        assert!(
+            matches!(err, Error::Internal(msg) if msg.contains("residual directory cleanup") && msg.contains("still failed") && msg.contains("still locked"))
+        );
     }
 
     /// Build a `Command` with both repo-selection *and* identity/config `GIT_*` variables stripped. Tests get a stricter scrub than production

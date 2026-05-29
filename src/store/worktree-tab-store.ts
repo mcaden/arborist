@@ -22,6 +22,8 @@ import {
   configGet,
   formatError,
 } from '@/lib/tauri-bridge';
+import { summariseSubCloseOutcomes } from '@/lib/close-outcomes';
+import { useWorktreeCloseStore } from '@/store/worktree-close-store';
 import type { ChildId, WorktreeTab, WorktreeTabAppClosePolicy, WorktreeTabCloseResult, WorktreeTabId } from '@/types/arborist';
 
 // ---------------------------------------------------------------------------
@@ -128,45 +130,78 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
     },
 
     async close(id: WorktreeTabId, deleteWorktree?: boolean, appClosePolicy?: WorktreeTabAppClosePolicy) {
-      // Capture the path BEFORE the backend call so we can converge frontend caches even if the result payload were missing it. Backend
-      // cascade closes child sessions/sub-sessions but we don't get per-child UI events for that — the session-store would otherwise leave
-      // zombie rows. Lazy-import session-store to avoid a circular import (session-store already imports this module).
+      // Round-3 contract: the close is OPTIMISTIC. The sidebar tab disappears before the IPC call returns so the user sees their click take
+      // effect immediately. The actual backend cascade + git/fs cleanup runs in the background (10-60s on Windows with the retry budget) and
+      // surfaces progress + final status through `useWorktreeCloseStore` → `WorktreeCloseBanner`. Without this the sidebar pinned the closed tab
+      // for the full retry duration even when the modal had already dismissed, which felt like the whole app froze.
       const closingTab = get().tabs.find((t) => t.id === id);
-      const result = await worktreeTabClose({
-        id,
-        deleteWorktree: deleteWorktree ?? false,
-        appClosePolicy: appClosePolicy ?? 'detach',
-      });
-      if (result.childErrors && result.childErrors.length > 0) {
-        console.warn('[worktree-tab-store] close had child errors:', result.childErrors);
+      const closeStore = useWorktreeCloseStore.getState();
+      if (closingTab) {
+        closeStore.markStarted({ tabId: id, worktreePath: closingTab.path, willDelete: deleteWorktree ?? false });
       }
+
+      // Snapshot the pre-removal tab list so a thrown IPC failure can rehydrate from authoritative backend state without losing the user's
+      // current set in the meantime — see the catch block below.
+      const previousTabs = get().tabs;
+      const previousActive = get().activeId;
       set((s) => {
         const newTabs = s.tabs.filter((t) => t.id !== id);
         const newActiveId = s.activeId === id ? (newTabs[0]?.id ?? null) : s.activeId;
         return {
           tabs: newTabs,
           activeId: newActiveId,
-          // Auto-clear pendingClose if the dialog was open for the row we just closed.
           pendingClose: s.pendingClose === id ? undefined : s.pendingClose,
         };
       });
+      // Drop session/sub-session cache rows for this path next. These dynamic imports break the session-store ↔ worktree-tab-store circular
+      // import at module-load time; first call pays a one-microtask cost while the module loads, subsequent calls resolve synchronously.
+      // The visible gap between tab removal and cache cleanup is bounded by that single microtask, which is below the next animation frame.
       if (closingTab) {
         try {
-          // Lazy require to break the import cycle session-store -> worktree-tab-store at module-load time.
           const { useSessionStore } = await import('@/store/session-store');
           useSessionStore.getState().actions.removeLocalForPath(closingTab.path);
         } catch (err) {
           console.warn(`[worktree-tab-store] removeLocalForPath(${closingTab.path}) failed: ${formatError(err)}`);
         }
         try {
-          // Sub-sessions are now owned by worktree tabs, not by agent sessions. Drop their local cache entries so the sidebar is consistent.
           const { useSubSessionStore } = await import('@/store/sub-session-store');
           useSubSessionStore.getState().actions.dropForWorktreeTab(id);
         } catch (err) {
           console.warn(`[worktree-tab-store] dropForWorktreeTab(${id}) failed: ${formatError(err)}`);
         }
       }
-      return result;
+
+      try {
+        const result = await worktreeTabClose({
+          id,
+          deleteWorktree: deleteWorktree ?? false,
+          appClosePolicy: appClosePolicy ?? 'detach',
+        });
+        if (result.childErrors && result.childErrors.length > 0) {
+          console.warn('[worktree-tab-store] close had child errors:', result.childErrors);
+        }
+        if (closingTab) {
+          closeStore.markCompleted(classifyCloseResult(id, result));
+        }
+        return result;
+      } catch (err) {
+        // IPC layer failure (very rare: command not registered, serialization error, host died mid-call). The backend may have committed
+        // partially or not at all — we can't tell from here. Rehydrate from authoritative state so the sidebar reflects reality, and surface
+        // the error via the banner so the user can retry. Re-throw to preserve the historical close() contract for callers that already
+        // `.catch` (Sidebar/SidebarTab/SubCloseConfirmDialog).
+        const message = formatError(err);
+        if (closingTab) {
+          closeStore.markCompleted({ tabId: id, status: 'failure', message: `Close request did not reach the backend: ${message}` });
+        }
+        try {
+          await get().actions.hydrate();
+        } catch (hydrateErr) {
+          // Hydrate failure is itself bridge-layer breakage; fall back to the snapshot so the sidebar isn't left empty.
+          console.warn(`[worktree-tab-store] close-error rehydrate failed: ${formatError(hydrateErr)}`);
+          set({ tabs: previousTabs, activeId: previousActive });
+        }
+        throw err;
+      }
     },
 
     async focus(id: WorktreeTabId) {
@@ -255,6 +290,27 @@ export const useWorktreeTabStore = create<Store>((set, get) => {
     actions,
   };
 });
+
+// Classify a `WorktreeTabCloseResult` for the close banner. `failure` is reserved for a residual-cleanup error after the user asked to delete
+// the worktree — that's the case where the tab is gone but the directory wasn't (the user-visible regression PR #221 set out to fix).
+// `attention` covers softer issues that the user should still see: child-session teardown errors, or any sub-session outcome that
+// `summariseSubCloseOutcomes` deems noteworthy (detached app, unconfirmed kill, shared-editor refusal). Everything else is `success`.
+function classifyCloseResult(
+  tabId: WorktreeTabId,
+  result: WorktreeTabCloseResult,
+): { tabId: WorktreeTabId; status: 'success' | 'attention' | 'failure'; message: string; result: WorktreeTabCloseResult } {
+  if (result.worktreeDeleteError) {
+    return { tabId, status: 'failure', message: result.worktreeDeleteError, result };
+  }
+  const childErrors = result.childErrors ?? [];
+  const subSummary = summariseSubCloseOutcomes(result.subOutcomes);
+  if (childErrors.length > 0 || subSummary !== '') {
+    const parts = [...childErrors];
+    if (subSummary !== '') parts.push(subSummary);
+    return { tabId, status: 'attention', message: parts.join('\n'), result };
+  }
+  return { tabId, status: 'success', message: '', result };
+}
 
 // ---------------------------------------------------------------------------
 // Selectors
