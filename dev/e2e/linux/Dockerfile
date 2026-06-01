@@ -59,6 +59,11 @@ COPY src-tauri/tauri.conf.json src-tauri/tauri.conf.json
 COPY src-tauri/capabilities/ src-tauri/capabilities/
 COPY src-tauri/permissions/ src-tauri/permissions/
 COPY src-tauri/icons/ src-tauri/icons/
+# AppImage / deb / rpm bundles reference `metainfo/io.github.mcaden.arborist.metainfo.xml`
+# in tauri.conf.json under bundle.linux.{appimage,deb,rpm}.files — the bundler
+# resolves the path relative to src-tauri/, so the directory must be present in
+# the build context before `pnpm tauri build`.
+COPY src-tauri/metainfo/ src-tauri/metainfo/
 
 # Now copy the rest of the source
 COPY src/ src/
