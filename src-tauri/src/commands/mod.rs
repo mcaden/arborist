@@ -374,8 +374,9 @@ fn validate_external_url(url: &str) -> Result<String, AppError> {
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
         return Err(AppError::new("InvalidPath", "only http/https URLs may be opened".to_string()));
     }
-    // Defence in depth: reject control characters / whitespace that could let a shell-style opener split the argument.
-    if trimmed.chars().any(|c| c.is_control() || c == ' ') {
+    // Defence in depth: reject control characters / whitespace (including Unicode whitespace like NBSP) that could let a shell-style opener split
+    // the argument.
+    if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err(AppError::new(
             "InvalidPath",
             "URL contains invalid whitespace or control characters".to_string(),
@@ -891,5 +892,28 @@ mod tests {
         let err = validate_prep_log_path(app_data.path(), redirected_root.path(), &log_path).expect_err("redirected root must fail");
 
         assert_eq!(err.code, "PermissionDenied");
+    }
+
+    #[test]
+    fn validate_external_url_accepts_http_and_https() {
+        assert_eq!(validate_external_url("https://example.com/x").expect("https"), "https://example.com/x");
+        assert_eq!(
+            validate_external_url("  http://example.com  ").expect("trimmed http"),
+            "http://example.com"
+        );
+    }
+
+    #[test]
+    fn validate_external_url_rejects_non_http_schemes() {
+        for url in ["file:///etc/passwd", "javascript:alert(1)", "data:text/html,x", "example.com"] {
+            assert_eq!(validate_external_url(url).expect_err("scheme rejected").code, "InvalidPath");
+        }
+    }
+
+    #[test]
+    fn validate_external_url_rejects_unicode_whitespace() {
+        // NBSP (U+00A0) is whitespace the OS opener could treat as an argument separator; `c == ' '` alone would have let it through.
+        let err = validate_external_url("https://example.com/a\u{00A0}b").expect_err("nbsp rejected");
+        assert_eq!(err.code, "InvalidPath");
     }
 }

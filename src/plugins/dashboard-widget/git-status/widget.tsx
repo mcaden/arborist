@@ -38,6 +38,15 @@ const PR_CHECKS_META: Record<PrChecksStatus, { label: string; glyph: string; cla
   unknown: null,
 };
 
+// Fire-and-forget external-open: the Rust `open_external_url` command validates the scheme and hands the URL to the OS opener. We swallow
+// rejections (capability denied / backend validation failure) so a failed open never escalates to an unhandled WebView promise rejection;
+// there is no in-widget recovery for a browser that won't launch, so a logged error is the appropriate ceiling.
+function openUrl(url: string): void {
+  void openExternalUrl(url).catch((error: unknown) => {
+    console.error('Failed to open external URL', error);
+  });
+}
+
 function PullRequestSection({
   prInfo,
   prError,
@@ -60,8 +69,9 @@ function PullRequestSection({
   if (!prInfo) {
     return prLoading ? <p className="text-xs text-slate-500 dark:text-slate-400">Loading pull request…</p> : null;
   }
-  // Nothing useful to show for unrecognised hosts (no error, no PR) — keep the widget uncluttered.
-  if (prInfo.provider === 'unknown' && !prInfo.pr) {
+  // For unrecognised hosts we still surface the backend's explanatory `note` (e.g. "Unrecognised git host…"), matching the documented "degrade
+  // to a note, not an error" contract. Only hide the section when there is genuinely nothing to show (no PR and no note).
+  if (prInfo.provider === 'unknown' && !prInfo.pr && !prInfo.note) {
     return null;
   }
 
@@ -80,7 +90,7 @@ function PullRequestSection({
               type="button"
               data-testid="worktree-dashboard-pr-link"
               onClick={() => {
-                void openExternalUrl(prInfo.pr!.url);
+                openUrl(prInfo.pr!.url);
               }}
               className="cursor-pointer font-mono font-semibold text-sky-600 hover:underline dark:text-sky-400"
             >
@@ -112,7 +122,7 @@ function PullRequestSection({
               type="button"
               data-testid="worktree-dashboard-pr-repo-link"
               onClick={() => {
-                void openExternalUrl(prInfo.repoWebUrl!);
+                openUrl(prInfo.repoWebUrl!);
               }}
               className="cursor-pointer self-start font-mono text-sky-600 hover:underline dark:text-sky-400"
             >

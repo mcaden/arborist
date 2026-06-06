@@ -321,6 +321,28 @@ describe('git-status widget — pull request section', () => {
     expect(bridgeMock.openExternalUrl).toHaveBeenCalledWith('https://github.com/o/r/pull/42');
   });
 
+  it('swallows a rejected open without surfacing an unhandled rejection', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    bridgeMock.openExternalUrl.mockRejectedValueOnce(new Error('capability denied'));
+    bridgeMock.worktreePrInfo.mockResolvedValueOnce({
+      provider: 'github',
+      cliAvailable: true,
+      pr: { number: 42, url: 'https://github.com/o/r/pull/42', state: 'open', checks: 'none', isDraft: false },
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-pr-link')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('worktree-dashboard-pr-link'));
+
+    await waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith('Failed to open external URL', expect.any(Error));
+    });
+    consoleError.mockRestore();
+  });
+
   it('renders a draft state with a failing checks badge', async () => {
     bridgeMock.worktreePrInfo.mockResolvedValueOnce({
       provider: 'gitlab',
@@ -353,8 +375,21 @@ describe('git-status widget — pull request section', () => {
     expect(bridgeMock.openExternalUrl).toHaveBeenCalledWith('https://github.com/o/r');
   });
 
-  it('hides the PR section entirely for an unrecognised host', async () => {
+  it('renders the explanatory note for an unrecognised host', async () => {
     bridgeMock.worktreePrInfo.mockResolvedValueOnce({ provider: 'unknown', cliAvailable: false, note: 'Unrecognised git host.' });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-pr-note')).toHaveTextContent(/Unrecognised git host/);
+    });
+    // No PR and no repo URL for an unknown host — only the note is shown.
+    expect(screen.queryByTestId('worktree-dashboard-pr-link')).toBeNull();
+    expect(screen.queryByTestId('worktree-dashboard-pr-repo-link')).toBeNull();
+  });
+
+  it('hides the PR section entirely for an unrecognised host with no note', async () => {
+    bridgeMock.worktreePrInfo.mockResolvedValueOnce({ provider: 'unknown', cliAvailable: false });
 
     renderWidget();
 
