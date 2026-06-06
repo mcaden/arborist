@@ -13,6 +13,8 @@
     "allow-frontend-ready",
     "allow-worktrees-list",
     "allow-worktree-git-status",
+    "allow-worktree-pr-info",
+    "allow-open-external-url",
     "allow-workspace-validate",
     "allow-workspace-switch",
     "allow-worktree-create",

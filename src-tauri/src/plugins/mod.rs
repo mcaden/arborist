@@ -450,7 +450,7 @@ mod tests {
             .iter()
             .find(|w| w.id() == "git-status")
             .expect("git-status backend must be registered");
-        assert_eq!(git_status.required_commands(), &["worktree_git_status"]);
+        assert_eq!(git_status.required_commands(), &["worktree_git_status", "worktree_pr_info"]);
         let ai_usage = reg
             .widgets()
             .iter()

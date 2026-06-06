@@ -718,7 +718,63 @@ export interface WorktreeGitStatus {
   error?: string;
 }
 
-// MIRROR: crates/arborist-types/src/lib.rs::WorkspaceValidateResult
+// MIRROR: crates/arborist-types/src/lib.rs::GitProvider
+// Git hosting provider detected from the worktree's `origin` remote URL.
+// Drives which provider CLI (`gh` / `glab` / `az repos`) the PR-info lookup
+// uses. `unknown` covers any unrecognised host (no PR section is shown).
+export type GitProvider = 'github' | 'gitlab' | 'azuredevops' | 'unknown';
+
+// MIRROR: crates/arborist-types/src/lib.rs::PrState
+// Normalised lifecycle state of a pull/merge request across providers.
+// `draft` is surfaced distinctly from `open`.
+export type PrState = 'open' | 'draft' | 'merged' | 'closed' | 'unknown';
+
+// MIRROR: crates/arborist-types/src/lib.rs::PrChecksStatus
+// Normalised aggregate CI/checks status. `none` = no checks configured;
+// `unknown` = the CLI reported a status we don't map.
+export type PrChecksStatus = 'passing' | 'failing' | 'pending' | 'none' | 'unknown';
+
+// MIRROR: crates/arborist-types/src/lib.rs::PullRequestInfo
+// A single pull/merge request for the current branch, normalised across
+// providers. Present only when the provider CLI is installed, authed, and
+// reports a PR for the branch.
+export interface PullRequestInfo {
+  number: number;
+  url: string;
+  title?: string;
+  state: PrState;
+  checks: PrChecksStatus;
+  isDraft: boolean;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreePrInfo
+// Returned by the `worktree_pr_info` command. Always resolves: hard failures
+// populate `error`; expected empty results (unknown provider, missing CLI, no
+// PR for branch) are conveyed via `provider` / `cliAvailable` / `note` with
+// `error` left undefined.
+export interface WorktreePrInfo {
+  provider: GitProvider;
+  cliAvailable: boolean;
+  repoWebUrl?: string;
+  pr?: PullRequestInfo;
+  /** Human-readable explanation for an expected empty result (informational, not a failure). */
+  note?: string;
+  /** Set on hard failure (invalid path, CLI invocation error). Undefined on any successful resolution. */
+  error?: string;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::WorktreePrInfoArgs
+// Args for the `worktree_pr_info` command.
+export interface WorktreePrInfoArgs {
+  path: string;
+}
+
+// MIRROR: crates/arborist-types/src/lib.rs::OpenExternalUrlArgs
+// Args for the `open_external_url` command. The backend validates the URL is
+// http/https before handing it to the OS opener.
+export interface OpenExternalUrlArgs {
+  url: string;
+}
 // Returned by the `workspace_validate` command (Roadmap §1.1). `error` is
 // only populated when `valid === false`.
 //

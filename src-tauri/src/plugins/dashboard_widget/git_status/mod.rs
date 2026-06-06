@@ -5,6 +5,8 @@ use crate::plugins::dashboard_widget::DashboardWidgetBackend;
 use crate::plugins::Plugin;
 use crate::types::AppError;
 
+pub mod pr_info;
+
 pub struct GitStatusBackend;
 
 impl Plugin for GitStatusBackend {
@@ -19,7 +21,7 @@ impl Plugin for GitStatusBackend {
 
 impl DashboardWidgetBackend for GitStatusBackend {
     fn required_commands(&self) -> &'static [&'static str] {
-        &["worktree_git_status"]
+        &["worktree_git_status", "worktree_pr_info"]
     }
 }
 
@@ -40,6 +42,21 @@ pub fn worktree_git_status_impl(ctx: &AppContext, worktree_path: &std::path::Pat
             ..Default::default()
         })),
         Err(e) => Ok(crate::types::WorktreeGitStatus {
+            error: Some(format!("invalid worktree path: {e}")),
+            ..Default::default()
+        }),
+    }
+}
+
+/// Look up the pull/merge request associated with a worktree's current branch (provider detected from the `origin` remote; data sourced from the
+/// matching provider CLI). See [`pr_info`] for the provider matrix and the always-`Ok` contract.
+///
+/// Mirrors [`worktree_git_status_impl`]: the path is canonicalised via `compose::validate_worktree` and any validation failure is folded into the
+/// `Ok(error_struct)` shape so the frontend never sees a thrown `AppError` for an unreadable worktree.
+pub fn worktree_pr_info_impl(_ctx: &AppContext, worktree_path: &std::path::Path) -> Result<crate::types::WorktreePrInfo, AppError> {
+    match crate::compose::validate_worktree(worktree_path) {
+        Ok(canonical) => Ok(pr_info::compute_pr_info(&pr_info::RealPrInfoRunner, &canonical)),
+        Err(e) => Ok(crate::types::WorktreePrInfo {
             error: Some(format!("invalid worktree path: {e}")),
             ..Default::default()
         }),

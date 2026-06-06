@@ -23,7 +23,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 // which is the module being mocked, deadlocking Vitest's module resolver.
 import * as tauriError from '@/lib/tauri-error';
 import type * as realBridge from './tauri-bridge';
-import type { AppConfig, WorktreeGitStatus } from '@/types/arborist';
+import type { AppConfig, WorktreeGitStatus, WorktreePrInfo } from '@/types/arborist';
 
 // Pure helpers (no Tauri side effects) — re-export so tests get the same
 // formatting as production. Indirected through `tauriError.*` instead of named
@@ -108,6 +108,12 @@ const defaultGitStatus = (): WorktreeGitStatus => ({
 
 export const worktreeGitStatus: Mock<typeof realBridge.worktreeGitStatus> = vi.fn(() => Promise.resolve(defaultGitStatus()));
 
+const defaultPrInfo = (): WorktreePrInfo => ({ provider: 'unknown', cliAvailable: false });
+
+export const worktreePrInfo: Mock<typeof realBridge.worktreePrInfo> = vi.fn(() => Promise.resolve(defaultPrInfo()));
+
+export const openExternalUrl: Mock<typeof realBridge.openExternalUrl> = vi.fn(() => Promise.resolve());
+
 export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.fn(() => Promise.resolve({ valid: true }));
 
 export const worktreeCreate: Mock<typeof realBridge.worktreeCreate> = vi.fn(rejectNotImplemented);
@@ -187,6 +193,8 @@ export function resetBridgeMocks(): void {
   repoCommandAllowOnce.mockReset().mockImplementation(() => Promise.resolve());
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreeGitStatus.mockReset().mockImplementation(() => Promise.resolve(defaultGitStatus()));
+  worktreePrInfo.mockReset().mockImplementation(() => Promise.resolve(defaultPrInfo()));
+  openExternalUrl.mockReset().mockImplementation(() => Promise.resolve());
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
   worktreeCreate.mockReset().mockImplementation(rejectNotImplemented);
   workspaceSwitch.mockReset().mockImplementation(rejectNotImplemented);
@@ -238,6 +246,8 @@ const _shapeCheck = {
   repoCommandAllowOnce,
   worktreesList,
   worktreeGitStatus,
+  worktreePrInfo,
+  openExternalUrl,
   workspaceValidate,
   worktreeCreate,
   workspaceSwitch,

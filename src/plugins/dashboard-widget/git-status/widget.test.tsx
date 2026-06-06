@@ -297,3 +297,94 @@ describe('git-status dashboard widget', () => {
     });
   });
 });
+
+describe('git-status widget — pull request section', () => {
+  it('renders the PR number, state, passing checks, and opens the link externally', async () => {
+    bridgeMock.worktreePrInfo.mockResolvedValueOnce({
+      provider: 'github',
+      cliAvailable: true,
+      repoWebUrl: 'https://github.com/o/r',
+      pr: { number: 42, url: 'https://github.com/o/r/pull/42', title: 'Add thing', state: 'open', checks: 'passing', isDraft: false },
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-pr-link')).toHaveTextContent('#42');
+    });
+    expect(screen.getByTestId('worktree-dashboard-pr-state')).toHaveTextContent('Open');
+    expect(screen.getByTestId('worktree-dashboard-pr-checks')).toHaveTextContent(/passing/i);
+    expect(screen.getByText('Add thing')).toBeInTheDocument();
+    expect(bridgeMock.worktreePrInfo).toHaveBeenCalledWith('/repo/feature-x');
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-pr-link'));
+    expect(bridgeMock.openExternalUrl).toHaveBeenCalledWith('https://github.com/o/r/pull/42');
+  });
+
+  it('renders a draft state with a failing checks badge', async () => {
+    bridgeMock.worktreePrInfo.mockResolvedValueOnce({
+      provider: 'gitlab',
+      cliAvailable: true,
+      pr: { number: 7, url: 'u', state: 'draft', checks: 'failing', isDraft: true },
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-pr-state')).toHaveTextContent('Draft');
+    });
+    expect(screen.getByTestId('worktree-dashboard-pr-checks')).toHaveTextContent(/failing/i);
+  });
+
+  it('shows a note and a repository link when no PR exists for the branch', async () => {
+    bridgeMock.worktreePrInfo.mockResolvedValueOnce({
+      provider: 'github',
+      cliAvailable: true,
+      repoWebUrl: 'https://github.com/o/r',
+      note: 'No pull request found for this branch.',
+    });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-pr-note')).toHaveTextContent(/No pull request found/);
+    });
+    fireEvent.click(screen.getByTestId('worktree-dashboard-pr-repo-link'));
+    expect(bridgeMock.openExternalUrl).toHaveBeenCalledWith('https://github.com/o/r');
+  });
+
+  it('hides the PR section entirely for an unrecognised host', async () => {
+    bridgeMock.worktreePrInfo.mockResolvedValueOnce({ provider: 'unknown', cliAvailable: false, note: 'Unrecognised git host.' });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(bridgeMock.worktreePrInfo).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId('worktree-dashboard-pr')).toBeNull();
+    expect(screen.queryByTestId('worktree-dashboard-pr-note')).toBeNull();
+  });
+
+  it('surfaces an inline error when the PR lookup rejects', async () => {
+    bridgeMock.worktreePrInfo.mockRejectedValueOnce(new Error('bridge denied'));
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-pr-error')).toHaveTextContent(/bridge denied/);
+    });
+  });
+
+  it('clicking Refresh also re-invokes worktreePrInfo', async () => {
+    renderWidget();
+
+    await waitFor(() => {
+      expect(bridgeMock.worktreePrInfo).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByTestId('worktree-dashboard-git-refresh'));
+    await waitFor(() => {
+      expect(bridgeMock.worktreePrInfo).toHaveBeenCalledTimes(2);
+    });
+  });
+});

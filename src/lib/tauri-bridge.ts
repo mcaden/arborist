@@ -49,6 +49,7 @@ import type {
   WorkspaceValidateResult,
   WorktreeCreateResult,
   WorktreeGitStatus,
+  WorktreePrInfo,
   WorktreeTab,
   WorktreeTabId,
   WorktreeTabCloseResult,
@@ -285,6 +286,29 @@ export function worktreeGitStatus(path: string): Promise<WorktreeGitStatus> {
   return invoke<WorktreeGitStatus>('worktree_git_status', {
     args: { path },
   });
+}
+
+/**
+ * Look up the pull/merge request for a worktree's current branch (Git Status
+ * dashboard). Like {@link worktreeGitStatus} this always resolves: the provider
+ * is detected from the `origin` remote and PR data comes from the matching
+ * provider CLI (`gh` / `glab` / `az`). Unknown-host / missing-CLI / no-PR
+ * outcomes are conveyed via the result's `provider` / `cliAvailable` / `note`
+ * fields rather than a rejection; only a hard backend failure populates `error`.
+ */
+export function worktreePrInfo(path: string): Promise<WorktreePrInfo> {
+  return invoke<WorktreePrInfo>('worktree_pr_info', {
+    args: { path },
+  });
+}
+
+/**
+ * Open a validated `http`/`https` URL (e.g. a pull request link) in the user's
+ * default browser. The backend rejects any non-http(s) scheme, so this cannot
+ * be used as a generic file/shell opener.
+ */
+export function openExternalUrl(url: string): Promise<void> {
+  return invoke<void>('open_external_url', { args: { url } });
 }
 
 /**
