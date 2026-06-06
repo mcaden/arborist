@@ -54,12 +54,12 @@ export function usePrInfo(tabPath: string): UsePrInfoResult {
     setPrLoading(false);
 
     void refreshPrInfo();
-    const handle = window.setInterval(() => {
+    const handle = globalThis.setInterval(() => {
       void refreshPrInfo();
     }, POLL_INTERVAL_MS);
     const refSnapshot = reqIdRef;
     return () => {
-      window.clearInterval(handle);
+      globalThis.clearInterval(handle);
       refSnapshot.current++;
     };
   }, [tabPath, refreshPrInfo]);

@@ -21,7 +21,9 @@ impl Plugin for GitStatusBackend {
 
 impl DashboardWidgetBackend for GitStatusBackend {
     fn required_commands(&self) -> &'static [&'static str] {
-        &["worktree_git_status", "worktree_pr_info"]
+        // The widget's PR section also opens PR / repository web links via the `open_external_url` command, so it is a real dependency even
+        // though it is not git-status-specific. Declared here so future capability-wiring code-gen sees the complete command set.
+        &["worktree_git_status", "worktree_pr_info", "open_external_url"]
     }
 }
 

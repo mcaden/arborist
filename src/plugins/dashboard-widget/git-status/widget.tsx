@@ -42,22 +42,25 @@ function PullRequestSection({
   prInfo,
   prError,
   prLoading,
-}: {
+}: Readonly<{
   prInfo: WorktreePrInfo | null;
   prError: string | null;
   prLoading: boolean;
-}): JSX.Element | null {
-  if (prError) {
+}>): JSX.Element | null {
+  // `prError` is a hook-level rejection; `prInfo.error` is the backend's structured always-Ok failure (e.g. invalid worktree path, which also
+  // defaults `provider` to `unknown`). Surface both the same way so a structured error is never hidden by the unrecognised-host short-circuit below.
+  const failure = prError ?? prInfo?.error ?? null;
+  if (failure) {
     return (
       <p data-testid="worktree-dashboard-pr-error" className="text-xs text-red-600 dark:text-red-400">
-        Unable to read pull request: {prError}
+        Unable to read pull request: {failure}
       </p>
     );
   }
   if (!prInfo) {
     return prLoading ? <p className="text-xs text-slate-500 dark:text-slate-400">Loading pull request…</p> : null;
   }
-  // Nothing useful to show for unrecognised hosts (or an invalid-path backend error) — keep the widget uncluttered.
+  // Nothing useful to show for unrecognised hosts (no error, no PR) — keep the widget uncluttered.
   if (prInfo.provider === 'unknown' && !prInfo.pr) {
     return null;
   }

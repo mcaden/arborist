@@ -375,6 +375,19 @@ describe('git-status widget — pull request section', () => {
     });
   });
 
+  it('surfaces the structured backend error even when provider is unknown', async () => {
+    // The always-Ok backend resolves with `error` set (and provider defaulting to `unknown`) for e.g. an invalid worktree path. This must not be
+    // swallowed by the unrecognised-host short-circuit, which otherwise renders nothing.
+    bridgeMock.worktreePrInfo.mockResolvedValueOnce({ provider: 'unknown', cliAvailable: false, error: 'invalid worktree path: nope' });
+
+    renderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('worktree-dashboard-pr-error')).toHaveTextContent(/invalid worktree path/);
+    });
+    expect(screen.queryByTestId('worktree-dashboard-pr')).toBeNull();
+  });
+
   it('clicking Refresh also re-invokes worktreePrInfo', async () => {
     renderWidget();
 
