@@ -25,6 +25,8 @@ vi.mock('@xterm/xterm', () => {
       dispose: vi.fn(),
       loadAddon: vi.fn(),
       paste: vi.fn(),
+      getSelection: vi.fn(() => ''),
+      parser: { registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })) },
       cols: 80,
       rows: 24,
     };

@@ -18,6 +18,8 @@ const mockTerminals: Array<{
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
+  _oscHandlers: Map<number, (data: string) => boolean | Promise<boolean>>;
+  parser: { registerOscHandler: ReturnType<typeof vi.fn> };
   _core: {
     _renderService: {
       clear: ReturnType<typeof vi.fn>;
@@ -40,6 +42,10 @@ vi.mock('@xterm/xterm', () => {
       getSelection: vi.fn(() => ''),
       cols: 80,
       rows: 24,
+      _oscHandlers: new Map<number, (data: string) => boolean | Promise<boolean>>(),
+      parser: {
+        registerOscHandler: vi.fn(),
+      },
       _core: {
         _renderService: {
           clear: vi.fn(),
@@ -49,6 +55,10 @@ vi.mock('@xterm/xterm', () => {
     });
     this.onData.mockImplementation((cb: (data: string) => void) => {
       this._dataCb = cb;
+    });
+    this.parser.registerOscHandler.mockImplementation((ident: number, handler: (data: string) => boolean | Promise<boolean>) => {
+      this._oscHandlers.set(ident, handler);
+      return { dispose: vi.fn() };
     });
     mockTerminals.push(this);
   });
@@ -756,6 +766,123 @@ describe('useTerminal', () => {
       const dispatched = host.dispatchEvent(evt);
 
       expect(dispatched).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('OSC 52 clipboard write from the CLI is forwarded to the system clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const { result } = renderHook(() => useTerminal('s1'));
+      const host = makeHost();
+      act(() => result.current.attach(host));
+      const handler = mockTerminals[0]!._oscHandlers.get(52);
+      expect(handler).toBeDefined();
+
+      // OSC 52 payload: "<selection>;<base64>". "hi" → "aGk=".
+      const handled = await handler!('c;aGk=');
+
+      expect(handled).toBe(true);
+      expect(writeText).toHaveBeenCalledWith('hi');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('OSC 52 decodes multi-byte UTF-8 correctly', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const { result } = renderHook(() => useTerminal('s1'));
+      const host = makeHost();
+      act(() => result.current.attach(host));
+      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+
+      // "café — 日本" base64-encoded from its UTF-8 bytes.
+      const b64 = Buffer.from('café — 日本', 'utf-8').toString('base64');
+      const handled = await handler(`c;${b64}`);
+
+      expect(handled).toBe(true);
+      expect(writeText).toHaveBeenCalledWith('café — 日本');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('OSC 52 read request ("?") is declined and never leaks the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const { result } = renderHook(() => useTerminal('s1'));
+      const host = makeHost();
+      act(() => result.current.attach(host));
+      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+
+      const handled = await handler('c;?');
+
+      expect(handled).toBe(false);
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('OSC 52 with malformed base64 is declined cleanly', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const { result } = renderHook(() => useTerminal('s1'));
+      const host = makeHost();
+      act(() => result.current.attach(host));
+      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+
+      const handled = await handler('c;@@not-base64@@');
+
+      expect(handled).toBe(false);
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('OSC 52 is declined when the clipboard write API is unavailable', async () => {
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: {} },
+      configurable: true,
+    });
+
+    try {
+      const { result } = renderHook(() => useTerminal('s1'));
+      const host = makeHost();
+      act(() => result.current.attach(host));
+      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+
+      const handled = await handler('c;aGk=');
+
+      expect(handled).toBe(false);
     } finally {
       Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
     }

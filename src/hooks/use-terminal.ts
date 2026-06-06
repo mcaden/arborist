@@ -388,6 +388,11 @@ function createEntry(id: string, ioKind: IoKind): RegistryEntry {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
 
+  // Service OSC 52 clipboard writes from the running CLI (e.g. Copilot
+  // CLI's in-app copy). xterm drops OSC 52 by default, which silently
+  // breaks copy from inside the TUI even though it reports success.
+  term.parser.registerOscHandler(52, handleOsc52);
+
   term.onData((data) => {
     const sendInput = ioKind === 'session' ? sessionInput({ sessionId: id, data }) : subSessionInput({ id: id as SubSessionId, data });
     void sendInput.catch((err: unknown) => {
@@ -515,10 +520,71 @@ function copySelectionToClipboard(entry: RegistryEntry): boolean {
   const selection = entry.term.getSelection();
   if (!selection) return false;
   if (!canWriteClipboard()) return false;
-  void navigator.clipboard.writeText(selection).catch((err: unknown) => {
+  writeTextToClipboard(selection);
+  return true;
+}
+
+/**
+ * Fire-and-forget write to the system clipboard via
+ * `navigator.clipboard.writeText()`. Shared by the Ctrl/Cmd+C selection
+ * copy and the OSC 52 handler. Callers gate on [`canWriteClipboard`]
+ * first; failures are logged but never surfaced to the user.
+ */
+function writeTextToClipboard(text: string): void {
+  void navigator.clipboard.writeText(text).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[use-terminal] clipboard.writeText() failed: ${message}`);
   });
+}
+
+/**
+ * Decode an OSC 52 base64 payload into a UTF-8 string. The payload is
+ * base64 of the raw UTF-8 bytes, so we cannot use `atob` alone (it would
+ * mangle any multi-byte character) — we re-interpret the binary string
+ * as bytes and run them through `TextDecoder`. Returns `null` on any
+ * malformed input so the handler can decline the sequence cleanly.
+ */
+function decodeOsc52Payload(b64: string): string | null {
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Handle an OSC 52 clipboard sequence emitted by the running CLI.
+ *
+ * TUI programs (notably GitHub Copilot CLI's in-app "copy" action) put
+ * text on the system clipboard by emitting `OSC 52 ; <selection> ; <b64> ST`
+ * rather than going through any browser copy event. xterm.js does NOT
+ * service OSC 52 by default — it silently drops the sequence — so the
+ * CLI reports "copy successful" while the system clipboard never
+ * actually changes. We register this handler to close that gap.
+ *
+ * `data` is the parser payload after the `52;` identifier, i.e.
+ * `"<selection>;<base64-or-?>"`. We ignore the selection target (we
+ * always write the system clipboard) and decline read requests
+ * (`payload === '?'`) — servicing those would let the remote program
+ * exfiltrate the user's clipboard, which we deliberately do not allow.
+ *
+ * Returns `true` only when we actually wrote, so xterm knows the
+ * sequence was consumed; otherwise `false` so xterm falls back to its
+ * default (drop) behaviour.
+ */
+function handleOsc52(data: string): boolean {
+  const sep = data.indexOf(';');
+  if (sep === -1) return false;
+  const payload = data.slice(sep + 1);
+  // `?` is a paste/read request — decline it (never leak the clipboard to the program).
+  if (payload === '?' || payload === '') return false;
+  if (!canWriteClipboard()) return false;
+  const text = decodeOsc52Payload(payload);
+  if (text === null) return false;
+  writeTextToClipboard(text);
   return true;
 }
 
