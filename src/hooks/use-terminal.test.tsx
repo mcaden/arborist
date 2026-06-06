@@ -14,6 +14,7 @@ const mockTerminals: Array<{
   loadAddon: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
   paste: ReturnType<typeof vi.fn>;
+  getSelection: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
   _dataCb?: (data: string) => void;
@@ -36,6 +37,7 @@ vi.mock('@xterm/xterm', () => {
       loadAddon: vi.fn(),
       refresh: vi.fn(),
       paste: vi.fn(),
+      getSelection: vi.fn(() => ''),
       cols: 80,
       rows: 24,
       _core: {
@@ -605,6 +607,155 @@ describe('useTerminal', () => {
       await Promise.resolve();
 
       expect(term.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+C with a selection copies it to the clipboard and suppresses SIGINT', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    mockTerminals[0]!.getSelection.mockReturnValue('selected text');
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(writeText).toHaveBeenCalledWith('selected text');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+C with no selection is not intercepted (falls through to SIGINT)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    mockTerminals[0]!.getSelection.mockReturnValue('');
+
+    const writeText = vi.fn();
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+Shift+C copies the selection', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    mockTerminals[0]!.getSelection.mockReturnValue('shift-copy');
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'C',
+        code: 'KeyC',
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(writeText).toHaveBeenCalledWith('shift-copy');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Cmd+C copies the selection on macOS', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    mockTerminals[0]!.getSelection.mockReturnValue('mac-copy');
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: { writeText } },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !host.dispatchEvent(evt);
+
+      expect(prevented).toBe(true);
+      expect(writeText).toHaveBeenCalledWith('mac-copy');
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    }
+  });
+
+  it('Ctrl+C with a selection but no clipboard write API is not intercepted (preserves SIGINT)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+    mockTerminals[0]!.getSelection.mockReturnValue('selected but no API');
+
+    const originalNav = (globalThis as { navigator?: Navigator }).navigator;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { ...originalNav, clipboard: {} },
+      configurable: true,
+    });
+
+    try {
+      const evt = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = host.dispatchEvent(evt);
+
+      expect(dispatched).toBe(true);
     } finally {
       Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
     }

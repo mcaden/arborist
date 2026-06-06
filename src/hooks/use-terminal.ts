@@ -488,6 +488,40 @@ function canReadClipboard(): boolean {
  * recovery and we don't want to spam the user with toasts every time
  * they paste an empty clipboard.
  */
+/**
+ * Whether the async clipboard write API is available in this runtime.
+ *
+ * Gates Ctrl/Cmd+C copy interception the same way [`canReadClipboard`]
+ * gates paste: if this returns `false` the copy branch must NOT cancel
+ * the event, so that plain Ctrl+C still falls through to xterm and
+ * sends SIGINT instead of becoming a silent no-op.
+ */
+function canWriteClipboard(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.clipboard?.writeText === 'function';
+}
+
+/**
+ * Copy the terminal's current selection to the system clipboard via
+ * `navigator.clipboard.writeText()`. Returns `true` only when there was
+ * a non-empty selection AND the write API is available — i.e. when the
+ * caller should cancel the originating keystroke.
+ *
+ * Returning `false` is what keeps Ctrl+C working as interrupt: with no
+ * selection (or no clipboard API) the caller leaves the event alone and
+ * xterm sends the SIGINT byte (`\x03`) as usual. The write itself is
+ * fire-and-forget; failures are logged but never surfaced to the user.
+ */
+function copySelectionToClipboard(entry: RegistryEntry): boolean {
+  const selection = entry.term.getSelection();
+  if (!selection) return false;
+  if (!canWriteClipboard()) return false;
+  void navigator.clipboard.writeText(selection).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[use-terminal] clipboard.writeText() failed: ${message}`);
+  });
+  return true;
+}
+
 function pasteFromClipboard(id: string, entry: RegistryEntry): void {
   if (!canReadClipboard()) return;
   void navigator.clipboard
@@ -656,7 +690,7 @@ function attachToHost(id: string, entry: RegistryEntry, host: HTMLDivElement): v
   // state if it fires too early).
   refitEntry(id, entry);
 
-  // Capture-phase keydown listener on the host. Two responsibilities:
+  // Capture-phase keydown listener on the host. Three responsibilities:
   //
   // 1. Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a
   //    plain `\r` for both Enter and Shift+Enter, which CLIs like Claude
@@ -670,6 +704,11 @@ function attachToHost(id: string, entry: RegistryEntry, host: HTMLDivElement): v
   //    `\x16` SYN byte to the PTY) and the browser never fires a `paste`
   //    event, so our capture-phase paste listener has nothing to handle.
   //    Right-click → Paste still goes through the paste listener below.
+  //
+  // 3. Ctrl+C / Ctrl+Shift+C / Cmd+C → copy the current selection to the
+  //    clipboard, but ONLY when there is a selection. With no selection,
+  //    plain Ctrl+C must fall through so xterm sends SIGINT (`\x03`) —
+  //    the Windows Terminal / VS Code convention. We never break interrupt.
   //
   // We listen at the **host** in the **capture** phase so we run before
   // xterm's own keydown listener (registered on its hidden textarea, also
@@ -727,6 +766,27 @@ function attachToHost(id: string, entry: RegistryEntry, host: HTMLDivElement): v
         event.preventDefault();
         event.stopPropagation();
         pasteFromClipboard(id, entry);
+      }
+      return;
+    }
+    // Copy shortcuts. Matched on physical `event.code === 'KeyC'` for the
+    // same layout-independence reason as paste above. Accepted chords:
+    //   - Ctrl+C         (Windows/Linux; copy-on-selection-else-SIGINT)
+    //   - Ctrl+Shift+C   (Linux terminal convention)
+    //   - Cmd+C          (macOS convention; **without** Shift)
+    // We only cancel the keystroke when there is actually a selection to
+    // copy (see copySelectionToClipboard). For plain Ctrl+C with nothing
+    // selected this leaves the event untouched so xterm sends the SIGINT
+    // byte — interrupt is never broken. Cmd+Shift+C / Alt-modified chords
+    // pass through unchanged.
+    const c = event.code === 'KeyC';
+    const isCtrlCopy = c && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+    const isCtrlShiftCopy = c && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
+    const isMetaCopy = c && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+    if (isCtrlCopy || isCtrlShiftCopy || isMetaCopy) {
+      if (copySelectionToClipboard(entry)) {
+        event.preventDefault();
+        event.stopPropagation();
       }
     }
   };
