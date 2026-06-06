@@ -1792,7 +1792,7 @@ pub struct WorktreeCreateArgs {
 /// `branch` is the short branch name (also used as the worktree directory name). When `remote` is `Some(_)`, a local tracking branch is created from
 /// `<remote>/<branch>`; when `None`, the existing local branch `branch` is checked out.
 ///
-/// MIRROR: `src/lib/tauri-bridge.ts::WorktreeCreateFromBranchArgs`.
+/// MIRROR: `src/lib/tauri-bridge.ts` `worktreeCreateFromBranch(branch, remote?)` inline args — there is no named TS type for this payload.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeCreateFromBranchArgs {

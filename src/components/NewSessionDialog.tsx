@@ -119,7 +119,11 @@ function BranchList({ loading, branches, selectedKey, onSelect }: Readonly<Branc
     return <p className="text-sm text-slate-500">Loading...</p>;
   }
   if (branches.length === 0) {
-    return <p className="mb-2 text-sm text-slate-500">No branches available — every branch is already checked out in a worktree.</p>;
+    return (
+      <p className="mb-2 text-sm text-slate-500">
+        No branches available — every branch is already checked out in a worktree, or branch discovery was unavailable.
+      </p>
+    );
   }
   return (
     <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
