@@ -24,9 +24,10 @@
 //! - **Windows** — `QueryFullProcessImageNameW` → `SHGetFileInfoW` →
 //!   `DrawIconEx` into a 32-bit BGRA DIB → swizzle to RGBA → PNG encode (`png`
 //!   crate).
-//! - **macOS** — `proc_pidpath` → walk up to `.app` bundle → `plutil -extract
-//!   CFBundleIconFile raw …` → `sips -s format png` into a tempfile. No new
-//!   Rust deps; relies on Apple's pre-installed binaries.
+//! - **macOS** — `proc_pidpath` → canonicalise (resolve the `/usr/local/bin`
+//!   etc. symlink that points into the bundle) → walk up to `.app` bundle →
+//!   `plutil -extract CFBundleIconFile raw …` → `sips -s format png` into a
+//!   tempfile. No new Rust deps; relies on Apple's pre-installed binaries.
 //! - **Linux** — read `/proc/<pid>/exe` → search XDG `applications/`
 //!   directories for a matching `.desktop` file → resolve `Icon=`
 //!   conservatively (absolute path, then a few standard
@@ -447,7 +448,13 @@ mod platform {
     }
 
     fn find_app_bundle(exe: &Path) -> Option<PathBuf> {
-        let mut p = exe.parent();
+        // Resolve symlinks before walking ancestors. macOS GUI apps expose their CLI entrypoint as a symlink under `/usr/local/bin` (Homebrew),
+        // `/opt/homebrew/bin`, or `~/.local/bin` that points *into* the `.app` bundle (e.g. `/usr/local/bin/code` →
+        // `…/Visual Studio Code.app/Contents/Resources/app/bin/code`). The literal symlink path has no `.app` ancestor, so without canonicalising we
+        // never find the bundle and fall back to the generic emoji. `resolve_command_icon_path` hands us this symlink for custom-process / AI
+        // commands, so this is the load-bearing step that makes their icons resolve at all.
+        let resolved = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
+        let mut p = resolved.parent();
         while let Some(dir) = p {
             if dir.file_name().and_then(|s| s.to_str()).map(|s| s.ends_with(".app")).unwrap_or(false) {
                 return Some(dir.to_path_buf());
@@ -463,6 +470,49 @@ mod platform {
             return None;
         }
         String::from_utf8(out.stdout).ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn find_app_bundle_walks_direct_path_inside_bundle() {
+            let tmp = tempfile::tempdir().unwrap();
+            let bin = tmp.path().join("My App.app").join("Contents").join("MacOS");
+            std::fs::create_dir_all(&bin).unwrap();
+            let exe = bin.join("My App");
+            std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+
+            let bundle = find_app_bundle(&exe).expect("an exe directly inside a bundle resolves the bundle root");
+            assert_eq!(bundle.file_name().and_then(|s| s.to_str()), Some("My App.app"));
+        }
+
+        /// Regression: macOS GUI apps symlink their CLI entrypoint into `/usr/local/bin` etc., pointing *into* the `.app`. The literal symlink path
+        /// has no `.app` ancestor, so `find_app_bundle` must canonicalise first or the icon never resolves (the custom-process / AI-command path).
+        #[test]
+        fn find_app_bundle_resolves_symlink_into_bundle() {
+            let tmp = tempfile::tempdir().unwrap();
+            let inner = tmp
+                .path()
+                .join("Visual Studio Code.app")
+                .join("Contents")
+                .join("Resources")
+                .join("app")
+                .join("bin");
+            std::fs::create_dir_all(&inner).unwrap();
+            let target = inner.join("code");
+            std::fs::write(&target, b"#!/bin/sh\n").unwrap();
+
+            // A `bin` dir with no `.app` ancestor, holding a symlink that points into the bundle (mirrors `/usr/local/bin/code`).
+            let link_dir = tmp.path().join("usr-local-bin");
+            std::fs::create_dir_all(&link_dir).unwrap();
+            let link = link_dir.join("code");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+
+            let bundle = find_app_bundle(&link).expect("symlink pointing into a bundle must resolve to the bundle root");
+            assert_eq!(bundle.file_name().and_then(|s| s.to_str()), Some("Visual Studio Code.app"));
+        }
     }
 }
 
