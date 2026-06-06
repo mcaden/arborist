@@ -54,7 +54,7 @@ function makeTab(path: string): WorktreeTab {
 }
 
 function makeBranch(name: string, remote?: string, isCheckedOut = false): BranchInfo {
-  return { name, isCheckedOut, ...(remote !== undefined ? { remote } : {}) };
+  return { name, isCheckedOut, ...(remote === undefined ? {} : { remote }) };
 }
 
 function openDialog(): void {

@@ -330,7 +330,7 @@ export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
  */
 export function worktreeCreateFromBranch(branch: string, remote?: string): Promise<WorktreeCreateResult> {
   return invoke<WorktreeCreateResult>('worktree_create_from_branch', {
-    args: remote !== undefined ? { branch, remote } : { branch },
+    args: remote === undefined ? { branch } : { branch, remote },
   });
 }
 

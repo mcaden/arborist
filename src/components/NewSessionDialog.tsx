@@ -99,12 +99,12 @@ function ExistingWorktreeList({
 }
 
 function branchLabel(b: BranchInfo): string {
-  return b.remote !== undefined ? `${b.remote}/${b.name}` : b.name;
+  return b.remote === undefined ? b.name : `${b.remote}/${b.name}`;
 }
 
 function branchKey(b: BranchInfo): string {
   // Namespace by kind so a remote literally named "local" can't collide with a local branch's key (both used as React keys + selection identity).
-  return b.remote !== undefined ? `remote:${b.remote}/${b.name}` : `local:${b.name}`;
+  return b.remote === undefined ? `local:${b.name}` : `remote:${b.remote}/${b.name}`;
 }
 
 interface BranchListProps {
@@ -147,6 +147,26 @@ function BranchList({ loading, branches, selectedKey, onSelect }: Readonly<Branc
       ))}
     </ul>
   );
+}
+
+const MODE_ORDER: readonly WorktreeMode[] = ['new', 'existing', 'branch'];
+type TabNavKey = 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
+
+function tabIdFor(mode: WorktreeMode): string {
+  return `worktree-tab-${mode}`;
+}
+
+function isTabNavKey(key: string): key is TabNavKey {
+  return key === 'ArrowLeft' || key === 'ArrowRight' || key === 'Home' || key === 'End';
+}
+
+/** Compute the next tab for roving-tabindex keyboard nav: Home/End jump to the ends, Arrow keys wrap around `MODE_ORDER`. */
+function nextTabMode(current: WorktreeMode, key: TabNavKey): WorktreeMode {
+  if (key === 'Home') return MODE_ORDER[0]!;
+  if (key === 'End') return MODE_ORDER.at(-1)!;
+  const delta = key === 'ArrowRight' ? 1 : -1;
+  const idx = MODE_ORDER.indexOf(current);
+  return MODE_ORDER[(idx + delta + MODE_ORDER.length) % MODE_ORDER.length]!;
 }
 
 export function NewSessionDialog(): JSX.Element | null {
@@ -398,9 +418,6 @@ export function NewSessionDialog(): JSX.Element | null {
   // Any in-flight operation across the three tabs — used to gate tab switching, cancel, and footer buttons uniformly.
   const busy = creating || submitting || branchCreating;
 
-  const MODE_ORDER: WorktreeMode[] = ['new', 'existing', 'branch'];
-  const tabIdFor = (mode: WorktreeMode): string => `worktree-tab-${mode}`;
-
   return (
     <dialog
       ref={dialogRef}
@@ -423,19 +440,10 @@ export function NewSessionDialog(): JSX.Element | null {
           aria-label="Worktree source"
           className="mb-3 flex gap-1"
           onKeyDown={(e) => {
-            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
+            if (!isTabNavKey(e.key)) return;
             if (busy) return;
             e.preventDefault();
-            const idx = MODE_ORDER.indexOf(worktreeMode);
-            let nextMode: WorktreeMode;
-            if (e.key === 'Home') {
-              nextMode = MODE_ORDER[0]!;
-            } else if (e.key === 'End') {
-              nextMode = MODE_ORDER[MODE_ORDER.length - 1]!;
-            } else {
-              const delta = e.key === 'ArrowRight' ? 1 : -1;
-              nextMode = MODE_ORDER[(idx + delta + MODE_ORDER.length) % MODE_ORDER.length]!;
-            }
+            const nextMode = nextTabMode(worktreeMode, e.key);
             setWorktreeMode(nextMode);
             document.getElementById(tabIdFor(nextMode))?.focus();
           }}
@@ -605,9 +613,9 @@ export function NewSessionDialog(): JSX.Element | null {
                 <p className="mt-1 text-xs text-slate-500">
                   Will run{' '}
                   <span className="font-mono">
-                    {selectedBranch.remote !== undefined
-                      ? `git worktree add --track -b ${selectedBranch.name} .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.remote}/${selectedBranch.name}`
-                      : `git worktree add .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.name}`}
+                    {selectedBranch.remote === undefined
+                      ? `git worktree add .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.name}`
+                      : `git worktree add --track -b ${selectedBranch.name} .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.remote}/${selectedBranch.name}`}
                   </span>
                 </p>
               )}
