@@ -107,6 +107,13 @@ function branchKey(b: BranchInfo): string {
   return b.remote === undefined ? `local:${b.name}` : `remote:${b.remote}/${b.name}`;
 }
 
+/** The exact `git worktree add` invocation the "From Branch" flow will run for `b` — shown to the user as a preview before they confirm. */
+function previewWorktreeCommand(b: BranchInfo): string {
+  return b.remote === undefined
+    ? `git worktree add .arborist/.worktrees/${b.name} ${b.name}`
+    : `git worktree add --track -b ${b.name} .arborist/.worktrees/${b.name} ${b.remote}/${b.name}`;
+}
+
 interface BranchListProps {
   loading: boolean;
   branches: BranchInfo[];
@@ -611,12 +618,7 @@ export function NewSessionDialog(): JSX.Element | null {
               />
               {selectedBranch && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Will run{' '}
-                  <span className="font-mono">
-                    {selectedBranch.remote === undefined
-                      ? `git worktree add .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.name}`
-                      : `git worktree add --track -b ${selectedBranch.name} .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.remote}/${selectedBranch.name}`}
-                  </span>
+                  Will run <span className="font-mono">{previewWorktreeCommand(selectedBranch)}</span>
                 </p>
               )}
               {branchError !== null && (
