@@ -84,14 +84,6 @@ describe('WorktreeTabContextMenu', () => {
     expect(screen.queryByTestId('worktree-tab-context-menu-launch-copilot')).toBeNull();
   });
 
-  it('Close requests close (sets pendingClose) and dismisses the menu', () => {
-    const onClose = vi.fn();
-    renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
-    expect(screen.queryByTestId('worktree-tab-context-menu-close')).toBeNull();
-    expect(useWorktreeTabStore.getState().pendingClose).toBeUndefined();
-    expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
-  });
-
   it('clicking Launch Claude calls sessionCreate with this worktree path', async () => {
     bridgeMock.sessionCreate.mockResolvedValueOnce({
       id: 'new-id',

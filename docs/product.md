@@ -30,17 +30,17 @@ Success looks like:
 
 ### Sidebar and worktree tabs
 
-| ID   | Requirement                                                                                                                                                                |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S-01 | The sidebar must be a vertical tab bar on the left edge of the window.                                                                                                     |
-| S-02 | Top-level rows are worktree tabs. Child rows are AI sessions and custom-process sub-sessions.                                                                              |
-| S-03 | Clicking a worktree tab shows its dashboard unless it has an active child. Clicking a child shows that child's terminal or app-tracking view.                              |
-| S-04 | The `+` flow opens or creates a worktree tab. AI agents are launched later from the worktree context menu.                                                                 |
-| S-05 | Closing a worktree tab cascades to children. AI sessions and terminal sub-sessions terminate; application sub-sessions detach or terminate according to the chosen policy. |
-| S-06 | Active worktree and active child selection must be visually clear and keyboard navigable.                                                                                  |
-| S-07 | Top-level worktree order must persist. Child reordering can be added later.                                                                                                |
-| S-08 | Close actions that terminate processes must require confirmation.                                                                                                          |
-| S-09 | The worktree-tab context menu must expose Launch Claude, Launch Copilot, Launch Codex, enabled custom-process entries, custom-process settings, and close.                 |
+| ID   | Requirement                                                                                                                                                                                                                                    |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S-01 | The sidebar must be a vertical tab bar on the left edge of the window.                                                                                                                                                                         |
+| S-02 | Top-level rows are worktree tabs. Child rows are AI sessions and custom-process sub-sessions.                                                                                                                                                  |
+| S-03 | Clicking a worktree tab shows its dashboard unless it has an active child. Clicking a child shows that child's terminal or app-tracking view.                                                                                                  |
+| S-04 | The `+` flow opens or creates a worktree tab. AI agents are launched later from the worktree context menu.                                                                                                                                     |
+| S-05 | Closing a worktree tab cascades to children. AI sessions and terminal sub-sessions terminate; application sub-sessions detach or terminate according to the chosen policy.                                                                     |
+| S-06 | Active worktree and active child selection must be visually clear and keyboard navigable.                                                                                                                                                      |
+| S-07 | Top-level worktree order must persist. Child reordering can be added later.                                                                                                                                                                    |
+| S-08 | Close actions that terminate processes must require confirmation.                                                                                                                                                                              |
+| S-09 | The worktree-tab context menu must expose Launch Claude, Launch Copilot, Launch Codex, enabled custom-process entries, and custom-process settings. Closing the worktree tab is handled by the row's dedicated close (×) button, not the menu. |
 
 ### Workspaces and worktrees
 
