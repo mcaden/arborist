@@ -9,6 +9,8 @@ use crate::plugins::Plugin;
 use crate::types::SessionId;
 use crate::types::Tool;
 
+pub mod metrics;
+
 /// Stable singleton instance for dispatch sites that need a `'static`
 /// [`AiPlugin`] reference without allocating.
 pub static PLUGIN: CopilotPlugin = CopilotPlugin;
@@ -50,10 +52,15 @@ impl AiPlugin for CopilotPlugin {
         }
     }
 
-    fn metrics_watcher_kind(&self, session_id: SessionId, _cwd: &std::path::Path) -> Option<crate::plugins::ai::MetricsWatcherKind> {
-        Some(crate::plugins::ai::MetricsWatcherKind::Copilot {
-            otel_path: crate::compose::copilot_otel_path(&session_id),
-        })
+    fn metrics_parser(
+        &self,
+        session_id: SessionId,
+        _cwd: &std::path::Path,
+        _spawn_instant: std::time::SystemTime,
+    ) -> Option<Box<dyn crate::session_metrics::MetricsParser>> {
+        Some(Box::new(metrics::CopilotMetricsParser::new(crate::compose::copilot_otel_path(
+            &session_id,
+        ))))
     }
 
     fn starts_activity_events_watcher(&self) -> bool {

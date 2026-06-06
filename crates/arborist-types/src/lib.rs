@@ -499,6 +499,24 @@ pub struct WorktreeInfo {
     pub is_locked: bool,
 }
 
+/// One entry in the result of `branches_list`. Describes a git branch that can be used as the base for a new worktree ("From Branch" flow).
+///
+/// For a local branch, `name` is its short name (e.g. `feature/foo`) and `remote` is `None`. For a remote-tracking branch, `name` is the branch
+/// name with the remote prefix stripped (e.g. `feature/foo` for `origin/feature/foo`) and `remote` is the remote name (e.g. `origin`); creating a
+/// worktree from it establishes a local tracking branch.
+///
+/// Mirrored on the frontend by `BranchInfo` in `src/types/arborist.ts`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    pub name: String,
+    /// Remote name for remote-tracking branches; `None` for local branches.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub remote: Option<String>,
+    /// `true` when this branch is already checked out in some worktree (so `git worktree add` would refuse it).
+    pub is_checked_out: bool,
+}
+
 /// Args for the `worktree_git_status` command (Issue #55).
 ///
 /// MIRROR: `src/types/arborist.ts::WorktreeGitStatusArgs`.
@@ -1888,6 +1906,21 @@ pub struct WorkspaceValidateResult {
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeCreateArgs {
     pub name: String,
+}
+
+/// Arguments for `worktree_create_from_branch` ("From Branch" flow): create a worktree whose checkout is an *existing* branch rather than a freshly
+/// created one.
+///
+/// `branch` is the short branch name (also used as the worktree directory name). When `remote` is `Some(_)`, a local tracking branch is created from
+/// `<remote>/<branch>`; when `None`, the existing local branch `branch` is checked out.
+///
+/// MIRROR: `src/lib/tauri-bridge.ts` `worktreeCreateFromBranch(branch, remote?)` inline args — there is no named TS type for this payload.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeCreateFromBranchArgs {
+    pub branch: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub remote: Option<String>,
 }
 
 /// Result of `worktree_create`. `path` is the canonical absolute path to the newly-created worktree directory. `prep` is `Some(...)` iff the user has

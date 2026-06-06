@@ -1,10 +1,16 @@
-// WorktreeTabContextMenu — right-click menu for a worktree tab (issue #44).
+// WorktreeTabContextMenu — actions menu for a worktree tab (issue #44).
+//
+// Opened from the row's + button or the keyboard (Shift+F10 / ContextMenu key);
+// right-click is intentionally not bound — SidebarWorktreeTab suppresses the
+// native context menu (see issue #49).
 //
 // Items (flat, no submenu):
 //   * Launch <AI plugin> → creates an AI session under this worktree tab.
 //   * <custom defs>      → one entry per enabled custom-process definition.
 //   * Settings…          → opens the Settings dialog on the Custom Processes tab.
-//   * Close              → cascades close of the worktree tab and all children (pinned to bottom).
+//
+// Close is intentionally NOT in this menu — the row's dedicated × button
+// already closes the worktree tab, so a menu entry would be redundant.
 //
 // Keyboard model: ↑/↓ cycles items, Enter activates, Esc closes and
 // restores focus to the trigger.
@@ -19,7 +25,7 @@ import { pluginEnabled, useRegistry } from '@/plugins';
 import { useEnabledCustomProcesses, useConfigStore } from '@/store/config-store';
 import { useSessionActions } from '@/store/session-store';
 import { useSubSessionActions } from '@/store/sub-session-store';
-import { useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
+import { useWorktreeTabStore } from '@/store/worktree-tab-store';
 import type { CustomProcessDefId, Tool, WorktreeTabId } from '@/types/arborist';
 
 export interface WorktreeTabContextMenuProps {
@@ -32,11 +38,10 @@ export interface WorktreeTabContextMenuProps {
   onOpenSettings?: () => void;
 }
 
-type Item = 'close' | 'settings' | `launch:${Tool}` | `cp:${string}`;
+type Item = 'settings' | `launch:${Tool}` | `cp:${string}`;
 
 export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo, onOpenSettings }: WorktreeTabContextMenuProps): JSX.Element | null {
   const tab = useWorktreeTabStore((s) => s.tabs.find((t) => t.id === tabId));
-  const wttActions = useWorktreeTabActions();
   const sessionActions = useSessionActions();
   const subActions = useSubSessionActions();
   const registry = useRegistry();
@@ -48,7 +53,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   const customProcesses = useEnabledCustomProcesses();
   const aiIconDataUris = useConfigStore((s) => s.config.aiLaunchCommands.iconDataUris);
 
-  // Build the full item order: launchers, custom processes, Settings…, Close.
+  // Build the full item order: launchers, custom processes, Settings…
   const itemOrder = useMemo<Item[]>(() => {
     const items: Item[] = aiPlugins.map((plugin) => `launch:${plugin.id}` as Item);
     if (customProcesses.length > 0) {
@@ -56,7 +61,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
         items.push(`cp:${def.id}` as Item);
       }
     }
-    items.push('settings', 'close');
+    items.push('settings');
     return items;
   }, [aiPlugins, customProcesses]);
 
@@ -108,7 +113,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   const position = useMemo(() => {
     const margin = 4;
     const estW = 220;
-    const separatorCount = 2;
+    const separatorCount = 1;
     const estH = itemOrder.length * 32 + separatorCount * 9 + 8;
     const vw = typeof window !== 'undefined' ? window.innerWidth : estW * 2;
     const vh = typeof window !== 'undefined' ? window.innerHeight : estH * 2;
@@ -128,11 +133,6 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     const nextIdx = (idx + delta + itemOrder.length) % itemOrder.length;
     const next = itemOrder[nextIdx];
     if (next) focusItem(next);
-  };
-
-  const handleClose = (): void => {
-    wttActions.requestClose(tabId);
-    closeMenu();
   };
 
   const handleLaunch = (tool: Tool): void => {
@@ -175,8 +175,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   };
 
   const activateItem = (item: Item): void => {
-    if (item === 'close') handleClose();
-    else if (item.startsWith('launch:')) {
+    if (item.startsWith('launch:')) {
       const plugin = aiPlugins.find((candidate) => `launch:${candidate.id}` === item);
       if (plugin) handleLaunch(plugin.id);
     } else if (item === 'settings') handleSettings();
@@ -295,18 +294,6 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
           className={itemBase}
         >
           <span>Custom Processes…</span>
-        </button>
-        <hr className="my-1 border-t border-slate-200 dark:border-slate-700" />
-        <button
-          ref={setItemRef('close')}
-          type="button"
-          role="menuitem"
-          data-testid="worktree-tab-context-menu-close"
-          onClick={handleClose}
-          onMouseEnter={() => setFocusedItem('close')}
-          className={itemBase}
-        >
-          <span>Close worktree tab</span>
         </button>
       </div>
       {actionError && (

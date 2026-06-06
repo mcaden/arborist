@@ -82,6 +82,10 @@ fn main_capability_allows_required_commands_only() {
         "main capability must include allow-worktrees-list so worktrees_list is callable; got {identifiers:?}",
     );
     assert!(
+        identifiers.contains(&"allow-branches-list"),
+        "main capability must include allow-branches-list so branches_list is callable; got {identifiers:?}",
+    );
+    assert!(
         identifiers.contains(&"allow-workspace-validate"),
         "main capability must include allow-workspace-validate so workspace_validate is callable; got {identifiers:?}",
     );
@@ -92,6 +96,10 @@ fn main_capability_allows_required_commands_only() {
     assert!(
         identifiers.contains(&"allow-worktree-create"),
         "main capability must include allow-worktree-create so worktree_create is callable; got {identifiers:?}",
+    );
+    assert!(
+        identifiers.contains(&"allow-worktree-create-from-branch"),
+        "main capability must include allow-worktree-create-from-branch so worktree_create_from_branch is callable; got {identifiers:?}",
     );
     assert!(
         identifiers.contains(&"allow-worktree-prep-open-log"),
@@ -404,6 +412,31 @@ fn allow_worktree_create_permission_file_declares_command() {
     let path = manifest_dir().join("permissions").join("allow-worktree-create.toml");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     assert!(raw.contains("worktree_create"));
+}
+
+#[test]
+fn allow_branches_list_permission_file_declares_command() {
+    let path = manifest_dir().join("permissions").join("allow-branches-list.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-branches-list\""),
+        "permission identifier must remain `allow-branches-list`",
+    );
+    assert!(raw.contains("\"branches_list\""), "permission must allow the `branches_list` command",);
+}
+
+#[test]
+fn allow_worktree_create_from_branch_permission_file_declares_command() {
+    let path = manifest_dir().join("permissions").join("allow-worktree-create-from-branch.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktree-create-from-branch\""),
+        "permission identifier must remain `allow-worktree-create-from-branch`",
+    );
+    assert!(
+        raw.contains("\"worktree_create_from_branch\""),
+        "permission must allow the `worktree_create_from_branch` command",
+    );
 }
 
 #[test]

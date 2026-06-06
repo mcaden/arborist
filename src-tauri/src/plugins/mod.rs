@@ -224,7 +224,12 @@ mod tests {
         fn spawn_prep(&self, _session_id: &crate::types::SessionId) -> ai::SpawnPrep {
             ai::SpawnPrep::default()
         }
-        fn metrics_watcher_kind(&self, _session_id: crate::types::SessionId, _cwd: &std::path::Path) -> Option<ai::MetricsWatcherKind> {
+        fn metrics_parser(
+            &self,
+            _session_id: crate::types::SessionId,
+            _cwd: &std::path::Path,
+            _spawn_instant: std::time::SystemTime,
+        ) -> Option<Box<dyn crate::session_metrics::MetricsParser>> {
             None
         }
         fn starts_activity_events_watcher(&self) -> bool {

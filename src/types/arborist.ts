@@ -662,6 +662,19 @@ export interface WorktreeInfo {
   isLocked: boolean;
 }
 
+// MIRROR: crates/arborist-types/src/lib.rs::BranchInfo
+// One entry returned by the `branches_list` command ("From Branch" worktree
+// flow). For a local branch, `name` is its short name and `remote` is
+// undefined; for a remote-tracking branch, `name` has the remote prefix
+// stripped (e.g. "feature/foo" for "origin/feature/foo") and `remote` is the
+// remote name. `isCheckedOut` is true when the branch is already attached to a
+// worktree, so `git worktree add` would refuse it.
+export interface BranchInfo {
+  name: string;
+  remote?: string;
+  isCheckedOut: boolean;
+}
+
 // MIRROR: crates/arborist-types/src/lib.rs::GitStatusFileKind
 // Categorical state of a single file in a worktree's working tree (Issue #55).
 // A file with both X and Y dirty surfaces as both `staged` and `unstaged`
