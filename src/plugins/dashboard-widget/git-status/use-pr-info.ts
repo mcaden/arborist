@@ -53,9 +53,10 @@ export function usePrInfo(tabPath: string): UsePrInfoResult {
     inFlightRef.current = false;
     setPrLoading(false);
 
-    void refreshPrInfo();
+    // Fire-and-forget: refreshPrInfo captures its own errors into prError, so the returned promise never rejects and needs no awaiting/handling.
+    refreshPrInfo();
     const handle = globalThis.setInterval(() => {
-      void refreshPrInfo();
+      refreshPrInfo();
     }, POLL_INTERVAL_MS);
     const refSnapshot = reqIdRef;
     return () => {
