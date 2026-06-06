@@ -45,11 +45,11 @@ afterEach(() => {
 describe('WorktreeTabContextMenu', () => {
   const noop = () => {};
 
-  it('renders Launch Claude, Launch Copilot, and Close items', () => {
+  it('renders Launch Claude and Launch Copilot items without a Close item (close lives on the row × button)', () => {
     renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
     expect(screen.getByTestId('worktree-tab-context-menu-launch-claude')).toBeInTheDocument();
     expect(screen.getByTestId('worktree-tab-context-menu-launch-copilot')).toBeInTheDocument();
-    expect(screen.getByTestId('worktree-tab-context-menu-close')).toBeInTheDocument();
+    expect(screen.queryByTestId('worktree-tab-context-menu-close')).toBeNull();
   });
 
   it('flags experimental AI plugins (Codex) with a warning icon and an "Experimental" tooltip, leaving stable ones unmarked', () => {
@@ -87,10 +87,9 @@ describe('WorktreeTabContextMenu', () => {
   it('Close requests close (sets pendingClose) and dismisses the menu', () => {
     const onClose = vi.fn();
     renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={onClose} />);
-    fireEvent.click(screen.getByTestId('worktree-tab-context-menu-close'));
-    expect(useWorktreeTabStore.getState().pendingClose).toBe(TAB_ID);
+    expect(screen.queryByTestId('worktree-tab-context-menu-close')).toBeNull();
+    expect(useWorktreeTabStore.getState().pendingClose).toBeUndefined();
     expect(bridgeMock.worktreeTabClose).not.toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalled();
   });
 
   it('clicking Launch Claude calls sessionCreate with this worktree path', async () => {
@@ -221,7 +220,7 @@ describe('WorktreeTabContextMenu', () => {
     renderWithPlugins(<WorktreeTabContextMenu tabId={TAB_ID} anchor={{ x: 10, y: 10 }} onClose={noop} />);
     const launchClaude = screen.getByTestId('worktree-tab-context-menu-launch-claude');
     launchClaude.focus();
-    fireEvent.mouseEnter(screen.getByTestId('worktree-tab-context-menu-close'));
+    fireEvent.mouseEnter(screen.getByTestId('worktree-tab-context-menu-settings'));
     fireEvent.keyDown(launchClaude, { key: 'Enter' });
 
     await waitFor(() => expect(bridgeMock.sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claude' })));
