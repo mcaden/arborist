@@ -1177,14 +1177,20 @@ fn resolved_default_shell() -> String {
     if cfg!(target_os = "windows") {
         "cmd".to_owned()
     } else {
-        // Use $SHELL when set, but only if it looks like a sane absolute path with no shell-metacharacters. A weird $SHELL (containing spaces,
-        // quotes, `;`, `&`, `|`, `$`, backticks, newlines, …) would be re-interpreted by the launcher's `sh -c`, so we fall back to `sh` rather
-        // than persist a footgun into the user's seed.
+        // Use $SHELL when set, but only if it looks like a sane absolute path with a real final component and no shell-metacharacters. We trim first
+        // and return the *trimmed* value so stray surrounding whitespace can't leak into the composed `<shell> -i` command (it would otherwise spawn
+        // something like `" /usr/bin/zsh  -i"` and fail). A bare `/`, a path ending in a separator (`/bin/zsh/`), or one carrying spaces/quotes/`;`/
+        // `&`/`|`/`$`/backticks/etc. is rejected in favour of `sh` rather than persisted as a footgun into the user's seed.
         std::env::var("SHELL")
             .ok()
+            .map(|s| s.trim().to_owned())
             .filter(|s| {
-                let s = s.trim();
-                !s.is_empty() && std::path::Path::new(s).is_absolute() && !s.chars().any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
+                let path = std::path::Path::new(s);
+                !s.is_empty()
+                    && path.is_absolute()
+                    && path.file_name().is_some()
+                    && !s.ends_with('/')
+                    && !s.chars().any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
             })
             .unwrap_or_else(|| "sh".to_owned())
     }
@@ -2873,6 +2879,46 @@ mod tests {
             None => std::env::remove_var("SHELL"),
         }
         assert_eq!(name, "sh", "a suspicious $SHELL must fall back to the `sh` basename");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_resolution_trims_surrounding_whitespace() {
+        let original = std::env::var_os("SHELL");
+        // Leading/trailing whitespace passed the trimmed validation before, but the untrimmed value leaked into the spawned command.
+        std::env::set_var("SHELL", "  /usr/bin/zsh  ");
+        let cmd = default_shell_command();
+        let name = default_shell_name();
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+        assert_eq!(
+            cmd, "/usr/bin/zsh -i",
+            "surrounding whitespace must be trimmed out of the composed command"
+        );
+        assert_eq!(name, "zsh", "surrounding whitespace must not leak into the shell name");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_resolution_rejects_paths_without_a_final_component() {
+        let original = std::env::var_os("SHELL");
+        for bad in ["/", "/bin/zsh/"] {
+            std::env::set_var("SHELL", bad);
+            assert_eq!(
+                default_shell_command(),
+                "sh -i",
+                "`{bad}` has no usable final component and must fall back"
+            );
+            assert_eq!(default_shell_name(), "sh", "`{bad}` must fall back to the `sh` name");
+        }
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
     }
 
     // ----- from_layout --------------------------------------------------
