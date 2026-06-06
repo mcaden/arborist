@@ -163,6 +163,23 @@ pub fn run() {
             // Recover the user's interactive PATH before anything inherits this process's env (macOS only; no-op elsewhere).
             login_path::apply_login_path_macos();
 
+            // macOS routes WebKit editing commands — Cut/Copy/Paste/Select-All and Delete/Backspace — through the native Edit menu's responder
+            // chain. With no menu installed, WKWebView never receives them, so paste and backspace silently fail inside the terminal. Installing the
+            // standard default menu (which contains the Edit submenu) restores them. The menu lives in the global menu bar at the top of the screen,
+            // never inside the app window, so it doesn't intrude on the terminal UI. No-op on Windows/Linux, which don't gate editing on a menu.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::Menu;
+                match Menu::default(app.handle()) {
+                    Ok(menu) => {
+                        if let Err(err) = app.set_menu(menu) {
+                            tracing::warn!(%err, "failed to set default macOS menu; terminal paste/backspace may not work");
+                        }
+                    }
+                    Err(err) => tracing::warn!(%err, "failed to build default macOS menu; terminal paste/backspace may not work"),
+                }
+            }
+
             // If this build came from a branch other than `main`, surface the branch name in the window title bar so it's obvious which build is
             // running. We set the title twice: once here with no workspace bound (covers the brief startup window before `boot_select_workspace`
             // returns), and again after the workspace binding succeeds with the bound `workspace_root` so the workspace name is included

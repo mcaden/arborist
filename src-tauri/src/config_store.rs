@@ -1131,7 +1131,7 @@ pub fn default_custom_processes() -> Vec<CustomProcessDef> {
     vec![
         CustomProcessDef {
             id: CustomProcessDefId::new(BUILTIN_DEF_ID_SHELL),
-            name: "Shell".to_owned(),
+            name: default_shell_name(),
             kind: CustomProcessKind::Terminal,
             command: default_shell_command(),
             enabled: true,
@@ -1163,21 +1163,48 @@ fn default_shell_command() -> String {
     // Phase 1 keeps this minimal: launch the platform shell interactively. The PTY pool will spawn it via `$SHELL -c <cmd>` (Unix) or `%COMSPEC% /c
     // <cmd>` (Windows), so the inner command is a fresh login-ish invocation of the same shell. We deliberately don't pass `--login` so we don't
     // fight the user's profile order.
+    let shell = resolved_default_shell();
+    if cfg!(target_os = "windows") {
+        shell
+    } else {
+        format!("{shell} -i")
+    }
+}
+
+/// Resolve the shell executable backing the built-in launcher. Windows always uses `cmd`; on Unix we honour `$SHELL` when it looks sane, otherwise
+/// fall back to `sh`. See [`default_shell_command`] for the metacharacter-filter rationale.
+fn resolved_default_shell() -> String {
     if cfg!(target_os = "windows") {
         "cmd".to_owned()
     } else {
-        // Use $SHELL when set, but only if it looks like a sane absolute path with no shell-metacharacters. A weird $SHELL (containing spaces,
-        // quotes, `;`, `&`, `|`, `$`, backticks, newlines, …) would be re-interpreted by the launcher's `sh -c`, so we fall back to `sh -i` rather
-        // than persist a footgun into the user's seed.
-        let shell = std::env::var("SHELL")
+        // Use $SHELL when set, but only if it looks like a sane absolute path that ends in a real filename component and carries no shell-
+        // metacharacters. We trim first and return the *trimmed* value so stray surrounding whitespace can't leak into the composed `<shell> -i`
+        // command (it would otherwise spawn something like `" /usr/bin/zsh  -i"` and fail). We inspect the *raw* final segment (not `Path` components,
+        // which normalise a trailing `.` away): a bare `/`, a trailing separator (`/bin/zsh/`), or a final `.`/`..` (`/bin/.`, `/bin/..` — not
+        // executable filenames) all yield an empty/`.`/`..` segment and are rejected, as is any path carrying spaces/quotes/`;`/`&`/`|`/`$`/backticks/
+        // etc. — falling back to `sh` rather than persisting a footgun into the user's seed.
+        std::env::var("SHELL")
             .ok()
+            .map(|s| s.trim().to_owned())
             .filter(|s| {
-                let s = s.trim();
-                !s.is_empty() && std::path::Path::new(s).is_absolute() && !s.chars().any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
+                let last_segment = s.rsplit('/').next().unwrap_or("");
+                !s.is_empty()
+                    && std::path::Path::new(s).is_absolute()
+                    && !matches!(last_segment, "" | "." | "..")
+                    && !s.chars().any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
             })
-            .unwrap_or_else(|| "sh".to_owned());
-        format!("{shell} -i")
+            .unwrap_or_else(|| "sh".to_owned())
     }
+}
+
+/// Human-facing name for the built-in shell launcher: the basename of the resolved shell (`zsh`, `bash`, `cmd`, …) so a fresh seed reflects the
+/// shell that will actually run rather than a generic "Shell" label.
+fn default_shell_name() -> String {
+    let shell = resolved_default_shell();
+    std::path::Path::new(&shell)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map_or_else(|| shell.clone(), str::to_owned)
 }
 
 const fn default_open_folder_command() -> &'static str {
@@ -2809,19 +2836,94 @@ mod tests {
         assert_eq!(ids, vec!["good"], "only the first valid def must survive");
     }
 
+    /// RAII guard that snapshots `$SHELL` on construction and restores it on drop, so an assertion panic inside a `$SHELL`-mutating test can't leak a
+    /// mutated process env into unrelated tests (the `serial` guard only serialises execution, it doesn't roll back env on panic).
+    #[cfg(not(target_os = "windows"))]
+    struct ShellEnvGuard {
+        original: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    impl ShellEnvGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::var_os("SHELL"),
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    impl Drop for ShellEnvGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(v) => std::env::set_var("SHELL", v),
+                None => std::env::remove_var("SHELL"),
+            }
+        }
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     #[serial_test::serial(env_shell)]
     fn default_shell_command_falls_back_when_shell_env_is_suspicious() {
-        let original = std::env::var_os("SHELL");
+        let _guard = ShellEnvGuard::new();
         // Suspicious: contains a metacharacter.
         std::env::set_var("SHELL", "/bin/sh; rm -rf /");
-        let cmd = default_shell_command();
-        match original {
-            Some(v) => std::env::set_var("SHELL", v),
-            None => std::env::remove_var("SHELL"),
+        assert_eq!(default_shell_command(), "sh -i", "metacharacter in $SHELL must trigger fallback");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_name_uses_basename_of_resolved_shell() {
+        let _guard = ShellEnvGuard::new();
+        std::env::set_var("SHELL", "/usr/bin/zsh");
+        assert_eq!(
+            default_shell_name(),
+            "zsh",
+            "the seeded shell name should be the resolved shell's basename, not a generic label"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_name_falls_back_to_sh_when_shell_env_is_suspicious() {
+        let _guard = ShellEnvGuard::new();
+        std::env::set_var("SHELL", "/bin/sh; rm -rf /");
+        assert_eq!(default_shell_name(), "sh", "a suspicious $SHELL must fall back to the `sh` basename");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_resolution_trims_surrounding_whitespace() {
+        let _guard = ShellEnvGuard::new();
+        // Leading/trailing whitespace passed the trimmed validation before, but the untrimmed value leaked into the spawned command.
+        std::env::set_var("SHELL", "  /usr/bin/zsh  ");
+        assert_eq!(
+            default_shell_command(),
+            "/usr/bin/zsh -i",
+            "surrounding whitespace must be trimmed out of the composed command"
+        );
+        assert_eq!(default_shell_name(), "zsh", "surrounding whitespace must not leak into the shell name");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_resolution_rejects_paths_without_a_final_component() {
+        // A bare root, a trailing separator, or a final `.`/`..` component is not an executable filename and must fall back to `sh`.
+        let _guard = ShellEnvGuard::new();
+        for bad in ["/", "/bin/zsh/", "/bin/.", "/bin/.."] {
+            std::env::set_var("SHELL", bad);
+            assert_eq!(
+                default_shell_command(),
+                "sh -i",
+                "`{bad}` has no usable final component and must fall back"
+            );
+            assert_eq!(default_shell_name(), "sh", "`{bad}` must fall back to the `sh` name");
         }
-        assert_eq!(cmd, "sh -i", "metacharacter in $SHELL must trigger fallback");
     }
 
     // ----- from_layout --------------------------------------------------
