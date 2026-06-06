@@ -79,7 +79,7 @@ function PullRequestSection({
               onClick={() => {
                 void openExternalUrl(prInfo.pr!.url);
               }}
-              className="font-mono font-semibold text-sky-600 hover:underline dark:text-sky-400"
+              className="cursor-pointer font-mono font-semibold text-sky-600 hover:underline dark:text-sky-400"
             >
               #{prInfo.pr.number}
             </button>
@@ -111,7 +111,7 @@ function PullRequestSection({
               onClick={() => {
                 void openExternalUrl(prInfo.repoWebUrl!);
               }}
-              className="self-start font-mono text-sky-600 hover:underline dark:text-sky-400"
+              className="cursor-pointer self-start font-mono text-sky-600 hover:underline dark:text-sky-400"
             >
               Open repository
             </button>
