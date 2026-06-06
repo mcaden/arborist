@@ -1,4 +1,8 @@
-// WorktreeTabContextMenu — right-click menu for a worktree tab (issue #44).
+// WorktreeTabContextMenu — actions menu for a worktree tab (issue #44).
+//
+// Opened from the row's + button or the keyboard (Shift+F10 / ContextMenu key);
+// right-click is intentionally not bound — SidebarWorktreeTab suppresses the
+// native context menu (see issue #49).
 //
 // Items (flat, no submenu):
 //   * Launch <AI plugin> → creates an AI session under this worktree tab.
