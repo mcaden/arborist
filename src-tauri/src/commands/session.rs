@@ -1677,7 +1677,20 @@ pub fn branches_list_impl(ctx: &AppContext, repo_root: &std::path::Path) -> Resu
         );
         return Ok(Vec::new());
     }
-    ctx.git_runner.list_branches(repo_root).map_err(AppError::from)
+    // Honor the documented graceful-degradation contract for *every* runner: a list_branches error degrades to an empty list (the dialog falls back to
+    // the New/Existing tabs) rather than rejecting the command. RealGitRunner already swallows git failures internally; this guards other impls too.
+    match ctx.git_runner.list_branches(repo_root) {
+        Ok(branches) => Ok(branches),
+        Err(e) => {
+            warn!(
+                code = "GitUnavailable",
+                repo_root = %repo_root.display(),
+                error = %e,
+                "branches_list: list_branches failed; returning empty list"
+            );
+            Ok(Vec::new())
+        }
+    }
 }
 
 // --------------------------------------------------------------------------- workspace_validate / worktree_create (Roadmap §1, §2)

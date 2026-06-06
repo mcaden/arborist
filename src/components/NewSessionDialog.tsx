@@ -103,7 +103,8 @@ function branchLabel(b: BranchInfo): string {
 }
 
 function branchKey(b: BranchInfo): string {
-  return `${b.remote ?? 'local'}/${b.name}`;
+  // Namespace by kind so a remote literally named "local" can't collide with a local branch's key (both used as React keys + selection identity).
+  return b.remote !== undefined ? `remote:${b.remote}/${b.name}` : `local:${b.name}`;
 }
 
 interface BranchListProps {
