@@ -4,12 +4,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use arborist_lib::commands::session::{workspace_validate_impl, worktree_create_impl, AppContext};
+use arborist_lib::commands::session::{
+    branches_list_impl, workspace_validate_impl, worktree_create_from_branch_impl, worktree_create_impl, AppContext,
+};
 use arborist_lib::config_store::ConfigStore;
 use arborist_lib::git::GitRunner;
 use arborist_lib::pty_pool::{PortablePtySpawner, PtyPool, PtySink};
 use arborist_lib::types::{Error, PartialAppConfig, SessionId, SessionStatus, WorktreeInfo};
 use tempfile::TempDir;
+
+/// Recorded args of a `create_worktree_from_branch` call: `(repo_root, relative_path, branch, remote)`.
+type CreateFromBranchCall = (PathBuf, PathBuf, String, Option<String>);
 
 /// Configurable fake. `toplevel_for` controls `git_toplevel`'s response — `None` means "not a repo", `Some(path)` means it returns that path
 /// canonicalized.
@@ -18,6 +23,10 @@ struct FakeGitRunner {
     /// `Ok(())` ⇒ create_worktree returns the joined path; `Err(s)` ⇒ it returns Error::Internal(s).
     create_outcome: Mutex<Result<(), String>>,
     last_create: Mutex<Option<(PathBuf, PathBuf, String)>>,
+    /// Branches returned by `list_branches`.
+    branches: Mutex<Vec<arborist_lib::types::BranchInfo>>,
+    /// Records the args of the last `create_worktree_from_branch` call.
+    last_create_from_branch: Mutex<Option<CreateFromBranchCall>>,
 }
 
 impl FakeGitRunner {
@@ -26,6 +35,8 @@ impl FakeGitRunner {
             toplevel: Mutex::new(None),
             create_outcome: Mutex::new(Ok(())),
             last_create: Mutex::new(None),
+            branches: Mutex::new(Vec::new()),
+            last_create_from_branch: Mutex::new(None),
         })
     }
     /// Configure git_toplevel to return `Some(canonical(path))` for any query — i.e. "this is a repo whose root is `path`".
@@ -34,6 +45,9 @@ impl FakeGitRunner {
     }
     fn set_create_err(&self, msg: &str) {
         *self.create_outcome.lock().unwrap() = Err(msg.to_owned());
+    }
+    fn set_branches(&self, branches: Vec<arborist_lib::types::BranchInfo>) {
+        *self.branches.lock().unwrap() = branches;
     }
     /// Test-only: forget the configured repo root so subsequent `git_toplevel` queries return `None` ("not a repo").
     fn clear_repo_root(&self) {
@@ -64,6 +78,25 @@ impl GitRunner for FakeGitRunner {
     }
     fn git_status(&self, _worktree_path: &Path) -> Result<arborist_lib::types::WorktreeGitStatus, Error> {
         Ok(arborist_lib::types::WorktreeGitStatus::default())
+    }
+    fn list_branches(&self, _repo_root: &Path) -> Result<Vec<arborist_lib::types::BranchInfo>, Error> {
+        Ok(self.branches.lock().unwrap().clone())
+    }
+    fn create_worktree_from_branch(&self, repo_root: &Path, relative_path: &Path, branch: &str, remote: Option<&str>) -> Result<PathBuf, Error> {
+        *self.last_create_from_branch.lock().unwrap() = Some((
+            repo_root.to_path_buf(),
+            relative_path.to_path_buf(),
+            branch.to_owned(),
+            remote.map(str::to_owned),
+        ));
+        match &*self.create_outcome.lock().unwrap() {
+            Ok(()) => {
+                let joined = repo_root.join(relative_path);
+                std::fs::create_dir_all(&joined).ok();
+                Ok(joined)
+            }
+            Err(msg) => Err(Error::Internal(msg.clone())),
+        }
     }
 }
 
@@ -313,6 +346,107 @@ fn worktree_create_propagates_runner_failure() {
     set_workspace(&ctx, ws.path());
 
     let err = worktree_create_impl(&ctx, "feat-x").expect_err("must err");
+    assert!(format!("{err:?}").contains("simulated git failure"));
+}
+
+// ---------- branches_list / worktree_create_from_branch (From Branch flow) ----------
+
+#[test]
+fn branches_list_returns_runner_branches() {
+    use arborist_lib::types::BranchInfo;
+    let store = TempDir::new().unwrap();
+    let repo = make_repo_tempdir();
+    let runner = FakeGitRunner::new();
+    runner.set_branches(vec![
+        BranchInfo {
+            name: "main".to_owned(),
+            remote: None,
+            is_checked_out: true,
+        },
+        BranchInfo {
+            name: "feature/foo".to_owned(),
+            remote: Some("origin".to_owned()),
+            is_checked_out: false,
+        },
+    ]);
+    let ctx = build_ctx(runner as Arc<dyn GitRunner>, &store);
+
+    let branches = branches_list_impl(&ctx, repo.path()).expect("ok");
+    assert_eq!(branches.len(), 2);
+    assert_eq!(branches[1].name, "feature/foo");
+    assert_eq!(branches[1].remote.as_deref(), Some("origin"));
+}
+
+#[test]
+fn branches_list_empty_for_missing_repo() {
+    let store = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner as Arc<dyn GitRunner>, &store);
+    let branches = branches_list_impl(&ctx, Path::new("/no/such/repo/arborist-test")).expect("ok");
+    assert!(branches.is_empty());
+}
+
+#[test]
+fn worktree_create_from_branch_invokes_runner_with_local_branch() {
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let out = worktree_create_from_branch_impl(&ctx, "feature/foo", None).expect("ok");
+    assert!(out.path.ends_with("foo"));
+
+    let last = runner.last_create_from_branch.lock().unwrap().clone().unwrap();
+    let canon_ws = dunce::canonicalize(ws.path()).unwrap();
+    assert_eq!(last.0, canon_ws);
+    assert_eq!(last.1, PathBuf::from(".arborist").join(".worktrees").join("feature").join("foo"));
+    assert_eq!(last.2, "feature/foo");
+    assert_eq!(last.3, None, "local branch must not pass a remote");
+    assert!(runner.last_create.lock().unwrap().is_none(), "must not call create_worktree");
+}
+
+#[test]
+fn worktree_create_from_branch_passes_remote_through() {
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    worktree_create_from_branch_impl(&ctx, "feat-x", Some("origin")).expect("ok");
+
+    let last = runner.last_create_from_branch.lock().unwrap().clone().unwrap();
+    assert_eq!(last.2, "feat-x");
+    assert_eq!(last.3.as_deref(), Some("origin"));
+}
+
+#[test]
+fn worktree_create_from_branch_rejects_invalid_name() {
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    let ctx = build_ctx(runner.clone() as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let err = worktree_create_from_branch_impl(&ctx, "has space", None).expect_err("must err");
+    assert!(
+        format!("{err:?}").contains("Invalid") || format!("{err:?}").contains("invalid"),
+        "got {err:?}"
+    );
+    assert!(runner.last_create_from_branch.lock().unwrap().is_none(), "must not invoke runner");
+}
+
+#[test]
+fn worktree_create_from_branch_propagates_runner_failure() {
+    let store = TempDir::new().unwrap();
+    let ws = TempDir::new().unwrap();
+    let runner = FakeGitRunner::new();
+    runner.set_create_err("simulated git failure");
+    let ctx = build_ctx(runner as Arc<dyn GitRunner>, &store);
+    set_workspace(&ctx, ws.path());
+
+    let err = worktree_create_from_branch_impl(&ctx, "feat-x", None).expect_err("must err");
     assert!(format!("{err:?}").contains("simulated git failure"));
 }
 

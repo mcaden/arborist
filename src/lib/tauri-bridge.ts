@@ -44,6 +44,7 @@ import type {
   SubSessionRestoredEvent,
   SubSessionStatusEvent,
   Tool,
+  BranchInfo,
   WorktreeInfo,
   WorkspaceSwitchResult,
   WorkspaceValidateResult,
@@ -271,6 +272,16 @@ export function worktreesList(repoRoot: string): Promise<WorktreeInfo[]> {
 }
 
 /**
+ * Enumerate the repository's local and remote-tracking branches for the
+ * "From Branch" worktree flow. Always resolves with a (possibly empty) array —
+ * the backend swallows discovery failures so the dialog's other tabs are never
+ * blocked by an error.
+ */
+export function branchesList(repoRoot: string): Promise<BranchInfo[]> {
+  return invoke<BranchInfo[]>('branches_list', { repoRoot });
+}
+
+/**
  * Snapshot `git status` for a worktree (Issue #55: worktree dashboard). Always
  * resolves. The returned {@link WorktreeGitStatus} carries an optional `error`
  * field: when set, the snapshot could not be produced (path missing, not a git
@@ -307,6 +318,19 @@ export function workspaceValidate(path: string): Promise<WorkspaceValidateResult
 export function worktreeCreate(name: string): Promise<WorktreeCreateResult> {
   return invoke<WorktreeCreateResult>('worktree_create', {
     args: { name },
+  });
+}
+
+/**
+ * Create a linked git worktree from an *existing* branch ("From Branch" flow).
+ * `branch` is the short branch name (also used as the worktree directory name).
+ * When `remote` is provided, a local tracking branch is created from
+ * `<remote>/<branch>`; otherwise the existing local branch `branch` is checked
+ * out. Rejects with `AppError` on validation or git failure.
+ */
+export function worktreeCreateFromBranch(branch: string, remote?: string): Promise<WorktreeCreateResult> {
+  return invoke<WorktreeCreateResult>('worktree_create_from_branch', {
+    args: remote !== undefined ? { branch, remote } : { branch },
   });
 }
 

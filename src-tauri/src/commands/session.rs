@@ -1666,6 +1666,20 @@ pub fn worktrees_list_impl(ctx: &AppContext, repo_root: &std::path::Path) -> Res
     ctx.git_runner.list_worktrees(repo_root).map_err(AppError::from)
 }
 
+/// Enumerate the local and remote-tracking branches of the repo rooted at `repo_root` ("From Branch" worktree flow). Returns `Ok(vec![])` on any
+/// failure (missing dir, not a repo, git unavailable) so the dialog never blocks on an error.
+pub fn branches_list_impl(ctx: &AppContext, repo_root: &std::path::Path) -> Result<Vec<crate::types::BranchInfo>, AppError> {
+    if !repo_root.is_dir() {
+        debug!(
+            code = "GitUnavailable",
+            repo_root = %repo_root.display(),
+            "branches_list: repo_root not a directory; returning empty list"
+        );
+        return Ok(Vec::new());
+    }
+    ctx.git_runner.list_branches(repo_root).map_err(AppError::from)
+}
+
 // --------------------------------------------------------------------------- workspace_validate / worktree_create (Roadmap §1, §2)
 // ---------------------------------------------------------------------------
 
@@ -2107,6 +2121,58 @@ pub async fn workspace_switch_impl_inner(
 pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types::WorktreeCreateResult, AppError> {
     use crate::types::WorktreeCreateResult;
 
+    let (workspace, relative, validated) = prepare_worktree_target(ctx, name)?;
+
+    let new_path = ctx
+        .git_runner
+        .create_worktree(&workspace, &relative, &validated)
+        .map_err(AppError::from)?;
+
+    // Post-condition: the canonical new path must still lie under the canonical workspace root.
+    if !new_path.starts_with(&workspace) {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "created worktree {} resolved outside workspace {}",
+            new_path.display(),
+            workspace.display()
+        ))));
+    }
+
+    Ok(WorktreeCreateResult { path: new_path, prep: None })
+}
+
+/// Create a new linked worktree at `<workspaceRoot>/.arborist/.worktrees/<branch>` that checks out an *existing* branch ("From Branch" flow).
+///
+/// When `remote` is `Some(_)`, a local tracking branch is created from `<remote>/<branch>`; when `None`, the existing local branch `branch` is
+/// checked out. Shares all directory preparation and containment guards with [`worktree_create_impl`].
+pub fn worktree_create_from_branch_impl(
+    ctx: &AppContext,
+    branch: &str,
+    remote: Option<&str>,
+) -> Result<crate::types::WorktreeCreateResult, AppError> {
+    use crate::types::WorktreeCreateResult;
+
+    let (workspace, relative, validated) = prepare_worktree_target(ctx, branch)?;
+
+    let new_path = ctx
+        .git_runner
+        .create_worktree_from_branch(&workspace, &relative, &validated, remote)
+        .map_err(AppError::from)?;
+
+    // Post-condition: the canonical new path must still lie under the canonical workspace root.
+    if !new_path.starts_with(&workspace) {
+        return Err(AppError::from(Error::InvalidPath(format!(
+            "created worktree {} resolved outside workspace {}",
+            new_path.display(),
+            workspace.display()
+        ))));
+    }
+
+    Ok(WorktreeCreateResult { path: new_path, prep: None })
+}
+
+/// Shared setup for the worktree-create flows: validate `name`, resolve the workspace root, materialise `<workspace>/.arborist/`, and run the
+/// symlink/containment guards. Returns `(workspace_root, relative_path, validated_name)` ready to hand to a `GitRunner` worktree-add call.
+fn prepare_worktree_target(ctx: &AppContext, name: &str) -> Result<(PathBuf, PathBuf, String), AppError> {
     // Validate the name with the same rules the frontend used (defence in depth).
     let validated = compose::validate_worktree_name(name).map_err(|msg| AppError::from(Error::InvalidPath(msg)))?;
 
@@ -2166,21 +2232,7 @@ pub fn worktree_create_impl(ctx: &AppContext, name: &str) -> Result<crate::types
         ))));
     }
 
-    let new_path = ctx
-        .git_runner
-        .create_worktree(&workspace, &relative, &validated)
-        .map_err(AppError::from)?;
-
-    // Post-condition: the canonical new path must still lie under the canonical workspace root.
-    if !new_path.starts_with(&workspace) {
-        return Err(AppError::from(Error::InvalidPath(format!(
-            "created worktree {} resolved outside workspace {}",
-            new_path.display(),
-            workspace.display()
-        ))));
-    }
-
-    Ok(WorktreeCreateResult { path: new_path, prep: None })
+    Ok((workspace, relative, validated))
 }
 
 fn session_temp_file_owner(path: &Path) -> Result<Option<SessionId>, AppError> {

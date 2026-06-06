@@ -9,7 +9,7 @@ import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
-import type { AppConfig, WorktreeInfo, WorktreeTab } from '@/types/arborist';
+import type { AppConfig, BranchInfo, WorktreeInfo, WorktreeTab } from '@/types/arborist';
 
 import { NewSessionDialog } from './NewSessionDialog';
 
@@ -51,6 +51,10 @@ function makeTab(path: string): WorktreeTab {
     tabIndex: 0,
     iconId: 1,
   } satisfies WorktreeTab;
+}
+
+function makeBranch(name: string, remote?: string, isCheckedOut = false): BranchInfo {
+  return { name, isCheckedOut, ...(remote !== undefined ? { remote } : {}) };
 }
 
 function openDialog(): void {
@@ -608,5 +612,63 @@ describe('NewSessionDialog', () => {
 
     fireEvent.change(nameInput, { target: { value: 'feature-x' } });
     expect(nameInput).toHaveFocus();
+  });
+
+  it('From Branch tab lists branches and creates a worktree from a local branch', async () => {
+    const path = `${REPO_ROOT}/.arborist/.worktrees/feature-x`;
+    bridgeMock.branchesList.mockResolvedValue([makeBranch('main', undefined, true), makeBranch('feature-x')]);
+    bridgeMock.worktreeCreateFromBranch.mockResolvedValue({ path, prep: null });
+    bridgeMock.worktreeTabOpen.mockResolvedValue(makeTab(path));
+
+    render(<NewSessionDialog />);
+    openDialog();
+    await screen.findByRole('heading', { name: /add worktree/i });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^from branch$/i }));
+
+    // The checked-out `main` is filtered out; only `feature-x` is selectable.
+    const branchBtn = await screen.findByRole('button', { name: /^feature-x$/i });
+    expect(screen.queryByRole('button', { name: /^main$/i })).not.toBeInTheDocument();
+
+    fireEvent.click(branchBtn);
+    fireEvent.click(screen.getByRole('button', { name: /^create & open$/i }));
+
+    await waitFor(() => expect(bridgeMock.worktreeCreateFromBranch).toHaveBeenCalledWith('feature-x', undefined));
+    await waitFor(() => expect(bridgeMock.worktreeTabOpen).toHaveBeenCalledWith({ path }));
+    await waitFor(() => expect(useNewSessionDialog.getState().isOpen).toBe(false));
+  });
+
+  it('From Branch tab passes the remote through when creating from a remote branch', async () => {
+    const path = `${REPO_ROOT}/.arborist/.worktrees/feature-y`;
+    bridgeMock.branchesList.mockResolvedValue([makeBranch('feature-y', 'origin')]);
+    bridgeMock.worktreeCreateFromBranch.mockResolvedValue({ path, prep: null });
+    bridgeMock.worktreeTabOpen.mockResolvedValue(makeTab(path));
+
+    render(<NewSessionDialog />);
+    openDialog();
+    await screen.findByRole('heading', { name: /add worktree/i });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^from branch$/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /origin\/feature-y/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^create & open$/i }));
+
+    await waitFor(() => expect(bridgeMock.worktreeCreateFromBranch).toHaveBeenCalledWith('feature-y', 'origin'));
+  });
+
+  it('From Branch tab surfaces backend create errors', async () => {
+    bridgeMock.branchesList.mockResolvedValue([makeBranch('feature-x')]);
+    bridgeMock.worktreeCreateFromBranch.mockRejectedValue(new Error('branch is already checked out'));
+
+    render(<NewSessionDialog />);
+    openDialog();
+    await screen.findByRole('heading', { name: /add worktree/i });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^from branch$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^feature-x$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^create & open$/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already checked out/i);
+    expect(bridgeMock.worktreeTabOpen).not.toHaveBeenCalled();
   });
 });

@@ -16,14 +16,14 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { ensureShellCommandTrusted } from '@/lib/shell-command-trust';
 import { isInsideWorktreesDir, pathsEqual } from '@/lib/worktree-paths';
-import { formatError, pickDirectory, worktreeCreate, worktreesList } from '@/lib/tauri-bridge';
+import { branchesList, formatError, pickDirectory, worktreeCreate, worktreeCreateFromBranch, worktreesList } from '@/lib/tauri-bridge';
 import { validateWorktreeName } from '@/lib/worktree-validation';
 import { selectWorkspaceRoot, useConfigStore } from '@/store/config-store';
 import { useNewSessionDialog } from '@/store/new-session-dialog-store';
 import { useWorktreeTabActions, useWorktreeTabStore } from '@/store/worktree-tab-store';
-import type { WorktreeInfo } from '@/types/arborist';
+import type { BranchInfo, WorktreeInfo } from '@/types/arborist';
 
-type WorktreeMode = 'existing' | 'new';
+type WorktreeMode = 'existing' | 'new' | 'branch';
 
 interface ChosenWorktree {
   path: string;
@@ -98,6 +98,52 @@ function ExistingWorktreeList({
   );
 }
 
+function branchLabel(b: BranchInfo): string {
+  return b.remote !== undefined ? `${b.remote}/${b.name}` : b.name;
+}
+
+function branchKey(b: BranchInfo): string {
+  return `${b.remote ?? 'local'}/${b.name}`;
+}
+
+interface BranchListProps {
+  loading: boolean;
+  branches: BranchInfo[];
+  selectedKey: string | null;
+  onSelect: (b: BranchInfo) => void;
+}
+
+function BranchList({ loading, branches, selectedKey, onSelect }: Readonly<BranchListProps>): JSX.Element {
+  if (loading) {
+    return <p className="text-sm text-slate-500">Loading...</p>;
+  }
+  if (branches.length === 0) {
+    return <p className="mb-2 text-sm text-slate-500">No branches available — every branch is already checked out in a worktree.</p>;
+  }
+  return (
+    <ul className="themed-scrollbar mb-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+      {branches.map((b) => (
+        <li key={branchKey(b)}>
+          <button
+            type="button"
+            onClick={() => onSelect(b)}
+            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${
+              selectedKey === branchKey(b) ? 'bg-sky-100 dark:bg-sky-900' : ''
+            }`}
+          >
+            <span className="truncate font-mono">{branchLabel(b)}</span>
+            {b.remote !== undefined && (
+              <span className="shrink-0 rounded bg-indigo-200 px-1.5 py-0.5 text-xs text-indigo-900 dark:bg-indigo-700 dark:text-indigo-50">
+                remote
+              </span>
+            )}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function NewSessionDialog(): JSX.Element | null {
   const isOpen = useNewSessionDialog((s) => s.isOpen);
   const close = useNewSessionDialog((s) => s.close);
@@ -112,6 +158,8 @@ export function NewSessionDialog(): JSX.Element | null {
   const isMountedRef = useRef<boolean>(false);
   // Monotonic request counter for worktree-list loads.
   const worktreesRequestIdRef = useRef<number>(0);
+  // Monotonic request counter for branch-list loads ("From Branch" tab).
+  const branchesRequestIdRef = useRef<number>(0);
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -131,6 +179,13 @@ export function NewSessionDialog(): JSX.Element | null {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
+  // "From Branch" sub-form state.
+  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState<BranchInfo | null>(null);
+  const [branchCreating, setBranchCreating] = useState(false);
+  const [branchError, setBranchError] = useState<string | null>(null);
+
   // Reset state whenever the dialog opens.
   useEffect(() => {
     if (!isOpen) return;
@@ -142,6 +197,10 @@ export function NewSessionDialog(): JSX.Element | null {
     setNewName('');
     setCreating(false);
     setCreateError(null);
+    setBranches([]);
+    setSelectedBranch(null);
+    setBranchCreating(false);
+    setBranchError(null);
   }, [isOpen]);
 
   // Show/hide the native <dialog>.
@@ -191,6 +250,29 @@ export function NewSessionDialog(): JSX.Element | null {
       });
   }, [isOpen, workspaceRoot]);
 
+  // List branches when the dialog opens ("From Branch" tab).
+  useEffect(() => {
+    const requestId = ++branchesRequestIdRef.current;
+    if (!isOpen) return;
+    setBranchesLoading(true);
+    if (workspaceRoot === null || workspaceRoot.length === 0) {
+      setBranches([]);
+      setBranchesLoading(false);
+      return;
+    }
+    branchesList(workspaceRoot)
+      .catch(() => [] as BranchInfo[])
+      .then((list) => {
+        if (!isMountedRef.current) return;
+        if (requestId !== branchesRequestIdRef.current) return;
+        setBranches(list);
+      })
+      .finally(() => {
+        if (!isMountedRef.current) return;
+        if (requestId === branchesRequestIdRef.current) setBranchesLoading(false);
+      });
+  }, [isOpen, workspaceRoot]);
+
   const onCancel = (): void => {
     close();
   };
@@ -212,6 +294,13 @@ export function NewSessionDialog(): JSX.Element | null {
   const availableWorktrees = useMemo(() => {
     return worktrees.filter((w) => !openTabs.some((t) => pathsEqual(t.path, w.path)));
   }, [worktrees, openTabs]);
+
+  // Branches available as a worktree base: drop branches already checked out, and hide a remote-tracking entry when a local branch of the same
+  // name exists (the local checkout is what `git worktree add <branch>` would resolve to, so the remote duplicate would only confuse / conflict).
+  const availableBranches = useMemo(() => {
+    const localNames = new Set(branches.filter((b) => b.remote === undefined).map((b) => b.name));
+    return branches.filter((b) => !b.isCheckedOut && !(b.remote !== undefined && localNames.has(b.name)));
+  }, [branches]);
 
   const onCreateWorktree = async (): Promise<void> => {
     const trimmed = newName.trim();
@@ -260,6 +349,31 @@ export function NewSessionDialog(): JSX.Element | null {
     }
   };
 
+  const onCreateFromBranch = async (): Promise<void> => {
+    if (!selectedBranch || branchCreating) return;
+    const branch = selectedBranch;
+    setBranchCreating(true);
+    setBranchError(null);
+    setSubmitError(null);
+    try {
+      // Trust is keyed on the resulting worktree path, so the prep-command prompt is identical to the New-worktree flow.
+      const trusted = await ensureShellCommandTrusted({ kind: 'worktreeCreate', name: branch.name });
+      if (!trusted) return;
+      const result = await worktreeCreateFromBranch(branch.name, branch.remote);
+      try {
+        await wttActions.open(result.path);
+        close();
+      } catch (openErr) {
+        setSubmitError(formatError(openErr));
+        setWorktreeMode('existing');
+      }
+    } catch (err) {
+      setBranchError(formatError(err));
+    } finally {
+      setBranchCreating(false);
+    }
+  };
+
   const onConfirmExisting = async (): Promise<void> => {
     if (!worktree) return;
     setSubmitting(true);
@@ -276,6 +390,12 @@ export function NewSessionDialog(): JSX.Element | null {
 
   if (!isOpen) return null;
 
+  // Any in-flight operation across the three tabs — used to gate tab switching, cancel, and footer buttons uniformly.
+  const busy = creating || submitting || branchCreating;
+
+  const MODE_ORDER: WorktreeMode[] = ['new', 'existing', 'branch'];
+  const tabIdFor = (mode: WorktreeMode): string => `worktree-tab-${mode}`;
+
   return (
     <dialog
       ref={dialogRef}
@@ -283,7 +403,7 @@ export function NewSessionDialog(): JSX.Element | null {
       aria-labelledby="new-session-title"
       onCancel={(e) => {
         e.preventDefault();
-        if (creating || submitting) return;
+        if (busy) return;
         onCancel();
       }}
       className="fixed inset-0 m-auto h-fit w-[28rem] rounded-md border border-slate-300 bg-white p-4 text-slate-900 shadow-lg backdrop:bg-black/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
@@ -299,12 +419,20 @@ export function NewSessionDialog(): JSX.Element | null {
           className="mb-3 flex gap-1"
           onKeyDown={(e) => {
             if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
-            if (creating || submitting) return;
+            if (busy) return;
             e.preventDefault();
-            const nextMode: WorktreeMode = e.key === 'Home' ? 'new' : e.key === 'End' ? 'existing' : worktreeMode === 'new' ? 'existing' : 'new';
+            const idx = MODE_ORDER.indexOf(worktreeMode);
+            let nextMode: WorktreeMode;
+            if (e.key === 'Home') {
+              nextMode = MODE_ORDER[0]!;
+            } else if (e.key === 'End') {
+              nextMode = MODE_ORDER[MODE_ORDER.length - 1]!;
+            } else {
+              const delta = e.key === 'ArrowRight' ? 1 : -1;
+              nextMode = MODE_ORDER[(idx + delta + MODE_ORDER.length) % MODE_ORDER.length]!;
+            }
             setWorktreeMode(nextMode);
-            const id = nextMode === 'new' ? 'worktree-tab-new' : 'worktree-tab-existing';
-            document.getElementById(id)?.focus();
+            document.getElementById(tabIdFor(nextMode))?.focus();
           }}
         >
           <button
@@ -318,10 +446,10 @@ export function NewSessionDialog(): JSX.Element | null {
             aria-controls="worktree-panel-new"
             tabIndex={worktreeMode === 'new' ? 0 : -1}
             onClick={() => {
-              if (creating || submitting) return;
+              if (busy) return;
               setWorktreeMode('new');
             }}
-            disabled={creating || submitting}
+            disabled={busy}
             className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
               worktreeMode === 'new'
                 ? 'border-sky-600 text-sky-700 dark:text-sky-300'
@@ -341,10 +469,10 @@ export function NewSessionDialog(): JSX.Element | null {
             aria-controls="worktree-panel-existing"
             tabIndex={worktreeMode === 'existing' ? 0 : -1}
             onClick={() => {
-              if (creating || submitting) return;
+              if (busy) return;
               setWorktreeMode('existing');
             }}
-            disabled={creating || submitting}
+            disabled={busy}
             className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
               worktreeMode === 'existing'
                 ? 'border-sky-600 text-sky-700 dark:text-sky-300'
@@ -352,6 +480,29 @@ export function NewSessionDialog(): JSX.Element | null {
             }`}
           >
             Existing
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="worktree-tab-branch"
+            ref={(el) => {
+              if (worktreeMode === 'branch') (firstFocusRef as React.MutableRefObject<HTMLElement | null>).current = el;
+            }}
+            aria-selected={worktreeMode === 'branch'}
+            aria-controls="worktree-panel-branch"
+            tabIndex={worktreeMode === 'branch' ? 0 : -1}
+            onClick={() => {
+              if (busy) return;
+              setWorktreeMode('branch');
+            }}
+            disabled={busy}
+            className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
+              worktreeMode === 'branch'
+                ? 'border-sky-600 text-sky-700 dark:text-sky-300'
+                : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+            }`}
+          >
+            From Branch
           </button>
         </div>
 
@@ -433,6 +584,36 @@ export function NewSessionDialog(): JSX.Element | null {
             )}
           </form>
         </div>
+        <div role="tabpanel" id="worktree-panel-branch" aria-labelledby="worktree-tab-branch" hidden={worktreeMode !== 'branch'}>
+          {worktreeMode === 'branch' && (
+            <>
+              <BranchList
+                loading={branchesLoading}
+                branches={availableBranches}
+                selectedKey={selectedBranch ? branchKey(selectedBranch) : null}
+                onSelect={(b) => {
+                  setSelectedBranch(b);
+                  setBranchError(null);
+                }}
+              />
+              {selectedBranch && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Will run{' '}
+                  <span className="font-mono">
+                    {selectedBranch.remote !== undefined
+                      ? `git worktree add --track -b ${selectedBranch.name} .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.remote}/${selectedBranch.name}`
+                      : `git worktree add .arborist/.worktrees/${selectedBranch.name} ${selectedBranch.name}`}
+                  </span>
+                </p>
+              )}
+              {branchError !== null && (
+                <p role="alert" className="mt-2 rounded bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-900 dark:text-red-100">
+                  {branchError}
+                </p>
+              )}
+            </>
+          )}
+        </div>
 
         {worktree && <p className="mt-2 truncate text-xs text-slate-500">Selected: {worktree.path}</p>}
 
@@ -453,7 +634,7 @@ export function NewSessionDialog(): JSX.Element | null {
         <button
           type="button"
           onClick={onCancel}
-          disabled={creating || submitting}
+          disabled={busy}
           className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
         >
           Cancel
@@ -462,7 +643,7 @@ export function NewSessionDialog(): JSX.Element | null {
           <button
             type="submit"
             form="new-worktree-form"
-            disabled={creating || submitting || newName.trim().length === 0 || newNameError !== null}
+            disabled={busy || newName.trim().length === 0 || newNameError !== null}
             className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
             {creating ? 'Creating…' : 'Create & open'}
@@ -475,10 +656,22 @@ export function NewSessionDialog(): JSX.Element | null {
             onClick={() => {
               void onConfirmExisting();
             }}
-            disabled={submitting || creating || !worktree}
+            disabled={busy || !worktree}
             className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
             {submitting ? 'Opening…' : 'Open worktree'}
+          </button>
+        )}
+        {worktreeMode === 'branch' && (
+          <button
+            type="button"
+            onClick={() => {
+              void onCreateFromBranch();
+            }}
+            disabled={busy || !selectedBranch}
+            className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+          >
+            {branchCreating ? 'Creating…' : 'Create & open'}
           </button>
         )}
       </div>
