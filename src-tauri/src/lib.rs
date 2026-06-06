@@ -13,6 +13,7 @@ pub mod compose;
 pub mod config_store;
 pub mod copilot_events;
 pub mod git;
+pub mod git_remote;
 pub mod icon_backfill;
 pub mod login_path;
 pub mod plugins;
@@ -423,6 +424,8 @@ pub fn run() {
             commands::worktrees_list,
             commands::branches_list,
             commands::worktree_git_status,
+            commands::worktree_pr_info,
+            commands::open_external_url,
             commands::workspace_validate,
             commands::workspace_switch,
             commands::worktree_create,

@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Allows the frontend to open a validated http/https URL (e.g. a pull request link) in the user's default browser via the `open_external_url` command. The backend rejects any non-http(s) scheme so this cannot be abused as a generic file/shell opener."
+commands.allow = [
+    "open_external_url",
+]

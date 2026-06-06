@@ -1,7 +1,9 @@
 import type { DashboardWidgetProps } from '@/plugins/registry';
-import type { GitStatusFileKind } from '@/types/arborist';
+import { openExternalUrl } from '@/lib/tauri-bridge';
+import type { GitStatusFileKind, PrChecksStatus, PrState, WorktreePrInfo } from '@/types/arborist';
 
 import { useGitStatus } from './use-git-status';
+import { usePrInfo } from './use-pr-info';
 
 const KINDS: GitStatusFileKind[] = ['staged', 'unstaged', 'untracked', 'conflicted'];
 
@@ -12,8 +14,130 @@ const KIND_LABELS: Record<GitStatusFileKind, string> = {
   conflicted: 'Conflicted',
 };
 
+const PR_STATE_LABELS: Record<PrState, string> = {
+  open: 'Open',
+  draft: 'Draft',
+  merged: 'Merged',
+  closed: 'Closed',
+  unknown: 'Unknown',
+};
+
+const PR_STATE_CLASSES: Record<PrState, string> = {
+  open: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  draft: 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
+  merged: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+  closed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  unknown: 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+};
+
+const PR_CHECKS_META: Record<PrChecksStatus, { label: string; glyph: string; className: string } | null> = {
+  passing: { label: 'Checks passing', glyph: '✓', className: 'text-emerald-600 dark:text-emerald-400' },
+  failing: { label: 'Checks failing', glyph: '✗', className: 'text-red-600 dark:text-red-400' },
+  pending: { label: 'Checks pending', glyph: '•', className: 'text-amber-600 dark:text-amber-400' },
+  none: null,
+  unknown: null,
+};
+
+// Fire-and-forget external-open: the Rust `open_external_url` command validates the scheme and hands the URL to the OS opener. We swallow
+// rejections (capability denied / backend validation failure) so a failed open never escalates to an unhandled WebView promise rejection;
+// there is no in-widget recovery for a browser that won't launch, so a logged error is the appropriate ceiling.
+function openUrl(url: string): void {
+  void openExternalUrl(url).catch((error: unknown) => {
+    console.error('Failed to open external URL', error);
+  });
+}
+
+function PullRequestSection({
+  prInfo,
+  prError,
+  prLoading,
+}: Readonly<{
+  prInfo: WorktreePrInfo | null;
+  prError: string | null;
+  prLoading: boolean;
+}>): JSX.Element | null {
+  // `prError` is a hook-level rejection; `prInfo.error` is the backend's structured always-Ok failure (e.g. invalid worktree path, which also
+  // defaults `provider` to `unknown`). Surface both the same way so a structured error is never hidden by the unrecognised-host short-circuit below.
+  const failure = prError ?? prInfo?.error ?? null;
+  if (failure) {
+    return (
+      <p data-testid="worktree-dashboard-pr-error" className="text-xs text-red-600 dark:text-red-400">
+        Unable to read pull request: {failure}
+      </p>
+    );
+  }
+  if (!prInfo) {
+    return prLoading ? <p className="text-xs text-slate-500 dark:text-slate-400">Loading pull request…</p> : null;
+  }
+  // For unrecognised hosts we still surface the backend's explanatory `note` (e.g. "Unrecognised git host…"), matching the documented "degrade
+  // to a note, not an error" contract. Only hide the section when there is genuinely nothing to show (no PR and no note).
+  if (prInfo.provider === 'unknown' && !prInfo.pr && !prInfo.note) {
+    return null;
+  }
+
+  const checksMeta = prInfo.pr ? PR_CHECKS_META[prInfo.pr.checks] : null;
+
+  return (
+    <div
+      data-testid="worktree-dashboard-pr"
+      className="flex flex-col gap-1 rounded-md border border-slate-200 bg-white p-2 text-xs dark:border-slate-700 dark:bg-slate-950"
+    >
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Pull Request</span>
+      {prInfo.pr ? (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="worktree-dashboard-pr-link"
+              onClick={() => {
+                openUrl(prInfo.pr!.url);
+              }}
+              className="cursor-pointer font-mono font-semibold text-sky-600 hover:underline dark:text-sky-400"
+            >
+              #{prInfo.pr.number}
+            </button>
+            <span
+              data-testid="worktree-dashboard-pr-state"
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${PR_STATE_CLASSES[prInfo.pr.state]}`}
+            >
+              {PR_STATE_LABELS[prInfo.pr.state]}
+            </span>
+            {checksMeta && (
+              <span data-testid="worktree-dashboard-pr-checks" title={checksMeta.label} className={`text-xs font-semibold ${checksMeta.className}`}>
+                {checksMeta.glyph} {checksMeta.label}
+              </span>
+            )}
+          </div>
+          {prInfo.pr.title && <span className="truncate text-slate-600 dark:text-slate-300">{prInfo.pr.title}</span>}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {prInfo.note && (
+            <span data-testid="worktree-dashboard-pr-note" className="text-slate-500 dark:text-slate-400">
+              {prInfo.note}
+            </span>
+          )}
+          {prInfo.repoWebUrl && (
+            <button
+              type="button"
+              data-testid="worktree-dashboard-pr-repo-link"
+              onClick={() => {
+                openUrl(prInfo.repoWebUrl!);
+              }}
+              className="cursor-pointer self-start font-mono text-sky-600 hover:underline dark:text-sky-400"
+            >
+              Open repository
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element {
   const { status, statusError, statusLoading, refreshStatus } = useGitStatus(tabPath);
+  const { prInfo, prError, prLoading, refreshPrInfo } = usePrInfo(tabPath);
   const counts: Record<GitStatusFileKind, number> = {
     staged: status?.staged ?? 0,
     unstaged: status?.unstaged ?? 0,
@@ -34,6 +158,7 @@ export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element 
           data-testid="worktree-dashboard-git-refresh"
           onClick={() => {
             void refreshStatus();
+            void refreshPrInfo();
           }}
           disabled={statusLoading}
           className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -41,6 +166,8 @@ export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element 
           {statusLoading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
+
+      <PullRequestSection prInfo={prInfo} prError={prError} prLoading={prLoading} />
 
       {statusError ? (
         <p data-testid="worktree-dashboard-git-error" className="text-xs text-red-600 dark:text-red-400">

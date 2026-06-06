@@ -89,11 +89,12 @@ Success looks like:
 
 ### Built-in plugins
 
-| ID    | Requirement                                                                                                                                       |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| BP-01 | Settings must expose a Plugins tab where registered built-in plugins can be enabled or disabled by kind.                                          |
-| BP-02 | Disabled AI plugins must not appear as new-session launch actions; disabled dashboard widgets must not render on the worktree dashboard.          |
-| BP-03 | Plugin-owned settings must be associated with the matching plugin entry. AI CLI launch command overrides belong to the Claude/Copilot plugin row. |
+| ID    | Requirement                                                                                                                                                                                                                                                                                                                               |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BP-01 | Settings must expose a Plugins tab where registered built-in plugins can be enabled or disabled by kind.                                                                                                                                                                                                                                  |
+| BP-02 | Disabled AI plugins must not appear as new-session launch actions; disabled dashboard widgets must not render on the worktree dashboard.                                                                                                                                                                                                  |
+| BP-03 | Plugin-owned settings must be associated with the matching plugin entry. AI CLI launch command overrides belong to the Claude/Copilot plugin row.                                                                                                                                                                                         |
+| BP-04 | The Git Status widget must surface the pull/merge request for the current branch — number, web link, and state/checks — for GitHub, GitLab, and Azure DevOps, detected from the `origin` remote and the matching installed CLI (`gh`/`glab`/`az`), degrading gracefully when the provider is unknown, the CLI is absent, or no PR exists. |
 
 ### Persistence and recovery
 

@@ -279,6 +279,15 @@ pub async fn worktree_git_status(
     crate::plugins::dashboard_widget::git_status::worktree_git_status_impl(&ctx, &args.path)
 }
 
+/// Look up the pull/merge request for a worktree's current branch (Git Status dashboard). Always returns `Ok(...)`; provider is detected from the
+/// `origin` remote and PR data comes from the matching provider CLI (`gh` / `glab` / `az`). Missing CLI / no-PR / unknown-host outcomes are conveyed
+/// via the result's `provider` / `cliAvailable` / `note` fields rather than an error.
+#[tauri::command]
+pub async fn worktree_pr_info(app: tauri::AppHandle, args: crate::types::WorktreePrInfoArgs) -> Result<crate::types::WorktreePrInfo, AppError> {
+    let ctx = ctx_of(&app)?;
+    crate::plugins::dashboard_widget::git_status::worktree_pr_info_impl(&ctx, &args.path)
+}
+
 /// Validate a candidate workspace root (Roadmap §1.1). Never errors for the "invalid path" case — the picker shows inline feedback.
 #[tauri::command]
 pub async fn workspace_validate(app: tauri::AppHandle, args: WorkspaceValidateArgs) -> Result<WorkspaceValidateResult, AppError> {
@@ -367,6 +376,60 @@ fn reject_redirected_logs_root(canon_app_data: &Path, canon_root: &Path) -> Resu
         "worktree-prep logs root resolves outside the expected app-data location: {}",
         canon_root.display()
     ))
+}
+
+/// Open an `http`/`https` URL in the user's default browser. The backend validates the scheme (only `http` / `https` are accepted) before handing
+/// the URL to the OS opener, so this command cannot be abused as a generic shell / file / `file://` opener.
+#[tauri::command]
+pub async fn open_external_url(args: crate::types::OpenExternalUrlArgs) -> Result<(), AppError> {
+    let url = validate_external_url(&args.url)?;
+    open_url_with_os(&url).map_err(|e| AppError::new("Io", format!("open url: {e}")))
+}
+
+/// Validate that `url` is a well-formed `http`/`https` URL. Returns the trimmed URL on success. Rejects other schemes (`file:`, `javascript:`,
+/// `data:`, …) and inputs without an explicit `http(s)` scheme so the OS opener can never be steered at a local file or custom protocol handler.
+fn validate_external_url(url: &str) -> Result<String, AppError> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err(AppError::new("InvalidPath", "only http/https URLs may be opened".to_string()));
+    }
+    // Defence in depth: reject control characters / whitespace (including Unicode whitespace like NBSP) that could let a shell-style opener split
+    // the argument.
+    if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(AppError::new(
+            "InvalidPath",
+            "URL contains invalid whitespace or control characters".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_with_os(url: &str) -> std::io::Result<()> {
+    // `explorer.exe <url>` launches the URL in the user's default browser without going through `cmd.exe`. This matters for security: a shell
+    // opener (`cmd /c start … <url>`) interprets cmd metacharacters (`&`, `|`, `(`, …) in the URL as command separators, and because the URL
+    // carries no spaces Rust passes it unquoted, so an `&`-laden URL derived from a malicious `origin` remote would execute arbitrary commands.
+    // CreateProcess (used here) does no such interpretation, so the URL reaches the protocol handler verbatim.
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut command = std::process::Command::new("explorer.exe");
+    command.creation_flags(CREATE_NO_WINDOW).arg(url);
+    spawn_opener(command)
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_with_os(url: &str) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("open");
+    command.arg(url);
+    spawn_opener(command)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_url_with_os(url: &str) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url);
+    spawn_opener(command)
 }
 
 fn spawn_opener(mut command: std::process::Command) -> std::io::Result<()> {
@@ -849,5 +912,28 @@ mod tests {
         let err = validate_prep_log_path(app_data.path(), redirected_root.path(), &log_path).expect_err("redirected root must fail");
 
         assert_eq!(err.code, "PermissionDenied");
+    }
+
+    #[test]
+    fn validate_external_url_accepts_http_and_https() {
+        assert_eq!(validate_external_url("https://example.com/x").expect("https"), "https://example.com/x");
+        assert_eq!(
+            validate_external_url("  http://example.com  ").expect("trimmed http"),
+            "http://example.com"
+        );
+    }
+
+    #[test]
+    fn validate_external_url_rejects_non_http_schemes() {
+        for url in ["file:///etc/passwd", "javascript:alert(1)", "data:text/html,x", "example.com"] {
+            assert_eq!(validate_external_url(url).expect_err("scheme rejected").code, "InvalidPath");
+        }
+    }
+
+    #[test]
+    fn validate_external_url_rejects_unicode_whitespace() {
+        // NBSP (U+00A0) is whitespace the OS opener could treat as an argument separator; `c == ' '` alone would have let it through.
+        let err = validate_external_url("https://example.com/a\u{00A0}b").expect_err("nbsp rejected");
+        assert_eq!(err.code, "InvalidPath");
     }
 }

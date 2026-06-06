@@ -619,6 +619,128 @@ pub struct WorktreeGitStatus {
 /// thousands of dirty files cannot bloat the IPC payload.
 pub const MAX_GIT_STATUS_FILES: usize = 200;
 
+// --------------------------------------------------------------------------- Pull request info
+// ---------------------------------------------------------------------------
+
+/// Git hosting provider detected from the worktree's `origin` remote URL. Drives which provider CLI (`gh` / `glab` / `az repos`) the PR-info
+/// lookup shells out to and how the repo / PR web URLs are constructed. `Unknown` covers any host we don't recognise (the dashboard then shows no
+/// PR section). Self-hosted GitHub Enterprise / self-managed GitLab are matched best-effort via host heuristics; full enterprise detection is left
+/// to the provider CLI's own configuration.
+///
+/// MIRROR: `src/types/arborist.ts::GitProvider`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GitProvider {
+    GitHub,
+    GitLab,
+    AzureDevOps,
+    #[default]
+    Unknown,
+}
+
+/// Lifecycle state of a pull/merge request, normalised across providers so the dashboard renders one badge vocabulary regardless of CLI. `Draft`
+/// is surfaced distinctly from `Open` because every supported provider exposes a draft flag and it is the single most actionable "not ready"
+/// signal. `Unknown` is used when the CLI returns a state string we don't map.
+///
+/// MIRROR: `src/types/arborist.ts::PrState`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PrState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+    #[default]
+    Unknown,
+}
+
+/// Aggregate CI / checks status for a PR, normalised across providers (GitHub status-check rollup, GitLab pipeline status, ADO PR policy
+/// evaluations). `None` means the PR has no checks configured; `Unknown` means the CLI did not report a status we could map. Kept deliberately
+/// coarse — the dashboard renders a single pass/fail/pending glyph, not a per-check breakdown.
+///
+/// MIRROR: `src/types/arborist.ts::PrChecksStatus`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PrChecksStatus {
+    Passing,
+    Failing,
+    Pending,
+    None,
+    #[default]
+    Unknown,
+}
+
+/// A single pull/merge request associated with the current branch, normalised across providers. Populated only when the provider CLI is installed,
+/// authenticated, and reports a PR for the branch.
+///
+/// MIRROR: `src/types/arborist.ts::PullRequestInfo`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestInfo {
+    /// Provider-assigned PR/MR number (GitHub/GitLab) or ID (Azure DevOps). Rendered as `#<number>` in the dashboard.
+    pub number: u64,
+    /// Absolute https URL to the PR web page. Opened via the `open_external_url` command (never navigated to inside the WebView).
+    pub url: String,
+    /// PR title, when the CLI reports one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub title: Option<String>,
+    pub state: PrState,
+    pub checks: PrChecksStatus,
+    /// `true` when the PR is marked as a draft / work-in-progress. Surfaced separately from [`Self::state`] so a draft that is otherwise "open"
+    /// still reads as draft in the UI.
+    pub is_draft: bool,
+}
+
+/// Pull-request snapshot for a single worktree, returned by the `worktree_pr_info` command and rendered in the Git Status dashboard widget.
+///
+/// Like [`WorktreeGitStatus`], the command **always** resolves `Ok(...)`: discovery failures populate [`Self::error`] (hard failure) while expected
+/// "nothing to show" outcomes (unknown provider, missing CLI, no PR for the branch) are conveyed through [`Self::provider`], [`Self::cli_available`],
+/// and [`Self::note`] with `error == None`. The frontend distinguishes these states without a thrown error.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreePrInfo`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePrInfo {
+    /// Provider detected from the `origin` remote URL. `Unknown` when the host is unrecognised or there is no `origin` remote.
+    pub provider: GitProvider,
+    /// `true` when the provider's CLI (`gh` / `glab` / `az`) was found on `PATH`. `false` short-circuits the PR lookup — the dashboard can still
+    /// surface [`Self::repo_web_url`] and a hint to install/authenticate the CLI.
+    pub cli_available: bool,
+    /// Normalised https URL to the repository web page, derived from the remote. `None` when the remote could not be parsed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub repo_web_url: Option<String>,
+    /// The PR associated with the current branch, when one was found.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pr: Option<PullRequestInfo>,
+    /// Human-readable explanation for an *expected* empty result (e.g. "no open PR for this branch", "gh CLI not authenticated", "provider not
+    /// supported"). Distinct from [`Self::error`]: a `note` is informational, not a failure.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub note: Option<String>,
+    /// `Some(message)` on hard failure (invalid worktree path, CLI invocation error). `None` on any successful resolution — including the
+    /// degraded-but-expected cases conveyed via [`Self::note`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+/// Args for the `worktree_pr_info` command.
+///
+/// MIRROR: `src/types/arborist.ts::WorktreePrInfoArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePrInfoArgs {
+    pub path: PathBuf,
+}
+
+/// Args for the `open_external_url` command. The backend validates that [`Self::url`] is an `http`/`https` URL before handing it to the OS opener,
+/// so this command cannot be abused as a generic shell/file opener.
+///
+/// MIRROR: `src/types/arborist.ts::OpenExternalUrlArgs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenExternalUrlArgs {
+    pub url: String,
+}
+
 // --------------------------------------------------------------------------- AppConfig
 // ---------------------------------------------------------------------------
 

@@ -125,6 +125,14 @@ fn main_capability_allows_required_commands_only() {
         identifiers.contains(&"allow-worktree-git-status"),
         "main capability must include allow-worktree-git-status so worktree_git_status is callable; got {identifiers:?}",
     );
+    assert!(
+        identifiers.contains(&"allow-worktree-pr-info"),
+        "main capability must include allow-worktree-pr-info so worktree_pr_info is callable; got {identifiers:?}",
+    );
+    assert!(
+        identifiers.contains(&"allow-open-external-url"),
+        "main capability must include allow-open-external-url so open_external_url is callable; got {identifiers:?}",
+    );
 }
 
 #[test]
@@ -200,6 +208,34 @@ fn allow_worktree_git_status_permission_file_declares_command() {
     assert!(
         raw.contains("\"worktree_git_status\""),
         "allow-worktree-git-status must declare worktree_git_status; raw permission file:\n{raw}",
+    );
+}
+
+#[test]
+fn allow_worktree_pr_info_permission_file_declares_command() {
+    let path = manifest_dir().join("permissions").join("allow-worktree-pr-info.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-worktree-pr-info\""),
+        "permission identifier must remain `allow-worktree-pr-info`",
+    );
+    assert!(
+        raw.contains("\"worktree_pr_info\""),
+        "allow-worktree-pr-info must declare worktree_pr_info; raw permission file:\n{raw}",
+    );
+}
+
+#[test]
+fn allow_open_external_url_permission_file_declares_command() {
+    let path = manifest_dir().join("permissions").join("allow-open-external-url.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    assert!(
+        raw.contains("identifier = \"allow-open-external-url\""),
+        "permission identifier must remain `allow-open-external-url`",
+    );
+    assert!(
+        raw.contains("\"open_external_url\""),
+        "allow-open-external-url must declare open_external_url; raw permission file:\n{raw}",
     );
 }
 
