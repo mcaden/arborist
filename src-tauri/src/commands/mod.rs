@@ -27,8 +27,8 @@ use crate::types::{
     SessionInputArgs, SessionOutputEvent, SessionResizeArgs, SessionRestartArgs, SessionStatus, SessionStatusEvent, SessionView, ShellCommandPreview,
     ShellCommandPreviewArgs, SubSession, SubSessionCloseArgs, SubSessionCloseResult, SubSessionCreateArgs, SubSessionIdArg, SubSessionInputArgs,
     SubSessionListArgs, SubSessionResizeArgs, WorkspaceSwitchArgs, WorkspaceSwitchResult, WorkspaceValidateArgs, WorkspaceValidateResult,
-    WorktreeCreateArgs, WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs, WorktreeTabCloseResult, WorktreeTabFocusArgs, WorktreeTabOpenArgs,
-    WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
+    WorktreeCreateArgs, WorktreeCreateFromBranchArgs, WorktreeCreateResult, WorktreeTab, WorktreeTabCloseArgs, WorktreeTabCloseResult,
+    WorktreeTabFocusArgs, WorktreeTabOpenArgs, WorktreeTabReorderArgs, WorktreeTabSetActiveChildArgs,
 };
 use crate::workspace_scope::WorkspaceScope;
 
@@ -258,6 +258,15 @@ pub async fn worktrees_list(app: tauri::AppHandle, repo_root: String) -> Result<
     session::worktrees_list_impl(&ctx, &path)
 }
 
+/// Enumerate the local and remote-tracking branches of the repo rooted at `repo_root` ("From Branch" worktree flow). Always returns `Ok(vec![])`
+/// on discovery failures so the dialog's other tabs are never blocked by an error toast.
+#[tauri::command]
+pub async fn branches_list(app: tauri::AppHandle, repo_root: String) -> Result<Vec<crate::types::BranchInfo>, AppError> {
+    let ctx = ctx_of(&app)?;
+    let path = PathBuf::from(repo_root);
+    session::branches_list_impl(&ctx, &path)
+}
+
 /// Snapshot `git status` for a worktree (Issue #55). Always returns `Ok(...)`; on any discovery failure (invalid/missing path, non-repo, `git`
 /// binary missing, non-zero `git` exit) the result is a default-valued [`crate::types::WorktreeGitStatus`] with `error: Some(message)` populated
 /// so the dashboard can distinguish a clean tree from an unreadable one and surface "unable to read git status" rather than blocking.
@@ -297,7 +306,18 @@ pub async fn worktree_create(app: tauri::AppHandle, args: WorktreeCreateArgs) ->
     Ok(result)
 }
 
-/// Open a worktree-prep log file in the user's default OS handler.
+/// Create a linked worktree from an *existing* branch ("From Branch" flow). Mirrors [`worktree_create`] — same workspace-switch barrier, repo-command
+/// trust gate (keyed on the resulting worktree path, so the prep-command trust prompt is identical), and background `worktree_prep` spawn — but checks
+/// out the chosen branch instead of creating a fresh one. When `args.remote` is set, a local tracking branch is created from `<remote>/<branch>`.
+#[tauri::command]
+pub async fn worktree_create_from_branch(app: tauri::AppHandle, args: WorktreeCreateFromBranchArgs) -> Result<WorktreeCreateResult, AppError> {
+    let ctx = ctx_of(&app)?;
+    let _switch = session::acquire_switch_read(&ctx)?;
+    let cfg = session::trusted_worktree_create_config(&ctx, &args.branch)?;
+    let mut result = session::worktree_create_from_branch_impl(&ctx, &args.branch, args.remote.as_deref())?;
+    result.prep = crate::worktree_prep::maybe_spawn(&app, ctx.prep_registry.clone(), &cfg, &result.path);
+    Ok(result)
+}
 ///
 /// The canonical path must live under `<app_data_dir>/worktree-prep-logs/`, so this cannot be abused as a generic file opener.
 #[tauri::command]

@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tracing::{debug, warn};
 
-use crate::types::{Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
+use crate::types::{BranchInfo, Error, GitStatusFile, GitStatusFileKind, WorktreeGitStatus, WorktreeInfo, MAX_GIT_STATUS_FILES};
 
 // On Windows, file handles can linger after a child process exits. The hot case in practice is **orphaned grandchildren** of the killed PTY tree:
 // `windows_process_tree::kill_process_tree` takes a single process snapshot then terminates descendants deepest-first, but if a leaf process spawns
@@ -108,6 +108,24 @@ pub trait GitRunner: Send + Sync {
     /// records are silently skipped (see [`parse_status_v2`]), so callers never see a "parse error" — the worst case is missing entries, not a
     /// signalled failure. The dashboard distinguishes "clean tree" from "unreadable" by inspecting `error`.
     fn git_status(&self, worktree_path: &Path) -> Result<WorktreeGitStatus, Error>;
+
+    /// Enumerate the local and remote-tracking branches of the repository rooted at `repo_root` (the "From Branch" worktree flow). Like
+    /// [`GitRunner::list_worktrees`], implementations MUST degrade to `Ok(vec![])` on any discovery failure (missing binary, not a repo, IO error)
+    /// so the dialog never blocks on an error. The default implementation returns an empty list; the production runner overrides it.
+    fn list_branches(&self, _repo_root: &Path) -> Result<Vec<BranchInfo>, Error> {
+        Ok(Vec::new())
+    }
+
+    /// Create a worktree at `<repo_root>/<relative_path>` that checks out an *existing* branch. When `remote` is `Some(r)`, runs
+    /// `git -C <repo_root> worktree add --track -b <branch> <relative_path> <r>/<branch>` to create a local tracking branch; when `None`, runs
+    /// `git -C <repo_root> worktree add <relative_path> <branch>` to check out the existing local branch. Returns the canonical absolute path of the
+    /// new worktree on success; otherwise an [`Error::Internal`] carrying the captured stderr. The default implementation errors; the production
+    /// runner overrides it.
+    fn create_worktree_from_branch(&self, _repo_root: &Path, _relative_path: &Path, _branch: &str, _remote: Option<&str>) -> Result<PathBuf, Error> {
+        Err(Error::Internal(
+            "create_worktree_from_branch is not implemented for this GitRunner".to_owned(),
+        ))
+    }
 }
 
 /// Production [`GitRunner`] that shells out to the system `git`.
@@ -225,6 +243,77 @@ impl GitRunner for RealGitRunner {
             )));
         }
         // The new worktree lives at <repo_root>/<relative_path>.
+        let new_path = repo_root.join(relative_path);
+        dunce::canonicalize(&new_path)
+            .map_err(|e| Error::Internal(format!("worktree created but canonicalization failed: {}: {e}", new_path.display())))
+    }
+
+    fn list_branches(&self, repo_root: &Path) -> Result<Vec<BranchInfo>, Error> {
+        if !repo_root.is_dir() {
+            debug!(
+                code = "GitUnavailable",
+                repo_root = %repo_root.display(),
+                "list_branches: repo_root is not a directory"
+            );
+            return Ok(Vec::new());
+        }
+        // `%(worktreepath)` (git >= 2.31) is non-empty when the ref is checked out in some worktree. We separate fields with a tab — refnames cannot
+        // contain control characters, and worktree paths containing tabs are vanishingly unlikely, so this is an unambiguous machine-readable split.
+        const FMT: &str = "%(refname)\t%(worktreepath)";
+        let output = match git_command()
+            .current_dir(repo_root)
+            .arg("-C")
+            .arg(repo_root)
+            .args(["for-each-ref", "--format", FMT, "refs/heads", "refs/remotes"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                warn!(
+                    code = "GitUnavailable",
+                    repo_root = %repo_root.display(),
+                    error = %e,
+                    "git binary not invokable; returning empty branch list",
+                );
+                return Ok(Vec::new());
+            }
+        };
+        if !output.status.success() {
+            warn!(
+                code = "GitUnavailable",
+                repo_root = %repo_root.display(),
+                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                "git for-each-ref failed; returning empty branch list",
+            );
+            return Ok(Vec::new());
+        }
+        Ok(parse_for_each_ref(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    fn create_worktree_from_branch(&self, repo_root: &Path, relative_path: &Path, branch: &str, remote: Option<&str>) -> Result<PathBuf, Error> {
+        if !repo_root.is_dir() {
+            return Err(Error::WorktreeMissing(repo_root.to_path_buf()));
+        }
+        let mut cmd = git_command();
+        cmd.current_dir(repo_root).arg("-C").arg(repo_root).args(["worktree", "add"]);
+        match remote {
+            // Establish a new local tracking branch from the remote-tracking ref so the checkout is unambiguous even if several remotes share the
+            // branch name (plain `worktree add <path> <branch>` DWIM would be ambiguous in that case).
+            Some(r) => {
+                cmd.args(["--track", "-b", branch]).arg(relative_path).arg(format!("{r}/{branch}"));
+            }
+            None => {
+                cmd.arg(relative_path).arg(branch);
+            }
+        }
+        let output = cmd.output().map_err(|e| Error::Internal(format!("git worktree add: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(Error::Internal(format!(
+                "git worktree add failed: {}",
+                if stderr.is_empty() { "<no stderr>".to_owned() } else { stderr }
+            )));
+        }
         let new_path = repo_root.join(relative_path);
         dunce::canonicalize(&new_path)
             .map_err(|e| Error::Internal(format!("worktree created but canonicalization failed: {}: {e}", new_path.display())))
@@ -513,6 +602,46 @@ pub(crate) fn parse_porcelain(input: &str) -> Vec<WorktreeInfo> {
         }
     }
 
+    out
+}
+
+/// Parse `git for-each-ref --format="%(refname)\t%(worktreepath)" refs/heads refs/remotes` output into [`BranchInfo`] entries.
+///
+/// Each line is `<refname>\t<worktreepath>`, where `worktreepath` is non-empty iff the ref is checked out in some worktree. Local heads
+/// (`refs/heads/<name>`) become `BranchInfo { name, remote: None }`; remote-tracking refs (`refs/remotes/<remote>/<name>`) become
+/// `BranchInfo { name, remote: Some(remote) }`. The symbolic `refs/remotes/<remote>/HEAD` pointer is skipped (it is an alias, not a branch).
+pub(crate) fn parse_for_each_ref(input: &str) -> Vec<BranchInfo> {
+    let mut out: Vec<BranchInfo> = Vec::new();
+    for raw_line in input.lines() {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            continue;
+        }
+        let (refname, worktreepath) = match line.split_once('\t') {
+            Some((r, w)) => (r, w),
+            None => (line, ""),
+        };
+        let is_checked_out = !worktreepath.is_empty();
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
+            out.push(BranchInfo {
+                name: name.to_owned(),
+                remote: None,
+                is_checked_out,
+            });
+        } else if let Some(rest) = refname.strip_prefix("refs/remotes/") {
+            // `rest` is `<remote>/<branch...>`; split only on the first slash so branch names with slashes survive intact.
+            if let Some((remote, branch)) = rest.split_once('/') {
+                if branch == "HEAD" {
+                    continue;
+                }
+                out.push(BranchInfo {
+                    name: branch.to_owned(),
+                    remote: Some(remote.to_owned()),
+                    is_checked_out,
+                });
+            }
+        }
+    }
     out
 }
 
@@ -1156,8 +1285,18 @@ locked migrating to slow disk
             Self { repo_root, tempdir }
         }
 
+        /// Variant for repos that live in a *subdirectory* of `tempdir` (e.g. a `git clone` target). `repo_root` is the directory the cleanup scrub
+        /// and `repo_root()` accessor operate on; the whole `tempdir` is still removed when the guard drops.
+        fn new_for(tempdir: tempfile::TempDir, repo_root: PathBuf) -> Self {
+            Self { repo_root, tempdir }
+        }
+
         fn path(&self) -> &Path {
             self.tempdir.path()
+        }
+
+        fn repo_root(&self) -> &Path {
+            &self.repo_root
         }
     }
 
@@ -1303,6 +1442,124 @@ locked migrating to slow disk
             .create_worktree(Path::new("/no/such/repo/arborist-test"), Path::new(".worktrees/x"), "x")
             .expect_err("must error");
         assert!(matches!(err, Error::WorktreeMissing(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_for_each_ref_classifies_local_and_remote_branches() {
+        let input = "refs/heads/main\t/repo\n\
+                     refs/heads/feature/foo\t\n\
+                     refs/remotes/origin/feature/foo\t\n\
+                     refs/remotes/origin/HEAD\t\n";
+        let parsed = parse_for_each_ref(input);
+        assert_eq!(parsed.len(), 3, "HEAD pointer must be skipped: {parsed:?}");
+
+        let main = parsed.iter().find(|b| b.name == "main").expect("main");
+        assert_eq!(main.remote, None);
+        assert!(main.is_checked_out, "main has a non-empty worktreepath");
+
+        let local = parsed
+            .iter()
+            .find(|b| b.name == "feature/foo" && b.remote.is_none())
+            .expect("local feature/foo");
+        assert!(!local.is_checked_out);
+
+        let remote = parsed.iter().find(|b| b.remote.as_deref() == Some("origin")).expect("remote feature/foo");
+        assert_eq!(remote.name, "feature/foo", "remote prefix must be stripped, slashes preserved");
+        assert!(!remote.is_checked_out);
+    }
+
+    #[test]
+    fn real_runner_list_branches_reports_local_branches() {
+        let dir = WorktreeCleanup::new(tempfile::TempDir::new().unwrap());
+        init_git_repo(dir.path());
+        // Create an extra local branch without checking it out.
+        let st = clean_test_git_command()
+            .current_dir(dir.path())
+            .arg("-C")
+            .arg(dir.path())
+            .args(["branch", "feature/foo"])
+            .output()
+            .expect("git branch");
+        assert!(st.status.success(), "git branch failed: {}", String::from_utf8_lossy(&st.stderr));
+
+        let runner = RealGitRunner;
+        let branches = runner.list_branches(dir.path()).expect("list_branches");
+        let main = branches.iter().find(|b| b.name == "main").expect("main present");
+        assert!(main.is_checked_out, "main is the checked-out branch of the primary worktree");
+        let feature = branches.iter().find(|b| b.name == "feature/foo").expect("feature/foo present");
+        assert_eq!(feature.remote, None);
+        assert!(!feature.is_checked_out, "feature/foo is not checked out anywhere");
+    }
+
+    #[test]
+    fn real_runner_list_branches_empty_for_missing_repo() {
+        let runner = RealGitRunner;
+        assert!(runner.list_branches(Path::new("/no/such/repo/arborist-test")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn real_runner_create_worktree_from_branch_checks_out_existing_local_branch() {
+        let dir = WorktreeCleanup::new(tempfile::TempDir::new().unwrap());
+        init_git_repo(dir.path());
+        let st = clean_test_git_command()
+            .current_dir(dir.path())
+            .arg("-C")
+            .arg(dir.path())
+            .args(["branch", "feature"])
+            .output()
+            .expect("git branch");
+        assert!(st.status.success(), "git branch failed: {}", String::from_utf8_lossy(&st.stderr));
+
+        let runner = RealGitRunner;
+        let new_path = runner
+            .create_worktree_from_branch(dir.path(), Path::new(".worktrees/feature"), "feature", None)
+            .expect("create_worktree_from_branch");
+        assert!(new_path.is_dir(), "expected the new worktree dir to exist");
+        // The existing branch must now be checked out in the new worktree (no fresh branch was created).
+        let listed = runner.list_worktrees(dir.path()).unwrap();
+        assert!(
+            listed.iter().any(|w| w.branch.as_deref() == Some("feature")),
+            "expected `feature` checked out at the new worktree: {listed:?}"
+        );
+    }
+
+    #[test]
+    fn real_runner_create_worktree_from_branch_tracks_remote_branch() {
+        // Build an "origin" repo with a `feature` branch, then clone it so the clone has a `refs/remotes/origin/feature` tracking ref.
+        let origin = WorktreeCleanup::new(tempfile::TempDir::new().unwrap());
+        init_git_repo(origin.path());
+        let st = clean_test_git_command()
+            .current_dir(origin.path())
+            .arg("-C")
+            .arg(origin.path())
+            .args(["branch", "feature"])
+            .output()
+            .expect("git branch");
+        assert!(st.status.success(), "git branch failed: {}", String::from_utf8_lossy(&st.stderr));
+
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let work_root = work_dir.path().join("clone");
+        let st = clean_test_git_command()
+            .current_dir(work_dir.path())
+            .args(["clone", "-q"])
+            .arg(origin.path())
+            .arg(&work_root)
+            .output()
+            .expect("git clone");
+        assert!(st.status.success(), "git clone failed: {}", String::from_utf8_lossy(&st.stderr));
+        let work = WorktreeCleanup::new_for(work_dir, work_root.clone());
+
+        let runner = RealGitRunner;
+        // No local `feature` exists yet; remote = Some("origin") must create a local tracking branch from origin/feature.
+        let new_path = runner
+            .create_worktree_from_branch(work.repo_root(), Path::new(".worktrees/feature"), "feature", Some("origin"))
+            .expect("create_worktree_from_branch (remote)");
+        assert!(new_path.is_dir(), "expected the new worktree dir to exist");
+        let listed = runner.list_worktrees(work.repo_root()).unwrap();
+        assert!(
+            listed.iter().any(|w| w.branch.as_deref() == Some("feature")),
+            "expected a local `feature` branch checked out at the new worktree: {listed:?}"
+        );
     }
 
     /// Regression for issue #13: every `git` we spawn must drop the repo-selection env vars so a hostile parent (e.g. husky pre-push) cannot reroute

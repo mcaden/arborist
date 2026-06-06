@@ -95,6 +95,8 @@ export const repoCommandAllowOnce: Mock<typeof realBridge.repoCommandAllowOnce> 
 
 export const worktreesList: Mock<typeof realBridge.worktreesList> = vi.fn(() => Promise.resolve([]));
 
+export const branchesList: Mock<typeof realBridge.branchesList> = vi.fn(() => Promise.resolve([]));
+
 const defaultGitStatus = (): WorktreeGitStatus => ({
   ahead: 0,
   behind: 0,
@@ -111,6 +113,8 @@ export const worktreeGitStatus: Mock<typeof realBridge.worktreeGitStatus> = vi.f
 export const workspaceValidate: Mock<typeof realBridge.workspaceValidate> = vi.fn(() => Promise.resolve({ valid: true }));
 
 export const worktreeCreate: Mock<typeof realBridge.worktreeCreate> = vi.fn(rejectNotImplemented);
+
+export const worktreeCreateFromBranch: Mock<typeof realBridge.worktreeCreateFromBranch> = vi.fn(rejectNotImplemented);
 
 export const workspaceSwitch: Mock<typeof realBridge.workspaceSwitch> = vi.fn(rejectNotImplemented);
 
@@ -186,9 +190,11 @@ export function resetBridgeMocks(): void {
   repoCommandTrust.mockReset().mockImplementation(() => Promise.resolve(defaultAppConfig()));
   repoCommandAllowOnce.mockReset().mockImplementation(() => Promise.resolve());
   worktreesList.mockReset().mockImplementation(() => Promise.resolve([]));
+  branchesList.mockReset().mockImplementation(() => Promise.resolve([]));
   worktreeGitStatus.mockReset().mockImplementation(() => Promise.resolve(defaultGitStatus()));
   workspaceValidate.mockReset().mockImplementation(() => Promise.resolve({ valid: true }));
   worktreeCreate.mockReset().mockImplementation(rejectNotImplemented);
+  worktreeCreateFromBranch.mockReset().mockImplementation(rejectNotImplemented);
   workspaceSwitch.mockReset().mockImplementation(rejectNotImplemented);
   pickDirectory.mockReset().mockImplementation(() => Promise.resolve(null));
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
@@ -237,9 +243,11 @@ const _shapeCheck = {
   repoCommandTrust,
   repoCommandAllowOnce,
   worktreesList,
+  branchesList,
   worktreeGitStatus,
   workspaceValidate,
   worktreeCreate,
+  worktreeCreateFromBranch,
   workspaceSwitch,
   pickDirectory,
   onSessionOutput,

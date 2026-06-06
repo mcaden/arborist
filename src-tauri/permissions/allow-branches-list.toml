@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-branches-list"
+description = "Allows the frontend to enumerate the repository's local and remote-tracking branches via the `branches_list` command (\"From Branch\" worktree flow)."
+commands.allow = [
+    "branches_list",
+]
