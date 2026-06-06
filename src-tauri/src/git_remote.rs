@@ -42,8 +42,13 @@ fn split_host_path(url: &str) -> Option<(String, String)> {
         let host_port = authority.rsplit('@').next().unwrap_or(authority);
         (host_port.to_string(), path.to_string())
     } else if let Some((before, after)) = url.split_once(':') {
-        // scp-like: [user@]host:path — but guard against a bare `host:port/...` that slipped through without a scheme (rare for remotes).
+        // scp-like: `[user@]host:path`. scp syntax has no port, so a numeric first path segment (e.g. `host:2222/team/repo`) means this is really a
+        // scheme-less `host:port/...` we can't reliably parse — bail rather than emit a wrong web URL (use `ssh://host:port/...` for ports).
         let host = before.rsplit('@').next().unwrap_or(before);
+        let first_seg = after.split('/').next().unwrap_or(after);
+        if !first_seg.is_empty() && first_seg.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
         (host.to_string(), after.to_string())
     } else {
         return None;
@@ -217,5 +222,14 @@ mod tests {
         assert_eq!(parse_remote_url("").provider, GitProvider::Unknown);
         assert_eq!(parse_remote_url("not-a-url").provider, GitProvider::Unknown);
         assert_eq!(parse_remote_url("https://github.com/").provider, GitProvider::Unknown);
+    }
+
+    #[test]
+    fn scheme_less_host_port_is_not_parsed_as_scp() {
+        // `host:2222/team/repo` (no scheme) is a scheme-less host:port, not scp-like — git itself requires `ssh://` for ports. We must not emit a
+        // bogus web URL from the digits-as-path misparse; it maps to Unknown with no web URL.
+        let info = parse_remote_url("gitlab.example.com:2222/team/repo.git");
+        assert_eq!(info.provider, GitProvider::Unknown);
+        assert_eq!(info.repo_web_url, None);
     }
 }
