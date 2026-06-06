@@ -96,7 +96,7 @@ impl PrInfoRunner for RealPrInfoRunner {
 /// directly via `CreateProcess`, so they are invoked through `cmd.exe /c`. The console window is suppressed to match [`crate::git::git_command`].
 fn build_cli_command(exe: &Path, args: &[&str]) -> Command {
     #[cfg(windows)]
-    let mut command = {
+    let command = {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         use std::os::windows::process::CommandExt as _;
         let is_script = crate::cmd_resolver::is_script_wrapper(exe);
@@ -113,12 +113,11 @@ fn build_cli_command(exe: &Path, args: &[&str]) -> Command {
         command
     };
     #[cfg(not(windows))]
-    let mut command = {
+    let command = {
         let mut c = Command::new(exe);
         c.args(args);
         c
     };
-    let _ = &mut command;
     command
 }
 

@@ -5,7 +5,7 @@ use crate::plugins::dashboard_widget::DashboardWidgetBackend;
 use crate::plugins::Plugin;
 use crate::types::AppError;
 
-pub mod pr_info;
+mod pr_info;
 
 pub struct GitStatusBackend;
 
