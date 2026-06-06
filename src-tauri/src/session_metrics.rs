@@ -942,8 +942,10 @@ fn maybe_invoke_agent_span(line: &[u8]) -> bool {
 // Codex persists every session as a JSONL "rollout" file under `<CODEX_HOME>/sessions/` (default `~/.codex/sessions/`), optionally nested in
 // `YYYY/MM/DD/` date subdirectories. Filenames follow `rollout-<TIMESTAMP>-<UUID>.jsonl`. The first line is a `session_meta` envelope carrying the
 // thread id and `cwd`; subsequent lines are `event_msg` / `turn_context` envelopes. The watcher discovers the file by matching `cwd` and spawn
-// instant, fires the AI-session discovery callback with the thread id, then tails `TokenCount` (cumulative usage) and `TurnComplete` (turn duration)
-// events. Only token usage and model name are surfaced to the sidebar — feature parity with the Claude and Copilot watchers.
+// instant, fires the AI-session discovery callback with the thread id, then tails `token_count` (cumulative usage) and `turn_complete` (turn
+// duration) events. `RolloutItem` is adjacently tagged (`{"type":...,"payload":...}`) but the inner `EventMsg` is internally tagged, so token
+// fields live at `payload.info.*`, not `payload.payload.info.*`. Only token usage and model name are surfaced to the sidebar — feature parity
+// with the Claude and Copilot watchers.
 
 /// Outer envelope for every rollout JSONL line: `{"timestamp": "...", "type": "...", "payload": {...}}`. Inner-payload shape varies by `type` and is
 /// inspected as `serde_json::Value` to avoid a deserialize match per variant.
@@ -1092,7 +1094,9 @@ struct CodexState {
     sum_output: u64,
     /// Model context window limit (from model_context_window or TurnStarted).
     context_window: Option<u64>,
-    /// Current tokens used in context (total_tokens from total_token_usage).
+    /// Current tokens occupying the context window — sourced from `last_token_usage.total_tokens` (the most recent turn),
+    /// NOT the cumulative session counter `total_token_usage`. This mirrors Codex's own status card, which drives the
+    /// context gauge from `last_token_usage`; using the cumulative total would pin the gauge at 100% after enough turns.
     context_tokens_used: Option<u64>,
     /// Most recent model name (from TurnContext).
     last_model: Option<String>,
@@ -1124,27 +1128,44 @@ impl CodexState {
     }
 }
 
-/// Extract token-count fields from a `TokenCount` event's nested `payload.payload.info` object. Returns a tuple of
-/// `(input, output, total, model_context_window)`, each `Some` when present and well-typed. Missing nested info returns
+/// Extract token-count fields from a `token_count` event's `info` object. Returns a tuple of
+/// `(input, output, context_tokens, model_context_window)`, each `Some` when present and well-typed. Missing info returns
 /// an all-`None` tuple early.
+///
+/// Codex's `EventMsg` is *internally* tagged, so `TokenCountEvent`'s fields are inlined directly under the rollout
+/// line's `payload` (i.e. `payload.info`). We still accept the legacy `payload.payload.info` shape defensively in case
+/// an older CLI build emitted an extra wrapper.
+///
+/// `input`/`output` come from `total_token_usage` (Codex's cumulative session counters), while `context_tokens` — the
+/// value that drives the context-window gauge — comes from `last_token_usage.total_tokens` (the live occupancy of the
+/// window), falling back to the cumulative total only if `last_token_usage` is absent.
 fn extract_codex_token_count(payload: &serde_json::Value) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
-    let Some(info) = payload.get("payload").and_then(|p| p.get("info")) else {
+    let Some(info) = payload.get("info").or_else(|| payload.get("payload").and_then(|p| p.get("info"))) else {
         return (None, None, None, None);
     };
     let total = info.get("total_token_usage");
     let input = total.and_then(|t| t.get("input_tokens")).and_then(|v| v.as_u64());
     let output = total.and_then(|t| t.get("output_tokens")).and_then(|v| v.as_u64());
-    let total_tokens = total.and_then(|t| t.get("total_tokens")).and_then(|v| v.as_u64());
+    let context_tokens = info
+        .get("last_token_usage")
+        .and_then(|t| t.get("total_tokens"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| total.and_then(|t| t.get("total_tokens")).and_then(|v| v.as_u64()));
     let mcw = info.get("model_context_window").and_then(|v| v.as_u64()).filter(|&v| v > 0);
-    (input, output, total_tokens, mcw)
+    (input, output, context_tokens, mcw)
 }
 
 /// Ingest a single Codex rollout JSONL line. Extracts token usage from `EventMsg::TokenCount` and model from `TurnContext`.
 fn ingest_codex_rollout_line(line: &[u8], state: &mut CodexState) {
     // Lines in the rollout are `{"timestamp":"...","type":"<variant>","payload":{...}}`.
     // We care about:
-    // - type = "event_msg" with payload.type = "TokenCount" → token usage
+    // - type = "event_msg" with payload.type = "token_count" → token usage
     // - type = "turn_context" → model name
+    //
+    // Codex's `RolloutItem` is adjacently tagged (`tag = "type", content = "payload"`) while the inner `EventMsg` is
+    // internally tagged (`tag = "type"`, no content), and both use `rename_all = "snake_case"`. So the real event tag is
+    // `token_count` / `task_started`, not the PascalCase `TokenCount` / `TurnStarted`. We accept both spellings so a
+    // format change in either direction doesn't silently zero out the sidebar.
     let Ok(outer) = serde_json::from_slice::<CodexRolloutLine>(line) else {
         return;
     };
@@ -1152,12 +1173,12 @@ fn ingest_codex_rollout_line(line: &[u8], state: &mut CodexState) {
     match outer.r#type.as_str() {
         "event_msg" => {
             let Some(payload) = outer.payload else { return };
-            // EventMsg is tagged: {"type":"TokenCount","payload":{...}}
+            // EventMsg is tagged: {"type":"token_count", ...inlined TokenCountEvent fields}
             let Some(event_type) = payload.get("type").and_then(|v| v.as_str()) else {
                 return;
             };
             match event_type {
-                "TokenCount" => {
+                "token_count" | "TokenCount" => {
                     let (input, output, total, mcw) = extract_codex_token_count(&payload);
                     if let Some(v) = input {
                         state.sum_input = v;
@@ -1173,11 +1194,12 @@ fn ingest_codex_rollout_line(line: &[u8], state: &mut CodexState) {
                     }
                     state.seen = true;
                 }
-                "TurnStarted" => {
-                    // payload.payload.model_context_window
+                "task_started" | "turn_started" | "TurnStarted" => {
+                    // `TurnStartedEvent.model_context_window` is inlined under `payload` (internally-tagged EventMsg); the
+                    // legacy `payload.payload.model_context_window` shape is accepted defensively.
                     if let Some(mcw) = payload
-                        .get("payload")
-                        .and_then(|p| p.get("model_context_window"))
+                        .get("model_context_window")
+                        .or_else(|| payload.get("payload").and_then(|p| p.get("model_context_window")))
                         .and_then(|v| v.as_u64())
                         .filter(|&v| v > 0)
                     {
@@ -1223,7 +1245,10 @@ fn parse_codex_turn_duration_ms(line: &[u8]) -> Option<Option<u64>> {
     if event_type != "TurnComplete" && event_type != "task_complete" && event_type != "turn_complete" {
         return None;
     }
-    let duration_ms = payload.get("payload").and_then(|inner| inner.get("duration_ms")).and_then(|v| v.as_u64());
+    let duration_ms = payload
+        .get("duration_ms")
+        .or_else(|| payload.get("payload").and_then(|inner| inner.get("duration_ms")))
+        .and_then(|v| v.as_u64());
     Some(duration_ms)
 }
 
@@ -2245,14 +2270,50 @@ mod tests {
 
     #[test]
     fn ingest_codex_token_count_event() {
+        // Real Codex format: `RolloutItem` is adjacently tagged (`payload`), `EventMsg` is internally tagged
+        // (`token_count`), so `info` is inlined directly under `payload` — there is no second `payload` wrapper.
+        // Context occupancy is the LAST turn's total (950), while input/output are the cumulative session totals.
+        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":200,"output_tokens":800,"reasoning_output_tokens":100,"total_tokens":2600},"last_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":300,"reasoning_output_tokens":50,"total_tokens":950},"model_context_window":128000},"rate_limits":null}}"#;
+        let mut state = CodexState::default();
+        ingest_codex_rollout_line(line, &mut state);
+        assert!(state.seen);
+        assert_eq!(state.sum_input, 1500);
+        assert_eq!(state.sum_output, 800);
+        assert_eq!(state.context_tokens_used, Some(950));
+        assert_eq!(state.context_window, Some(128000));
+    }
+
+    #[test]
+    fn ingest_codex_token_count_event_legacy_double_payload() {
+        // Defensive: an older/alternative shape with PascalCase tag and a nested `payload.payload.info` wrapper.
         let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TokenCount","payload":{"info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":200,"output_tokens":800,"reasoning_output_tokens":100,"total_tokens":2600},"last_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":300,"reasoning_output_tokens":50,"total_tokens":950},"model_context_window":128000}}}}"#;
         let mut state = CodexState::default();
         ingest_codex_rollout_line(line, &mut state);
         assert!(state.seen);
         assert_eq!(state.sum_input, 1500);
         assert_eq!(state.sum_output, 800);
-        assert_eq!(state.context_tokens_used, Some(2600));
+        assert_eq!(state.context_tokens_used, Some(950));
         assert_eq!(state.context_window, Some(128000));
+    }
+
+    #[test]
+    fn ingest_codex_context_occupancy_tracks_last_turn_not_cumulative() {
+        // Across turns, `total_token_usage` accumulates without bound while `last_token_usage` reflects the live window.
+        // The context gauge must follow the latter, so it can never get pinned at 100% once the session exceeds the window.
+        let window = 100_000u64;
+        let turn1 = br#"{"timestamp":"t1","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":60000,"output_tokens":20000,"total_tokens":80000},"last_token_usage":{"input_tokens":60000,"output_tokens":20000,"total_tokens":80000},"model_context_window":100000}}}"#;
+        // After a /compact the cumulative session total (190000) exceeds the window, but only 30000 tokens occupy it.
+        let turn2 = br#"{"timestamp":"t2","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140000,"output_tokens":50000,"total_tokens":190000},"last_token_usage":{"input_tokens":25000,"output_tokens":5000,"total_tokens":30000},"model_context_window":100000}}}"#;
+        let mut state = CodexState::default();
+        ingest_codex_rollout_line(turn1, &mut state);
+        ingest_codex_rollout_line(turn2, &mut state);
+        assert_eq!(state.context_tokens_used, Some(30_000));
+        assert_eq!(state.context_window, Some(window));
+        let snap = state.snapshot(SessionId::new());
+        assert_eq!(snap.context_used_pct, Some(30));
+        // Cumulative session totals still surface for the input/output displays.
+        assert_eq!(snap.input_tokens, Some(140_000));
+        assert_eq!(snap.output_tokens, Some(50_000));
     }
 
     #[test]
@@ -2265,6 +2326,16 @@ mod tests {
 
     #[test]
     fn ingest_codex_turn_started_extracts_context_window() {
+        // Real Codex format: `task_started` tag, `model_context_window` inlined under `payload`.
+        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"abc","model_context_window":200000}}"#;
+        let mut state = CodexState::default();
+        ingest_codex_rollout_line(line, &mut state);
+        assert_eq!(state.context_window, Some(200000));
+    }
+
+    #[test]
+    fn ingest_codex_turn_started_extracts_context_window_legacy() {
+        // Defensive: PascalCase tag with a nested `payload.payload.model_context_window`.
         let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TurnStarted","payload":{"turn_id":"abc","model_context_window":200000}}}"#;
         let mut state = CodexState::default();
         ingest_codex_rollout_line(line, &mut state);
@@ -2304,19 +2375,27 @@ mod tests {
 
     #[test]
     fn parse_codex_turn_complete_duration() {
+        // Real Codex format: `turn_complete` tag, `duration_ms` inlined under `payload`.
+        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"turn_complete","turn_id":"t1","duration_ms":4200}}"#;
+        assert_eq!(parse_codex_turn_duration_ms(line), Some(Some(4200)));
+    }
+
+    #[test]
+    fn parse_codex_turn_complete_duration_legacy_double_payload() {
+        // Defensive: PascalCase tag with a nested `payload.payload.duration_ms`.
         let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TurnComplete","payload":{"turn_id":"t1","last_agent_message":"done","duration_ms":4200}}}"#;
         assert_eq!(parse_codex_turn_duration_ms(line), Some(Some(4200)));
     }
 
     #[test]
     fn parse_codex_turn_complete_no_duration() {
-        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TurnComplete","payload":{"turn_id":"t1","last_agent_message":"done"}}}"#;
+        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"turn_complete","turn_id":"t1"}}"#;
         assert_eq!(parse_codex_turn_duration_ms(line), Some(None));
     }
 
     #[test]
     fn parse_codex_turn_complete_ignores_non_turn_complete_event_with_keyword() {
-        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"TokenCount","payload":{"note":"TurnComplete"}}}"#;
+        let line = br#"{"timestamp":"2025-05-18T10:00:00Z","type":"event_msg","payload":{"type":"token_count","note":"TurnComplete"}}"#;
         assert!(maybe_codex_turn_complete(line));
         assert_eq!(parse_codex_turn_duration_ms(line), None);
     }
