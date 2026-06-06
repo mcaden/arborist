@@ -56,29 +56,29 @@ flowchart TB
 
 ## Backend modules
 
-| Module                                                    | Responsibility                                                                                                                      |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `lib.rs`                                                  | Tauri app setup, tracing, workspace boot binding, plugin registry, managed state, command registration, and production sink wiring. |
-| `boot.rs`                                                 | CLI parsing, boot-time workspace resolution, primary-clone validation, native failure dialogs, and workspace binding.               |
-| `store_layout.rs`                                         | Per-branch and per-workspace app-data path layout.                                                                                  |
-| `workspace_lock.rs`                                       | `fs2` advisory lock for one process per `(branch, workspace)` store.                                                                |
-| `workspace_scope.rs`                                      | Current workspace binding and `ConfigStore` handle.                                                                                 |
-| `config_store.rs`                                         | Atomic JSON persistence, migrations, quarantine, config merge, session records, and worktree tabs.                                  |
-| `commands/mod.rs`                                         | Thin `#[tauri::command]` wrappers and production event sinks.                                                                       |
-| `commands/session.rs`                                     | Session, workspace, worktree-create, restore, and switch implementation logic.                                                      |
-| `commands/worktree_tab.rs`                                | Worktree tab open, close, focus, reorder, and active-child logic.                                                                   |
-| `commands/subsession.rs`                                  | Custom-process sub-session lifecycle and restore logic.                                                                             |
-| `compose.rs`                                              | CLI command composition, path validation, worktree-name validation, shell quoting, and tool-specific launch behavior.               |
-| `session_temp.rs`                                         | Hardened per-session temp directory and Copilot OTel file creation, reset, orphan cleanup, and symlink/reparse refusal.             |
-| `pty_pool.rs`                                             | PTY spawn/read/write/resize/kill, deferred spawn, backpressure, wait threads, and orphan cleanup.                                   |
-| `sub_sessions.rs`                                         | Parallel PTY/app runtime for custom-process sub-tabs.                                                                               |
-| `app_launcher.rs`                                         | Detached application process spawning and app close/kill support.                                                                   |
-| `window_focus.rs`                                         | Platform-specific focus implementation for application sub-sessions.                                                                |
-| `git.rs`                                                  | `GitRunner` seam and parsing of `git worktree list --porcelain`.                                                                    |
-| `worktree_prep.rs`                                        | One-shot prep process spawning, logging, and `worktree://prep` events.                                                              |
-| `session_metrics.rs`                                      | Claude/Copilot metrics watchers, AI session id discovery, and activity event generation.                                            |
-| `plugins/`                                                | Built-in AI, custom-process, and dashboard-widget plugin registration.                                                              |
-| `process_icon.rs`, `icon_backfill.rs`, `worktree_icon.rs` | Icon extraction, cached icon data URIs, and worktree icon assignment.                                                               |
+| Module                                                    | Responsibility                                                                                                                                 |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib.rs`                                                  | Tauri app setup, tracing, workspace boot binding, plugin registry, managed state, command registration, and production sink wiring.            |
+| `boot.rs`                                                 | CLI parsing, boot-time workspace resolution, primary-clone validation, native failure dialogs, and workspace binding.                          |
+| `store_layout.rs`                                         | Per-branch and per-workspace app-data path layout.                                                                                             |
+| `workspace_lock.rs`                                       | `fs2` advisory lock for one process per `(branch, workspace)` store.                                                                           |
+| `workspace_scope.rs`                                      | Current workspace binding and `ConfigStore` handle.                                                                                            |
+| `config_store.rs`                                         | Atomic JSON persistence, migrations, quarantine, config merge, session records, and worktree tabs.                                             |
+| `commands/mod.rs`                                         | Thin `#[tauri::command]` wrappers and production event sinks.                                                                                  |
+| `commands/session.rs`                                     | Session, workspace, worktree-create, restore, and switch implementation logic.                                                                 |
+| `commands/worktree_tab.rs`                                | Worktree tab open, close, focus, reorder, and active-child logic.                                                                              |
+| `commands/subsession.rs`                                  | Custom-process sub-session lifecycle and restore logic.                                                                                        |
+| `compose.rs`                                              | CLI command composition, path validation, worktree-name validation, shell quoting, and tool-specific launch behavior.                          |
+| `session_temp.rs`                                         | Hardened per-session temp directory and Copilot OTel file creation, reset, orphan cleanup, and symlink/reparse refusal.                        |
+| `pty_pool.rs`                                             | PTY spawn/read/write/resize/kill, deferred spawn, backpressure, wait threads, and orphan cleanup.                                              |
+| `sub_sessions.rs`                                         | Parallel PTY/app runtime for custom-process sub-tabs.                                                                                          |
+| `app_launcher.rs`                                         | Detached application process spawning and app close/kill support.                                                                              |
+| `window_focus.rs`                                         | Platform-specific focus implementation for application sub-sessions.                                                                           |
+| `git.rs`                                                  | `GitRunner` seam and parsing of `git worktree list --porcelain`.                                                                               |
+| `worktree_prep.rs`                                        | One-shot prep process spawning, logging, and `worktree://prep` events.                                                                         |
+| `session_metrics.rs`                                      | Generic metrics-watcher engine (threading, file tailing, discovery backoff, dedup) driving per-tool `MetricsParser`s; AI session id discovery. |
+| `plugins/`                                                | Built-in AI, custom-process, and dashboard-widget plugin registration.                                                                         |
+| `process_icon.rs`, `icon_backfill.rs`, `worktree_icon.rs` | Icon extraction, cached icon data URIs, and worktree icon assignment.                                                                          |
 
 ## Frontend modules
 

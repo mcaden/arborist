@@ -5,14 +5,16 @@
 //! Resume syntax differs from Claude/Copilot: `codex resume <session_id>` (a
 //! subcommand, not a `--resume` flag).
 //!
-//! The metrics watcher implementation lives in
-//! [`crate::session_metrics`] (`run_codex_watcher`); that module documents the
-//! rollout-file layout and the event types it consumes.
+//! The metrics watcher implementation is driven by the generic engine in
+//! [`crate::session_metrics`]; the rollout-file layout and the event types it
+//! consumes are documented in [`metrics`].
 
 use crate::plugins::ai::AiPlugin;
 use crate::plugins::Plugin;
 use crate::types::SessionId;
 use crate::types::Tool;
+
+pub mod metrics;
 
 /// Stable singleton instance for dispatch sites that need a `'static`
 /// [`AiPlugin`] reference without allocating.
@@ -47,14 +49,16 @@ impl AiPlugin for CodexPlugin {
         crate::plugins::ai::SpawnPrep::default()
     }
 
-    fn metrics_watcher_kind(&self, _session_id: SessionId, cwd: &std::path::Path) -> Option<crate::plugins::ai::MetricsWatcherKind> {
+    fn metrics_parser(
+        &self,
+        _session_id: SessionId,
+        cwd: &std::path::Path,
+        _spawn_instant: std::time::SystemTime,
+    ) -> Option<Box<dyn crate::session_metrics::MetricsParser>> {
         let codex_home = std::env::var_os("CODEX_HOME")
             .map(std::path::PathBuf::from)
             .or_else(|| crate::session_metrics::home_dir().map(|home| home.join(".codex")))?;
-        Some(crate::plugins::ai::MetricsWatcherKind::Codex {
-            codex_home,
-            cwd: cwd.to_path_buf(),
-        })
+        Some(Box::new(metrics::CodexMetricsParser::new(&codex_home, cwd)))
     }
 
     fn starts_activity_events_watcher(&self) -> bool {

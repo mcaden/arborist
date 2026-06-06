@@ -10,6 +10,7 @@ use crate::types::SessionId;
 use crate::types::Tool;
 
 pub mod hooks;
+pub mod metrics;
 
 /// Filename of the per-session `--settings` JSON we hand to Claude (`<session_temp_dir>/claude-settings.json`). Single source of truth — the
 /// structured-argv router in `commands::session::default_structured_command` matches on this basename to decide when to add `--settings <path>`,
@@ -55,11 +56,14 @@ impl AiPlugin for ClaudePlugin {
         }
     }
 
-    fn metrics_watcher_kind(&self, _session_id: SessionId, cwd: &std::path::Path) -> Option<crate::plugins::ai::MetricsWatcherKind> {
-        crate::session_metrics::home_dir().map(|home| crate::plugins::ai::MetricsWatcherKind::Claude {
-            home,
-            cwd: cwd.to_path_buf(),
-        })
+    fn metrics_parser(
+        &self,
+        _session_id: SessionId,
+        cwd: &std::path::Path,
+        _spawn_instant: std::time::SystemTime,
+    ) -> Option<Box<dyn crate::session_metrics::MetricsParser>> {
+        let home = crate::session_metrics::home_dir()?;
+        Some(Box::new(metrics::ClaudeMetricsParser::new(&home, cwd)))
     }
 
     fn starts_activity_events_watcher(&self) -> bool {
