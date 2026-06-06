@@ -388,9 +388,8 @@ function createEntry(id: string, ioKind: IoKind): RegistryEntry {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
 
-  // Service OSC 52 clipboard writes from the running CLI (e.g. Copilot
-  // CLI's in-app copy). xterm drops OSC 52 by default, which silently
-  // breaks copy from inside the TUI even though it reports success.
+  // Service OSC 52 clipboard writes from the running CLI (e.g. Copilot CLI's in-app copy). xterm drops OSC 52 by default, which silently breaks copy
+  // from inside the TUI even though it reports success.
   term.parser.registerOscHandler(52, handleOsc52);
 
   term.onData((data) => {
@@ -471,50 +470,19 @@ function canReadClipboard(): boolean {
 }
 
 /**
- * Read text from the system clipboard via `navigator.clipboard.readText()`
- * and forward it to the terminal via `term.paste()`. Used by both the
- * Ctrl/Cmd+V keydown branch (where xterm's keydown handler would
- * otherwise eat the keystroke before any `paste` event fires) and the
- * `paste` event listener fallback (when `clipboardData` is empty, as
- * happens in some WebView2 right-click → Paste flows).
- *
- * Callers must gate cancellation of the original event on
- * [`canReadClipboard`] — this function silently no-ops if the API is
- * missing, and unconditionally cancelling the event in that case
- * would block xterm from handling the keystroke / paste itself.
- *
- * The async resolution of `readText()` is racy with session disposal:
- * the user could dispatch Ctrl+V and then close the tab before the
- * clipboard read resolves. We re-check the registry by `sessionId`
- * before calling `term.paste(text)` so we don't write into a disposed
- * (or replaced) terminal.
- *
- * Failures are logged but otherwise silent — there's no useful UI
- * recovery and we don't want to spam the user with toasts every time
- * they paste an empty clipboard.
- */
-/**
- * Whether the async clipboard write API is available in this runtime.
- *
- * Gates Ctrl/Cmd+C copy interception the same way [`canReadClipboard`]
- * gates paste: if this returns `false` the copy branch must NOT cancel
- * the event, so that plain Ctrl+C still falls through to xterm and
- * sends SIGINT instead of becoming a silent no-op.
+ * Whether the async clipboard write API is available in this runtime. Gates Ctrl/Cmd+C copy interception the same way [`canReadClipboard`] gates
+ * paste: if this returns `false` the copy branch must NOT cancel the event, so that plain Ctrl+C still falls through to xterm and sends SIGINT
+ * instead of becoming a silent no-op.
  */
 function canWriteClipboard(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.clipboard?.writeText === 'function';
 }
 
 /**
- * Copy the terminal's current selection to the system clipboard via
- * `navigator.clipboard.writeText()`. Returns `true` only when there was
- * a non-empty selection AND the write API is available — i.e. when the
- * caller should cancel the originating keystroke.
- *
- * Returning `false` is what keeps Ctrl+C working as interrupt: with no
- * selection (or no clipboard API) the caller leaves the event alone and
- * xterm sends the SIGINT byte (`\x03`) as usual. The write itself is
- * fire-and-forget; failures are logged but never surfaced to the user.
+ * Copy the terminal's current selection to the system clipboard via `navigator.clipboard.writeText()`. Returns `true` only when there was a
+ * non-empty selection AND the write API is available — i.e. when the caller should cancel the originating keystroke. Returning `false` is what
+ * keeps Ctrl+C working as interrupt: with no selection (or no clipboard API) the caller leaves the event alone and xterm sends the SIGINT byte
+ * (`\x03`) as usual. The write itself is fire-and-forget; failures are logged but never surfaced to the user.
  */
 function copySelectionToClipboard(entry: RegistryEntry): boolean {
   const selection = entry.term.getSelection();
@@ -525,10 +493,8 @@ function copySelectionToClipboard(entry: RegistryEntry): boolean {
 }
 
 /**
- * Fire-and-forget write to the system clipboard via
- * `navigator.clipboard.writeText()`. Shared by the Ctrl/Cmd+C selection
- * copy and the OSC 52 handler. Callers gate on [`canWriteClipboard`]
- * first; failures are logged but never surfaced to the user.
+ * Fire-and-forget write to the system clipboard via `navigator.clipboard.writeText()`. Shared by the Ctrl/Cmd+C selection copy and the OSC 52
+ * handler. Callers gate on [`canWriteClipboard`] first; failures are logged but never surfaced to the user.
  */
 function writeTextToClipboard(text: string): void {
   void navigator.clipboard.writeText(text).catch((err: unknown) => {
@@ -538,17 +504,15 @@ function writeTextToClipboard(text: string): void {
 }
 
 /**
- * Decode an OSC 52 base64 payload into a UTF-8 string. The payload is
- * base64 of the raw UTF-8 bytes, so we cannot use `atob` alone (it would
- * mangle any multi-byte character) — we re-interpret the binary string
- * as bytes and run them through `TextDecoder`. Returns `null` on any
- * malformed input so the handler can decline the sequence cleanly.
+ * Decode an OSC 52 base64 payload into a UTF-8 string. The payload is base64 of the raw UTF-8 bytes, so we cannot use `atob` alone (it would mangle
+ * any multi-byte character) — we re-interpret the binary string as bytes and run them through `TextDecoder`. Returns `null` on any malformed input
+ * so the handler can decline the sequence cleanly.
  */
 function decodeOsc52Payload(b64: string): string | null {
   try {
     const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    // Each char of an `atob` result is a single byte (code point 0-255), so `codePointAt(0)` and `charCodeAt(0)` are equivalent here.
+    const bytes = Uint8Array.from(binary, (ch) => ch.codePointAt(0) ?? 0);
     return new TextDecoder().decode(bytes);
   } catch {
     return null;
@@ -556,24 +520,15 @@ function decodeOsc52Payload(b64: string): string | null {
 }
 
 /**
- * Handle an OSC 52 clipboard sequence emitted by the running CLI.
+ * Handle an OSC 52 clipboard sequence emitted by the running CLI. TUI programs (notably GitHub Copilot CLI's in-app "copy" action) put text on the
+ * system clipboard by emitting `OSC 52 ; <selection> ; <b64> ST` rather than going through any browser copy event. xterm.js does NOT service OSC 52
+ * by default — it silently drops the sequence — so the CLI reports "copy successful" while the system clipboard never actually changes. We register
+ * this handler to close that gap.
  *
- * TUI programs (notably GitHub Copilot CLI's in-app "copy" action) put
- * text on the system clipboard by emitting `OSC 52 ; <selection> ; <b64> ST`
- * rather than going through any browser copy event. xterm.js does NOT
- * service OSC 52 by default — it silently drops the sequence — so the
- * CLI reports "copy successful" while the system clipboard never
- * actually changes. We register this handler to close that gap.
- *
- * `data` is the parser payload after the `52;` identifier, i.e.
- * `"<selection>;<base64-or-?>"`. We ignore the selection target (we
- * always write the system clipboard) and decline read requests
- * (`payload === '?'`) — servicing those would let the remote program
- * exfiltrate the user's clipboard, which we deliberately do not allow.
- *
- * Returns `true` only when we actually wrote, so xterm knows the
- * sequence was consumed; otherwise `false` so xterm falls back to its
- * default (drop) behaviour.
+ * `data` is the parser payload after the `52;` identifier, i.e. `"<selection>;<base64-or-?>"`. We ignore the selection target (we always write the
+ * system clipboard) and decline read requests (`payload === '?'`) — servicing those would let the remote program exfiltrate the user's clipboard,
+ * which we deliberately do not allow. Returns `true` only when we actually wrote, so xterm knows the sequence was consumed; otherwise `false` so
+ * xterm falls back to its default (drop) behaviour.
  */
 function handleOsc52(data: string): boolean {
   const sep = data.indexOf(';');
@@ -588,15 +543,27 @@ function handleOsc52(data: string): boolean {
   return true;
 }
 
+/**
+ * Read text from the system clipboard via `navigator.clipboard.readText()` and forward it to the terminal via `term.paste()`. Used by both the
+ * Ctrl/Cmd+V keydown branch (where xterm's keydown handler would otherwise eat the keystroke before any `paste` event fires) and the `paste` event
+ * listener fallback (when `clipboardData` is empty, as happens in some WebView2 right-click → Paste flows).
+ *
+ * Callers must gate cancellation of the original event on [`canReadClipboard`] — this function silently no-ops if the API is missing, and
+ * unconditionally cancelling the event in that case would block xterm from handling the keystroke / paste itself.
+ *
+ * The async resolution of `readText()` is racy with session disposal: the user could dispatch Ctrl+V and then close the tab before the clipboard
+ * read resolves. We re-check the registry by `sessionId` before calling `term.paste(text)` so we don't write into a disposed (or replaced)
+ * terminal. Failures are logged but otherwise silent — there's no useful UI recovery and we don't want to spam the user with toasts every time they
+ * paste an empty clipboard.
+ */
 function pasteFromClipboard(id: string, entry: RegistryEntry): void {
   if (!canReadClipboard()) return;
   void navigator.clipboard
     .readText()
     .then((text) => {
       if (!text) return;
-      // Guard against a concurrent disposeTerminal(): if the registry
-      // entry for this id is gone or has been replaced, drop the
-      // paste rather than writing to a stale Terminal instance.
+      // Guard against a concurrent disposeTerminal(): if the registry entry for this id is gone or has been replaced, drop the paste rather than
+      // writing to a stale Terminal instance.
       if (registry.get(id) !== entry) return;
       entry.term.paste(text);
     })
@@ -604,6 +571,65 @@ function pasteFromClipboard(id: string, entry: RegistryEntry): void {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[use-terminal] clipboard.readText() failed: ${message}`);
     });
+}
+
+/**
+ * Handle the Shift+Enter chord: send ESC + CR (`\x1b\r`) instead of the bare `\r` xterm emits by default. CLIs like Claude Code and GitHub Copilot
+ * CLI interpret a bare `\r` as "submit"; the de-facto convention (matching what `claude /terminal-setup` configures in iTerm2) is ESC-prefixed CR
+ * for "newline without submit". Dispatches through the same kind-aware switch the `term.onData` handler uses so it works for both parent sessions
+ * and terminal sub-sessions. Returns `true` when the chord was consumed so the caller stops processing the event.
+ */
+function handleShiftEnterKey(event: KeyboardEvent, id: string, entry: RegistryEntry): boolean {
+  if (!(event.key === 'Enter' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey)) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  const inputPromise =
+    entry.ioKind === 'session'
+      ? sessionInput({ sessionId: id as SessionId, data: '\x1b\r' })
+      : subSessionInput({ id: id as SubSessionId, data: '\x1b\r' });
+  void inputPromise.catch((err: unknown) => {
+    const message = formatError(err);
+    console.warn(`[use-terminal] ${entry.ioKind} input(${id}) failed: ${message}`);
+  });
+  return true;
+}
+
+/**
+ * Handle paste chords (Ctrl+V, Ctrl+Shift+V, Cmd+V) by reading the clipboard and writing through `term.paste()`. We intercept here because xterm's
+ * own keydown handler would otherwise eat the keypress (sending the literal `\x16` SYN byte) and the browser would never fire a `paste` event.
+ * Cmd+Shift+V (macOS "paste and match style") and any Alt-modified chord are deliberately not accepted and pass through. We match on the physical
+ * `event.code === 'KeyV'` rather than `event.key`, so the shortcut is layout-independent (on a Russian layout the V position prints `м`). Returns
+ * `true` only when we actually consumed the event — when no clipboard read API is available we leave the event alone (swallowing it would turn
+ * Ctrl+V into a silent no-op) so xterm can fall back to its own handling.
+ */
+function handlePasteShortcut(event: KeyboardEvent, id: string, entry: RegistryEntry): boolean {
+  const v = event.code === 'KeyV';
+  const isCtrlPaste = v && event.ctrlKey && !event.metaKey && !event.altKey;
+  const isMetaPaste = v && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+  if (!isCtrlPaste && !isMetaPaste) return false;
+  if (!canReadClipboard()) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  pasteFromClipboard(id, entry);
+  return true;
+}
+
+/**
+ * Handle copy chords (Ctrl+C, Ctrl+Shift+C, Cmd+C) by copying the current selection to the clipboard — but only when there is a selection. With
+ * nothing selected, plain Ctrl+C must fall through so xterm sends SIGINT (`\x03`), matching the Windows Terminal / VS Code convention; interrupt is
+ * never broken. Cmd+Shift+C and Alt-modified chords pass through unchanged. Matched on the physical `event.code === 'KeyC'` for the same
+ * layout-independence reason as paste. Returns `true` only when a selection was copied and the event consumed.
+ */
+function handleCopyShortcut(event: KeyboardEvent, entry: RegistryEntry): boolean {
+  const c = event.code === 'KeyC';
+  const isCtrlCopy = c && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+  const isCtrlShiftCopy = c && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
+  const isMetaCopy = c && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+  if (!isCtrlCopy && !isCtrlShiftCopy && !isMetaCopy) return false;
+  if (!copySelectionToClipboard(entry)) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  return true;
 }
 
 /**
@@ -756,105 +782,21 @@ function attachToHost(id: string, entry: RegistryEntry, host: HTMLDivElement): v
   // state if it fires too early).
   refitEntry(id, entry);
 
-  // Capture-phase keydown listener on the host. Three responsibilities:
+  // Capture-phase keydown listener on the host with three responsibilities, each delegated to a helper that returns whether it consumed the event:
+  // (1) Shift+Enter → ESC + CR for "newline without submit" ([`handleShiftEnterKey`]); (2) Ctrl/Cmd+V paste ([`handlePasteShortcut`]); and
+  // (3) Ctrl/Ctrl+Shift/Cmd+C copy-on-selection-else-SIGINT ([`handleCopyShortcut`]).
   //
-  // 1. Shift+Enter → ESC + CR (`\x1b\r`). xterm.js by default sends a
-  //    plain `\r` for both Enter and Shift+Enter, which CLIs like Claude
-  //    Code and GitHub Copilot CLI interpret as "submit". The de-facto
-  //    convention (matching what `claude /terminal-setup` configures in
-  //    iTerm2) is to send ESC-prefixed CR for "newline without submit".
-  //
-  // 2. Ctrl+V / Cmd+V → trigger paste via `navigator.clipboard.readText()`
-  //    and write the result through `term.paste()`. If we don't intercept,
-  //    xterm's own keydown handler eats the keypress (sending the literal
-  //    `\x16` SYN byte to the PTY) and the browser never fires a `paste`
-  //    event, so our capture-phase paste listener has nothing to handle.
-  //    Right-click → Paste still goes through the paste listener below.
-  //
-  // 3. Ctrl+C / Ctrl+Shift+C / Cmd+C → copy the current selection to the
-  //    clipboard, but ONLY when there is a selection. With no selection,
-  //    plain Ctrl+C must fall through so xterm sends SIGINT (`\x03`) —
-  //    the Windows Terminal / VS Code convention. We never break interrupt.
-  //
-  // We listen at the **host** in the **capture** phase so we run before
-  // xterm's own keydown listener (registered on its hidden textarea, also
-  // capture-phase). xterm's `attachCustomKeyEventHandler` is unreliable
-  // here because by the time it runs the textarea may already have
-  // committed default behaviour, and we cannot from inside it
-  // `preventDefault()` the textarea's own newline insertion. Capturing on
-  // the host fully owns the event before any descendant listener.
+  // We listen at the **host** in the **capture** phase so we run before xterm's own keydown listener (registered on its hidden textarea, also
+  // capture-phase). xterm's `attachCustomKeyEventHandler` is unreliable here because by the time it runs the textarea may already have committed
+  // default behaviour, and we cannot from inside it `preventDefault()` the textarea's own newline insertion. Capturing on the host fully owns the
+  // event before any descendant listener.
   const keydownListener = (event: KeyboardEvent): void => {
-    // Skip IME composition: Enter/Shift+Enter during candidate selection
-    // belongs to the IME, not to the terminal. `keyCode === 229` is the
-    // legacy Chromium/WebView signal for "still composing".
+    // Skip IME composition: Enter/Shift+Enter during candidate selection belongs to the IME, not the terminal. `keyCode === 229` is the legacy
+    // Chromium/WebView "still composing" signal.
     if (event.isComposing || event.keyCode === 229) return;
-    if (event.key === 'Enter' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      event.stopPropagation();
-      // Dispatch through the same kind-aware switch the term.onData
-      // handler uses (see createEntry) so Shift+Enter works for both
-      // parent sessions and terminal sub-sessions.
-      const inputPromise =
-        entry.ioKind === 'session'
-          ? sessionInput({ sessionId: id as SessionId, data: '\x1b\r' })
-          : subSessionInput({ id: id as SubSessionId, data: '\x1b\r' });
-      void inputPromise.catch((err: unknown) => {
-        const message = formatError(err);
-        console.warn(`[use-terminal] ${entry.ioKind} input(${id}) failed: ${message}`);
-      });
-      return;
-    }
-    // Paste shortcuts. The accepted matrix is asymmetric on purpose:
-    //   - Ctrl+V         (Windows/Linux convention)
-    //   - Ctrl+Shift+V   (Linux terminal convention — many emulators)
-    //   - Cmd+V          (macOS convention; **without** Shift)
-    // Cmd+Shift+V on macOS is "paste and match style" in apps that
-    // implement formatted clipboard semantics; it has no useful meaning
-    // in a terminal and we leave it to pass through unchanged. Alt is
-    // never accepted (Ctrl+Alt+V / Cmd+Alt+V / Alt+V are not paste).
-    //
-    // We match on `event.code === 'KeyV'` rather than `event.key`. `key`
-    // is the produced character — on a Russian keyboard layout the
-    // physical V position prints `м`, so a `key === 'v'` test would miss
-    // the user's normal paste shortcut. `code` reflects the **physical**
-    // key location and is layout-independent, which is what every other
-    // major terminal app keys off for shortcut matching.
-    const v = event.code === 'KeyV';
-    const isCtrlPaste = v && event.ctrlKey && !event.metaKey && !event.altKey;
-    const isMetaPaste = v && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
-    if (isCtrlPaste || isMetaPaste) {
-      // Only suppress xterm's default handling when we have a paste path
-      // that might actually succeed. If `navigator.clipboard.readText`
-      // is unavailable, swallowing the event would just turn Ctrl+V
-      // into a silent no-op; instead, let it propagate so xterm can do
-      // whatever it would have done.
-      if (canReadClipboard()) {
-        event.preventDefault();
-        event.stopPropagation();
-        pasteFromClipboard(id, entry);
-      }
-      return;
-    }
-    // Copy shortcuts. Matched on physical `event.code === 'KeyC'` for the
-    // same layout-independence reason as paste above. Accepted chords:
-    //   - Ctrl+C         (Windows/Linux; copy-on-selection-else-SIGINT)
-    //   - Ctrl+Shift+C   (Linux terminal convention)
-    //   - Cmd+C          (macOS convention; **without** Shift)
-    // We only cancel the keystroke when there is actually a selection to
-    // copy (see copySelectionToClipboard). For plain Ctrl+C with nothing
-    // selected this leaves the event untouched so xterm sends the SIGINT
-    // byte — interrupt is never broken. Cmd+Shift+C / Alt-modified chords
-    // pass through unchanged.
-    const c = event.code === 'KeyC';
-    const isCtrlCopy = c && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
-    const isCtrlShiftCopy = c && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
-    const isMetaCopy = c && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
-    if (isCtrlCopy || isCtrlShiftCopy || isMetaCopy) {
-      if (copySelectionToClipboard(entry)) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    }
+    if (handleShiftEnterKey(event, id, entry)) return;
+    if (handlePasteShortcut(event, id, entry)) return;
+    handleCopyShortcut(event, entry);
   };
   host.addEventListener('keydown', keydownListener as EventListener, true);
   entry.keydownListener = keydownListener;
