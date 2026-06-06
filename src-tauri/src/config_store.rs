@@ -1131,7 +1131,7 @@ pub fn default_custom_processes() -> Vec<CustomProcessDef> {
     vec![
         CustomProcessDef {
             id: CustomProcessDefId::new(BUILTIN_DEF_ID_SHELL),
-            name: "Shell".to_owned(),
+            name: default_shell_name(),
             kind: CustomProcessKind::Terminal,
             command: default_shell_command(),
             enabled: true,
@@ -1163,21 +1163,41 @@ fn default_shell_command() -> String {
     // Phase 1 keeps this minimal: launch the platform shell interactively. The PTY pool will spawn it via `$SHELL -c <cmd>` (Unix) or `%COMSPEC% /c
     // <cmd>` (Windows), so the inner command is a fresh login-ish invocation of the same shell. We deliberately don't pass `--login` so we don't
     // fight the user's profile order.
+    let shell = resolved_default_shell();
+    if cfg!(target_os = "windows") {
+        shell
+    } else {
+        format!("{shell} -i")
+    }
+}
+
+/// Resolve the shell executable backing the built-in launcher. Windows always uses `cmd`; on Unix we honour `$SHELL` when it looks sane, otherwise
+/// fall back to `sh`. See [`default_shell_command`] for the metacharacter-filter rationale.
+fn resolved_default_shell() -> String {
     if cfg!(target_os = "windows") {
         "cmd".to_owned()
     } else {
         // Use $SHELL when set, but only if it looks like a sane absolute path with no shell-metacharacters. A weird $SHELL (containing spaces,
-        // quotes, `;`, `&`, `|`, `$`, backticks, newlines, …) would be re-interpreted by the launcher's `sh -c`, so we fall back to `sh -i` rather
+        // quotes, `;`, `&`, `|`, `$`, backticks, newlines, …) would be re-interpreted by the launcher's `sh -c`, so we fall back to `sh` rather
         // than persist a footgun into the user's seed.
-        let shell = std::env::var("SHELL")
+        std::env::var("SHELL")
             .ok()
             .filter(|s| {
                 let s = s.trim();
                 !s.is_empty() && std::path::Path::new(s).is_absolute() && !s.chars().any(|c| c.is_whitespace() || "\"'`$&|;<>()\\*?[]{}".contains(c))
             })
-            .unwrap_or_else(|| "sh".to_owned());
-        format!("{shell} -i")
+            .unwrap_or_else(|| "sh".to_owned())
     }
+}
+
+/// Human-facing name for the built-in shell launcher: the basename of the resolved shell (`zsh`, `bash`, `cmd`, …) so a fresh seed reflects the
+/// shell that will actually run rather than a generic "Shell" label.
+fn default_shell_name() -> String {
+    let shell = resolved_default_shell();
+    std::path::Path::new(&shell)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map_or_else(|| shell.clone(), str::to_owned)
 }
 
 const fn default_open_folder_command() -> &'static str {
@@ -2822,6 +2842,37 @@ mod tests {
             None => std::env::remove_var("SHELL"),
         }
         assert_eq!(cmd, "sh -i", "metacharacter in $SHELL must trigger fallback");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_name_uses_basename_of_resolved_shell() {
+        let original = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", "/usr/bin/zsh");
+        let name = default_shell_name();
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+        assert_eq!(
+            name, "zsh",
+            "the seeded shell name should be the resolved shell's basename, not a generic label"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial(env_shell)]
+    fn default_shell_name_falls_back_to_sh_when_shell_env_is_suspicious() {
+        let original = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", "/bin/sh; rm -rf /");
+        let name = default_shell_name();
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+        assert_eq!(name, "sh", "a suspicious $SHELL must fall back to the `sh` basename");
     }
 
     // ----- from_layout --------------------------------------------------
