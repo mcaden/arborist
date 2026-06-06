@@ -232,7 +232,7 @@ pub fn copilot_otel_path(session_id: &SessionId) -> PathBuf {
 /// * `Tool::Copilot` — enable Copilot's OpenTelemetry **file exporter**
 ///   pointing at `<session_temp_dir>/otel.jsonl`. Arborist tails that file to
 ///   surface real-time token usage / context-window state in the sidebar (see
-///   [`crate::session_metrics::run_copilot_watcher`]). The
+///   [`crate::plugins::ai::copilot::metrics`]). The
 ///   `OTEL_BSP_SCHEDULE_DELAY=1000` (ms) tightens the SDK's batch flush from
 ///   its 5s default to ~1Hz so the sidebar updates feel live. Older Copilot
 ///   CLIs that don't recognise these vars silently ignore them.

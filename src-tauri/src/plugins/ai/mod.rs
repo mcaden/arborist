@@ -35,8 +35,15 @@ pub trait AiPlugin: Plugin {
     /// Spawn-prep side effects run right before PTY spawn.
     fn spawn_prep(&self, session_id: &SessionId) -> SpawnPrep;
 
-    /// Resolve which metrics watcher implementation to run.
-    fn metrics_watcher_kind(&self, session_id: SessionId, cwd: &Path) -> Option<MetricsWatcherKind>;
+    /// Build the per-session metrics parser for this tool, or `None` when no watcher can run (e.g. the home dir could not be resolved). The returned
+    /// parser owns all wire-format knowledge; the generic engine in [`crate::session_metrics`] drives it. `spawn_instant` lets file-discovery filter
+    /// stale transcripts/rollouts by mtime.
+    fn metrics_parser(
+        &self,
+        session_id: SessionId,
+        cwd: &Path,
+        spawn_instant: std::time::SystemTime,
+    ) -> Option<Box<dyn crate::session_metrics::MetricsParser>>;
 
     /// Whether this tool should also arm the activity-events watcher (the events.jsonl tailer for Copilot, or the hook-events.jsonl tailer for
     /// Claude). When `true`, the host calls [`Self::activity_events_kind`] to discover which tailer flavour to spawn.
@@ -91,14 +98,6 @@ pub enum RestartAiSessionPolicy {
     Preserve,
     /// Clear persisted id before restart and rediscover later.
     Clear,
-}
-
-/// Which metrics watcher implementation to run for a tool.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MetricsWatcherKind {
-    Claude { home: PathBuf, cwd: PathBuf },
-    Copilot { otel_path: PathBuf },
-    Codex { codex_home: PathBuf, cwd: PathBuf },
 }
 
 /// Which activity-events tailer flavour to spawn for a tool, with its resolved on-disk path.
@@ -207,10 +206,15 @@ pub fn spawn_prep(tool: Tool, session_id: &SessionId) -> SpawnPrep {
     plugin_for_tool(tool).spawn_prep(session_id)
 }
 
-/// Resolve which metrics watcher implementation to run for `tool`.
+/// Build the per-session metrics parser for `tool`, or `None` if no watcher can run.
 #[must_use]
-pub fn metrics_watcher_kind(tool: Tool, session_id: SessionId, cwd: &Path) -> Option<MetricsWatcherKind> {
-    plugin_for_tool(tool).metrics_watcher_kind(session_id, cwd)
+pub fn metrics_parser(
+    tool: Tool,
+    session_id: SessionId,
+    cwd: &Path,
+    spawn_instant: std::time::SystemTime,
+) -> Option<Box<dyn crate::session_metrics::MetricsParser>> {
+    plugin_for_tool(tool).metrics_parser(session_id, cwd, spawn_instant)
 }
 
 /// Whether the activity-events watcher should be armed for this tool.
