@@ -15,6 +15,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { readText as pluginReadText, writeText as pluginWriteText } from '@tauri-apps/plugin-clipboard-manager';
 
 export { formatError, isAppErrorLike } from '@/lib/tauri-error';
 export type { AppErrorLike } from '@/lib/tauri-error';
@@ -407,6 +408,30 @@ export function workspaceSwitch(path: string): Promise<WorkspaceSwitchResult> {
  */
 export function pickDirectory(): Promise<string | null> {
   return invoke<string | null>('dialog_pick_directory');
+}
+
+// ---------------------------------------------------------------------------
+// System clipboard
+//
+// Routed through `tauri-plugin-clipboard-manager` (native NSPasteboard /
+// Win32 / X11-Wayland) rather than the browser `navigator.clipboard` API.
+// On macOS WKWebView, `navigator.clipboard.readText()` is sandboxed and
+// rejects with `NotAllowedError`, so terminal paste silently failed; the
+// plugin path is reliable on every platform. Components MUST go through
+// these wrappers so the bridge mock can stub them in tests.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the system clipboard as plain text. Typically resolves to `''` for an empty/non-text clipboard, though the plugin may surface other falsy
+ * values, so callers must treat any falsy result as "nothing to paste" rather than relying on an exact empty string.
+ */
+export function clipboardReadText(): Promise<string> {
+  return pluginReadText();
+}
+
+/** Write plain text to the system clipboard. */
+export function clipboardWriteText(text: string): Promise<void> {
+  return pluginWriteText(text);
 }
 
 // ---------------------------------------------------------------------------

@@ -126,6 +126,10 @@ export const workspaceSwitch: Mock<typeof realBridge.workspaceSwitch> = vi.fn(re
 
 export const pickDirectory: Mock<typeof realBridge.pickDirectory> = vi.fn(() => Promise.resolve(null));
 
+export const clipboardReadText: Mock<typeof realBridge.clipboardReadText> = vi.fn(() => Promise.resolve(''));
+
+export const clipboardWriteText: Mock<typeof realBridge.clipboardWriteText> = vi.fn(() => Promise.resolve());
+
 export const onSessionOutput: Mock<typeof realBridge.onSessionOutput> = vi.fn(() => Promise.resolve(noopUnlisten));
 
 export const onSessionStatus: Mock<typeof realBridge.onSessionStatus> = vi.fn(() => Promise.resolve(noopUnlisten));
@@ -205,6 +209,8 @@ export function resetBridgeMocks(): void {
   worktreeCreateFromBranch.mockReset().mockImplementation(rejectNotImplemented);
   workspaceSwitch.mockReset().mockImplementation(rejectNotImplemented);
   pickDirectory.mockReset().mockImplementation(() => Promise.resolve(null));
+  clipboardReadText.mockReset().mockImplementation(() => Promise.resolve(''));
+  clipboardWriteText.mockReset().mockImplementation(() => Promise.resolve());
   onSessionOutput.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionStatus.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
   onSessionActivity.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
@@ -260,6 +266,8 @@ export function resetBridgeMocks(): void {
   worktreeCreateFromBranch,
   workspaceSwitch,
   pickDirectory,
+  clipboardReadText,
+  clipboardWriteText,
   onSessionOutput,
   onSessionStatus,
   onSessionActivity,
