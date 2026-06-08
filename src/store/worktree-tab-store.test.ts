@@ -317,7 +317,7 @@ describe('useWorktreeTabStore', () => {
       expect(useWorktreeTabStore.getState().activeId).toBe(TAB_B);
       expect(bridgeMock.worktreeTabFocus).toHaveBeenCalledWith({ id: TAB_B });
       // Don't await `pending` — the test asserts the synchronous behaviour. The dangling promise is intentional and harmless.
-      void pending;
+      expect(pending).toBeInstanceOf(Promise);
     });
 
     it('does not roll back activeId when the backend rejects, only logs a warning', async () => {

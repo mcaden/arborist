@@ -270,7 +270,7 @@ export function PluginsTab({ onClose }: PluginsTabProps): JSX.Element {
         </button>
         <button
           type="button"
-          onClick={() => void handleSave()}
+          onClick={() => handleSave()}
           disabled={!dirty || saving}
           data-testid="plugins-save"
           className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"

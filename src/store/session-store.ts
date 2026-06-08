@@ -455,7 +455,7 @@ export const useSessionStore = create<Store>((set, get) => {
           if (parentTab && parentTab.activeChildId?.kind === 'session' && parentTab.activeChildId.id === id) {
             const sibling = nextSessions.find((s) => s.worktreePath === closingSession.worktreePath);
             const replacement: ChildId | null = sibling ? { kind: 'session', id: sibling.id } : null;
-            void wttState.actions.setActiveChild(parentTab.id, replacement).catch((err) => {
+            wttState.actions.setActiveChild(parentTab.id, replacement).catch((err) => {
               console.warn(`[session-store] setActiveChild(null) after close(${id}) failed: ${formatError(err)}`);
             });
           }
@@ -551,8 +551,8 @@ export const useSessionStore = create<Store>((set, get) => {
         }
         if (tab) {
           // Fire backend writes without awaiting — the store actions update local state synchronously, and focus must feel instant.
-          void wttActions.focus(tab.id);
-          void wttActions.setActiveChild(tab.id, { kind: 'session', id }).catch((err) => {
+          wttActions.focus(tab.id);
+          wttActions.setActiveChild(tab.id, { kind: 'session', id }).catch((err) => {
             console.warn(`[session-store] setActiveChild after focus(${id}) failed: ${formatError(err)}`);
           });
         }

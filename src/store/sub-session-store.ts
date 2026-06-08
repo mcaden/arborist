@@ -149,7 +149,6 @@ function isTerminalStatus(status: SubStatus): boolean {
  */
 function withStatusAndPid(current: SubSession, status: SubStatus, pid: number | undefined): SubSession {
   const { pid: _omit, ...rest } = current;
-  void _omit;
   const next: SubSession = { ...rest, status };
   if (pid !== undefined) next.pid = pid;
   return next;
@@ -236,7 +235,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
           const wttState = useWorktreeTabStore.getState();
           const tab = wttState.tabs.find((t) => t.id === closingSub.parentWorktreeTabId);
           if (tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === id) {
-            void wttState.actions.setActiveChild(tab.id, null).catch((err) => {
+            wttState.actions.setActiveChild(tab.id, null).catch((err) => {
               console.warn(`[sub-session-store] setActiveChild after close(${id}) failed: ${formatError(err)}`);
             });
           }
@@ -265,8 +264,8 @@ export const useSubSessionStore = create<Store>((set, get) => {
         const tab = wttState.tabs.find((t) => t.id === sub.parentWorktreeTabId);
         if (tab) {
           const wttActions = wttState.actions;
-          void wttActions.focus(tab.id);
-          void wttActions.setActiveChild(tab.id, { kind: 'subSession', id }).catch((err) => {
+          wttActions.focus(tab.id);
+          wttActions.setActiveChild(tab.id, { kind: 'subSession', id }).catch((err) => {
             console.warn(`[sub-session-store] setActiveChild after focus(${id}) failed: ${formatError(err)}`);
           });
         }
