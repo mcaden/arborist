@@ -92,7 +92,6 @@ function applyStarted(state: WorktreePrepStoreState, ev: Extract<WorktreePrepEve
 
 function applyExited(state: WorktreePrepStoreState, ev: Extract<WorktreePrepEvent, { kind: 'exited' }>): Partial<WorktreePrepStoreState> {
   const { [ev.prepId]: _removed, ...rest } = state.inFlight;
-  void _removed;
   const completed: PrepCompletedRecord = {
     state: 'completed',
     prepId: ev.prepId,

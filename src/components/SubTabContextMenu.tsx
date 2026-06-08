@@ -83,7 +83,7 @@ export function SubTabContextMenu({ subSessionId, anchor, onClose, restoreFocusT
   };
 
   const handleRestart = (): void => {
-    void subActions.relaunch(subSessionId).catch((err: unknown) => {
+    subActions.relaunch(subSessionId).catch((err: unknown) => {
       console.warn(`[SubTabContextMenu] subsession_relaunch failed: ${formatError(err)}`);
     });
     closeMenu();
@@ -96,7 +96,7 @@ export function SubTabContextMenu({ subSessionId, anchor, onClose, restoreFocusT
     if (sub && sub.kind === 'application' && sub.status !== 'exited' && sub.status !== 'error') {
       subActions.requestClose(subSessionId);
     } else {
-      void subActions.close(subSessionId).catch((err: unknown) => {
+      subActions.close(subSessionId).catch((err: unknown) => {
         console.warn(`[SubTabContextMenu] subsession_close failed: ${formatError(err)}`);
       });
     }

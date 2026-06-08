@@ -67,7 +67,7 @@ export function WorkspacePicker({ mode, initialPath, onConfirm, onCancel }: Work
     setValidation({ kind: 'validating' });
     const seq = ++requestSeq.current;
     const handle = window.setTimeout(() => {
-      void (async () => {
+      (async () => {
         try {
           const result = await workspaceValidate(trimmed);
           if (seq !== requestSeq.current) return;
@@ -149,7 +149,7 @@ export function WorkspacePicker({ mode, initialPath, onConfirm, onCancel }: Work
         className="w-full max-w-lg"
         onSubmit={(e) => {
           e.preventDefault();
-          void handleSubmit();
+          handleSubmit();
         }}
       >
         <h1 id={`${inputId}-heading`} className="text-xl font-semibold">
@@ -174,7 +174,7 @@ export function WorkspacePicker({ mode, initialPath, onConfirm, onCancel }: Work
           />
           <button
             type="button"
-            onClick={() => void handleBrowse()}
+            onClick={() => handleBrowse()}
             className="rounded border border-slate-300 bg-slate-100 px-3 py-2 text-sm hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
           >
             Browse…

@@ -149,7 +149,6 @@ function isTerminalStatus(status: SubStatus): boolean {
  */
 function withStatusAndPid(current: SubSession, status: SubStatus, pid: number | undefined): SubSession {
   const { pid: _omit, ...rest } = current;
-  void _omit;
   const next: SubSession = { ...rest, status };
   if (pid !== undefined) next.pid = pid;
   return next;
@@ -200,7 +199,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
       // backend; if we're already there, fire now, otherwise stage and
       // let `applyStatus` drain when the status flips.
       if (sub.kind === 'terminal' || sub.status === 'running') {
-        void actions.focus(sub.id).catch((err) => {
+        actions.focus(sub.id).catch((err) => {
           console.warn(`[sub-session-store] auto-focus after create(${sub.id}) failed: ${formatError(err)}`);
         });
       } else {
@@ -236,9 +235,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
           const wttState = useWorktreeTabStore.getState();
           const tab = wttState.tabs.find((t) => t.id === closingSub.parentWorktreeTabId);
           if (tab?.activeChildId?.kind === 'subSession' && tab.activeChildId.id === id) {
-            void wttState.actions.setActiveChild(tab.id, null).catch((err) => {
-              console.warn(`[sub-session-store] setActiveChild after close(${id}) failed: ${formatError(err)}`);
-            });
+            wttState.actions.setActiveChild(tab.id, null);
           }
         }
       }
@@ -265,10 +262,8 @@ export const useSubSessionStore = create<Store>((set, get) => {
         const tab = wttState.tabs.find((t) => t.id === sub.parentWorktreeTabId);
         if (tab) {
           const wttActions = wttState.actions;
-          void wttActions.focus(tab.id);
-          void wttActions.setActiveChild(tab.id, { kind: 'subSession', id }).catch((err) => {
-            console.warn(`[sub-session-store] setActiveChild after focus(${id}) failed: ${formatError(err)}`);
-          });
+          wttActions.focus(tab.id);
+          wttActions.setActiveChild(tab.id, { kind: 'subSession', id });
         }
       }
 
@@ -407,7 +402,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
       if (pendingFocus.has(event.id)) {
         if (event.status === 'running') {
           pendingFocus.delete(event.id);
-          void actions.focus(event.id).catch((err) => {
+          actions.focus(event.id).catch((err) => {
             console.warn(`[sub-session-store] deferred auto-focus for ${event.id} failed: ${formatError(err)}`);
           });
         } else if (isTerminalStatus(event.status)) {

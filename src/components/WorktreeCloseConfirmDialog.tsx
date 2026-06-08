@@ -87,7 +87,7 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
     // `worktree-tab-store.close` normally routes errors through `useWorktreeCloseStore` → `WorktreeCloseBanner`, but an exception thrown before
     // it can call `markStarted` (e.g. the local tab disappeared so `closingTab` is undefined and then the bridge itself rejects) would be
     // invisible. Log here so production support logs still capture the case; we deliberately don't rethrow because the user already moved on.
-    void actions.close(tabId, wantsDelete, policy).catch((err) => {
+    actions.close(tabId, wantsDelete, policy).catch((err) => {
       console.warn(`[worktree-close-dialog] close(${tabId}) rejected after dialog dismiss: ${formatError(err)}`);
     });
   };
@@ -194,7 +194,7 @@ export function WorktreeCloseConfirmDialog(): JSX.Element | null {
           type="button"
           disabled={busy}
           onClick={() => {
-            void onConfirm();
+            onConfirm();
           }}
           className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:cursor-not-allowed disabled:opacity-50"
         >

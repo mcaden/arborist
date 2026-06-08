@@ -301,7 +301,7 @@ function ensureGlobalSubscriptions(): void {
   // and may not exist in jsdom.
   if (!fontsReadyAttached && typeof document !== 'undefined' && 'fonts' in document && document.fonts && typeof document.fonts.ready === 'object') {
     fontsReadyAttached = true;
-    void document.fonts.ready
+    document.fonts.ready
       .then(() => {
         for (const [id, entry] of registry) {
           if (entry.wrapper && entry.wrapper.isConnected) {
@@ -342,7 +342,7 @@ function createEntry(id: string, ioKind: IoKind): RegistryEntry {
 
   term.onData((data) => {
     const sendInput = ioKind === 'session' ? sessionInput({ sessionId: id, data }) : subSessionInput({ id: id as SubSessionId, data });
-    void sendInput.catch((err: unknown) => {
+    sendInput.catch((err: unknown) => {
       const message = formatError(err);
       console.warn(`[use-terminal] ${ioKind} input(${id}) failed: ${message}`);
     });
@@ -440,7 +440,7 @@ function copySelectionToClipboard(entry: RegistryEntry): boolean {
  * handler. Callers gate on [`canWriteClipboard`] first; failures are logged but never surfaced to the user.
  */
 function writeTextToClipboard(text: string): void {
-  void navigator.clipboard.writeText(text).catch((err: unknown) => {
+  navigator.clipboard.writeText(text).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[use-terminal] clipboard.writeText() failed: ${message}`);
   });
@@ -501,7 +501,7 @@ function handleOsc52(data: string): boolean {
  */
 function pasteFromClipboard(id: string, entry: RegistryEntry): void {
   if (!canReadClipboard()) return;
-  void navigator.clipboard
+  navigator.clipboard
     .readText()
     .then((text) => {
       if (!text) return;
@@ -530,7 +530,7 @@ function handleShiftEnterKey(event: KeyboardEvent, id: string, entry: RegistryEn
     entry.ioKind === 'session'
       ? sessionInput({ sessionId: id as SessionId, data: '\x1b\r' })
       : subSessionInput({ id: id as SubSessionId, data: '\x1b\r' });
-  void inputPromise.catch((err: unknown) => {
+  inputPromise.catch((err: unknown) => {
     const message = formatError(err);
     console.warn(`[use-terminal] ${entry.ioKind} input(${id}) failed: ${message}`);
   });
@@ -667,7 +667,7 @@ function refitEntry(id: string, entry: RegistryEntry): void {
   entry.lastRows = rows;
   const sendResize =
     entry.ioKind === 'session' ? sessionResize({ sessionId: id, cols, rows }) : subSessionResize({ id: id as SubSessionId, cols, rows });
-  void sendResize.catch((err: unknown) => {
+  sendResize.catch((err: unknown) => {
     const message = formatError(err);
     console.warn(`[use-terminal] ${entry.ioKind} resize(${id}) failed: ${message}`);
   });
@@ -993,7 +993,7 @@ export function __resetTerminalRegistryForTests(): void {
   if (outputUnlisten) {
     const pending = outputUnlisten;
     outputUnlisten = null;
-    void pending.then((unlisten) => {
+    pending.then((unlisten) => {
       try {
         unlisten();
       } catch {

@@ -50,7 +50,7 @@ export function subscribeToStatus(): Unlisten {
     statusAttached = false;
     statusUnlistenPromise = null;
     if (!pending) return;
-    void pending.then((unlisten) => {
+    pending.then((unlisten) => {
       unlisten();
     });
   };
@@ -74,7 +74,7 @@ export function subscribeToActivity(): Unlisten {
     activityAttached = false;
     activityUnlistenPromise = null;
     if (!pending) return;
-    void pending.then((unlisten) => {
+    pending.then((unlisten) => {
       unlisten();
     });
   };
@@ -98,7 +98,7 @@ export function subscribeToMetrics(): Unlisten {
     metricsAttached = false;
     metricsUnlistenPromise = null;
     if (!pending) return;
-    void pending.then((unlisten) => {
+    pending.then((unlisten) => {
       unlisten();
     });
   };
@@ -121,17 +121,17 @@ export function __resetForTests(): void {
   metricsAttached = false;
   metricsUnlistenPromise = null;
   if (pendingStatus) {
-    void pendingStatus.then((unlisten) => {
+    pendingStatus.then((unlisten) => {
       unlisten();
     });
   }
   if (pendingActivity) {
-    void pendingActivity.then((unlisten) => {
+    pendingActivity.then((unlisten) => {
       unlisten();
     });
   }
   if (pendingMetrics) {
-    void pendingMetrics.then((unlisten) => {
+    pendingMetrics.then((unlisten) => {
       unlisten();
     });
   }

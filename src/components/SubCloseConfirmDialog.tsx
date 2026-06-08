@@ -121,7 +121,7 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
         <button
           type="button"
           onClick={() => {
-            void closeWith('tabOnly');
+            closeWith('tabOnly');
           }}
           className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600"
         >
@@ -130,7 +130,7 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
         <button
           type="button"
           onClick={() => {
-            void closeWith('requestAppClose');
+            closeWith('requestAppClose');
           }}
           className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
         >
@@ -139,7 +139,7 @@ export function SubCloseConfirmDialog(): JSX.Element | null {
         <button
           type="button"
           onClick={() => {
-            void closeWith('forceKill');
+            closeWith('forceKill');
           }}
           className="rounded-md bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
         >

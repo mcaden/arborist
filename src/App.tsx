@@ -188,7 +188,7 @@ function AppInner(): JSX.Element {
       }
     };
 
-    void boot();
+    boot();
 
     return () => {
       cancelled = true;

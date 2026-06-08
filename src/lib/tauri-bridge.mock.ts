@@ -233,7 +233,7 @@ export function resetBridgeMocks(): void {
 // Compile-time guard: this module must export every member of the real
 // bridge with a compatible type. Adding a new export to tauri-bridge.ts
 // without mirroring it here is a TypeScript error.
-const _shapeCheck = {
+({
   formatError,
   isAppErrorLike,
   ping,
@@ -283,5 +283,4 @@ const _shapeCheck = {
   worktreeTabSetActiveChild,
   worktreePrepOpenLog,
   onWorktreePrep,
-} satisfies typeof realBridge;
-void _shapeCheck;
+}) satisfies typeof realBridge;

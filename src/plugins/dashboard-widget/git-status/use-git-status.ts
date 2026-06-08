@@ -48,9 +48,9 @@ export function useGitStatus(tabPath: string): UseGitStatusResult {
     inFlightRef.current = false;
     setStatusLoading(false);
 
-    void refreshStatus();
+    refreshStatus();
     const handle = window.setInterval(() => {
-      void refreshStatus();
+      refreshStatus();
     }, POLL_INTERVAL_MS);
     const refSnapshot = reqIdRef;
     return () => {
