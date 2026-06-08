@@ -421,10 +421,7 @@ export function pickDirectory(): Promise<string | null> {
 // these wrappers so the bridge mock can stub them in tests.
 // ---------------------------------------------------------------------------
 
-/**
- * Read the system clipboard as plain text. Typically resolves to `''` for an empty/non-text clipboard, though the plugin may surface other falsy
- * values, so callers must treat any falsy result as "nothing to paste" rather than relying on an exact empty string.
- */
+/** Read the system clipboard as plain text. Resolves to `''` when the clipboard holds no text, which callers treat as "nothing to paste". */
 export function clipboardReadText(): Promise<string> {
   return pluginReadText();
 }
