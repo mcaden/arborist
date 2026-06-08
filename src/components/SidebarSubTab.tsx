@@ -32,6 +32,7 @@
 
 import { useRef, useState } from 'react';
 
+import { formatError } from '@/lib/tauri-bridge';
 import { SubTabContextMenu } from './SubTabContextMenu';
 import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 import { useWorktreeTabStore } from '@/store/worktree-tab-store';
@@ -63,10 +64,14 @@ export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSu
 
   const handleClick = (): void => {
     if (isExited && sub.kind === 'application') {
-      subActions.relaunch(subSessionId);
+      subActions.relaunch(subSessionId).catch((err: unknown) => {
+        console.warn(`[SidebarSubTab] subsession_relaunch failed: ${formatError(err)}`);
+      });
       return;
     }
-    subActions.focus(subSessionId);
+    subActions.focus(subSessionId).catch((err: unknown) => {
+      console.warn(`[SidebarSubTab] subsession_focus failed: ${formatError(err)}`);
+    });
   };
 
   const handleClose = (e: React.MouseEvent): void => {
@@ -75,7 +80,9 @@ export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSu
       subActions.requestClose(subSessionId);
       return;
     }
-    subActions.close(subSessionId);
+    subActions.close(subSessionId).catch((err: unknown) => {
+      console.warn(`[SidebarSubTab] subsession_close failed: ${formatError(err)}`);
+    });
   };
 
   const stateClasses = isActive

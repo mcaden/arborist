@@ -30,6 +30,7 @@
 
 import { useEffect, useRef } from 'react';
 
+import { formatError } from '@/lib/tauri-bridge';
 import { useSubTerminal } from '@/hooks/use-terminal';
 import { useSubSessionActions, useSubSessionById } from '@/store/sub-session-store';
 import type { SubSessionId, SubSessionStatus } from '@/types/arborist';
@@ -100,11 +101,15 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
   }, [isActive, refit, focus, showExitedBar]);
 
   const handleRelaunch = (): void => {
-    subActions.relaunch(subSessionId);
+    subActions.relaunch(subSessionId).catch((err: unknown) => {
+      console.warn(`[SubTerminalView] subsession_relaunch failed: ${formatError(err)}`);
+    });
   };
 
   const handleClose = (): void => {
-    subActions.close(subSessionId);
+    subActions.close(subSessionId).catch((err: unknown) => {
+      console.warn(`[SubTerminalView] subsession_close failed: ${formatError(err)}`);
+    });
   };
 
   const exitedSummary = (() => {
