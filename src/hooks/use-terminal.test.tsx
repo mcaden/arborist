@@ -123,6 +123,36 @@ function withMacPlatform(fn: () => void): void {
   }
 }
 
+// Render a terminal and attach it to a fresh host — the preamble nearly every interaction test needs. Returns the host plus the just-created mock
+// Terminal so tests can assert against `term.paste`, read its OSC handlers, etc., without repeating the renderHook → makeHost → attach boilerplate.
+function attachTerminal(id = 's1'): { host: HTMLDivElement; term: (typeof mockTerminals)[number] } {
+  const { result } = renderHook(() => useTerminal(id));
+  const host = makeHost();
+  act(() => result.current.attach(host));
+  return { host, term: mockTerminals[mockTerminals.length - 1]! };
+}
+
+// Drive the "modifier+V pastes the clipboard" happy path: mock the system clipboard, dispatch the chord, drain the async read, and assert the text
+// reached `term.paste`. Shared by the Ctrl+V / Cmd+V / non-Latin-layout cases, which differ only in the key chord and the pasted payload.
+async function expectChordPastes(init: KeyboardEventInit, clip: string): Promise<void> {
+  const { host, term } = attachTerminal();
+  clipboardReadText.mockResolvedValue(clip);
+  const prevented = !host.dispatchEvent(keydown(init));
+  expect(prevented).toBe(true);
+  expect(clipboardReadText).toHaveBeenCalled();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(term.paste).toHaveBeenCalledWith(clip);
+}
+
+// Attach a terminal and return its registered OSC 52 handler (always present — `createEntry` registers it). The OSC 52 tests differ only in payload.
+function attachOsc52Handler(): (data: string) => boolean | Promise<boolean> {
+  const { term } = attachTerminal();
+  const handler = term._oscHandlers.get(52);
+  expect(handler).toBeDefined();
+  return handler!;
+}
+
 let originalResizeObserver: typeof ResizeObserver | undefined;
 
 beforeEach(() => {
@@ -333,33 +363,11 @@ describe('useTerminal', () => {
   });
 
   it('Ctrl+V on host reads the system clipboard and pastes via term.paste', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    clipboardReadText.mockResolvedValue('clip-text');
-    const prevented = !host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true }));
-
-    expect(prevented).toBe(true);
-    expect(clipboardReadText).toHaveBeenCalled();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('clip-text');
+    await expectChordPastes({ key: 'v', code: 'KeyV', ctrlKey: true }, 'clip-text');
   });
 
   it('Cmd+V (metaKey) on host pastes via the clipboard plugin', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    clipboardReadText.mockResolvedValue('mac-clip');
-    const prevented = !host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', metaKey: true }));
-
-    expect(prevented).toBe(true);
-    expect(clipboardReadText).toHaveBeenCalled();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('mac-clip');
+    await expectChordPastes({ key: 'v', code: 'KeyV', metaKey: true }, 'mac-clip');
   });
 
   it('Ctrl+Shift+V on host also triggers paste (Linux terminal convention)', () => {
@@ -431,18 +439,7 @@ describe('useTerminal', () => {
   it('Ctrl+V on a non-Latin keyboard layout still triggers paste (matches by code, not key)', async () => {
     // On a Russian QWERTY layout the V position prints `м`, so `event.key` is `'м'` — not `'v'`. We deliberately match on `event.code === 'KeyV'`
     // (physical key) rather than `event.key` so the user's normal paste shortcut works regardless of active keyboard layout.
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    clipboardReadText.mockResolvedValue('layout-clip');
-    const prevented = !host.dispatchEvent(keydown({ key: 'м', code: 'KeyV', ctrlKey: true }));
-
-    expect(prevented).toBe(true);
-    expect(clipboardReadText).toHaveBeenCalled();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('layout-clip');
+    await expectChordPastes({ key: 'м', code: 'KeyV', ctrlKey: true }, 'layout-clip');
   });
 
   it('Ctrl + non-V key with key:"v" is not intercepted (matches by code, not by produced character)', () => {
@@ -537,24 +534,17 @@ describe('useTerminal', () => {
   });
 
   it('OSC 52 clipboard write from the CLI is forwarded to the system clipboard', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-    const handler = mockTerminals[0]!._oscHandlers.get(52);
-    expect(handler).toBeDefined();
+    const handler = attachOsc52Handler();
 
     // OSC 52 payload: "<selection>;<base64>". "hi" → "aGk=".
-    const handled = await handler!('c;aGk=');
+    const handled = await handler('c;aGk=');
 
     expect(handled).toBe(true);
     expect(clipboardWriteText).toHaveBeenCalledWith('hi');
   });
 
   it('OSC 52 decodes multi-byte UTF-8 correctly', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-    const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+    const handler = attachOsc52Handler();
 
     // "café — 日本" base64-encoded from its UTF-8 bytes.
     const b64 = Buffer.from('café — 日本', 'utf-8').toString('base64');
@@ -565,10 +555,7 @@ describe('useTerminal', () => {
   });
 
   it('OSC 52 read request ("?") is declined and never leaks the clipboard', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-    const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+    const handler = attachOsc52Handler();
 
     const handled = await handler('c;?');
 
@@ -577,10 +564,7 @@ describe('useTerminal', () => {
   });
 
   it('OSC 52 with malformed base64 is declined cleanly', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-    const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+    const handler = attachOsc52Handler();
 
     const handled = await handler('c;@@not-base64@@');
 
