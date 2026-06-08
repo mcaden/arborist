@@ -44,7 +44,7 @@ export function WorktreeDashboard({ tabId }: WorktreeDashboardProps): JSX.Elemen
     setLaunchError(null);
     const pluginName = aiPlugins.find((plugin) => plugin.id === tool)?.displayName ?? tool;
     const dims = measureInitialPtyDimensions();
-    void sessionActions
+    sessionActions
       .create({
         tool,
         worktreePath: tab.path,

@@ -152,7 +152,7 @@ function FailureBanner({
         <button
           type="button"
           onClick={() => {
-            void worktreePrepOpenLog({ logPath: record.logPath }).catch((err: unknown) => {
+            worktreePrepOpenLog({ logPath: record.logPath }).catch((err: unknown) => {
               onOpenLogFailed(`open log: ${formatError(err)}`);
             });
           }}

@@ -143,7 +143,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
     setActionError(null);
     const pluginName = aiPlugins.find((plugin) => plugin.id === tool)?.displayName ?? tool;
     const dims = measureInitialPtyDimensions();
-    void sessionActions
+    sessionActions
       .create({
         tool,
         worktreePath: tab.path,
@@ -163,7 +163,7 @@ export function WorktreeTabContextMenu({ tabId, anchor, onClose, restoreFocusTo,
   };
 
   const handleCustomProcess = (defId: string): void => {
-    void subActions.create({ parentWorktreeTabId: tabId, defId: defId as CustomProcessDefId }).catch((err: unknown) => {
+    subActions.create({ parentWorktreeTabId: tabId, defId: defId as CustomProcessDefId }).catch((err: unknown) => {
       console.warn(`[WorktreeTabContextMenu] subsession_create(${defId}) failed: ${formatError(err)}`);
     });
     closeMenu();

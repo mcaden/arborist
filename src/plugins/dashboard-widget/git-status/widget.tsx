@@ -42,7 +42,7 @@ const PR_CHECKS_META: Record<PrChecksStatus, { label: string; glyph: string; cla
 // rejections (capability denied / backend validation failure) so a failed open never escalates to an unhandled WebView promise rejection;
 // there is no in-widget recovery for a browser that won't launch, so a logged error is the appropriate ceiling.
 function openUrl(url: string): void {
-  void openExternalUrl(url).catch((error: unknown) => {
+  openExternalUrl(url).catch((error: unknown) => {
     console.error('Failed to open external URL', error);
   });
 }
@@ -157,8 +157,8 @@ export function GitStatusWidget({ tabPath }: DashboardWidgetProps): JSX.Element 
           type="button"
           data-testid="worktree-dashboard-git-refresh"
           onClick={() => {
-            void refreshStatus();
-            void refreshPrInfo();
+            refreshStatus();
+            refreshPrInfo();
           }}
           disabled={statusLoading}
           className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"

@@ -199,7 +199,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
       // backend; if we're already there, fire now, otherwise stage and
       // let `applyStatus` drain when the status flips.
       if (sub.kind === 'terminal' || sub.status === 'running') {
-        void actions.focus(sub.id).catch((err) => {
+        actions.focus(sub.id).catch((err) => {
           console.warn(`[sub-session-store] auto-focus after create(${sub.id}) failed: ${formatError(err)}`);
         });
       } else {
@@ -406,7 +406,7 @@ export const useSubSessionStore = create<Store>((set, get) => {
       if (pendingFocus.has(event.id)) {
         if (event.status === 'running') {
           pendingFocus.delete(event.id);
-          void actions.focus(event.id).catch((err) => {
+          actions.focus(event.id).catch((err) => {
             console.warn(`[sub-session-store] deferred auto-focus for ${event.id} failed: ${formatError(err)}`);
           });
         } else if (isTerminalStatus(event.status)) {

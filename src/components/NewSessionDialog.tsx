@@ -546,7 +546,7 @@ export function NewSessionDialog(): JSX.Element | null {
               <button
                 type="button"
                 onClick={() => {
-                  void onPickDirectory();
+                  onPickDirectory();
                 }}
                 className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
               >
@@ -560,7 +560,7 @@ export function NewSessionDialog(): JSX.Element | null {
             id="new-worktree-form"
             onSubmit={(e) => {
               e.preventDefault();
-              void onCreateWorktree();
+              onCreateWorktree();
             }}
           >
             <label htmlFor="new-worktree-name" className="block text-sm font-medium">
@@ -669,7 +669,7 @@ export function NewSessionDialog(): JSX.Element | null {
             ref={existingConfirmRef}
             type="button"
             onClick={() => {
-              void onConfirmExisting();
+              onConfirmExisting();
             }}
             disabled={busy || !worktree}
             className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
@@ -681,7 +681,7 @@ export function NewSessionDialog(): JSX.Element | null {
           <button
             type="button"
             onClick={() => {
-              void onCreateFromBranch();
+              onCreateFromBranch();
             }}
             disabled={busy || !selectedBranch}
             className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"

@@ -75,7 +75,7 @@ export function TerminalView({ sessionId, isActive }: TerminalViewProps): JSX.El
   const handleRestart = (): void => {
     const dims = getDimensions() ?? measureInitialPtyDimensions();
     sessionActions.prepareForRestart(sessionId);
-    void (async () => {
+    (async () => {
       const trusted = await ensureShellCommandTrusted({ kind: 'sessionRestart', sessionId });
       if (!trusted) return;
       await sessionRestart({ sessionId, cols: dims.cols, rows: dims.rows });

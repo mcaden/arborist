@@ -63,10 +63,10 @@ export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSu
 
   const handleClick = (): void => {
     if (isExited && sub.kind === 'application') {
-      void subActions.relaunch(subSessionId);
+      subActions.relaunch(subSessionId);
       return;
     }
-    void subActions.focus(subSessionId);
+    subActions.focus(subSessionId);
   };
 
   const handleClose = (e: React.MouseEvent): void => {
@@ -75,7 +75,7 @@ export function SidebarSubTab({ subSessionId, isLastInGroup = false }: SidebarSu
       subActions.requestClose(subSessionId);
       return;
     }
-    void subActions.close(subSessionId);
+    subActions.close(subSessionId);
   };
 
   const stateClasses = isActive

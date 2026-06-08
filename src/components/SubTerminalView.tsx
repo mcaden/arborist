@@ -100,11 +100,11 @@ export function SubTerminalView({ subSessionId, isActive }: SubTerminalViewProps
   }, [isActive, refit, focus, showExitedBar]);
 
   const handleRelaunch = (): void => {
-    void subActions.relaunch(subSessionId);
+    subActions.relaunch(subSessionId);
   };
 
   const handleClose = (): void => {
-    void subActions.close(subSessionId);
+    subActions.close(subSessionId);
   };
 
   const exitedSummary = (() => {

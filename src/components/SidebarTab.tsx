@@ -120,7 +120,7 @@ export function SidebarTab({
         onClick={() => {
           // Clicking a session tab focuses it via the worktree-tab activeChildId
           // mechanism (actions.focus sets activeChildId to this session).
-          void actions.focus(id);
+          actions.focus(id);
         }}
         onKeyDown={(e) => {
           // Shift+F10 and the Apps / ContextMenu key are the standard
@@ -188,7 +188,7 @@ export function SidebarTab({
         aria-label={`Close session ${session.label}`}
         onClick={(e) => {
           e.stopPropagation();
-          void actions.close(id, false).catch((err) => {
+          actions.close(id, false).catch((err) => {
             console.warn(`[sidebar-tab] close failed for session ${id}: ${formatError(err)}`);
           });
         }}

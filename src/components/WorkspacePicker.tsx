@@ -67,7 +67,7 @@ export function WorkspacePicker({ mode, initialPath, onConfirm, onCancel }: Work
     setValidation({ kind: 'validating' });
     const seq = ++requestSeq.current;
     const handle = window.setTimeout(() => {
-      void (async () => {
+      (async () => {
         try {
           const result = await workspaceValidate(trimmed);
           if (seq !== requestSeq.current) return;

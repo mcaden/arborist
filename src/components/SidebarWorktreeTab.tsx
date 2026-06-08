@@ -56,8 +56,8 @@ export function SidebarWorktreeTab({ tabId, isActive, onOpenContextMenu }: Sideb
         onClick={() => {
           // Activating a worktree header is a deliberate "show me the dashboard" gesture — clear the activeChildId so MainArea swaps
           // to <WorktreeDashboard> instead of staying on whichever session was previously visible.
-          void wttActions.focus(tab.id);
-          void wttActions.setActiveChild(tab.id, null).catch((err) => {
+          wttActions.focus(tab.id);
+          wttActions.setActiveChild(tab.id, null).catch((err) => {
             console.warn(`[SidebarWorktreeTab] setActiveChild(${tab.id}, null) failed: ${formatError(err)}`);
           });
         }}

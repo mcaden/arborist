@@ -35,7 +35,7 @@ export function subscribeToSubStatus(): Unlisten {
     statusAttached = false;
     statusUnlistenPromise = null;
     if (!pending) return;
-    void pending.then((unlisten) => {
+    pending.then((unlisten) => {
       unlisten();
     });
   };
@@ -58,7 +58,7 @@ export function subscribeToSubExited(): Unlisten {
     exitedAttached = false;
     exitedUnlistenPromise = null;
     if (!pending) return;
-    void pending.then((unlisten) => {
+    pending.then((unlisten) => {
       unlisten();
     });
   };
@@ -87,7 +87,7 @@ export function subscribeToSubRestored(): Unlisten {
     restoredAttached = false;
     restoredUnlistenPromise = null;
     if (!pending) return;
-    void pending.then((unlisten) => {
+    pending.then((unlisten) => {
       unlisten();
     });
   };
@@ -108,17 +108,17 @@ export function __resetForTests(): void {
   restoredAttached = false;
   restoredUnlistenPromise = null;
   if (pendingStatus) {
-    void pendingStatus.then((unlisten) => {
+    pendingStatus.then((unlisten) => {
       unlisten();
     });
   }
   if (pendingExited) {
-    void pendingExited.then((unlisten) => {
+    pendingExited.then((unlisten) => {
       unlisten();
     });
   }
   if (pendingRestored) {
-    void pendingRestored.then((unlisten) => {
+    pendingRestored.then((unlisten) => {
       unlisten();
     });
   }

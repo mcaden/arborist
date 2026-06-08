@@ -242,11 +242,11 @@ export function Sidebar(): JSX.Element {
         e.preventDefault();
         // Mirror the SidebarTab mouse-click behaviour so keyboard activation also clears any sub-session viewport claim — without this,
         // arrowing onto a parent and pressing Enter while a sub still owns the viewport would feel like a no-op.
-        void actions.focus(currentId);
+        actions.focus(currentId);
         break;
       case 'Delete':
         e.preventDefault();
-        void actions.close(currentId, false).catch((err) => {
+        actions.close(currentId, false).catch((err) => {
           console.warn(`[sidebar] keyboard close failed for session ${currentId}: ${formatError(err)}`);
         });
         break;
