@@ -904,6 +904,172 @@ impl PtySpawner for FakeSpawner {
     }
 }
 
+// --------------------------------------------------------------------------- Fake spawner for per-session DSR routing
+// ---------------------------------------------------------------------------
+
+/// Reader that yields a single pre-built chunk (used to deliver some number of `ESC[6n` queries in one go) then parks until `eof` flips. Parking
+/// rather than EOFing keeps the session alive long enough for the DSR sink's `tokio::spawn`ed reply to win its `pool.write` retry race.
+struct ChunkThenParkReader {
+    chunk: Option<Vec<u8>>,
+    eof: Arc<AtomicBool>,
+}
+
+impl Read for ChunkThenParkReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(c) = self.chunk.take() {
+            let n = c.len().min(buf.len());
+            buf[..n].copy_from_slice(&c[..n]);
+            return Ok(n);
+        }
+        while !self.eof.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(0)
+    }
+}
+
+/// Writer that records everything `pool.write` sends to this session into a shared buffer. The buffer is the assertion target — its contents prove
+/// exactly which DSR replies were routed to *this* session.
+struct CaptureWriter {
+    buf: Arc<Mutex<Vec<u8>>>,
+}
+
+impl std::io::Write for CaptureWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.buf.lock().unwrap().extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Deterministic spawner for the per-session DSR routing test. Each `spawn` call (in order) emits the next configured number of `ESC[6n` queries
+/// from its reader and hands the pool a [`CaptureWriter`] over a fresh buffer, recorded in `writer_bufs` so the test can correlate writer ⇄ session
+/// by spawn order.
+struct DsrRoutingSpawner {
+    query_counts: Vec<usize>,
+    next_index: AtomicUsize,
+    next_pid: AtomicUsize,
+    writer_bufs: Mutex<Vec<Arc<Mutex<Vec<u8>>>>>,
+}
+
+impl DsrRoutingSpawner {
+    fn new(query_counts: &[usize]) -> Self {
+        Self {
+            query_counts: query_counts.to_vec(),
+            next_index: AtomicUsize::new(0),
+            next_pid: AtomicUsize::new(2000),
+            writer_bufs: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Capturing-writer buffers in spawn order — `writer_bufs()[i]` is the writer handed to the i-th spawned session.
+    fn writer_bufs(&self) -> Vec<Arc<Mutex<Vec<u8>>>> {
+        self.writer_bufs.lock().unwrap().clone()
+    }
+}
+
+impl PtySpawner for DsrRoutingSpawner {
+    fn spawn(&self, _cmd: ChildCommand, _cwd: &Path, _size: PtySize) -> Result<SpawnedChild, arborist_lib::types::Error> {
+        let index = self.next_index.fetch_add(1, Ordering::Relaxed);
+        let count = *self
+            .query_counts
+            .get(index)
+            .expect("DsrRoutingSpawner spawned more sessions than configured query counts");
+
+        let mut chunk = Vec::with_capacity(count * 4);
+        for _ in 0..count {
+            chunk.extend_from_slice(b"\x1b[6n");
+        }
+
+        let eof = Arc::new(AtomicBool::new(false));
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        self.writer_bufs.lock().unwrap().push(Arc::clone(&buf));
+
+        Ok(SpawnedChild {
+            pid: self.next_pid.fetch_add(1, Ordering::Relaxed) as u32,
+            reader: Box::new(ChunkThenParkReader {
+                chunk: Some(chunk),
+                eof: Arc::clone(&eof),
+            }),
+            writer: Box::new(CaptureWriter { buf }),
+            resize: Arc::new(FakeResize),
+            waiter: Box::new(FakeWaiter {
+                eof_flag: Arc::clone(&eof),
+                exit_code: 0,
+                auto_exit_after: None,
+            }),
+            killer: Arc::new(FakeKiller { eof_flag: eof, fail: false }),
+        })
+    }
+}
+
+/// Deterministic, cross-platform companion to `dsr_responses_route_to_correct_session_when_multiple_are_live` (which needs three real ConPTYs and so
+/// carries the `serial(real_pty)` gate). It drives the exact same per-session routing in `dsr_responding_sink` — each sink captures its own
+/// `SessionId` and answers via `pool.write(&id, ...)` — but with no pseudo-console: a fake spawner hands every session a reader that emits a distinct
+/// number of `ESC[6n` queries plus a capturing writer, so we can assert each session's DSR replies land in *its own* writer and nowhere else.
+///
+/// The distinct per-session query counts (1, 2, 3) are the teeth of the regression check: if a refactor ever shared one `SessionId` across sinks, all
+/// six replies would funnel into a single session's writer and the per-session equality assertions below would fail. Runs on Linux/macOS/Windows with
+/// no `serial_test` tagging because nothing here contends for a real ConPTY.
+#[test]
+fn dsr_responses_route_to_correct_session_with_fake_spawner() {
+    const REPLY: &[u8] = b"\x1b[1;1R";
+    let query_counts = [1usize, 2, 3];
+
+    let spawner = Arc::new(DsrRoutingSpawner::new(&query_counts));
+    let pool = Arc::new(PtyPool::new(Arc::clone(&spawner) as Arc<dyn PtySpawner>));
+
+    let rt = rt();
+    let _g = rt.enter();
+
+    let dirs: Vec<_> = (0..query_counts.len()).map(|_| tempfile::tempdir().unwrap()).collect();
+    let sessions: Vec<Session> = dirs.iter().map(|d| make_session(d.path())).collect();
+    for session in &sessions {
+        let (sink, _outs, _stats) = dsr_responding_sink(Arc::clone(&pool));
+        pool.spawn(session, sink, DEFAULT_PTY_SIZE).expect("spawn");
+    }
+
+    let writers = spawner.writer_bufs();
+    assert_eq!(writers.len(), query_counts.len(), "expected one capturing writer per spawned session");
+
+    // Wait until every DSR reply has been written somewhere. The total is conserved regardless of routing (each detected query produces exactly one
+    // write), so once the global byte count settles we can safely assert the *distribution* across sessions — which is where a misroute shows up.
+    let total_expected = REPLY.len() * query_counts.iter().sum::<usize>();
+    let start = Instant::now();
+    loop {
+        let total: usize = writers.iter().map(|b| b.lock().unwrap().len()).sum();
+        if total >= total_expected {
+            break;
+        }
+        if start.elapsed() > Duration::from_secs(5) {
+            let lens: Vec<usize> = writers.iter().map(|b| b.lock().unwrap().len()).collect();
+            panic!("only {total}/{total_expected} reply bytes routed after 5s; per-session byte counts: {lens:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Each session's writer must hold exactly its own query count's worth of replies — no more (a foreign sink leaked in), no fewer (its own sink
+    // misrouted away).
+    for (i, (buf, &count)) in writers.iter().zip(query_counts.iter()).enumerate() {
+        let got = buf.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            REPLY.repeat(count),
+            "session {i} writer did not receive exactly {count} DSR repl{}",
+            if count == 1 { "y" } else { "ies" }
+        );
+    }
+
+    for session in &sessions {
+        rt.block_on(async {
+            pool.kill(&session.id).await.ok();
+        });
+    }
+}
+
 // --------------------------------------------------------------------------- Backpressure
 // ---------------------------------------------------------------------------
 
