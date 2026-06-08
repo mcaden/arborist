@@ -907,18 +907,22 @@ impl PtySpawner for FakeSpawner {
 // --------------------------------------------------------------------------- Fake spawner for per-session DSR routing
 // ---------------------------------------------------------------------------
 
-/// Reader that yields a single pre-built chunk (used to deliver some number of `ESC[6n` queries in one go) then parks until `eof` flips. Parking
-/// rather than EOFing keeps the session alive long enough for the DSR sink's `tokio::spawn`ed reply to win its `pool.write` retry race.
+/// Reader that drains a single pre-built chunk (used to deliver some number of `ESC[6n` queries) then parks until `eof` flips. Parking rather than
+/// EOFing keeps the session alive long enough for the DSR sink's `tokio::spawn`ed reply to win its `pool.write` retry race.
 struct ChunkThenParkReader {
-    chunk: Option<Vec<u8>>,
+    chunk: std::collections::VecDeque<u8>,
     eof: Arc<AtomicBool>,
 }
 
 impl Read for ChunkThenParkReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if let Some(c) = self.chunk.take() {
-            let n = c.len().min(buf.len());
-            buf[..n].copy_from_slice(&c[..n]);
+        // Drain whatever still fits this `buf` and keep the remainder for the next call. A short `buf` (smaller than the chunk) must not silently
+        // drop queries, or a future buffer-size / query-count change could lose an `ESC[6n` and hang the test.
+        if !self.chunk.is_empty() {
+            let n = self.chunk.len().min(buf.len());
+            for (slot, byte) in buf[..n].iter_mut().zip(self.chunk.drain(..n)) {
+                *slot = byte;
+            }
             return Ok(n);
         }
         while !self.eof.load(Ordering::Relaxed) {
@@ -979,9 +983,9 @@ impl PtySpawner for DsrRoutingSpawner {
             .get(index)
             .expect("DsrRoutingSpawner spawned more sessions than configured query counts");
 
-        let mut chunk = Vec::with_capacity(count * 4);
+        let mut chunk: std::collections::VecDeque<u8> = std::collections::VecDeque::with_capacity(count * 4);
         for _ in 0..count {
-            chunk.extend_from_slice(b"\x1b[6n");
+            chunk.extend(b"\x1b[6n".iter().copied());
         }
 
         let eof = Arc::new(AtomicBool::new(false));
@@ -991,7 +995,7 @@ impl PtySpawner for DsrRoutingSpawner {
         Ok(SpawnedChild {
             pid: self.next_pid.fetch_add(1, Ordering::Relaxed) as u32,
             reader: Box::new(ChunkThenParkReader {
-                chunk: Some(chunk),
+                chunk,
                 eof: Arc::clone(&eof),
             }),
             writer: Box::new(CaptureWriter { buf }),
