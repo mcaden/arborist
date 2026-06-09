@@ -213,39 +213,41 @@ describe('SettingsDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows General tab by default and switches panels when the tab is clicked', () => {
+  it('shows General tab by default and switches the active panel when a tab is clicked', () => {
     seedConfig();
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
-    expect(screen.getByTestId('settings-panel-general')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-panel-plugins')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-about')).toBeNull();
+    // All panels stay mounted (so per-tab edits survive switching); only the active one is visible.
+    const generalPanel = screen.getByTestId('settings-panel-general');
+    const pluginsPanel = screen.getByTestId('settings-panel-plugins');
+    const customPanel = screen.getByTestId('settings-panel-custom-processes');
+    const aboutPanel = screen.getByTestId('settings-panel-about');
+    expect(generalPanel).not.toHaveAttribute('hidden');
+    expect(pluginsPanel).toHaveAttribute('hidden');
+    expect(customPanel).toHaveAttribute('hidden');
+    expect(aboutPanel).toHaveAttribute('hidden');
     expect(screen.getByTestId('settings-tab-general')).toHaveAttribute('aria-selected', 'true');
+
     fireEvent.click(screen.getByTestId('settings-tab-plugins'));
-    expect(screen.getByTestId('settings-panel-plugins')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-about')).toBeNull();
+    expect(generalPanel).toHaveAttribute('hidden');
+    expect(pluginsPanel).not.toHaveAttribute('hidden');
     expect(screen.getByTestId('settings-tab-plugins')).toHaveAttribute('aria-selected', 'true');
+
     fireEvent.click(screen.getByTestId('settings-tab-custom-processes'));
-    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-plugins')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-about')).toBeNull();
+    expect(pluginsPanel).toHaveAttribute('hidden');
+    expect(customPanel).not.toHaveAttribute('hidden');
     expect(screen.getByTestId('settings-tab-custom-processes')).toHaveAttribute('aria-selected', 'true');
+
     fireEvent.click(screen.getByTestId('settings-tab-about'));
-    expect(screen.getByTestId('settings-panel-about')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-plugins')).toBeNull();
-    expect(screen.queryByTestId('settings-panel-custom-processes')).toBeNull();
+    expect(customPanel).toHaveAttribute('hidden');
+    expect(aboutPanel).not.toHaveAttribute('hidden');
     expect(screen.getByTestId('settings-tab-about')).toHaveAttribute('aria-selected', 'true');
   });
 
   it('honours initialTab="customProcesses" so the empty-launch handoff lands on the right tab', () => {
     seedConfig();
     renderWithPlugins(<SettingsDialog onClose={() => {}} initialTab="customProcesses" />);
-    expect(screen.getByTestId('settings-panel-custom-processes')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-panel-general')).toBeNull();
+    expect(screen.getByTestId('settings-panel-custom-processes')).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('settings-panel-general')).toHaveAttribute('hidden');
   });
 
   it('Arrow keys move between tabs (WAI-ARIA tab keyboard model)', () => {
@@ -304,7 +306,7 @@ describe('SettingsDialog', () => {
     fireEvent.change(claudeInput, { target: { value: 'claude --model sonnet' } });
     fireEvent.change(copilotInput, { target: { value: 'gh copilot' } });
     await act(async () => {
-      screen.getByTestId('plugins-save').click();
+      screen.getByTestId('settings-save').click();
     });
 
     expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
@@ -332,7 +334,7 @@ describe('SettingsDialog', () => {
     const claudeInput = screen.getByTestId('plugin-ai-claude-launch-command') as HTMLInputElement;
     fireEvent.change(claudeInput, { target: { value: '   ' } });
     await act(async () => {
-      screen.getByTestId('plugins-save').click();
+      screen.getByTestId('settings-save').click();
     });
     expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
       pluginSettings: { ai: { claude: { settings: { launchCommand: '' } } } },
@@ -426,6 +428,85 @@ describe('SettingsDialog', () => {
     const picker = screen.getByTestId('settings-theme-picker');
     const darkRadio = picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!;
     fireEvent.click(darkRadio);
+    expect(screen.queryByTestId('settings-error')).toBeNull();
+  });
+
+  it('shows a dirty indicator only on tabs with unsaved edits', () => {
+    seedConfig();
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+    // Nothing changed yet — no tab shows a dirty dot.
+    expect(screen.queryByTestId('settings-tab-general-dirty')).toBeNull();
+    expect(screen.queryByTestId('settings-tab-plugins-dirty')).toBeNull();
+    expect(screen.queryByTestId('settings-tab-custom-processes-dirty')).toBeNull();
+
+    // Editing a General field marks only the General tab dirty.
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo hi' } });
+    expect(screen.getByTestId('settings-tab-general-dirty')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-tab-plugins-dirty')).toBeNull();
+
+    // Editing a Plugins field marks the Plugins tab dirty too — and the General dot persists across the switch.
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
+    fireEvent.change(screen.getByTestId('plugin-ai-claude-launch-command'), { target: { value: 'claude --foo' } });
+    expect(screen.getByTestId('settings-tab-plugins-dirty')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-tab-general-dirty')).toBeInTheDocument();
+  });
+
+  it('the single Save persists edits made across multiple tabs in one round-trip', async () => {
+    seedConfig({ worktreePrepCommands: [] });
+    const onClose = vi.fn();
+    renderWithPlugins(<SettingsDialog onClose={onClose} />);
+
+    // Edit General.
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo prep' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Dark' }));
+
+    // Edit Plugins.
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
+    fireEvent.change(screen.getByTestId('plugin-ai-claude-launch-command'), { target: { value: 'claude --model sonnet' } });
+
+    await act(async () => {
+      screen.getByTestId('settings-save').click();
+    });
+
+    expect(bridgeMock.configSet).toHaveBeenCalledTimes(1);
+    expect(bridgeMock.configSet.mock.calls[0]![0]).toEqual({
+      worktreePrepCommands: ['echo prep'],
+      theme: 'dark',
+      pluginSettings: { ai: { claude: { settings: { launchCommand: 'claude --model sonnet' } } } },
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('a validation error in the Custom Processes tab blocks the shared Save', () => {
+    seedConfig();
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+
+    // Make a valid General edit so dirtiness alone wouldn't keep Save disabled.
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo ok' } });
+    expect(screen.getByTestId('settings-save')).toBeEnabled();
+
+    // Add an invalid custom-process row (blank name/command) — Save must disable.
+    fireEvent.click(screen.getByTestId('settings-tab-custom-processes'));
+    fireEvent.click(screen.getByTestId('custom-processes-add'));
+    fireEvent.change(screen.getByLabelText(/^ID for new launcher$/i), { target: { value: 'foo' } });
+    expect(screen.getByTestId('settings-save')).toBeDisabled();
+  });
+
+  it('clears a stale unified-save error when the user edits a non-General tab', async () => {
+    seedConfig({ worktreePrepCommands: [] });
+    bridgeMock.configSet.mockRejectedValueOnce(new Error('save blew up'));
+    renderWithPlugins(<SettingsDialog onClose={() => {}} />);
+
+    // Cause a unified-save failure via a General edit so the dialog-level banner shows.
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo x' } });
+    await act(async () => {
+      screen.getByTestId('settings-save').click();
+    });
+    expect(screen.getByTestId('settings-error')).toBeInTheDocument();
+
+    // Editing a Plugins field (a non-General tab) must clear the stale banner.
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
+    fireEvent.change(screen.getByTestId('plugin-ai-claude-launch-command'), { target: { value: 'claude --foo' } });
     expect(screen.queryByTestId('settings-error')).toBeNull();
   });
 });
