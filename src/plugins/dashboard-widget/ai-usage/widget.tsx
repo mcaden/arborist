@@ -45,7 +45,7 @@ export function AiUsageWidget({ tabPath }: DashboardWidgetProps): JSX.Element {
     >
       <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">AI Usage</h2>
       {childCount === 0 ? (
-        <p className="text-xs text-slate-500 dark:text-slate-400">No agents yet — launch one below or right-click this tab.</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400">No agents yet — use the Launch buttons above to start one.</p>
       ) : (
         <>
           <p className="text-xs text-slate-500 dark:text-slate-400">
