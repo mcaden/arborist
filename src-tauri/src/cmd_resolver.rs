@@ -71,6 +71,9 @@ pub fn parse_program(command: &str) -> Option<String> {
 /// 2. If it contains a path separator, resolve it relative to `cwd`.
 /// 3. Otherwise look it up in `PATH` (Windows: also tries each `PATHEXT`
 ///    suffix).
+///
+/// This returns the real on-disk path (what the icon extractor needs). Callers that intend to *spawn* the program should prefer
+/// [`resolve_launchable`], which also reports how the OS must be asked to launch it.
 #[must_use]
 pub fn resolve_executable(program: &str, cwd: &Path) -> Option<PathBuf> {
     let p = Path::new(program);
@@ -84,20 +87,76 @@ pub fn resolve_executable(program: &str, cwd: &Path) -> Option<PathBuf> {
     search_path(program)
 }
 
-fn existing_with_pathext(path: &Path) -> Option<PathBuf> {
-    if path.is_file() {
-        return Some(path.to_path_buf());
+/// How a resolved program must be handed to the OS to spawn it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchMethod {
+    /// Spawn the resolved path directly via `CreateProcess` / `execvp`.
+    Direct,
+    /// Spawn through `cmd.exe /c <path>` (Windows only). Required for anything the Windows loader can't execute directly — script wrappers
+    /// (`.cmd` / `.bat`) and extensionless shims (the Azure CLI's bare `az`) — which otherwise fail with "is not a valid Win32 application"
+    /// (os error 193).
+    ViaCmdShell,
+}
+
+/// A resolved program together with the [`LaunchMethod`] required to spawn it. Returned by [`resolve_launchable`] so the launch decision is made
+/// once, at resolution time, rather than re-derived from the path extension at each spawn site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCommand {
+    pub path: PathBuf,
+    pub launch: LaunchMethod,
+}
+
+/// Resolve `program` (see [`resolve_executable`]) and classify how it must be spawned. This is the entry point for callers that intend to *run* the
+/// resolved program; the icon extractor, which only needs the on-disk path, uses [`resolve_executable`] directly.
+#[must_use]
+pub fn resolve_launchable(program: &str, cwd: &Path) -> Option<ResolvedCommand> {
+    let path = resolve_executable(program, cwd)?;
+    let launch = launch_method_for(&path);
+    Some(ResolvedCommand { path, launch })
+}
+
+/// Decide how `path` must be spawned. On Windows, only native PE images (`.exe` / `.com`) go straight to `CreateProcess`; everything else
+/// (script wrappers, extensionless shims) routes through `cmd.exe /c`. On other platforms every resolved path is launched directly.
+fn launch_method_for(path: &Path) -> LaunchMethod {
+    if cfg!(target_os = "windows") && !is_windows_native_executable(path) {
+        LaunchMethod::ViaCmdShell
+    } else {
+        LaunchMethod::Direct
     }
+}
+
+fn existing_with_pathext(path: &Path) -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
-        // Re-try with each PATHEXT suffix only if the path has no extension — `code` → `code.cmd`/`code.exe`, but `Code.exe` → `Code.exe.cmd` would
-        // be nonsense.
+        // On Windows, an extensionless file can't be launched via `CreateProcess` — e.g. the Azure CLI ships a bare `az` bash shim next to the
+        // runnable `az.cmd`. Prefer a PATHEXT-suffixed sibling (`az` → `az.cmd`/`az.exe`) so we hand the OS something it can actually execute, and
+        // only fall back to the literal extensionless file when no executable sibling exists. A path that already has an extension is used as-is
+        // (`Code.exe` → `Code.exe.cmd` would be nonsense).
         if path.extension().is_none() {
-            for ext in pathext_entries() {
-                let with_ext: PathBuf = format!("{}{}", path.display(), ext).into();
-                if with_ext.is_file() {
-                    return Some(with_ext);
-                }
+            if let Some(found) = pathext_sibling(path, &pathext_entries()) {
+                return Some(found);
             }
+        }
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+        return None;
+    }
+    if path.is_file() {
+        Some(path.to_path_buf())
+    } else {
+        None
+    }
+}
+
+/// Return the first PATHEXT-suffixed sibling of `path` that exists on disk (`az` → `az.cmd`). Caller is responsible for the bare-file fallback;
+/// this only reports an executable sibling, and assumes `path` is extensionless — suffixing an already-extensioned path (`Code.exe` →
+/// `Code.exe.cmd`) is nonsense. `exts` is passed in so a multi-directory sweep can parse `PATHEXT` once instead of per directory.
+fn pathext_sibling(path: &Path, exts: &[String]) -> Option<PathBuf> {
+    debug_assert!(path.extension().is_none(), "pathext_sibling expects an extensionless path");
+    for ext in exts {
+        let with_ext: PathBuf = format!("{}{}", path.display(), ext).into();
+        if with_ext.is_file() {
+            return Some(with_ext);
         }
     }
     None
@@ -105,9 +164,34 @@ fn existing_with_pathext(path: &Path) -> Option<PathBuf> {
 
 fn search_path(program: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(program);
-        if let Some(found) = existing_with_pathext(&candidate) {
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path_var).collect();
+    search_path_in(program, &dirs)
+}
+
+fn search_path_in(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    // On Windows a bare extensionless program (`az`) can match both a runnable PATHEXT sibling (`az.cmd`) and a non-executable bash shim (`az`) that
+    // CreateProcess rejects with os error 193. The two can live in different PATH directories, so we sweep ALL directories for an executable sibling
+    // first and only fall back to a literal extensionless file if none is found — otherwise PATH ordering alone could decide whether we return
+    // something launchable. This deliberately differs from strict `cmd.exe` resolution (dir-major, then the bare name before PATHEXT within each
+    // dir): a bare extensionless file isn't launchable via CreateProcess anyway, so matching cmd's order here would just reproduce the os-error-193 bug.
+    if cfg!(target_os = "windows") && Path::new(program).extension().is_none() {
+        let exts = pathext_entries();
+        for dir in dirs {
+            if let Some(found) = pathext_sibling(&dir.join(program), &exts) {
+                return Some(found);
+            }
+        }
+        for dir in dirs {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+
+    for dir in dirs {
+        if let Some(found) = existing_with_pathext(&dir.join(program)) {
             return Some(found);
         }
     }
@@ -129,6 +213,17 @@ pub fn is_script_wrapper(path: &Path) -> bool {
         return false;
     };
     matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat" | "ps1" | "sh")
+}
+
+/// True only for paths the Windows loader can hand straight to `CreateProcess` — native PE images (`.exe` / `.com`). Anything else (script wrappers
+/// like `.cmd` / `.bat`, or an extensionless shim such as the Azure CLI's bare `az`) must be launched through `cmd.exe /c`, otherwise the launch
+/// fails with "is not a valid Win32 application" (os error 193). This is broader than [`is_script_wrapper`], which keys off a known-shim extension
+/// and so would let an extensionless shim through. Drives [`launch_method_for`].
+fn is_windows_native_executable(path: &Path) -> bool {
+    match path.extension().and_then(|s| s.to_str()) {
+        Some(ext) => matches!(ext.to_ascii_lowercase().as_str(), "exe" | "com"),
+        None => false,
+    }
 }
 
 /// If `path` is a script wrapper, peek inside (read the first ~8KB) and look for an executable reference. Returns the first one that resolves to an
@@ -486,6 +581,98 @@ mod tests {
         let exe = tmp.path().join("foo.exe");
         std::fs::write(&exe, b"binary").unwrap();
         assert_eq!(resolve_executable(exe.to_str().unwrap(), tmp.path()), Some(exe));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn resolve_executable_prefers_pathext_over_bare_shim() {
+        // Mirrors the Azure CLI layout: a bare `az` bash shim sits next to the runnable `az.cmd`. On Windows the extensionless shim can't be
+        // launched via CreateProcess, so resolution must hand back `az.cmd`, not `az`.
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("az");
+        std::fs::write(&bare, b"#!/bin/bash\n").unwrap();
+        let cmd = tmp.path().join("az.cmd");
+        std::fs::write(&cmd, b"@echo off\n").unwrap();
+        let resolved = resolve_executable(bare.to_str().unwrap(), tmp.path()).expect("should resolve to the .cmd sibling");
+        assert!(resolved.is_file(), "resolved path must exist on disk");
+        assert_eq!(
+            resolved.to_string_lossy().to_ascii_lowercase(),
+            cmd.to_string_lossy().to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn resolve_executable_falls_back_to_bare_file_without_pathext_sibling() {
+        // When no PATHEXT sibling exists, the literal extensionless file must still resolve — this is the fallback branch that keeps tools shipping
+        // only a bare launcher working (and is the branch most at risk of a future regression).
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("solo");
+        std::fs::write(&bare, b"binary").unwrap();
+        assert_eq!(resolve_executable(bare.to_str().unwrap(), tmp.path()), Some(bare));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn search_path_in_prefers_executable_sibling_across_directories() {
+        // The bare `az` shim and the runnable `az.cmd` can live in different PATH directories. Even when the shim's directory comes first, the
+        // cross-directory sweep must return the `.cmd` so we never hand CreateProcess an unlaunchable file.
+        let tmp = tempfile::tempdir().unwrap();
+        let shim_dir = tmp.path().join("shim");
+        let cmd_dir = tmp.path().join("cmd");
+        std::fs::create_dir(&shim_dir).unwrap();
+        std::fs::create_dir(&cmd_dir).unwrap();
+        std::fs::write(shim_dir.join("az"), b"#!/bin/bash\n").unwrap();
+        let cmd = cmd_dir.join("az.cmd");
+        std::fs::write(&cmd, b"@echo off\n").unwrap();
+
+        let resolved = search_path_in("az", &[shim_dir, cmd_dir]).expect("should resolve across directories");
+        assert_eq!(
+            resolved.to_string_lossy().to_ascii_lowercase(),
+            cmd.to_string_lossy().to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn search_path_in_falls_back_to_bare_shim_when_no_sibling_anywhere() {
+        // With no `.cmd`/`.exe` sibling in any directory, the bare extensionless file is the only option and must still resolve.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("bin");
+        std::fs::create_dir(&dir).unwrap();
+        let bare = dir.join("az");
+        std::fs::write(&bare, b"#!/bin/bash\n").unwrap();
+        assert_eq!(search_path_in("az", &[dir]), Some(bare));
+    }
+
+    #[test]
+    fn is_windows_native_executable_only_matches_pe_images() {
+        assert!(is_windows_native_executable(Path::new("foo.exe")));
+        assert!(is_windows_native_executable(Path::new("FOO.EXE")));
+        assert!(is_windows_native_executable(Path::new("foo.com")));
+        // Script wrappers and extensionless shims are NOT directly launchable and must route through cmd.exe.
+        assert!(!is_windows_native_executable(Path::new("az.cmd")));
+        assert!(!is_windows_native_executable(Path::new("foo.bat")));
+        assert!(!is_windows_native_executable(Path::new("foo.ps1")));
+        assert!(!is_windows_native_executable(Path::new("az")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn launch_method_classifies_native_vs_shell() {
+        assert_eq!(launch_method_for(Path::new(r"C:\tools\gh.exe")), LaunchMethod::Direct);
+        assert_eq!(launch_method_for(Path::new(r"C:\tools\foo.com")), LaunchMethod::Direct);
+        // Script wrappers and extensionless shims need the cmd.exe shell.
+        assert_eq!(launch_method_for(Path::new(r"C:\tools\az.cmd")), LaunchMethod::ViaCmdShell);
+        assert_eq!(launch_method_for(Path::new(r"C:\tools\az")), LaunchMethod::ViaCmdShell);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn launch_method_is_always_direct_off_windows() {
+        // No `cmd.exe` indirection outside Windows — every resolved path is launched directly regardless of extension.
+        assert_eq!(launch_method_for(Path::new("/usr/bin/gh")), LaunchMethod::Direct);
+        assert_eq!(launch_method_for(Path::new("/usr/bin/az")), LaunchMethod::Direct);
     }
 
     #[test]
