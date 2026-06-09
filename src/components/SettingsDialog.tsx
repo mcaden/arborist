@@ -122,6 +122,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
   const handleCustomState = useCallback((next: SettingsTabStateChange): void => {
     setCustomState((prev) => (prev.dirty === next.dirty && prev.valid === next.valid ? prev : next));
   }, []);
+  // Clear a stale dialog-level error banner (from a prior failed Save) whenever the
+  // user edits any embedded tab — the General tab inputs already clear it inline.
+  const clearSubmitError = useCallback((): void => setSubmitError(null), []);
 
   const headingId = useId();
   const generalTabId = useId();
@@ -440,7 +443,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
             hidden={activeTab !== 'plugins'}
             className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
           >
-            <PluginsTab ref={pluginsRef} onClose={onClose} embedded onStateChange={handlePluginsState} />
+            <PluginsTab ref={pluginsRef} onClose={onClose} embedded onStateChange={handlePluginsState} onEdit={clearSubmitError} />
           </div>
 
           <div
@@ -451,7 +454,7 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
             hidden={activeTab !== 'customProcesses'}
             className="themed-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-2"
           >
-            <CustomProcessesTab ref={customRef} onClose={onClose} embedded onStateChange={handleCustomState} />
+            <CustomProcessesTab ref={customRef} onClose={onClose} embedded onStateChange={handleCustomState} onEdit={clearSubmitError} />
           </div>
 
           <div

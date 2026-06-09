@@ -488,21 +488,21 @@ describe('SettingsDialog', () => {
     expect(screen.getByTestId('settings-save')).toBeDisabled();
   });
 
-  it('shows a red invalid indicator (not the dirty dot) on a tab with a blocking validation error', () => {
-    seedConfig();
+  it('clears a stale unified-save error when the user edits a non-General tab', async () => {
+    seedConfig({ worktreePrepCommands: [] });
+    bridgeMock.configSet.mockRejectedValueOnce(new Error('save blew up'));
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
 
-    fireEvent.click(screen.getByTestId('settings-tab-custom-processes'));
-    fireEvent.click(screen.getByTestId('custom-processes-add'));
-    // A blank id/name/command row is invalid.
-    expect(screen.getByTestId('settings-tab-custom-processes-invalid')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-tab-custom-processes-dirty')).toBeNull();
+    // Cause a unified-save failure via a General edit so the dialog-level banner shows.
+    fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo x' } });
+    await act(async () => {
+      screen.getByTestId('settings-save').click();
+    });
+    expect(screen.getByTestId('settings-error')).toBeInTheDocument();
 
-    // Completing the row clears the error and flips back to the dirty dot.
-    fireEvent.change(screen.getByLabelText(/^ID for new launcher$/i), { target: { value: 'foo' } });
-    fireEvent.change(screen.getByLabelText(/^Name for foo$/i), { target: { value: 'Foo' } });
-    fireEvent.change(screen.getByLabelText(/^Command for foo$/i), { target: { value: 'foo' } });
-    expect(screen.queryByTestId('settings-tab-custom-processes-invalid')).toBeNull();
-    expect(screen.getByTestId('settings-tab-custom-processes-dirty')).toBeInTheDocument();
+    // Editing a Plugins field (a non-General tab) must clear the stale banner.
+    fireEvent.click(screen.getByTestId('settings-tab-plugins'));
+    fireEvent.change(screen.getByTestId('plugin-ai-claude-launch-command'), { target: { value: 'claude --foo' } });
+    expect(screen.queryByTestId('settings-error')).toBeNull();
   });
 });

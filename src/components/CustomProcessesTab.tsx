@@ -35,6 +35,8 @@ export interface CustomProcessesTabProps {
   embedded?: boolean;
   /** Report dirty/validity upward so the parent can drive cross-tab dirty indicators and the unified Save button. */
   onStateChange?: (state: SettingsTabStateChange) => void;
+  /** Called on any field edit so the parent can clear a stale dialog-level error banner from a prior failed save. */
+  onEdit?: () => void;
 }
 
 interface DraftRow {
@@ -131,7 +133,7 @@ function makeRowKey(): string {
 }
 
 export const CustomProcessesTab = forwardRef<SettingsTabHandle, CustomProcessesTabProps>(function CustomProcessesTab(
-  { onClose, embedded = false, onStateChange },
+  { onClose, embedded = false, onStateChange, onEdit },
   ref,
 ): JSX.Element {
   const persistedDefs = useConfigStore(selectCustomProcesses);
@@ -178,18 +180,27 @@ export const CustomProcessesTab = forwardRef<SettingsTabHandle, CustomProcessesT
 
   useImperativeHandle(ref, () => ({ buildPatch }), [buildPatch]);
 
-  const updateRow = useCallback((rowKey: string, patch: Partial<DraftRow>): void => {
-    setSubmitError(null);
-    setRows((prev) => prev.map((row) => (row.rowKey === rowKey ? { ...row, ...patch } : row)));
-  }, []);
+  const updateRow = useCallback(
+    (rowKey: string, patch: Partial<DraftRow>): void => {
+      setSubmitError(null);
+      onEdit?.();
+      setRows((prev) => prev.map((row) => (row.rowKey === rowKey ? { ...row, ...patch } : row)));
+    },
+    [onEdit],
+  );
 
-  const deleteRow = useCallback((rowKey: string): void => {
-    setSubmitError(null);
-    setRows((prev) => prev.filter((row) => row.rowKey !== rowKey));
-  }, []);
+  const deleteRow = useCallback(
+    (rowKey: string): void => {
+      setSubmitError(null);
+      onEdit?.();
+      setRows((prev) => prev.filter((row) => row.rowKey !== rowKey));
+    },
+    [onEdit],
+  );
 
   const addRow = useCallback((): void => {
     setSubmitError(null);
+    onEdit?.();
     setRows((prev) => [
       ...prev,
       {
@@ -202,7 +213,7 @@ export const CustomProcessesTab = forwardRef<SettingsTabHandle, CustomProcessesT
         enabled: true,
       },
     ]);
-  }, []);
+  }, [onEdit]);
 
   const handleSave = useCallback(async (): Promise<void> => {
     // Standalone-only entry point: in embedded mode the parent SettingsDialog

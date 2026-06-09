@@ -13,6 +13,8 @@ export interface PluginsTabProps {
   embedded?: boolean;
   /** Report dirty/validity upward so the parent can drive cross-tab dirty indicators and the unified Save button. */
   onStateChange?: (state: SettingsTabStateChange) => void;
+  /** Called on any field edit so the parent can clear a stale dialog-level error banner from a prior failed save. */
+  onEdit?: () => void;
 }
 
 interface PluginDraft {
@@ -46,7 +48,7 @@ function draftPatch(current: PluginDraft, persisted: PluginDraft): PartialPlugin
 }
 
 export const PluginsTab = forwardRef<SettingsTabHandle, PluginsTabProps>(function PluginsTab(
-  { onClose, embedded = false, onStateChange },
+  { onClose, embedded = false, onStateChange, onEdit },
   ref,
 ): JSX.Element {
   const registry = useRegistry();
@@ -89,30 +91,38 @@ export const PluginsTab = forwardRef<SettingsTabHandle, PluginsTabProps>(functio
     }
   }, [drafts, lastSynced, persistedDrafts]);
 
-  const updateEnabled = useCallback((kind: keyof PluginDrafts, pluginId: string, enabled: boolean): void => {
-    setSubmitError(null);
-    setDrafts((prev) => ({
-      ...prev,
-      [kind]: {
-        ...prev[kind],
-        [pluginId]: makeDraft(enabled, prev[kind][pluginId]?.settings ?? {}),
-      },
-    }));
-  }, []);
-
-  const updateSetting = useCallback((kind: keyof PluginDrafts, pluginId: string, settingId: string, value: PluginSettingValue): void => {
-    setSubmitError(null);
-    setDrafts((prev) => {
-      const existing = prev[kind][pluginId] ?? makeDraft(true);
-      return {
+  const updateEnabled = useCallback(
+    (kind: keyof PluginDrafts, pluginId: string, enabled: boolean): void => {
+      setSubmitError(null);
+      onEdit?.();
+      setDrafts((prev) => ({
         ...prev,
         [kind]: {
           ...prev[kind],
-          [pluginId]: makeDraft(existing.enabled, { ...existing.settings, [settingId]: value }),
+          [pluginId]: makeDraft(enabled, prev[kind][pluginId]?.settings ?? {}),
         },
-      };
-    });
-  }, []);
+      }));
+    },
+    [onEdit],
+  );
+
+  const updateSetting = useCallback(
+    (kind: keyof PluginDrafts, pluginId: string, settingId: string, value: PluginSettingValue): void => {
+      setSubmitError(null);
+      onEdit?.();
+      setDrafts((prev) => {
+        const existing = prev[kind][pluginId] ?? makeDraft(true);
+        return {
+          ...prev,
+          [kind]: {
+            ...prev[kind],
+            [pluginId]: makeDraft(existing.enabled, { ...existing.settings, [settingId]: value }),
+          },
+        };
+      });
+    },
+    [onEdit],
+  );
 
   const buildPatch = useCallback((): PartialAppConfig | undefined => {
     const pluginSettings: PartialPluginSettings = {};
