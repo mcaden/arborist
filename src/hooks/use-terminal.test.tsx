@@ -129,7 +129,7 @@ function attachTerminal(id = 's1'): { host: HTMLDivElement; term: (typeof mockTe
   const { result } = renderHook(() => useTerminal(id));
   const host = makeHost();
   act(() => result.current.attach(host));
-  return { host, term: mockTerminals[mockTerminals.length - 1]! };
+  return { host, term: mockTerminals.at(-1)! };
 }
 
 // Drive the "modifier+V pastes the clipboard" happy path: mock the system clipboard, dispatch the chord, drain the async read, and assert the text
@@ -316,7 +316,7 @@ describe('useTerminal', () => {
     expect(sessionInput).not.toHaveBeenCalled();
   });
 
-  it('Backspace on macOS sends DEL (\\x7f) straight to the PTY and prevents default', () => {
+  it(String.raw`Backspace on macOS sends DEL (\x7f) straight to the PTY and prevents default`, () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
 
@@ -328,7 +328,7 @@ describe('useTerminal', () => {
     expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x7f' });
   });
 
-  it('Option(Alt)+Backspace on macOS sends ESC+DEL (\\x1b\\x7f) for word-delete', () => {
+  it(String.raw`Option(Alt)+Backspace on macOS sends ESC+DEL (\x1b\x7f) for word-delete`, () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
 
