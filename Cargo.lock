@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "arborist"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "arborist-types",
  "base64 0.22.1",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "arborist-types"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "pretty_assertions",
  "serde",
