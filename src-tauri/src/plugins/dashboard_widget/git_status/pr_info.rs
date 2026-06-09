@@ -16,7 +16,9 @@ use std::process::Command;
 
 use serde_json::Value;
 
-use crate::cmd_resolver::resolve_executable;
+#[cfg(windows)]
+use crate::cmd_resolver::LaunchMethod;
+use crate::cmd_resolver::{resolve_executable, resolve_launchable, ResolvedCommand};
 use crate::git_remote::parse_remote_url;
 use crate::types::{GitProvider, PrChecksStatus, PrState, PullRequestInfo, WorktreePrInfo};
 
@@ -80,8 +82,8 @@ impl PrInfoRunner for RealPrInfoRunner {
     }
 
     fn run(&self, program: &str, args: &[&str], worktree: &Path) -> Result<CliOutput, String> {
-        let exe = resolve_executable(program, worktree).ok_or_else(|| format!("{program} not found on PATH"))?;
-        let mut command = build_cli_command(&exe, args);
+        let resolved = resolve_launchable(program, worktree).ok_or_else(|| format!("{program} not found on PATH"))?;
+        let mut command = build_cli_command(&resolved, args);
         command.current_dir(worktree);
         let output = command.output().map_err(|e| format!("failed to run {program}: {e}"))?;
         Ok(CliOutput {
@@ -92,29 +94,32 @@ impl PrInfoRunner for RealPrInfoRunner {
     }
 }
 
-/// Build a [`Command`] for a resolved CLI path. Windows script wrappers (`.cmd` / `.bat`, e.g. the Azure CLI's `az.cmd`) cannot be executed
-/// directly via `CreateProcess`, so they are invoked through `cmd.exe /c`. The console window is suppressed to match [`crate::git::git_command`].
-fn build_cli_command(exe: &Path, args: &[&str]) -> Command {
+/// Build a [`Command`] for a [`ResolvedCommand`], honouring its [`LaunchMethod`]: directly-launchable native executables are spawned as-is, while
+/// script wrappers and extensionless shims (`LaunchMethod::ViaCmdShell`) go through `cmd.exe /c` — launching such a file directly fails with os
+/// error 193. The console window is suppressed to match [`crate::git::git_command`].
+fn build_cli_command(resolved: &ResolvedCommand, args: &[&str]) -> Command {
     #[cfg(windows)]
     let command = {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         use std::os::windows::process::CommandExt as _;
-        let is_script = crate::cmd_resolver::is_script_wrapper(exe);
-        let mut command = if is_script {
-            let mut c = Command::new("cmd.exe");
-            c.arg("/c").arg(exe).args(args);
-            c
-        } else {
-            let mut c = Command::new(exe);
-            c.args(args);
-            c
+        let mut command = match resolved.launch {
+            LaunchMethod::Direct => {
+                let mut c = Command::new(&resolved.path);
+                c.args(args);
+                c
+            }
+            LaunchMethod::ViaCmdShell => {
+                let mut c = Command::new("cmd.exe");
+                c.arg("/c").arg(&resolved.path).args(args);
+                c
+            }
         };
         command.creation_flags(CREATE_NO_WINDOW);
         command
     };
     #[cfg(not(windows))]
     let command = {
-        let mut c = Command::new(exe);
+        let mut c = Command::new(&resolved.path);
         c.args(args);
         c
     };
@@ -711,5 +716,30 @@ mod tests {
     fn gh_checks_empty_is_none() {
         assert_eq!(gh_checks(Some(&serde_json::json!([]))), PrChecksStatus::None);
         assert_eq!(gh_checks(None), PrChecksStatus::None);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn build_cli_command_honours_launch_method() {
+        use std::ffi::OsStr;
+
+        // A directly-launchable executable is spawned as-is.
+        let native = ResolvedCommand {
+            path: std::path::PathBuf::from(r"C:\tools\gh.exe"),
+            launch: LaunchMethod::Direct,
+        };
+        let cmd = build_cli_command(&native, &["pr", "view"]);
+        assert_eq!(cmd.get_program(), OsStr::new(r"C:\tools\gh.exe"));
+
+        // `ViaCmdShell` routes through `cmd.exe /c <path>` — launching a `.cmd`/extensionless shim directly fails with os error 193.
+        let shim = ResolvedCommand {
+            path: std::path::PathBuf::from(r"C:\Program Files\Azure\az.cmd"),
+            launch: LaunchMethod::ViaCmdShell,
+        };
+        let routed = build_cli_command(&shim, &["repos", "pr", "list"]);
+        assert_eq!(routed.get_program(), OsStr::new("cmd.exe"));
+        let args: Vec<&OsStr> = routed.get_args().collect();
+        assert_eq!(args.first().copied(), Some(OsStr::new("/c")));
+        assert_eq!(args.get(1).copied(), Some(OsStr::new(r"C:\Program Files\Azure\az.cmd")));
     }
 }
