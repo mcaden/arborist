@@ -12,7 +12,7 @@ import { waitForAppReady } from "./helpers/app.js";
 import { SIDEBAR, MAIN_AREA } from "./helpers/selectors.js";
 
 describe("App Launch", () => {
-  before(async () => {
+  beforeAll(async () => {
     await waitForAppReady();
   });
 

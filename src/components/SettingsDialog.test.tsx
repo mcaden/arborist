@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/tauri-bridge', async () => await import('@/lib/tauri-bridge.mock'));
 
 import { SettingsDialog } from './SettingsDialog';
+import { formatAppVersion } from '@/lib/format-app-version';
 import * as bridgeMock from '@/lib/tauri-bridge.mock';
 import { PluginRegistryProvider } from '@/plugins';
 import { useConfigStore } from '@/store/config-store';
@@ -282,6 +283,10 @@ describe('SettingsDialog', () => {
     renderWithPlugins(<SettingsDialog onClose={() => {}} />);
     fireEvent.click(screen.getByTestId('settings-tab-about'));
     expect(screen.getByTestId('settings-about-attribution')).toHaveTextContent('mcaden');
+    // Mirror the component's dev/prod logic so the assertion holds under both vitest (DEV=true)
+    // and any future production-mode test run, rather than hardcoding the `-dev` suffix.
+    const expectedVersion = formatAppVersion(__APP_VERSION__, import.meta.env.DEV);
+    expect(screen.getByTestId('settings-about-version')).toHaveTextContent(`Version ${expectedVersion}`);
     expect(screen.getByText(/cross-platform desktop app/i)).toBeInTheDocument();
     expect(screen.getByText(/terminal persistent in the background/i)).toBeInTheDocument();
   });

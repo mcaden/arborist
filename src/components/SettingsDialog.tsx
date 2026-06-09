@@ -33,10 +33,13 @@ import { PluginsTab } from './PluginsTab';
 import type { SettingsTabHandle, SettingsTabStateChange } from './settings-tab';
 import { WorkspacePicker } from './WorkspacePicker';
 import { formatError } from '@/lib/tauri-bridge';
+import { formatAppVersion } from '@/lib/format-app-version';
 import { changeWorkspace } from '@/lib/workspace-switch';
 import { selectTheme, selectWorkspaceRoot, selectWorktreePrepCommands, useConfigStore } from '@/store/config-store';
 
 export type SettingsTab = 'general' | 'plugins' | 'customProcesses' | 'about';
+
+const appVersion = formatAppVersion(__APP_VERSION__, import.meta.env.DEV);
 
 export interface SettingsDialogProps {
   onClose: () => void;
@@ -468,6 +471,9 @@ export function SettingsDialog({ onClose, initialTab = 'general' }: SettingsDial
             <section className="space-y-3 text-xs leading-5 text-slate-600 dark:text-slate-300">
               <p data-testid="settings-about-attribution">
                 Arborist is created by <strong>mcaden</strong>.
+              </p>
+              <p data-testid="settings-about-version">
+                Version <strong>{appVersion}</strong>
               </p>
               <p>
                 Arborist is a cross-platform desktop app for managing multiple Claude CLI / GitHub Copilot CLI sessions, each bound to a Git worktree.

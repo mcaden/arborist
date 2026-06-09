@@ -2,6 +2,10 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
 import { relative, isAbsolute } from 'node:path';
+import { readAppVersion } from './scripts/read-app-version';
+
+// Version shown on the About tab. Injected as `__APP_VERSION__` via `define` below.
+const appVersion = readAppVersion();
 
 // Default dev port. The actual per-worktree port is supplied by
 // `scripts/tauri-dev.mjs` via vite's `--port=<n>` CLI flag (see Vite's
@@ -29,6 +33,9 @@ function ignoreNestedWorktrees(file: string): boolean {
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
