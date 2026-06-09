@@ -86,7 +86,16 @@ import {
   useSubTerminal,
   useTerminal,
 } from './use-terminal';
-import { onSessionOutput, resetBridgeMocks, sessionInput, sessionResize, subSessionInput, subSessionResize } from '@/lib/tauri-bridge.mock';
+import {
+  clipboardReadText,
+  clipboardWriteText,
+  onSessionOutput,
+  resetBridgeMocks,
+  sessionInput,
+  sessionResize,
+  subSessionInput,
+  subSessionResize,
+} from '@/lib/tauri-bridge.mock';
 import { useSessionStore } from '@/store/session-store';
 
 function makeHost(width = 600, height = 400): HTMLDivElement {
@@ -97,22 +106,51 @@ function makeHost(width = 600, height = 400): HTMLDivElement {
   return el;
 }
 
-// Swap globalThis.navigator for one whose `clipboard` is the provided stub, run `fn`, then restore the original — keeps every clipboard test from
-// re-rolling the same defineProperty/try-finally boilerplate. `clipboard` is passed straight through, so tests can hand in `{ readText }`,
-// `{ writeText }`, `{}`, or `undefined` to exercise the various availability branches.
-async function withNavigatorClipboard(clipboard: unknown, fn: () => void | Promise<void>): Promise<void> {
+// Build a bubbling, cancelable keydown event with the supplied init — the `bubbles`/`cancelable` flags are required for host dispatch in every case.
+function keydown(init: KeyboardEventInit): KeyboardEvent {
+  return new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+}
+
+// Swap globalThis.navigator for one reporting a macOS `platform`, run `fn`, then restore — used by the Backspace-on-macOS tests. The Backspace
+// workaround only fires when `isMacPlatform()` is true; jsdom's default navigator is not macOS, so non-mac tests need no override.
+function withMacPlatform(fn: () => void): void {
   const originalNav = (globalThis as { navigator?: Navigator }).navigator;
-  Object.defineProperty(globalThis, 'navigator', { value: { ...originalNav, clipboard }, configurable: true });
+  Object.defineProperty(globalThis, 'navigator', { value: { ...originalNav, platform: 'MacIntel' }, configurable: true });
   try {
-    await fn();
+    fn();
   } finally {
     Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
   }
 }
 
-// Build a bubbling, cancelable keydown event with the supplied init — the `bubbles`/`cancelable` flags are required for host dispatch in every case.
-function keydown(init: KeyboardEventInit): KeyboardEvent {
-  return new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+// Render a terminal and attach it to a fresh host — the preamble nearly every interaction test needs. Returns the host plus the just-created mock
+// Terminal so tests can assert against `term.paste`, read its OSC handlers, etc., without repeating the renderHook → makeHost → attach boilerplate.
+function attachTerminal(id = 's1'): { host: HTMLDivElement; term: (typeof mockTerminals)[number] } {
+  const { result } = renderHook(() => useTerminal(id));
+  const host = makeHost();
+  act(() => result.current.attach(host));
+  return { host, term: mockTerminals.at(-1)! };
+}
+
+// Drive the "modifier+V pastes the clipboard" happy path: mock the system clipboard, dispatch the chord, drain the async read, and assert the text
+// reached `term.paste`. Shared by the Ctrl+V / Cmd+V / non-Latin-layout cases, which differ only in the key chord and the pasted payload.
+async function expectChordPastes(init: KeyboardEventInit, clip: string): Promise<void> {
+  const { host, term } = attachTerminal();
+  clipboardReadText.mockResolvedValue(clip);
+  const prevented = !host.dispatchEvent(keydown(init));
+  expect(prevented).toBe(true);
+  expect(clipboardReadText).toHaveBeenCalled();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(term.paste).toHaveBeenCalledWith(clip);
+}
+
+// Attach a terminal and return its registered OSC 52 handler (always present — `createEntry` registers it). The OSC 52 tests differ only in payload.
+function attachOsc52Handler(): (data: string) => boolean | Promise<boolean> {
+  const { term } = attachTerminal();
+  const handler = term._oscHandlers.get(52);
+  expect(handler).toBeDefined();
+  return handler!;
 }
 
 let originalResizeObserver: typeof ResizeObserver | undefined;
@@ -278,144 +316,133 @@ describe('useTerminal', () => {
     expect(sessionInput).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+V on host triggers navigator.clipboard.readText and term.paste', async () => {
+  it(String.raw`Backspace on macOS sends DEL (\x7f) straight to the PTY and prevents default`, () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
-    act(() => result.current.attach(host));
 
-    const readText = vi.fn().mockResolvedValue('clip-text');
-    await withNavigatorClipboard({ readText }, async () => {
-      const prevented = !host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true }));
-
-      expect(prevented).toBe(true);
-      expect(readText).toHaveBeenCalled();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('clip-text');
+    withMacPlatform(() => {
+      act(() => result.current.attach(host));
+      const dispatched = host.dispatchEvent(keydown({ key: 'Backspace' }));
+      expect(dispatched).toBe(false); // preventDefault called
     });
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x7f' });
   });
 
-  it('Cmd+V (metaKey) on host triggers paste via navigator.clipboard.readText', async () => {
+  it(String.raw`Option(Alt)+Backspace on macOS sends ESC+DEL (\x1b\x7f) for word-delete`, () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
-    act(() => result.current.attach(host));
 
-    const readText = vi.fn().mockResolvedValue('mac-clip');
-    await withNavigatorClipboard({ readText }, async () => {
-      const prevented = !host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', metaKey: true }));
-
-      expect(prevented).toBe(true);
-      expect(readText).toHaveBeenCalled();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('mac-clip');
+    withMacPlatform(() => {
+      act(() => result.current.attach(host));
+      host.dispatchEvent(keydown({ key: 'Backspace', altKey: true }));
     });
+    expect(sessionInput).toHaveBeenCalledWith({ sessionId: 's1', data: '\x1b\x7f' });
   });
 
-  it('Ctrl+Shift+V on host also triggers paste (Linux terminal convention)', async () => {
+  it('Ctrl/Cmd+Backspace on macOS is left to fall through (not intercepted)', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
-    act(() => result.current.attach(host));
 
-    const readText = vi.fn().mockResolvedValue('linux-clip');
-    await withNavigatorClipboard({ readText }, () => {
-      const prevented = !host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true, shiftKey: true }));
-
-      expect(prevented).toBe(true);
-      expect(readText).toHaveBeenCalled();
+    withMacPlatform(() => {
+      act(() => result.current.attach(host));
+      expect(host.dispatchEvent(keydown({ key: 'Backspace', ctrlKey: true }))).toBe(true);
+      expect(host.dispatchEvent(keydown({ key: 'Backspace', metaKey: true }))).toBe(true);
     });
+    expect(sessionInput).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+Alt+V is not intercepted (Alt-modifier passthrough)', async () => {
+  it('Backspace off macOS is left to xterm (no interception, no input sent)', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    const readText = vi.fn();
-    await withNavigatorClipboard({ readText }, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true, altKey: true }));
+    const dispatched = host.dispatchEvent(keydown({ key: 'Backspace' }));
 
-      expect(dispatched).toBe(true);
-      expect(readText).not.toHaveBeenCalled();
-    });
+    expect(dispatched).toBe(true); // not preventDefault'd
+    expect(sessionInput).not.toHaveBeenCalled();
   });
 
-  it('Cmd+Shift+V is not intercepted (passthrough; "paste and match style" on macOS)', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    const readText = vi.fn();
-    await withNavigatorClipboard({ readText }, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', metaKey: true, shiftKey: true }));
-
-      expect(dispatched).toBe(true);
-      expect(readText).not.toHaveBeenCalled();
-    });
+  it('Ctrl+V on host reads the system clipboard and pastes via term.paste', async () => {
+    await expectChordPastes({ key: 'v', code: 'KeyV', ctrlKey: true }, 'clip-text');
   });
 
-  it('Cmd+Alt+V is not intercepted (Alt-modifier passthrough on macOS)', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    const readText = vi.fn();
-    await withNavigatorClipboard({ readText }, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', metaKey: true, altKey: true }));
-
-      expect(dispatched).toBe(true);
-      expect(readText).not.toHaveBeenCalled();
-    });
+  it('Cmd+V (metaKey) on host pastes via the clipboard plugin', async () => {
+    await expectChordPastes({ key: 'v', code: 'KeyV', metaKey: true }, 'mac-clip');
   });
 
-  it('Ctrl+Cmd+V is not intercepted (both ctrl and meta together is undefined)', async () => {
+  it('Ctrl+Shift+V on host also triggers paste (Linux terminal convention)', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    const readText = vi.fn();
-    await withNavigatorClipboard({ readText }, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true, metaKey: true }));
+    const prevented = !host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true, shiftKey: true }));
 
-      expect(dispatched).toBe(true);
-      expect(readText).not.toHaveBeenCalled();
-    });
+    expect(prevented).toBe(true);
+    expect(clipboardReadText).toHaveBeenCalled();
   });
 
-  it('plain "v" keystroke (no modifier) is not intercepted', async () => {
+  it('Ctrl+Alt+V is not intercepted (Alt-modifier passthrough)', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    const readText = vi.fn();
-    await withNavigatorClipboard({ readText }, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV' }));
+    const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true, altKey: true }));
 
-      expect(dispatched).toBe(true);
-      expect(readText).not.toHaveBeenCalled();
-    });
+    expect(dispatched).toBe(true);
+    expect(clipboardReadText).not.toHaveBeenCalled();
+  });
+
+  it('Cmd+Shift+V is not intercepted (passthrough; "paste and match style" on macOS)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', metaKey: true, shiftKey: true }));
+
+    expect(dispatched).toBe(true);
+    expect(clipboardReadText).not.toHaveBeenCalled();
+  });
+
+  it('Cmd+Alt+V is not intercepted (Alt-modifier passthrough on macOS)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', metaKey: true, altKey: true }));
+
+    expect(dispatched).toBe(true);
+    expect(clipboardReadText).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+Cmd+V is not intercepted (both ctrl and meta together is undefined)', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true, metaKey: true }));
+
+    expect(dispatched).toBe(true);
+    expect(clipboardReadText).not.toHaveBeenCalled();
+  });
+
+  it('plain "v" keystroke (no modifier) is not intercepted', () => {
+    const { result } = renderHook(() => useTerminal('s1'));
+    const host = makeHost();
+    act(() => result.current.attach(host));
+
+    const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV' }));
+
+    expect(dispatched).toBe(true);
+    expect(clipboardReadText).not.toHaveBeenCalled();
   });
 
   it('Ctrl+V on a non-Latin keyboard layout still triggers paste (matches by code, not key)', async () => {
     // On a Russian QWERTY layout the V position prints `м`, so `event.key` is `'м'` — not `'v'`. We deliberately match on `event.code === 'KeyV'`
     // (physical key) rather than `event.key` so the user's normal paste shortcut works regardless of active keyboard layout.
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    const readText = vi.fn().mockResolvedValue('layout-clip');
-    await withNavigatorClipboard({ readText }, async () => {
-      const prevented = !host.dispatchEvent(keydown({ key: 'м', code: 'KeyV', ctrlKey: true }));
-
-      expect(prevented).toBe(true);
-      expect(readText).toHaveBeenCalled();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('layout-clip');
-    });
+    await expectChordPastes({ key: 'м', code: 'KeyV', ctrlKey: true }, 'layout-clip');
   });
 
-  it('Ctrl + non-V key with key:"v" is not intercepted (matches by code, not by produced character)', async () => {
+  it('Ctrl + non-V key with key:"v" is not intercepted (matches by code, not by produced character)', () => {
     // Inverse of the layout test: on a Russian layout the key that produces `'v'` is at a different physical position (code `KeyM`, since Cyrillic
     // `в` is on a different key entirely) — but for this test the important property is that `event.key === 'v'` does not imply the user pressed the V
     // shortcut. Anything that isn't `code === 'KeyV'` must pass through unchanged.
@@ -423,13 +450,10 @@ describe('useTerminal', () => {
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    const readText = vi.fn();
-    await withNavigatorClipboard({ readText }, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyM', ctrlKey: true }));
+    const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyM', ctrlKey: true }));
 
-      expect(dispatched).toBe(true);
-      expect(readText).not.toHaveBeenCalled();
-    });
+    expect(dispatched).toBe(true);
+    expect(clipboardReadText).not.toHaveBeenCalled();
   });
 
   it('Ctrl+V resolved after disposeTerminal does not write to a stale terminal', async () => {
@@ -438,180 +462,114 @@ describe('useTerminal', () => {
     act(() => result.current.attach(host));
     const term = mockTerminals[0]!;
 
-    // Hand-rolled deferred so we can dispatch the keydown, dispose the
-    // session, and only THEN resolve `readText` — exactly the race we're
+    // Hand-rolled deferred so we can dispatch the keydown, dispose the session, and only THEN resolve the clipboard read — exactly the race we're
     // guarding against.
     let resolveReadText!: (text: string) => void;
-    const readText = vi.fn(
+    clipboardReadText.mockImplementation(
       () =>
         new Promise<string>((resolve) => {
           resolveReadText = resolve;
         }),
     );
-    await withNavigatorClipboard({ readText }, async () => {
-      host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true }));
-      expect(readText).toHaveBeenCalled();
+    host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true }));
+    expect(clipboardReadText).toHaveBeenCalled();
 
-      // Dispose the session BEFORE the clipboard read resolves.
-      act(() => disposeTerminal('s1'));
+    // Dispose the session BEFORE the clipboard read resolves.
+    act(() => disposeTerminal('s1'));
 
-      // Now resolve the pending readText. The guard inside pasteFromClipboard should drop the paste because the registry entry is gone.
-      resolveReadText('stale-paste');
-      await Promise.resolve();
-      await Promise.resolve();
+    // Now resolve the pending read. The guard inside pasteFromClipboard should drop the paste because the registry entry is gone.
+    resolveReadText('stale-paste');
+    await Promise.resolve();
+    await Promise.resolve();
 
-      expect(term.paste).not.toHaveBeenCalled();
-    });
+    expect(term.paste).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+C with a selection copies it to the clipboard and suppresses SIGINT', async () => {
+  it('Ctrl+C with a selection copies it to the clipboard and suppresses SIGINT', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
     mockTerminals[0]!.getSelection.mockReturnValue('selected text');
 
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    await withNavigatorClipboard({ writeText }, () => {
-      const prevented = !host.dispatchEvent(keydown({ key: 'c', code: 'KeyC', ctrlKey: true }));
+    const prevented = !host.dispatchEvent(keydown({ key: 'c', code: 'KeyC', ctrlKey: true }));
 
-      expect(prevented).toBe(true);
-      expect(writeText).toHaveBeenCalledWith('selected text');
-    });
+    expect(prevented).toBe(true);
+    expect(clipboardWriteText).toHaveBeenCalledWith('selected text');
   });
 
-  it('Ctrl+C with no selection is not intercepted (falls through to SIGINT)', async () => {
+  it('Ctrl+C with no selection is not intercepted (falls through to SIGINT)', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
     mockTerminals[0]!.getSelection.mockReturnValue('');
 
-    const writeText = vi.fn();
-    await withNavigatorClipboard({ writeText }, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'c', code: 'KeyC', ctrlKey: true }));
+    const dispatched = host.dispatchEvent(keydown({ key: 'c', code: 'KeyC', ctrlKey: true }));
 
-      expect(dispatched).toBe(true);
-      expect(writeText).not.toHaveBeenCalled();
-    });
+    expect(dispatched).toBe(true);
+    expect(clipboardWriteText).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+Shift+C copies the selection', async () => {
+  it('Ctrl+Shift+C copies the selection', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
     mockTerminals[0]!.getSelection.mockReturnValue('shift-copy');
 
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    await withNavigatorClipboard({ writeText }, () => {
-      const prevented = !host.dispatchEvent(keydown({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true }));
+    const prevented = !host.dispatchEvent(keydown({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true }));
 
-      expect(prevented).toBe(true);
-      expect(writeText).toHaveBeenCalledWith('shift-copy');
-    });
+    expect(prevented).toBe(true);
+    expect(clipboardWriteText).toHaveBeenCalledWith('shift-copy');
   });
 
-  it('Cmd+C copies the selection on macOS', async () => {
+  it('Cmd+C copies the selection on macOS', () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
     mockTerminals[0]!.getSelection.mockReturnValue('mac-copy');
 
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    await withNavigatorClipboard({ writeText }, () => {
-      const prevented = !host.dispatchEvent(keydown({ key: 'c', code: 'KeyC', metaKey: true }));
+    const prevented = !host.dispatchEvent(keydown({ key: 'c', code: 'KeyC', metaKey: true }));
 
-      expect(prevented).toBe(true);
-      expect(writeText).toHaveBeenCalledWith('mac-copy');
-    });
-  });
-
-  it('Ctrl+C with a selection but no clipboard write API is not intercepted (preserves SIGINT)', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-    mockTerminals[0]!.getSelection.mockReturnValue('selected but no API');
-
-    await withNavigatorClipboard({}, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'c', code: 'KeyC', ctrlKey: true }));
-
-      expect(dispatched).toBe(true);
-    });
+    expect(prevented).toBe(true);
+    expect(clipboardWriteText).toHaveBeenCalledWith('mac-copy');
   });
 
   it('OSC 52 clipboard write from the CLI is forwarded to the system clipboard', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    await withNavigatorClipboard({ writeText }, async () => {
-      const { result } = renderHook(() => useTerminal('s1'));
-      const host = makeHost();
-      act(() => result.current.attach(host));
-      const handler = mockTerminals[0]!._oscHandlers.get(52);
-      expect(handler).toBeDefined();
+    const handler = attachOsc52Handler();
 
-      // OSC 52 payload: "<selection>;<base64>". "hi" → "aGk=".
-      const handled = await handler!('c;aGk=');
+    // OSC 52 payload: "<selection>;<base64>". "hi" → "aGk=".
+    const handled = await handler('c;aGk=');
 
-      expect(handled).toBe(true);
-      expect(writeText).toHaveBeenCalledWith('hi');
-    });
+    expect(handled).toBe(true);
+    expect(clipboardWriteText).toHaveBeenCalledWith('hi');
   });
 
   it('OSC 52 decodes multi-byte UTF-8 correctly', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    await withNavigatorClipboard({ writeText }, async () => {
-      const { result } = renderHook(() => useTerminal('s1'));
-      const host = makeHost();
-      act(() => result.current.attach(host));
-      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+    const handler = attachOsc52Handler();
 
-      // "café — 日本" base64-encoded from its UTF-8 bytes.
-      const b64 = Buffer.from('café — 日本', 'utf-8').toString('base64');
-      const handled = await handler(`c;${b64}`);
+    // "café — 日本" base64-encoded from its UTF-8 bytes.
+    const b64 = Buffer.from('café — 日本', 'utf-8').toString('base64');
+    const handled = await handler(`c;${b64}`);
 
-      expect(handled).toBe(true);
-      expect(writeText).toHaveBeenCalledWith('café — 日本');
-    });
+    expect(handled).toBe(true);
+    expect(clipboardWriteText).toHaveBeenCalledWith('café — 日本');
   });
 
   it('OSC 52 read request ("?") is declined and never leaks the clipboard', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    await withNavigatorClipboard({ writeText }, async () => {
-      const { result } = renderHook(() => useTerminal('s1'));
-      const host = makeHost();
-      act(() => result.current.attach(host));
-      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+    const handler = attachOsc52Handler();
 
-      const handled = await handler('c;?');
+    const handled = await handler('c;?');
 
-      expect(handled).toBe(false);
-      expect(writeText).not.toHaveBeenCalled();
-    });
+    expect(handled).toBe(false);
+    expect(clipboardWriteText).not.toHaveBeenCalled();
   });
 
   it('OSC 52 with malformed base64 is declined cleanly', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    await withNavigatorClipboard({ writeText }, async () => {
-      const { result } = renderHook(() => useTerminal('s1'));
-      const host = makeHost();
-      act(() => result.current.attach(host));
-      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
+    const handler = attachOsc52Handler();
 
-      const handled = await handler('c;@@not-base64@@');
+    const handled = await handler('c;@@not-base64@@');
 
-      expect(handled).toBe(false);
-      expect(writeText).not.toHaveBeenCalled();
-    });
-  });
-
-  it('OSC 52 is declined when the clipboard write API is unavailable', async () => {
-    await withNavigatorClipboard({}, async () => {
-      const { result } = renderHook(() => useTerminal('s1'));
-      const host = makeHost();
-      act(() => result.current.attach(host));
-      const handler = mockTerminals[0]!._oscHandlers.get(52)!;
-
-      const handled = await handler('c;aGk=');
-
-      expect(handled).toBe(false);
-    });
+    expect(handled).toBe(false);
+    expect(clipboardWriteText).not.toHaveBeenCalled();
   });
 
   it('Shift+Enter listener is removed on detach', () => {
@@ -704,87 +662,58 @@ describe('useTerminal', () => {
     expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('hello world');
   });
 
-  it('paste falls back to navigator.clipboard.readText when clipboardData is empty', async () => {
+  it('paste falls back to the clipboard plugin when clipboardData is empty', async () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    const readText = vi.fn().mockResolvedValue('from-async-clipboard');
-    await withNavigatorClipboard({ readText }, async () => {
-      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
-      Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
-      host.dispatchEvent(evt);
+    clipboardReadText.mockResolvedValue('from-async-clipboard');
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
+    host.dispatchEvent(evt);
 
-      expect(readText).toHaveBeenCalled();
-      // Drain the microtask queue so the .then(...) on readText resolves. Two awaits: one for the readText resolution, one for the chained .then.
-      await Promise.resolve();
-      await Promise.resolve();
+    expect(clipboardReadText).toHaveBeenCalled();
+    // Drain the microtask queue so the .then(...) on the read resolves. Two awaits: one for the read resolution, one for the chained .then.
+    await Promise.resolve();
+    await Promise.resolve();
 
-      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('from-async-clipboard');
-    });
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('from-async-clipboard');
   });
 
-  it('paste with empty clipboard and no async fallback does not call term.paste() and does not preventDefault', async () => {
+  it('paste with empty clipboardData reads the plugin, finds nothing, and pastes nothing (but still preventDefaults)', async () => {
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    await withNavigatorClipboard(undefined, () => {
-      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
-      Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
-      const dispatched = host.dispatchEvent(evt);
+    clipboardReadText.mockResolvedValue('');
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', { value: { getData: () => '' } });
+    const prevented = !host.dispatchEvent(evt);
 
-      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
-      // When we have no paste path, we MUST let the event propagate so xterm or any other listener still has a chance to handle it — otherwise we
-      // just turn paste into a silent no-op (regression).
-      expect(dispatched).toBe(true);
-    });
+    // The plugin clipboard is always available in Tauri, so we own the paste end-to-end and always suppress the default to avoid a double-paste
+    // through xterm's own handler.
+    expect(prevented).toBe(true);
+    expect(clipboardReadText).toHaveBeenCalled();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+V keydown does not preventDefault when navigator.clipboard.readText is unavailable', async () => {
+  it('paste with inline clipboardData consumes it without reading the plugin', () => {
+    // Inline payload is the happy path and must always be consumed directly — we own the paste end-to-end here and never round-trip to the plugin.
     const { result } = renderHook(() => useTerminal('s1'));
     const host = makeHost();
     act(() => result.current.attach(host));
 
-    await withNavigatorClipboard(undefined, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', ctrlKey: true }));
-
-      // Without a clipboard API, we can't paste — so we must not suppress xterm's own keydown handling. A silent no-op is a regression vs. the
-      // previous behavior (xterm sending \x16).
-      expect(dispatched).toBe(true);
-      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
+    const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { getData: () => 'inline-text' },
     });
-  });
+    const prevented = !host.dispatchEvent(evt);
 
-  it('Cmd+V keydown does not preventDefault when navigator.clipboard.readText is unavailable', async () => {
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    await withNavigatorClipboard(undefined, () => {
-      const dispatched = host.dispatchEvent(keydown({ key: 'v', code: 'KeyV', metaKey: true }));
-
-      expect(dispatched).toBe(true);
-      expect(mockTerminals[0]!.paste).not.toHaveBeenCalled();
-    });
-  });
-
-  it('paste with inline clipboardData still preventDefaults even if async clipboard is missing', async () => {
-    // Inline payload is the happy path and must always be consumed — we own the paste end-to-end here.
-    const { result } = renderHook(() => useTerminal('s1'));
-    const host = makeHost();
-    act(() => result.current.attach(host));
-
-    await withNavigatorClipboard(undefined, () => {
-      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
-      Object.defineProperty(evt, 'clipboardData', {
-        value: { getData: () => 'inline-text' },
-      });
-      const prevented = !host.dispatchEvent(evt);
-
-      expect(prevented).toBe(true);
-      expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('inline-text');
-    });
+    expect(prevented).toBe(true);
+    expect(mockTerminals[0]!.paste).toHaveBeenCalledWith('inline-text');
+    expect(clipboardReadText).not.toHaveBeenCalled();
   });
 
   it('paste runs in capture phase, beating a descendants stopPropagation', () => {

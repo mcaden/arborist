@@ -6,6 +6,8 @@
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
     "allow-ping",
     "allow-config",
     "allow-shell-command-trust",

@@ -84,6 +84,7 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 tokio-util = "0.7"
 base64 = "0.22"
+tauri-plugin-clipboard-manager = "2.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
