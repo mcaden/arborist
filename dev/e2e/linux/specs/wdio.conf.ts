@@ -79,12 +79,11 @@ export const config: WebdriverIO.Config = {
   connectionRetryTimeout: 120000,
   connectionRetryCount: 3,
 
-  framework: "mocha",
+  framework: "jasmine",
   reporters: ["spec"],
 
-  mochaOpts: {
-    ui: "bdd",
-    timeout: 60000,
+  jasmineOpts: {
+    defaultTimeoutInterval: 60000,
   },
 
   // Start tauri-driver before the session so it can proxy WebDriver requests
