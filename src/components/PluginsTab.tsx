@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 
 import { ExperimentalIcon } from './ExperimentalIcon';
+import type { SettingsTabHandle, SettingsTabStateChange } from './settings-tab';
 import { formatError } from '@/lib/tauri-bridge';
 import { AI_LAUNCH_COMMAND_SETTING, aiLaunchCommand, pluginEnabled, useRegistry } from '@/plugins';
 import { selectConfig, useConfigStore } from '@/store/config-store';
-import type { PartialPluginSettingState, PartialPluginSettings, PluginSettingValue } from '@/types/arborist';
+import type { PartialAppConfig, PartialPluginSettingState, PartialPluginSettings, PluginSettingValue } from '@/types/arborist';
 
 export interface PluginsTabProps {
   onClose: () => void;
+  /** When true, the tab hides its own Save/Cancel footer; the parent SettingsDialog coordinates saving across tabs. */
+  embedded?: boolean;
+  /** Report dirty/validity upward so the parent can drive cross-tab dirty indicators and the unified Save button. */
+  onStateChange?: (state: SettingsTabStateChange) => void;
 }
 
 interface PluginDraft {
@@ -40,7 +45,10 @@ function draftPatch(current: PluginDraft, persisted: PluginDraft): PartialPlugin
   return patch.enabled !== undefined || patch.settings !== undefined ? patch : undefined;
 }
 
-export function PluginsTab({ onClose }: PluginsTabProps): JSX.Element {
+export const PluginsTab = forwardRef<SettingsTabHandle, PluginsTabProps>(function PluginsTab(
+  { onClose, embedded = false, onStateChange },
+  ref,
+): JSX.Element {
   const registry = useRegistry();
   const aiPlugins = useMemo(() => registry.ai(), [registry]);
   const customProcessPlugins = useMemo(() => registry.customProcesses(), [registry]);
@@ -106,30 +114,45 @@ export function PluginsTab({ onClose }: PluginsTabProps): JSX.Element {
     });
   }, []);
 
+  const buildPatch = useCallback((): PartialAppConfig | undefined => {
+    const pluginSettings: PartialPluginSettings = {};
+    for (const kind of ['ai', 'customProcess', 'dashboardWidget'] as const) {
+      const byPlugin: Record<string, PartialPluginSettingState> = {};
+      for (const [pluginId, current] of Object.entries(drafts[kind])) {
+        const persisted = lastSynced[kind][pluginId] ?? makeDraft(true);
+        const patch = draftPatch(current, persisted);
+        if (patch) byPlugin[pluginId] = patch;
+      }
+      if (Object.keys(byPlugin).length > 0) pluginSettings[kind] = byPlugin;
+    }
+    return Object.keys(pluginSettings).length > 0 ? { pluginSettings } : undefined;
+  }, [drafts, lastSynced]);
+
   const handleSave = useCallback(async (): Promise<void> => {
+    // Standalone-only entry point: in embedded mode the parent SettingsDialog
+    // drives saving via buildPatch(), and the Save/Cancel footer below (which is
+    // the only consumer of `saving`/`submitError`/`handleSave`) is not rendered.
     setSubmitError(null);
     setSaving(true);
     try {
-      const pluginSettings: PartialPluginSettings = {};
-      for (const kind of ['ai', 'customProcess', 'dashboardWidget'] as const) {
-        const byPlugin: Record<string, PartialPluginSettingState> = {};
-        for (const [pluginId, current] of Object.entries(drafts[kind])) {
-          const persisted = lastSynced[kind][pluginId] ?? makeDraft(true);
-          const patch = draftPatch(current, persisted);
-          if (patch) byPlugin[pluginId] = patch;
-        }
-        if (Object.keys(byPlugin).length > 0) pluginSettings[kind] = byPlugin;
-      }
-      if (Object.keys(pluginSettings).length > 0) await setConfig({ pluginSettings });
+      const patch = buildPatch();
+      if (patch) await setConfig(patch);
       onClose();
     } catch (err) {
       setSubmitError(formatError(err));
     } finally {
       setSaving(false);
     }
-  }, [drafts, lastSynced, onClose, setConfig]);
+  }, [buildPatch, onClose, setConfig]);
 
   const dirty = !draftsEqual(drafts, lastSynced);
+
+  // Plugin edits have no field-level validation, so the tab is always "valid".
+  useEffect(() => {
+    onStateChange?.({ dirty, valid: true });
+  }, [dirty, onStateChange]);
+
+  useImperativeHandle(ref, () => ({ buildPatch }), [buildPatch]);
 
   return (
     <div data-testid="plugins-tab" className="flex min-h-0 flex-1 flex-col">
@@ -249,7 +272,7 @@ export function PluginsTab({ onClose }: PluginsTabProps): JSX.Element {
         </section>
       </div>
 
-      {submitError && (
+      {!embedded && submitError && (
         <p
           role="alert"
           data-testid="settings-error"
@@ -259,25 +282,27 @@ export function PluginsTab({ onClose }: PluginsTabProps): JSX.Element {
         </p>
       )}
 
-      <div className="mt-3 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={saving}
-          className="rounded border border-slate-300 bg-white px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onClick={() => handleSave()}
-          disabled={!dirty || saving}
-          data-testid="plugins-save"
-          className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-        >
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-      </div>
+      {!embedded && (
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded border border-slate-300 bg-white px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSave()}
+            disabled={!dirty || saving}
+            data-testid="plugins-save"
+            className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      )}
     </div>
   );
-}
+});
