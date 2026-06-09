@@ -78,19 +78,19 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
  * between the dot and the icon doesn't nudge the tab label. The `sr-only` text
  * carries the meaning for screen readers since the glyphs are decorative.
  */
-function TabIndicator({ id, dirty, valid }: { id: string; dirty: boolean; valid: boolean }): JSX.Element | null {
+function TabIndicator({ id, dirty, valid }: Readonly<{ id: string; dirty: boolean; valid: boolean }>): JSX.Element | null {
   if (valid && !dirty) return null;
   return (
     <span className="ml-1.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-      {!valid ? (
-        <span data-testid={`settings-tab-${id}-invalid`} title="Invalid edits" className="inline-flex text-red-600 dark:text-red-400">
-          <ErrorIcon className="h-3.5 w-3.5" />
-          <span className="sr-only"> (invalid edits)</span>
-        </span>
-      ) : (
+      {valid ? (
         <span data-testid={`settings-tab-${id}-dirty`} title="Unsaved changes" className="inline-flex">
           <span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-orange-500 dark:bg-orange-400" />
           <span className="sr-only"> (unsaved changes)</span>
+        </span>
+      ) : (
+        <span data-testid={`settings-tab-${id}-invalid`} title="Invalid edits" className="inline-flex text-red-600 dark:text-red-400">
+          <ErrorIcon className="h-3.5 w-3.5" />
+          <span className="sr-only"> (invalid edits)</span>
         </span>
       )}
     </span>

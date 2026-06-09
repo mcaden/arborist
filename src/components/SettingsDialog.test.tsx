@@ -459,7 +459,7 @@ describe('SettingsDialog', () => {
     // Edit General.
     fireEvent.change(screen.getByLabelText(/worktree prep commands/i), { target: { value: 'echo prep' } });
     const picker = screen.getByTestId('settings-theme-picker');
-    fireEvent.click(picker.querySelectorAll<HTMLInputElement>('input[type="radio"]')[2]!); // dark
+    fireEvent.click(picker.querySelectorAll('input[type="radio"]')[2]!); // dark
 
     // Edit Plugins.
     fireEvent.click(screen.getByTestId('settings-tab-plugins'));
