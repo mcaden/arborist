@@ -94,9 +94,9 @@ impl PrInfoRunner for RealPrInfoRunner {
     }
 }
 
-/// Build a [`Command`] for a [`ResolvedCommand`], honouring its [`LaunchMethod`]: directly-launchable native executables are spawned as-is, while
-/// script wrappers and extensionless shims (`LaunchMethod::ViaCmdShell`) go through `cmd.exe /c` — launching such a file directly fails with os
-/// error 193. The console window is suppressed to match [`crate::git::git_command`].
+/// Build a [`Command`] for a [`ResolvedCommand`], honouring its [`crate::cmd_resolver::LaunchMethod`]: directly-launchable native executables are
+/// spawned as-is, while script wrappers and extensionless shims (`LaunchMethod::ViaCmdShell`) go through `cmd.exe /c` — launching such a file
+/// directly fails with os error 193. The console window is suppressed to match [`crate::git::git_command`].
 fn build_cli_command(resolved: &ResolvedCommand, args: &[&str]) -> Command {
     #[cfg(windows)]
     let command = {
